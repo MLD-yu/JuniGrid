@@ -1,0 +1,62 @@
+@namespace JuniGrid.Components.Layout
+@inject NavigationManager Nav
+@inject PageRefreshService PageRefresh
+@inject IJSRuntime JS
+@implements IDisposable
+
+<nav class="jg-topnav">
+    @* 选中高亮块：淡绿底、向下延伸到内容区，像“从内容区露出的一块”；left/width 由 JS 平移到当前激活项 *@
+    <div class="jg-topnav-thumb"></div>
+    @foreach (var item in Items)
+    {
+        @* v0.24.0：纯图标导航 + 悬浮胶囊提示。
+           data-tip 供 CSS ::after 气泡显示，不再渲染文字 span。 *@
+        <NavLink class="jg-topnav-item" ActiveClass="active" Match="@item.Match" href="@item.Href"
+                 data-tip="@item.Label" aria-label="@item.Label"
+                 @onclick="() => OnIconClick(item)">
+            <img class="jg-topnav-icon" src="@item.Icon" alt="" draggable="false" />
+        </NavLink>
+    }
+</nav>
+
+@code {
+    private record NavItem(string Href, string Label, string Icon, NavLinkMatch Match);
+
+    private readonly NavItem[] Items =
+    {
+        new("",         "首页",       "assets/nav/home.svg",     NavLinkMatch.All),
+        new("mods",     "Mod 管理",   "assets/nav/mods.svg",     NavLinkMatch.Prefix),
+        new("nexus",    "NEXUS MODS", "assets/nav/nexus.svg",    NavLinkMatch.Prefix),
+        new("logs",     "SMAPI 日志", "assets/nav/smapi.svg",    NavLinkMatch.Prefix),
+        new("settings", "设置",       "assets/nav/settings.svg", NavLinkMatch.Prefix),
+    };
+
+    protected override void OnInitialized()
+    {
+        // v0.35.0：路由变化（.active 挪项）后立即重定位滑块，杜绝"元素先动、背景后到"
+        Nav.LocationChanged += async (_, _) =>
+        {
+            try { await InvokeAsync(StateHasChanged); } catch { }
+            try { await JS.InvokeVoidAsync("junigridJs.placeNavThumb"); } catch { }
+        };
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        // 每次渲染后都重定位（双 rAF 内部保证等 .active 就位），Mod 强制刷新跳动一并覆盖
+        try { await JS.InvokeVoidAsync("junigridJs.placeNavThumb"); } catch { }
+    }
+
+    public void Dispose() { }
+
+    // v1.06.7：只有点击「当前已停留页面」的图标（mods/nexus）才发刷新信号，
+    // 页面订阅后重新扫描/拉取/检查更新；从其它页点图标 = 正常导航（组件重建自然加载，
+    // 不额外发请求）。旧的 forceLoad:true 整站重载已废弃。
+    private void OnIconClick(NavItem item)
+    {
+        if (item.Href is not ("mods" or "nexus")) return;
+        var path = Nav.ToAbsoluteUri(Nav.Uri).AbsolutePath.TrimEnd('/');
+        if (path.EndsWith(item.Href, StringComparison.OrdinalIgnoreCase))
+            PageRefresh.Request(item.Href);
+    }
+}

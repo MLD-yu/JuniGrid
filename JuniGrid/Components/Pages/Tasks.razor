@@ -1,0 +1,252 @@
+@namespace JuniGrid.Components.Pages
+@page "/tasks"
+@inject TaskCenterService Center
+@inject NavigationManager Nav
+@inject IJSRuntime JS
+@implements IDisposable
+
+<div class="jg-page jg-tasks-page">
+    <div class="jg-tasks-inner" style="display:flex;gap:16px;">
+        <aside style="flex:0 0 200px;">
+            @* ─── 透明底黑箭头返回（悬浮白底黑字胶囊提示跟随鼠标）─── *@
+            <button class="jg-tasks-back" @onclick="GoBack" data-tip="返回" aria-label="返回">
+                <svg width="20" height="20" viewBox="0 0 1024 1024" fill="none">
+                    <path d="M532.526499 904.817574L139.506311 511.797385 532.526499 118.777197c12.258185-12.258185 12.432147-32.892131-0.187265-45.51052-12.707416-12.707416-32.995485-12.703323-45.511543-0.187265L75.166957 484.739123c-7.120165 7.120165-10.163477 17.065677-8.990768 26.624381-1.500167 9.755178 1.5104 20.010753 8.990768 27.491121l411.660734 411.660734c12.258185 12.258185 32.892131 12.432147 45.511543-0.187265 12.707416-12.707416 12.7023-32.995485 0.187265-45.51052z" fill="currentColor"/>
+                </svg>
+            </button>
+            <div style="margin-top:24px;font-size:13px;opacity:.7;">总进度</div>
+            <div style="font-size:26px;font-weight:600;color:#141414;">@Center.TotalPercent.ToString("F2") %</div>
+            <div style="margin-top:16px;font-size:13px;opacity:.7;">下载速度</div>
+            <div style="font-size:22px;font-weight:600;color:#141414;">@Center.TotalSpeedMBps.ToString("F2") M/s</div>
+            <div style="margin-top:16px;font-size:13px;opacity:.7;">剩余任务</div>
+            <div style="font-size:22px;font-weight:600;color:#141414;">@Center.RunningCount</div>
+            <div style="margin-top:24px;">
+                <button class="jg-tasks-clear" @onclick="AskClear" data-tip="清理当前筛选下的所有任务"
+                        disabled="@(!VisibleItems().Any())">清理全部</button>
+            </div>
+        </aside>
+        <section style="flex:1;min-width:0;">
+            <h1 style="margin-top:0;">任务管理</h1>
+            @* ─── 筛选导航：第一个胶囊 = 任务类型（点本体一键回「全部」，点小箭头才弹下拉）
+                   + 状态胶囊 进行中/成功/失败 ─── *@
+            <div class="jg-tfilters">
+                <div class="jg-sort-dd jg-tf-kind @(_filter == "all" ? "active" : "")" id="jgKindFilter">
+                    <span class="jg-tf-label" @onclick="KindPillClick" title="点击回到该类型的全部任务">@KindLabel(_kind)</span>
+                    <span class="jg-tf-caret" @onclick="ToggleKindMenu" title="选择任务类型">
+                        <svg class="jg-sort-arrow" width="12" height="12" viewBox="0 0 12 12" fill="none">
+                            <path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                    </span>
+                    <div class="jg-sort-menu">
+                        @foreach (var k in Kinds)
+                        {
+                            <button type="button" class="jg-sort-item @(_kind == k.Key ? "active" : "")"
+                                    @onclick="() => SelectKind(k.Key)">@k.Label</button>
+                        }
+                    </div>
+                </div>
+                @foreach (var f in Filters)
+                {
+                    var key = f.Key;
+                    <button class="jg-tfilter @(_filter == key ? "active" : "")" @onclick="() => SetFilter(key)">@f.Label</button>
+                }
+            </div>
+            @if (VisibleItems().Count == 0)
+            {
+                <div class="jg-note">当前筛选下没有任务。</div>
+            }
+            else
+            {
+                @foreach (var t in VisibleItems())
+                {
+                    var dropId = "jgDrop-" + t.Id.ToString("N");
+                    var arrowId = "jgArr-" + t.Id.ToString("N");
+                    <div class="jg-card" style="margin-bottom:10px;">
+                        <div style="display:flex;justify-content:space-between;align-items:center;">
+                            <div style="font-weight:600;word-break:break-word;overflow-wrap:anywhere;flex:1;min-width:0;">@t.Title</div>
+                            <button class="jg-rowbtn" @onclick="() => Remove(t)" title="移除">×</button>
+                        </div>
+                        <div style="margin-top:6px;font-size:12px;display:flex;align-items:center;gap:6px;">
+                            <span style="opacity:.7;">@(t.Status == "running" ? "运行中" : t.Status == "done" ? "已完成" : "失败") · @t.Percent.ToString("F0")% @(t.SpeedMBps > 0 ? $" · {t.SpeedMBps:F2} M/s" : "")</span>
+                            @if (t.Log.Count > 0)
+                            {
+                                @* ─── 数字进度后边的下拉按钮：展开该任务的下载信息 ─── *@
+                                <button class="jg-taskdrop-trigger" @onclick="() => ToggleDrop(t)" aria-label="展开下载信息">
+                                    <svg id="@arrowId" width="12" height="12" viewBox="0 0 12 12" fill="none">
+                                        <path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                                    </svg>
+                                </button>
+                            }
+                        </div>
+                        <div style="height:6px;background:rgba(0,0,0,0.08);border-radius:3px;margin-top:6px;">
+                            <div style="height:100%;border-radius:3px;background:@(t.Status=="failed"?"#e11d48":"#141414");width:@(t.Percent)%"></div>
+                        </div>
+
+                        @* ─── 下载信息下拉面板（GSAP easeReverse 弹性展开；进度噪声行不进入）───
+                           v1.07：展开态由 class（_openDrops）驱动 —— 下载中频繁重渲染也不会丢展开状态；
+                           gsap 只负责动画过程，动画结束清除内联样式，稳态归 CSS 管 *@
+                        @if (UsefulLines(t).Any())
+                        {
+                            <div class="jg-taskdrop-menu @(_openDrops.Contains(t.Id) ? "open" : "")" id="@dropId">
+                                @foreach (var line in UsefulLines(t))
+                                {
+                                    <div class="jg-taskdrop-item">@line</div>
+                                }
+                            </div>
+                        }
+                    </div>
+                }
+            }
+        </section>
+    </div>
+
+    @* ─── 清理确认弹窗 ─── *@
+    @if (_confirmClear)
+    {
+        <div class="jg-tasks-confirm-mask" @onclick="() => _confirmClear = false">
+            <div class="jg-tasks-confirm" @onclick:stopPropagation>
+                <div style="font-weight:600;margin-bottom:6px;">清理任务</div>
+                <div style="font-size:13px;opacity:.8;">确定清理当前筛选下的所有任务吗？</div>
+                <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px;">
+                    <button class="jg-tasks-cancel" @onclick="() => _confirmClear = false">取消</button>
+                    <button class="jg-tasks-clear" style="margin:0;" @onclick="DoClear">确定清理</button>
+                </div>
+            </div>
+        </div>
+    }
+</div>
+
+@code {
+    protected override void OnInitialized() => Center.OnChanged += Refresh;
+    public void Dispose() => Center.OnChanged -= Refresh;
+    private void Refresh() => InvokeAsync(StateHasChanged);
+
+    // ─── 筛选导航：状态胶囊 × 任务类型下拉 ───
+    // 类型胶囊本体点击 = 一键回「全部」；只有小箭头才弹下拉 —— 保证任何时候一下就能回全部
+    private static readonly (string Key, string Label)[] Filters =
+    {
+        ("running", "进行中"), ("done", "成功"), ("failed", "失败")
+    };
+    private static readonly (string Key, string Label)[] Kinds =
+    {
+        ("all", "全部"), ("mod", "Mod 下载"), ("cleanup", "缓存清理")
+    };
+    private string _filter = "all";   // 状态维度：all / running / done / failed
+    private string _kind = "all";     // 类型维度：all / mod / cleanup
+
+    private string KindLabel(string key) =>
+        Kinds.FirstOrDefault(k => k.Key == key).Label ?? "全部";
+
+    private void SetFilter(string key)
+    {
+        _filter = key;
+        StateHasChanged();
+    }
+
+    /// <summary>点类型胶囊本体：只把状态筛选拉回「全部」，类型保持胶囊上显示的那个 ——
+    /// 显示「Mod 下载」就回 Mod 下载视图；要清掉类型选择用下拉菜单里的「全部」。</summary>
+    private void KindPillClick()
+    {
+        _filter = "all";
+        StateHasChanged();
+    }
+
+    private async Task ToggleKindMenu()
+    {
+        try { await JS.InvokeVoidAsync("junigridJs.logsFilterToggle", "#jgKindFilter"); } catch { }
+    }
+
+    private async Task SelectKind(string key)
+    {
+        _kind = key;
+        StateHasChanged();
+        try { await JS.InvokeVoidAsync("junigridJs.logsFilterClose", "#jgKindFilter"); } catch { }
+    }
+
+    private List<TaskItem> VisibleItems()
+    {
+        IEnumerable<TaskItem> q = Center.Items;
+        // 类型维度：Mod 下载 = 下载/安装/更新；缓存清理 = cleanup
+        if (_kind == "mod") q = q.Where(t => t.Kind != "cleanup");
+        else if (_kind == "cleanup") q = q.Where(t => t.Kind == "cleanup");
+        // 状态维度
+        q = _filter switch
+        {
+            "running" => q.Where(t => t.Status == "running"),
+            "done"    => q.Where(t => t.Status == "done"),
+            "failed"  => q.Where(t => t.Status == "failed"),
+            _         => q
+        };
+        return q.ToList();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            // 下拉外点关闭 + 箭头动画绑定（复用日志页同款组件）
+            try { await JS.InvokeVoidAsync("junigridJs.logsFilterInit", "#jgKindFilter"); } catch { }
+        }
+    }
+
+    // ─── 日志清洗：进度噪声不显示 ───
+    // 噪声 = 中间进度回报行（带 %、KB/MB 每秒、已下载/正在下载 X KB|MB / Y KB|MB 等）——
+    // 进度条和步骤列表已实时呈现；这些行曾把日志刷到两百多行。
+    private static readonly System.Text.RegularExpressions.Regex TsPrefix =
+        new(@"^\[\d{2}:\d{2}:\d{2}\]\s*", System.Text.RegularExpressions.RegexOptions.Compiled);
+    private static readonly System.Text.RegularExpressions.Regex ProgressNoise =
+        new(@"(\d+\s*%|\d+(\.\d+)?\s*(KB|MB)/s|已下载\s*[\d.]+\s*(KB|MB)|[\d.]+\s*(KB|MB)\s*/\s*[\d.]+\s*(KB|MB))",
+            System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    private static IEnumerable<string> UsefulLines(TaskItem t)
+    {
+        foreach (var raw in t.Log)
+        {
+            var line = TsPrefix.Replace(raw, "").Trim();
+            if (line.Length == 0 || ProgressNoise.IsMatch(line)) continue;
+            yield return line;
+        }
+    }
+
+    // ─── 下载信息下拉：每任务一个展开状态，GSAP 动画在 JS 里 ───
+    private readonly HashSet<Guid> _openDrops = new();
+    private async Task ToggleDrop(TaskItem t)
+    {
+        var open = !_openDrops.Contains(t.Id);
+        if (open) _openDrops.Add(t.Id); else _openDrops.Remove(t.Id);
+        try { await JS.InvokeVoidAsync("junigridJs.taskDrop", "#jgDrop-" + t.Id.ToString("N"), "#jgArr-" + t.Id.ToString("N"), open); } catch { }
+        // v1.07：渲染同步 class（open 态的稳态显示由 CSS .open 保证，重渲染不丢）
+        StateHasChanged();
+    }
+
+    private void Remove(TaskItem t)
+    {
+        Center.Remove(t);
+        _openDrops.Remove(t.Id);
+    }
+
+    // ─── 清理全部（当前筛选）：确认弹窗 → 按筛选条件清空 ───
+    private bool _confirmClear;
+    private void AskClear() => _confirmClear = true;
+    private void DoClear()
+    {
+        _confirmClear = false;
+        Center.ClearMatching(t => _filter switch
+        {
+            "running" => t.Status == "running",
+            "done"    => t.Status == "done",
+            "failed"  => t.Status == "failed",
+            _         => true
+        });
+    }
+
+    private void Clear() => Center.ClearFinished();
+    // v1.06.6：返回 = history.back 回到进入前的页面
+    private void GoBack() => _ = JS.InvokeVoidAsync("junigridJs.goBack");
+    private void OpenSmapiInstallerFolder()
+    {
+        try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(StoragePaths.SmapiInstallerDir) { UseShellExecute = true }); } catch { }
+    }
+    private void OpenSmapiSite() =>
+        System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("https://smapi.io") { UseShellExecute = true });
+}

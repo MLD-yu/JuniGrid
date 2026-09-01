@@ -1,0 +1,60 @@
+@namespace JuniGrid.Components.Layout
+@inherits LayoutComponentBase
+@inject IJSRuntime JS
+@inject NavigationManager Nav
+@implements IDisposable
+
+<div class="jg-shell">
+    <TitleBar />
+
+    <div class="jg-body">
+        <AccountPanel />
+
+        <div class="jg-content">
+            <TopNav />
+            <main class="jg-main">
+                @Body
+            </main>
+        </div>
+    </div>
+</div>
+<TaskDock />
+
+@code {
+    protected override void OnInitialized()
+    {
+        Nav.LocationChanged += OnLocChanged;
+    }
+
+    private void OnLocChanged(object? sender, Microsoft.AspNetCore.Components.Routing.LocationChangedEventArgs e)
+    {
+        // 切走「Mod 管理」相关页面时自动收起内置浏览器覆盖层 ——
+        // 它在语义上就是 Mod 管理页的内容区，路由离开就得跟着走。
+        var rel = Nav.ToBaseRelativePath(e.Location).ToLowerInvariant().TrimEnd('/');
+        var onModsPage = rel.StartsWith("mods") || rel.StartsWith("mod/");
+        if (!onModsPage) JuniGrid.MainWindow.HideNexusOverlay();
+
+        // v0.31.0：每次切页给 <main.jg-main> 播入场动画（PCL 风格）
+        _ = InvokeAsync(async () =>
+        {
+            try { await JS.InvokeVoidAsync("junigridJs.playPageEnter"); } catch { }
+        });
+    }
+
+    public void Dispose() => Nav.LocationChanged -= OnLocChanged;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            // v0.20.0：不要一挂载完就通知 —— 那时 shell DOM 有了但 CSS 还没铺完，
+            // WPF 层立刻淡入会看到深色兜底底色。让 JS 那边先等两帧 rAF + 一小段 stabilize，
+            // 直到浅色主题真正绘制稳定，再通知 WPF 主窗淡入。
+            // 兜底：调用失败（脚本未就绪）也不能变成未观察异常 —— App 侧另有 6s 强制揭示兜底。
+            try { await JS.InvokeVoidAsync("junigridJs.splashUiReadyWhenStable"); }
+            catch { }
+            // v0.31.0：首次进入首页也播一次入场动画
+            try { await JS.InvokeVoidAsync("junigridJs.playPageEnter"); } catch { }
+        }
+    }
+}

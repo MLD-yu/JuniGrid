@@ -1,0 +1,11 @@
+# .NET build artifacts
+bin/
+obj/
+.vs/
+*.user
+*.suo
+
+# stray junk
+$null
+NVIDIA Corporation/
+*.bak

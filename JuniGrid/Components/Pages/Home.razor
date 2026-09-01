@@ -1,0 +1,115 @@
+@namespace JuniGrid.Components.Pages
+@page "/"
+@inject ConfigService Cfg
+@inject GameService Game
+@inject ModService Mods
+@inject LauncherService Launcher
+@inject UpdateService Updater
+@implements IDisposable
+
+<div class="jg-page">
+    <div class="jg-grid-4">
+        <div class="jg-card">
+            <div class="jg-stat-label">已装 Mod</div>
+            <div class="jg-stat-num">@_totalModCount</div>
+            <div class="jg-stat-sub">@_activeModCount 启用 · @(_totalModCount - _activeModCount) 禁用</div>
+        </div>
+
+        <div class="jg-card">
+            <div class="jg-stat-label">SMAPI</div>
+            <div class="jg-stat-num">@(_smapiVersion is null ? "未安装" : _smapiVersion)</div>
+            <div class="jg-stat-sub">
+                @(_smapiVersion is null ? "仅支持 Steam 官方启动" : "Mod 加载器就绪")
+            </div>
+        </div>
+
+        <div class="jg-card">
+            <div class="jg-stat-label">游戏版本</div>
+            <div class="jg-stat-num">@(_gameVersion ?? "未定位")</div>
+            <div class="jg-stat-sub">Stardew Valley</div>
+        </div>
+
+        <div class="jg-card">
+            <div class="jg-stat-label">最近游玩</div>
+            <div class="jg-stat-num" style="font-size:18px;line-height:1.3;">
+                @(_cfg.LastLaunchTime is null ? "还没启动过" : FormatTime(_cfg.LastLaunchTime))
+            </div>
+            <div class="jg-stat-sub">
+                @_cfg.TotalLaunchCount 次启动 · 共 @FormatPlay(_cfg.TotalPlayMinutes)
+            </div>
+        </div>
+    </div>
+
+    @if (_recentLogs.Count > 0)
+    {
+        <div class="jg-card" style="margin-top:12px">
+            <div style="font-weight:600;margin-bottom:6px">
+                📋 SMAPI 实时输出
+                <span style="font-weight:400;font-size:12px;opacity:.6">（完整日志见「SMAPI 日志」页）</span>
+            </div>
+            <div class="jg-logtail">
+                @foreach (var line in _recentLogs)
+                {
+                    <div class="jg-logline @LogLineClassifier.Classify(line)">@line</div>
+                }
+            </div>
+        </div>
+    }
+</div>
+
+@code {
+    private JuniGridConfig _cfg = new();
+    private string? _smapiVersion;
+    private string? _gameVersion;
+    private int _totalModCount;
+    private int _activeModCount;
+
+    private const int MaxTailLines = 12;
+    private readonly List<string> _recentLogs = new();
+
+    protected override void OnInitialized()
+    {
+        _cfg = Cfg.Current;
+
+        if (string.IsNullOrWhiteSpace(_cfg.GamePath))
+        {
+            var detected = Game.DetectGamePath();
+            if (!string.IsNullOrEmpty(detected))
+            {
+                _cfg.GamePath = detected;
+                Cfg.Save(_cfg);
+            }
+        }
+
+        _smapiVersion = Game.ProbeSmapiVersion(_cfg.GamePath);
+        _gameVersion = Updater.GetGameVersion(_cfg.GamePath);
+
+        var mods = Mods.Scan(_cfg.GamePath);
+        _totalModCount = mods.Count;
+        _activeModCount = mods.Count(m => !m.Disabled);
+
+        Launcher.OnLogLine += HandleLogLine;
+    }
+
+    public void Dispose() => Launcher.OnLogLine -= HandleLogLine;
+
+    private void HandleLogLine(string line)
+    {
+        InvokeAsync(() =>
+        {
+            _recentLogs.Add(line);
+            if (_recentLogs.Count > MaxTailLines)
+                _recentLogs.RemoveAt(0);
+            StateHasChanged();
+        });
+    }
+
+    private static string FormatTime(string iso) =>
+        DateTime.TryParse(iso, out var t) ? t.ToString("MM-dd HH:mm") : iso;
+
+    private static string FormatPlay(long minutes)
+    {
+        if (minutes <= 0) return "0 小时";
+        return (minutes / 60.0).ToString("0.0") + " 小时";
+    }
+}

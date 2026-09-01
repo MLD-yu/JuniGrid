@@ -1,0 +1,344 @@
+@namespace JuniGrid.Components.Layout
+@inject ConfigService Cfg
+@inject GameService Game
+@inject LauncherService Launcher
+@inject SteamService Steam
+@inject UpdateService Updater
+@inject NavigationManager Nav
+@inject IJSRuntime JS
+@implements IDisposable
+
+<aside class="jg-account">
+    <div class="jg-mode-pills @(_cfg.LaunchMode)">
+        <span class="jg-pill-thumb"></span>
+        <button class="jg-pill @(_cfg.LaunchMode == "steam" ? "active" : "")"
+                disabled="@(_busy || _isRunning)" @onclick='() => SetMode("steam")'>
+            <img src="assets/steam.svg" alt="Steam" style="width:18px;height:18px;vertical-align:-3px;margin-right:6px;" />
+            官方
+        </button>
+        <button class="jg-pill @(_cfg.LaunchMode == "smapi" ? "active" : "")"
+                disabled="@(_busy || _isRunning)" @onclick='() => SetMode("smapi")'>
+            <img src="assets/smapi-pufferchick.svg" alt="SMAPI" style="width:18px;height:18px;vertical-align:-3px;margin-right:6px;border-radius:4px;" />
+            SMAPI
+        </button>
+    </div>
+
+    <div class="jg-account-mid">
+        <div class="jg-avatar-wrap">
+            @if (_profile.Found && _profile.AvatarDataUri is not null)
+            {
+                <img class="jg-avatar" src="@_profile.AvatarDataUri" alt="Steam 头像" />
+            }
+            else
+            {
+                <div class="jg-avatar jg-avatar-fallback">@AvatarInitial</div>
+            }
+            @if (_isRunning)
+            {
+                <span class="jg-avatar-dot" title="游戏运行中"></span>
+            }
+        </div>
+
+        <div class="jg-account-name">@AccountLabel</div>
+        <div class="jg-account-sub">
+            @(_cfg.LaunchMode == "steam" ? "官方（无 Mod）" : "SMAPI（带 Mod）")
+        </div>
+    </div>
+
+    <div class="jg-launch-row @(_isRunning ? "running" : "")">
+    <button id="launch-btn"
+            class="jg-launch-big"
+            disabled="@_launching"
+            @onclick="OnButtonClick">
+        <span class="jg-launch-main">@MainButtonLabel</span>
+        @if (!_isRunning && !_launching)
+        {
+            <span class="jg-launch-ver">
+                当前游戏版本：@(_gameVersion ?? "未定位")
+                @if (_gameHasUpdate && _gameLatest is not null)
+                {
+                    <span class="jg-upd-arrow">→ @_gameLatest</span>
+                }
+            </span>
+        }
+    </button>
+
+    <button class="jg-close-btn" data-tip="关闭游戏" @onclick="OnButtonClick">
+        ✕
+    </button>
+</div>
+</aside>
+
+@if (@_showConfirm)
+{
+    <div class="jg-dlg-overlay" @onclick="DismissConfirm">
+        <div class="jg-dialog" @onclick:stopPropagation>
+            <div class="jg-dialog-body">关闭游戏可能会导致未保存的游戏进度丢失<br />是否确认关闭游戏？</div>
+            <div class="jg-dialog-actions">
+                <button type="button" class="jg-pill-ghost" @onclick="DismissConfirm">取消</button>
+                <button type="button" class="jg-pill-danger" @onclick="KillGame">确认关闭</button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+
+    private JuniGridConfig _cfg = new();
+    private SteamProfile _profile = SteamProfile.None;
+    private string? _smapiVersion;
+    private string? _gameVersion;
+    private string? _gameLatest;
+    private bool _gameHasUpdate;
+    private SmapiUpdateInfo? _update;
+    private bool _launching;
+    private bool _isRunning;
+    private bool _showConfirm;
+    private readonly CancellationTokenSource _cts = new();
+
+    private bool _busy => _launching;
+
+    private string AccountLabel =>
+        _profile.Found
+            ? (_profile.PersonaName ?? _profile.AccountName ?? "Steam 用户")
+            : "未检测到 Steam 账户";
+
+    private string AvatarInitial =>
+        AccountLabel.Length > 0 ? AccountLabel[..1].ToUpperInvariant() : "?";
+
+    private string MainButtonLabel =>
+        _launching ? "启动中…" :
+        _isRunning ? "运行中…" :
+        _gameHasUpdate ? "⬆ 更新游戏" :
+        "▶ 启动游戏";
+
+    protected override void OnInitialized()
+    {
+        _cfg = Cfg.Current;
+
+        if (string.IsNullOrWhiteSpace(_cfg.GamePath))
+        {
+            var detected = Game.DetectGamePath();
+            if (!string.IsNullOrEmpty(detected))
+            {
+                _cfg.GamePath = detected;
+                Cfg.Save(_cfg);
+            }
+        }
+
+        _profile = Steam.GetProfile();
+        ProbeVersions();
+        _ = CheckGameVersionAsync();
+        Launcher.OnLogLine += HandleLogLine;
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        _update = await Updater.CheckSmapiAsync(_smapiVersion);
+        StateHasChanged();
+
+        // 轮询真实游戏进程，让「关闭游戏」按钮对 SMAPI / Steam 官方两种模式都生效
+        _ = PollRunningAsync();
+    }
+
+    public void Dispose()
+    {
+        _cts.Cancel();
+        Launcher.OnLogLine -= HandleLogLine;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            // 启动按钮：光标驱动的 3D 透视倾斜（GSAP quickTo）
+            try { await JS.InvokeVoidAsync("junigridJs.tiltPerspective", "#launch-btn"); } catch { }
+            // 启动按钮：hover 像素溶解成「点击启动！」（PixelSwap）
+            try { await JS.InvokeVoidAsync("junigridJs.launchHover", "#launch-btn"); } catch { }
+        }
+    }
+
+    private void HandleLogLine(string line)
+    {
+        if (line.StartsWith("[JuniGrid] 游戏进程已退出"))
+        {
+            InvokeAsync(() =>
+            {
+                _isRunning = false;
+                StateHasChanged();
+            });
+        }
+    }
+
+    private void ProbeVersions()
+    {
+        _smapiVersion = Game.ProbeSmapiVersion(_cfg.GamePath);
+        _gameVersion = Updater.GetGameVersion(_cfg.GamePath);
+    }
+
+    // 每次启动 JuniGrid 都自动检测一次游戏本体最新版，有新版本就在启动按钮里显示
+    private async Task CheckGameVersionAsync()
+    {
+        var latest = await Updater.GetLatestGameVersionAsync();
+        if (string.IsNullOrWhiteSpace(latest)) { _gameLatest = null; _gameHasUpdate = false; return; }
+        _gameLatest = latest;
+        // 版本比较：本地 1.6.15 vs 远端 1.6.16；本地无法解析时当作未知、不误报
+        _gameHasUpdate = false;
+        if (!string.IsNullOrWhiteSpace(_gameVersion)
+            && Version.TryParse(_gameVersion, out var local)
+            && Version.TryParse(latest, out var remote))
+        {
+            _gameHasUpdate = remote > local;
+        }
+
+        StateHasChanged();
+    }
+
+    private void SetMode(string mode)
+    {
+        _cfg.LaunchMode = mode;
+        Cfg.Save(_cfg);
+    }
+
+    private async Task Launch()
+    {
+        _launching = true;
+        StateHasChanged();
+        // 立刻清掉按钮上残留的像素溶解蒙版与倾斜 transform，避免盖住「启动中…」
+        try { await JS.InvokeVoidAsync("junigridJs.clearLaunchFx", "#launch-btn"); } catch { }
+
+        try { await JS.InvokeVoidAsync("junigridJs.popAnimate", "#launch-btn"); } catch { }
+
+        Steam.Refresh();
+            _profile = Steam.GetProfile();
+            StateHasChanged();
+
+            LaunchResult result = _cfg.LaunchMode == "steam"
+            ? Launcher.LaunchSteam(_cfg.SteamAppId)
+            : Launcher.LaunchSmapi(_cfg.GamePath);
+
+        if (result.Success)
+        {
+            _cfg.LastLaunchTime = DateTime.Now.ToString("o");
+            _cfg.LastLaunchMode = _cfg.LaunchMode;
+            _cfg.TotalLaunchCount++;
+            Cfg.Save(_cfg);
+
+            if (_cfg.LaunchMode == "smapi")
+            {
+                // 跟 PCL 一样：SMAPI 启动后自动切到日志页看输出（运行态由进程轮询接管）
+                Nav.NavigateTo("/logs");
+            }
+
+            // 启动成功但进程可能还在被 Steam/运行时拉起：
+            // 保持「启动中…」直到 IsGameRunning 真正为 true（或超时），避免回弹成「▶ 启动游戏」。
+            _ = WaitForRunningAsync();
+        }
+        else
+        {
+            // 启动失败 → toast「启动失败」并恢复按钮为可点
+            ShowToast("启动失败");
+            _launching = false;
+            StateHasChanged();
+        }
+    }
+
+    // 等待游戏真正进入运行态：期间按钮持续「启动中…」；超时（如 Steam 未拉起）则回退为「▶ 启动游戏」
+    private async Task WaitForRunningAsync(int timeoutMs = 90_000)
+    {
+        var deadline = Environment.TickCount64 + timeoutMs;
+        while (!_cts.IsCancellationRequested)
+        {
+            if (Launcher.IsGameRunning)
+            {
+                // 真正进入了运行态：直接落地「运行中」，让「启动中」退出
+                _launching = false;
+                _isRunning = true;
+                StateHasChanged();
+                return;
+            }
+            if (Environment.TickCount64 >= deadline)
+            {
+                _launching = false;
+                StateHasChanged();
+                return;
+            }
+            await Task.Delay(500, _cts.Token);
+        }
+    }
+
+    // 主按钮统一入口：正在运行→弹确认框关游戏；有更新→去更新；否则启动
+    private void OnButtonClick()
+    {
+        if (_launching) return;
+        if (_isRunning)
+        {
+            _showConfirm = true;
+            return;
+        }
+        if (_gameHasUpdate)
+        {
+            OpenUpdatePage();
+            return;
+        }
+        _ = Launch();
+    }
+
+    // 有新版本 → 打开 Steam 游戏页让用户点更新（不再直接启动本体，否则旧版会被启动）
+    private void OpenUpdatePage()
+    {
+        try
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo
+            {
+                UseShellExecute = true,
+                FileName = "steam://store/413150"
+            };
+            System.Diagnostics.Process.Start(psi);
+        }
+        catch (Exception)
+        {
+            ShowToast("启动失败");
+        }
+    }
+
+    // 取消关闭 / 点遮罩关闭 → 关闭确认框，不做任何事
+    private void DismissConfirm()
+    {
+        _showConfirm = false;
+    }
+
+    // 确认关闭游戏：先关确认框，再真正结束进程
+    private void KillGame()
+    {
+        _showConfirm = false;
+        Launcher.KillGame();
+    }
+
+    // 轮询真实游戏进程，让「关闭游戏」按钮在 SMAPI / Steam 官方两种模式都生效
+    private async Task PollRunningAsync()
+    {
+        try
+        {
+            while (!_cts.IsCancellationRequested)
+            {
+                var r = Launcher.IsGameRunning;
+                if (r != _isRunning)
+                {
+                    _isRunning = r;
+                    await InvokeAsync(StateHasChanged);
+                }
+                await Task.Delay(1500, _cts.Token);
+            }
+        }
+        catch (OperationCanceledException) { }
+    }
+
+
+    private void ShowToast(string text)
+    {
+        // v0.43.1：报错 → 红底白字 toast，同时落日志
+        AppLog.Error("AccountPanel", text);
+        _ = JS.InvokeVoidAsync("junigridJs.toast", text, "err");
+    }
+}

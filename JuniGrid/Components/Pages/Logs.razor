@@ -1,0 +1,264 @@
+@namespace JuniGrid.Components.Pages
+@page "/logs"
+@using System.Text.RegularExpressions
+@inject LauncherService Launcher
+@inject IJSRuntime JS
+@implements IDisposable
+
+<div class="jg-page jg-page-wide">
+    <div class="jg-logs-head">
+        <div>
+            <h1 style="margin-top:0;margin-bottom:8px">SMAPI 日志</h1>
+            <div class="jg-sort-dd" id="jgLogFilter">
+                <button type="button" class="jg-sort-trigger" @onclick="ToggleFilterMenu">
+                    @FilterLabel(_filter)
+                    <svg class="jg-sort-arrow" width="12" height="12" viewBox="0 0 12 12" fill="none">
+                        <path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                </button>
+                <div class="jg-sort-menu">
+                    @foreach (var f in Filters)
+                    {
+                        <button type="button" class="jg-sort-item @(_filter == f.Key ? "active" : "")"
+                                @onclick="() => SelectFilter(f.Key)">@f.Label</button>
+                    }
+                </div>
+            </div>
+        </div>
+        <div class="jg-logs-actions">
+            <button type="button" class="jg-pill-dark" @onclick="AskClear">清空</button>
+            <button type="button" class="jg-pill-dark" @onclick="CopyAll">复制全部</button>
+        </div>
+    </div>
+
+    <div class="jg-card" style="margin-top:12px;padding:0">
+        <div class="jg-logview">
+            @if (_lines.Count == 0)
+            {
+                <div style="padding:20px;opacity:.5;font-size:13px">
+                    暂无日志。点左侧「▶ 启动游戏」（SMAPI 模式）后，输出会实时显示在这里。
+                    Steam 模式下 SMAPI 的日志在 %APPDATA%\StardewValley\ErrorLogs 目录。
+                </div>
+            }
+            else if (_visible.Count == 0)
+            {
+                <div style="padding:20px;opacity:.5;font-size:13px">
+                    当前分类没有匹配的日志。
+                </div>
+            }
+            @foreach (var line in _visible)
+            {
+                <div class="jg-logline @LogLineClassifier.Classify(line)">
+                    @foreach (var seg in Segments(line))
+                    {
+                        if (seg.IsUrl)
+                        {
+                            <a href="@seg.Text" @onclick="() => OpenUrl(seg.Text)" @onclick:preventDefault="true">@seg.Text</a>
+                        }
+                        else
+                        {
+                            @seg.Text
+                        }
+                    }
+                </div>
+            }
+        </div>
+        <div class="jg-loginput">
+            <div class="jg-cmdcaps">
+                <input type="text" value="@_command"
+                       @oninput="e => _command = e.Value?.ToString() ?? string.Empty"
+                       @onkeydown="HandleCommandKey"
+                       placeholder="@(Launcher.CanSendCommand ? "输入 SMAPI 命令，回车发送，如 help" : "游戏由本程序启动后可在这里输入 SMAPI 命令")"
+                       disabled="@(!Launcher.CanSendCommand)" />
+                <button type="button" class="jg-cmdsend" @onclick="SendCommand"
+                        disabled="@(!Launcher.CanSendCommand)">发送</button>
+            </div>
+        </div>
+        <div class="jg-logfooter">实时输出 · 共 @_visible.Count 行</div>
+    </div>
+
+    @* ─── 清空日志确认弹窗 ─── *@
+    @if (_confirmClear)
+    {
+        <div class="jg-modal-overlay" @onclick="() => _confirmClear = false">
+            <div class="jg-modal" @onclick:stopPropagation>
+                <div class="jg-modal-title">清空日志</div>
+                <div class="jg-modal-body">是否清空日志全部内容？</div>
+                <div class="jg-modal-actions">
+                    <button type="button" class="jg-pill-ghost" @onclick="() => _confirmClear = false">取消</button>
+                    <button type="button" class="jg-pill-dark" @onclick="DoClear">确定</button>
+                </div>
+            </div>
+        </div>
+    }
+</div>
+
+@code {
+    // 渲染源是 LauncherService 里的共享缓冲快照——页面组件随路由销毁重建，
+    // 本地存的行会在离开 /logs 后"清空"，所以历史行一律从服务取。
+    private IReadOnlyList<string> _lines = Array.Empty<string>();    // 服务缓冲快照（全量）
+    private IReadOnlyList<string> _visible = Array.Empty<string>();  // 视图：分类筛选
+    private string _filter = "all"; // all | err | upd | loaded
+    private bool _pendingScroll;
+
+    private static readonly (string Key, string Label)[] Filters =
+    {
+        ("all", "全部"), ("err", "错误"), ("upd", "可更新"), ("loaded", "已加载")
+    };
+    private string FilterLabel(string key) =>
+        Array.Find(Filters, f => f.Key == key).Label;
+
+    protected override void OnInitialized()
+    {
+        _lines = Launcher.GetLogSnapshot();
+        _visible = BuildVisible();
+        _pendingScroll = _lines.Count > 0;
+        Launcher.OnLogLine += HandleLog;
+    }
+
+    public void Dispose() => Launcher.OnLogLine -= HandleLog;
+
+    private void HandleLog(string _) =>
+        InvokeAsync(() =>
+        {
+            _lines = Launcher.GetLogSnapshot();
+            _visible = BuildVisible();
+            _pendingScroll = true;
+            StateHasChanged();
+        });
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            try { await JS.InvokeVoidAsync("junigridJs.logsFilterInit", "#jgLogFilter"); } catch { }
+        }
+        if (_pendingScroll)
+        {
+            _pendingScroll = false;
+            try { await JS.InvokeVoidAsync("junigridJs.scrollToBottom", ".jg-logview"); } catch { }
+        }
+    }
+
+    private async Task ToggleFilterMenu() =>
+        await JS.InvokeVoidAsync("junigridJs.logsFilterToggle", "#jgLogFilter");
+
+    private async Task SelectFilter(string filter)
+    {
+        _filter = filter;
+        _visible = BuildVisible();
+        try { await JS.InvokeVoidAsync("junigridJs.logsFilterClose", "#jgLogFilter"); } catch { }
+    }
+
+    // 视图 = 服务缓冲快照，先按 SMAPI 控制台行为隐藏 TRACE 组
+    // （verbose 关闭时整组隐藏），再按分类筛选。
+    // 分类判定复用 LogLineClassifier，和行着色永远同一套规则。
+    private IReadOnlyList<string> BuildVisible()
+    {
+        var traceFiltered = new List<string>(_lines.Count);
+        var hideGroup = false;
+        foreach (var line in _lines)
+        {
+            if (line.StartsWith("["))
+                hideGroup = line.Contains(" TRACE ");
+            if (!hideGroup) traceFiltered.Add(line);
+        }
+
+        if (_filter == "all") return traceFiltered;
+        return traceFiltered.Where(l => LogLineClassifier.MatchesFilter(l, _filter)).ToList();
+    }
+
+    // ─── 清空 / 复制：清空走确认弹窗，复制成功弹 toast ───
+    private bool _confirmClear;
+    private void AskClear() => _confirmClear = true;
+
+    private void DoClear()
+    {
+        _confirmClear = false;
+        Launcher.ClearLog();
+        _lines = Array.Empty<string>();
+        _visible = Array.Empty<string>();
+    }
+
+    private async Task CopyAll()
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("navigator.clipboard.writeText", string.Join('\n', _visible));
+            await JS.InvokeVoidAsync("junigridJs.toast", "复制成功");
+        }
+        catch
+        {
+            await JS.InvokeVoidAsync("junigridJs.toast", "复制失败", "err");
+        }
+    }
+
+    // ---- SMAPI 命令输入 ----
+    private string _command = string.Empty;
+
+    private void HandleCommandKey(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter") SendCommand();
+    }
+
+    private void SendCommand()
+    {
+        var cmd = _command.Trim();
+        if (cmd.Length == 0) return;
+        if (Launcher.SendCommand(cmd)) _command = string.Empty;
+    }
+
+    // ---- 日志行内链接：拆出 URL 渲染成 <a>，点击用系统浏览器打开 ----
+    // （Blazor WebView 里点链接会把整个应用导航走，所以 preventDefault 后走 Process.Start）
+    private static readonly Regex UrlRegex = new(@"https?://\S+", RegexOptions.Compiled);
+
+    // 日志可能上千行且每来一行就整表重渲，按行内容缓存拆分结果
+    private readonly Dictionary<string, (string Text, bool IsUrl)[]> _segmentCache = new();
+
+    private (string Text, bool IsUrl)[] Segments(string line)
+    {
+        if (_segmentCache.TryGetValue(line, out var cached)) return cached;
+
+        var segs = new List<(string Text, bool IsUrl)>();
+        var pos = 0;
+        foreach (Match m in UrlRegex.Matches(line))
+        {
+            var url = TrimUrlTail(m.Value);
+            if (m.Index > pos) segs.Add((line[pos..m.Index], false));
+            if (url.Length > 0) segs.Add((url, true));
+            if (m.Value.Length > url.Length) segs.Add((m.Value[url.Length..], false));  // 剥掉的句尾标点按普通文本渲染
+            pos = m.Index + m.Length;
+        }
+        if (pos < line.Length) segs.Add((line[pos..], false));
+        var result = segs.ToArray();
+
+        if (_segmentCache.Count < 4000) _segmentCache[line] = result;
+        return result;
+    }
+
+    private static string TrimUrlTail(string url)
+    {
+        // 句尾标点不属于链接；右括号只在未配平时才算句读（链接本身可能含括号）
+        while (url.Length > 0)
+        {
+            var last = url[^1];
+            if (last == ')' && url.Count(c => c == '(') < url.Count(c => c == ')')) { url = url[..^1]; continue; }
+            if (last is '.' or ',' or ';' or ':' or '!' or '?' or '"' or '\'' or ']' or '}' or '。' or '，' or '）')
+            { url = url[..^1]; continue; }
+            break;
+        }
+        return url;
+    }
+
+    private void OpenUrl(string url)
+    {
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(url) { UseShellExecute = true });
+        }
+        catch
+        {
+            _ = JS.InvokeVoidAsync("junigridJs.toast", "无法打开链接", "err");
+        }
+    }
+}

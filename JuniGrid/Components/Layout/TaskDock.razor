@@ -1,0 +1,97 @@
+@namespace JuniGrid.Components.Layout
+@inject TaskCenterService Center
+@inject NavigationManager Nav
+@inject IJSRuntime JS
+@inject ConfigService Cfg
+@implements IDisposable
+
+@* v1.06.4：悬浮窗常驻实时可见 —— 不再自动隐藏（原来全部完成 8 秒后就消失，
+   冷启动无任务时也整个不渲染）。没任务时显示「暂无任务」，运行中实时刷新
+   进度百分比与速度（TaskCenterService.Report 每次回报都会触发刷新）。
+   配色：常态黑底；下载中整体变灰，黑色填充层按下载进度从左往右盖回黑色。
+   v1.07：全部完成时整个胶囊 morph 成圆 + 白色对号（gsap smooth-morph 同款形变，
+   由 taskDockMorph 驱动宽高/内边距过渡）；来任务时再 morph 回胶囊，下载态展示不变。
+   v0.2.2：设置页「打开任务管理悬浮窗」关闭时常驻隐藏，仅下载任务运行时显示；
+   悬浮窗可拖动（makeTaskDockDraggable，拖动超过 5px 吞掉本次点击）。 *@
+@if (Cfg.Current.ShowTaskDock || Center.RunningCount > 0)
+{
+    <button class="jg-taskdock @(Center.RunningCount > 0 ? "running" : "") @(_done ? "done" : "")" @onclick="Go" title="下载/安装任务">
+    @if (Center.RunningCount > 0)
+    {
+        <div class="jg-taskdock-fill" style="@($"width:{Center.TotalPercent:0}%")"></div>
+    }
+    <div class="jg-taskdock-body">
+        <div class="jg-taskdock-title">@(Center.RunningCount > 0
+            ? $"{Center.RunningCount} 个任务运行中"
+            : Center.RunningCount == 0 && Center.Items.Count > 0 ? "" : Center.Items.Count > 0 ? "全部完成" : "暂无任务")</div>
+        @if (Center.RunningCount > 0)
+        {
+            <div class="jg-taskdock-sub">@Center.TotalPercent.ToString("F0")% · @Center.TotalSpeedMBps.ToString("F1") M/s</div>
+        }
+    </div>
+    <svg class="jg-taskdock-check" viewBox="0 0 1024 1024" aria-hidden="true">
+        <path d="M392.533333 806.4L85.333333 503.466667l59.733334-59.733334 247.466666 247.466667L866.133333 213.333333l59.733334 59.733334L392.533333 806.4z" fill="#ffffff"></path>
+        </svg>
+    </button>
+}
+
+@code {
+    private bool _done;          // 上一次渲染是否处于「全部完成圆」态，驱动 morph
+    private bool _morphReady;    // 首渲染前不触发动画
+
+    protected override void OnInitialized()
+    {
+        Center.OnChanged += Refresh;
+        ConfigService.Saved += Refresh;   // 设置页切换「打开任务管理悬浮窗」时即时显隐
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        // 光标透视倾斜（gsap cursor-driven-perspective-tilt demo 同款），只绑一次
+        if (firstRender)
+        {
+            try { await JS.InvokeVoidAsync("junigridJs.taskDockTilt", ".jg-taskdock"); } catch { }
+        }
+        // 拖动绑定：元素可能因显隐切换被重建（绑定函数内部有防重复标记），每次渲染后补绑
+        try { await JS.InvokeVoidAsync("junigridJs.makeTaskDockDraggable", ".jg-taskdock"); } catch { }
+
+        // 胶囊 ↔ 圆 morph（gsap smooth-morph 同款）：状态翻转时交给 gsap 时间线过渡；
+        // 首次落位直接瞬时置态，不做动画
+        var done = Center.RunningCount == 0 && Center.Items.Count > 0;
+        if (!_morphReady)
+        {
+            _morphReady = true;
+            _done = done;
+            if (done)
+            {
+                try { await JS.InvokeVoidAsync("junigridJs.taskDockMorph", ".jg-taskdock", true, false); } catch { }
+            }
+        }
+        else if (done != _done)
+        {
+            _done = done;
+            try { await JS.InvokeVoidAsync("junigridJs.taskDockMorph", ".jg-taskdock", done, true); } catch { }
+        }
+    }
+
+    public void Dispose()
+    {
+        Center.OnChanged -= Refresh;
+        ConfigService.Saved -= Refresh;
+    }
+
+    // OnChanged 可能从后台下载线程触发，必须 InvokeAsync 回 UI 线程
+    private void Refresh() => InvokeAsync(StateHasChanged);
+
+    // v1.06.6：下载页的展开/收起动画已关闭 —— 点击就是普通切换；
+    // 在下载页时点悬浮窗 = history.back 回到进入前的页面
+    private void Go()
+    {
+        if (Nav.Uri.EndsWith("/tasks", StringComparison.OrdinalIgnoreCase))
+        {
+            _ = JS.InvokeVoidAsync("junigridJs.goBack");
+            return;
+        }
+        Nav.NavigateTo("/tasks");
+    }
+}

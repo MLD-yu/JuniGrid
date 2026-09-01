@@ -1,0 +1,43 @@
+<Window x:Class="JuniGrid.SplashWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent"
+        WindowStartupLocation="CenterScreen"
+        Width="560" Height="240"
+        ShowInTaskbar="False"
+        Topmost="True"
+        ResizeMode="NoResize">
+    <!-- 透明启动窗口（本窗口无 WebView2，可用 AllowsTransparency=True）。
+         布局：居中的 Canvas Stage，内含 logo（自行左移）/ 透明描边字 / 白色填充字。
+         StrokePath 逐笔描出（描边透明，仅用来驱动填色时序）；FillPath 用 Clip
+         矩形（Path 本地坐标）从 0 宽扩开实现左→右填充。 -->
+    <Canvas x:Name="Stage"
+            HorizontalAlignment="Center" VerticalAlignment="Center"
+            Width="560" Height="240"
+            Background="Transparent">
+
+        <!-- logo 静态：不做淡入/放大/左移动画，固定在最左侧 -->
+        <Image x:Name="LogoImg"
+               Source="pack://application:,,,/Assets/junigrid-logo-256.png"
+               Width="140" Height="140"
+               HorizontalAlignment="Left" VerticalAlignment="Top"
+               Opacity="1" />
+
+        <!-- v0.26.0：StrokePath 恢复透明，只驱动逐笔时序（视觉不可见） -->
+        <Path x:Name="StrokePath"
+              Stroke="Transparent"
+              StrokeThickness="1.6"
+              StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
+              IsHitTestVisible="False" />
+
+        <!-- v0.26.0：FillPath 白填 + 黑外描边（Splash 本体仍透明，只是字样自带外描边） -->
+        <Path x:Name="FillPath"
+              Fill="#FFFFFF"
+              Stroke="#111111"
+              StrokeThickness="2.4"
+              StrokeLineJoin="Round"
+              IsHitTestVisible="False" />
+    </Canvas>
+</Window>

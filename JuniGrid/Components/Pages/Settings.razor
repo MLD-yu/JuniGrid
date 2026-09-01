@@ -1,0 +1,750 @@
+@namespace JuniGrid.Components.Pages
+@page "/settings"
+@implements IDisposable
+@inject ConfigService Cfg
+@inject GameService Game
+@inject SteamService Steam
+@inject NexusService NexusApi
+@inject NavigationManager Nav
+@inject IJSRuntime JS
+@inject StorageService Storage
+@inject MemoryService Mem
+
+<div class="jg-page">
+    <h1 style="margin-top:0">设置</h1>
+    <div class="jg-card" style="margin-top:12px">
+        <div style="font-weight:600">账号</div>
+        <div style="display:flex;flex-direction:column;gap:10px;margin-top:8px;">
+            <div style="display:flex;align-items:center;gap:10px;">
+                @if (_steam.Found && _steam.AvatarDataUri is not null)
+                {
+                    <img src="@_steam.AvatarDataUri" alt="steam" style="width:36px;height:36px;border-radius:50%;object-fit:cover;" />
+                }
+                else
+                {
+                    <div style="width:36px;height:36px;border-radius:50%;background:#334155;color:#fff;display:flex;align-items:center;justify-content:center;">S</div>
+                }
+                <div style="flex:1">
+                    <div style="font-weight:600">Steam · @(_steam.Found ? (_steam.PersonaName ?? _steam.AccountName ?? "已登录") : "未登录")</div>
+                    <div style="font-size:12px;opacity:.65">Steam 客户端级登录，切换账号请在 Steam 里操作</div>
+                </div>
+            </div>
+            <div style="display:flex;align-items:center;gap:10px;">
+                @if (!string.IsNullOrEmpty(_nexusAvatar))
+                {
+                    <img src="@_nexusAvatar" alt="nexus" style="width:36px;height:36px;border-radius:50%;object-fit:cover;" />
+                }
+                else
+                {
+                    <img src="assets/nav/nexus.svg" alt="nexus" style="width:36px;height:36px;border-radius:50%;object-fit:cover;" />
+                }
+                <div style="flex:1">
+                    <div style="font-weight:600;display:flex;align-items:center;gap:6px;">Nexus · @(string.IsNullOrEmpty(_nexusName) ? "未登录" : _nexusName) @if (_nexusPremium) { <span class="jg-premium-badge">Premium</span> }</div>
+                    <div style="font-size:12px;opacity:.65">@(string.IsNullOrEmpty(_nexusName) ? "登录后可使用 Nexus 下载与安装" : "Nexus Mods 账号已登录")</div>
+                </div>
+                @if (!string.IsNullOrEmpty(_nexusName))
+                {
+                    <button class="jg-nexus-logout-btn" @onclick="NexusLogout">退出 Nexus</button>
+                }
+                else
+                {
+                    <button class="jg-nexus-login-btn" @onclick='() => Nav.NavigateTo("/nexus?login=1")'>登录</button>
+                }
+            </div>
+        </div>
+    </div>
+
+
+    <div class="jg-card" style="margin-top:12px">
+        <div style="font-weight:600">游戏目录</div>
+        <FluentTextField @bind-Value="_gamePath"
+                         Placeholder="例：C:\Program Files (x86)\Steam\steamapps\common\Stardew Valley"
+                         style="width:100%;margin-top:6px" />
+
+        <div style="display:flex;gap:8px;margin-top:8px">
+            <button type="button" class="jg-path-btn" @onclick="Pick">浏览...</button>
+            <button type="button" class="jg-path-btn" @onclick="AutoDetect">自动检测</button>
+            <button type="button" class="jg-path-btn primary" @onclick="Save">保存</button>
+        </div>
+    </div>
+
+    <div class="jg-card" style="margin-top:12px">
+        <div style="font-weight:600">Nexus 安装</div>
+        <div class="jg-switch-col">
+            <div class="jg-switch-row @(_oneClickInstall ? "on" : "")" @onclick="ToggleOneClick">
+                <span style="display:flex;align-items:center;gap:8px">
+                    <span>一键安装</span>
+                </span>
+                <span class="jg-switch"><span class="jg-switch-knob"></span></span>
+            </div>
+            <div class="jg-switch-row @(_autoInstall ? "on" : "") @(!_nexusPremium ? "disabled" : "")" @onclick="ToggleAutoInstall">
+                <span style="display:flex;align-items:center;gap:8px">
+                    <span>自动安装更新</span>
+                </span>
+                <span class="jg-switch"><span class="jg-switch-knob"></span></span>
+            </div>
+        </div>
+    </div>
+
+    <div class="jg-card" style="margin-top:12px">
+        <div style="font-weight:600">内容过滤</div>
+        <div class="jg-switch-col">
+            <div class="jg-switch-row @(_filterAdult ? "on" : "")" @onclick="ToggleFilterAdult">
+                <span>过滤色情内容</span>
+                <span class="jg-switch"><span class="jg-switch-knob"></span></span>
+            </div>
+        </div>
+    </div>
+
+    <div class="jg-card" style="margin-top:12px">
+        <div style="display:inline-flex;align-items:center;gap:6px;cursor:pointer" @onclick='() => Nav.NavigateTo("/tasks")'>
+            <div style="font-weight:600">任务管理</div>
+            <img src="assets/task-arrow.svg" alt="前往任务管理" style="width:14px;height:14px;opacity:.75" />
+        </div>
+        <div class="jg-switch-col">
+            <div class="jg-switch-row @(_showTaskDock ? "on" : "")" @onclick="ToggleTaskDock">
+                <span style="display:flex;align-items:center;gap:8px">
+                    <span>打开任务管理悬浮窗</span>
+                </span>
+                <span class="jg-switch"><span class="jg-switch-knob"></span></span>
+            </div>
+        </div>
+    </div>
+
+    <div class="jg-card" style="margin-top:12px">
+        <div style="font-weight:600">内存管理</div>
+        <div style="font-size:12px;opacity:.65;margin-top:2px">自身压缩、定时与阈值自动释放</div>
+
+        <div class="jg-mem-line" style="margin-top:8px">
+            系统 @FmtMb(_mem?.SysTotalBytes)，可用 @FmtMb(_mem?.SysAvailBytes)（@Pct()%）· 自身 @FmtMb(_mem?.AppWorkingSet)
+        </div>
+
+        <div class="jg-kv-grid" style="margin-top:10px">
+            <div class="jg-kv">
+                <div class="k">自身进程</div>
+                <div class="v">@FmtMb(_mem?.AppWorkingSet)<span class="jg-kv-sub">GC @FmtMb(_mem?.AppGcBytes)</span></div>
+            </div>
+            <div class="jg-kv">
+                <div class="k">WebView2 子进程</div>
+                <div class="v">@FmtMb(_mem?.WebViewWorkingSet)<span class="jg-kv-sub">@(_mem?.WebViewProcCount ?? 0) 个进程</span></div>
+            </div>
+            <div class="jg-kv">
+                <div class="k">游戏进程</div>
+                <div class="v">@(_mem is { GameRunning: true } ? FmtMb(_mem.GameWorkingSet) : "未运行")</div>
+            </div>
+            <div class="jg-kv">
+                <div class="k">系统内存占用</div>
+                <div class="v">@Pct()%</div>
+            </div>
+        </div>
+
+        <div class="jg-switch-col" style="margin-top:6px">
+            <div class="jg-switch-row @(_memTimer ? "on" : "")" @onclick="ToggleMemTimer">
+                <span>定时自动压缩</span>
+                <span class="jg-switch"><span class="jg-switch-knob"></span></span>
+            </div>
+            @* 滑杆面板：初始隐藏由 Blazor 的 style 决定（不依赖 JS 时序），开合动画由 JS 弹性播放 *@
+            <div class="jg-slider-panel" style="@(_memTimer ? null : "display:none")" @ref="_timerPanel">
+                <div class="jg-slider-row">
+                    <span class="jg-slider-label">定时释放</span>
+                    <div class="e-slider" data-min="5" data-max="240" data-step="5" data-suffix="分" @ref="_timerSlider">
+                        <div class="es-track-wrap"><div class="es-track"><div class="es-fill"></div></div></div>
+                        <span class="es-value"></span>
+                    </div>
+                </div>
+            </div>
+            <div class="jg-switch-row @(_memThreshold ? "on" : "")" @onclick="ToggleMemThreshold">
+                <span>占用阈值自动压缩</span>
+                <span class="jg-switch"><span class="jg-switch-knob"></span></span>
+            </div>
+            <div class="jg-slider-panel" style="@(_memThreshold ? null : "display:none")" @ref="_thresholdPanel">
+                <div class="jg-slider-row">
+                    <span class="jg-slider-label">占用阈值</span>
+                    <div class="e-slider" data-min="50" data-max="95" data-step="1" data-suffix="%" @ref="_thresholdSlider">
+                        <div class="es-track-wrap"><div class="es-track"><div class="es-fill"></div></div></div>
+                        <span class="es-value"></span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
+            <button type="button" class="jg-path-btn" @onclick="CompressNow">立即压缩</button>
+            <button type="button" class="jg-path-btn" @onclick="TrimGameNow">清理游戏内存</button>
+        </div>
+    </div>
+
+    <div class="jg-card" style="margin-top:12px">
+        <div style="font-weight:600">缓存与存储</div>
+        <div style="font-size:12px;opacity:.65;margin-top:2px">各类缓存占用统计、清理与统一缓存目录</div>
+
+        <div class="jg-mem-line" style="margin-top:8px;display:flex;align-items:center;gap:8px">
+            <span>可清理缓存共 @FmtMb(Storage.TotalKnownBytes)</span>
+        </div>
+
+        <div style="margin-top:4px">
+            @foreach (var c in _cats)
+            {
+                <div class="jg-store-row">
+                    <div class="jg-store-main">
+                        <div class="jg-store-name">
+                            @c.Name
+                            @if (c.Movable) { <span class="jg-store-tag">可迁移</span> }
+                            @if (!c.Cleanable) { <span class="jg-store-tag">固定</span> }
+                        </div>
+                        <div class="jg-store-path" title="@c.DisplayPath">@c.Note · @c.DisplayPath</div>
+                    </div>
+                    <div class="jg-store-size">@FmtSize(c.Id)</div>
+                    @if (c.Cleanable)
+                    {
+                        <button type="button" class="jg-mini-btn" @onclick='() => AskClean(c.Id)'>清理</button>
+                    }
+                    <button type="button" class="jg-mini-btn" @onclick='() => OpenCatFolder(c)'>打开</button>
+                </div>
+            }
+        </div>
+
+        <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;align-items:center">
+            <button type="button" class="jg-path-btn" @onclick="ChangeCacheRoot">更改缓存目录…</button>
+            @if (!string.IsNullOrWhiteSpace(Cfg.Current.CacheRoot))
+            {
+                <button type="button" class="jg-path-btn" @onclick="ResetCacheRoot">恢复默认位置</button>
+            }
+            <button type="button" class="jg-path-btn" @onclick='() => RefreshStats()'>刷新占用</button>
+            <button type="button" class="jg-path-btn primary" @onclick="AskCleanAll">一键清理</button>
+        </div>
+        <div class="jg-note" style="margin-top:6px">可迁移项统一存进缓存目录 更改时自动迁移 WebView2 在重启应用后生效 游戏回收站由游戏目录决定 设置数据固定不可迁移</div>
+    </div>
+
+    <div class="jg-card jg-cursor-grid" style="margin-top:12px">
+        <div style="font-weight:600">关于</div>
+        <div class="jg-about">
+            <div class="jg-about-title-row">
+                <span class="jg-pixel-title">JuniGrid</span>
+                <span class="jg-about-title-side">
+                    <span class="jg-shiny">· v1.0.0</span>
+                    <span class="jg-about-desc">Your helper for Stardew Valley.</span>
+                </span>
+            </div>
+            <div class="jg-author-row">
+                <span>作者：</span>
+                <img src="assets/author-avatar.jpg" alt="MLD avatar" class="jg-author-avatar" />
+                <span class="jg-pixel-name">MLD</span>
+            </div>
+            <div class="jg-logoloop" aria-label="联系方式">
+                <div class="jg-ll-track">
+                    <ul class="jg-ll-seq">
+                        <li class="jg-ll-item">
+                            <a class="jg-ll-link" href="https://github.com/MLD-yu" target="_blank" rel="noreferrer noopener" title="GitHub">
+                                <img src="assets/logos/logo-github.svg" alt="GitHub" />
+                            </a>
+                        </li>
+                        <li class="jg-ll-item">
+                            <a class="jg-ll-link" href="javascript:void(0)" data-copy="yu2109292229@gmail.com" title="Gmail">
+                                <img src="assets/logos/logo-gmail.svg" alt="Gmail" />
+                            </a>
+                        </li>
+                        <li class="jg-ll-item">
+                            <a class="jg-ll-link" href="https://space.bilibili.com/385452339" target="_blank" rel="noreferrer noopener" title="哔哩哔哩">
+                                <img src="assets/logos/logo-bilibili.svg" alt="哔哩哔哩" />
+                            </a>
+                        </li>
+                        <li class="jg-ll-item">
+                            <a class="jg-ll-link" href="https://www.douyin.com/user/MS4wLjABAAAA-5M0Kcg98EjyHuB9G2LYJ1lMRFwDjMIIjVwMYT8xXBfXVOBo8eiU12Qms7yddDDn" target="_blank" rel="noreferrer noopener" title="抖音">
+                                <img src="assets/logos/logo-douyin.svg" alt="抖音" />
+                            </a>
+                        </li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+@if (_pendingRoot is not null)
+{
+    <div class="jg-modal-overlay" @onclick="CancelChangeRoot">
+        <div class="jg-modal" @onclick:stopPropagation>
+            <div class="jg-modal-title">更改缓存目录</div>
+            <div class="jg-modal-body">
+                下载/安装临时、SMAPI 安装包、Mods 备份将立即迁移到：<br />
+                <b>@_pendingRoot</b><br /><br />
+                WebView2 数据在重启应用后自动迁移（正在使用的文件除外，留在原处可稍后清理）。
+            </div>
+            <div class="jg-modal-actions">
+                <button class="jg-path-btn" @onclick="CancelChangeRoot">取消</button>
+                <button class="jg-path-btn primary" @onclick="ConfirmChangeRoot">开始迁移</button>
+            </div>
+        </div>
+    </div>
+}
+
+@if (_pendingCleanId is not null || _confirmCleanAll)
+{
+    <div class="jg-modal-overlay" @onclick="CancelClean">
+        <div class="jg-modal" @onclick:stopPropagation>
+            <div class="jg-modal-title">@(_confirmCleanAll ? "一键清理缓存" : "清理缓存")</div>
+            <div class="jg-modal-body">@CleanConfirmText</div>
+            <div class="jg-modal-actions">
+                <button class="jg-path-btn" @onclick="CancelClean">取消</button>
+                <button class="jg-path-btn primary" @onclick="DoClean">确认清理</button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private SteamProfile _steam = SteamProfile.None;
+    private string _nexusName = "";
+    private string? _nexusAvatar;
+    private bool   _nexusPremium;
+
+    private void NexusLogout()
+    {
+        var cfg = Cfg.Current;
+        cfg.NexusApiKey = "";
+        cfg.NexusUserName = "";
+        cfg.NexusUserEmail = "";
+        cfg.NexusProfileUrl = "";
+        cfg.NexusIsPremium = false;
+        cfg.NexusAvatarDataUri = "";
+        Cfg.Save(cfg);
+        _nexusName = ""; _nexusAvatar = null; _nexusPremium = false;
+        _ = JS.InvokeVoidAsync("junigridJs.toast", "已退出 Nexus 登录");
+        StateHasChanged();
+    }
+
+    private async Task LoadAccountsAsync()
+    {
+        // Q4: 全部从 config 缓存瞬读，不再进设置页就拉网
+        _steam = Steam.GetProfile();
+        var cfg = Cfg.Current;
+        _nexusName = cfg.NexusUserName;
+        _nexusPremium = cfg.NexusIsPremium;
+        // v1.08.2：只信 image/* 的缓存 —— 旧版本曾把 profile_url（网页链接）的下载结果当头像缓存，
+        // data:text/html 之类坏数据每次进页都命中，头像自然「对不上」
+        var cached = cfg.NexusAvatarDataUri;
+        _nexusAvatar = cached is not null && cached.StartsWith("data:image/", StringComparison.Ordinal) ? cached : null;
+        // v1.08.2：已登录则后台自愈刷新（validate 已按 user_id 构造真实头像直链），拉到不同才写回缓存；
+        // 不 await —— 设置页首屏不因网络等待延迟
+        if (!string.IsNullOrEmpty(cfg.NexusApiKey)) _ = RefreshNexusAvatarAsync();
+    }
+
+    private async Task RefreshNexusAvatarAsync()
+    {
+        try
+        {
+            var cfg = Cfg.Current;
+            var u = await NexusApi.ValidateAsync(cfg.NexusApiKey);
+            if (u is null || string.IsNullOrEmpty(u.Avatar)) return;
+            var fresh = await NexusApi.FetchAvatarAsync(u.Avatar);
+            if (string.IsNullOrEmpty(fresh)) return;
+            _nexusName = string.IsNullOrEmpty(u.Name) ? _nexusName : u.Name;
+            _nexusPremium = u.IsPremium;
+            // 名字/Premium 也写回 config：老版本登录只落了 key + 头像缓存，
+            // 不写回的话每次进设置页都要闪 1s「未登录」等这次 validate 自愈
+            if (cfg.NexusUserName != _nexusName || cfg.NexusIsPremium != _nexusPremium)
+            {
+                cfg.NexusUserName = _nexusName;
+                cfg.NexusIsPremium = _nexusPremium;
+                Cfg.Save(cfg);
+            }
+            if (fresh != _nexusAvatar)
+            {
+                _nexusAvatar = fresh;
+                cfg.NexusAvatarDataUri = fresh;
+                Cfg.Save(cfg);
+            }
+            await InvokeAsync(StateHasChanged);
+        }
+        catch { /* 网络失败保持缓存显示，静默 */ }
+    }
+
+
+    private string _gamePath = "";
+    private bool _oneClickInstall;
+    private bool _autoInstall;
+
+    // ─── 过滤色情内容：默认开启，点击直接切换 ───
+    private bool _filterAdult = true;
+
+    private bool _showTaskDock = true;
+
+    private void ToggleTaskDock()
+    {
+        _showTaskDock = !_showTaskDock;
+        var cfg = Cfg.Current;
+        cfg.ShowTaskDock = _showTaskDock;
+        Cfg.Save(cfg);
+    }
+
+    // ─── v0.2.1：内存管理 ───
+    private MemoryService.MemorySnapshot? _mem;
+    private bool _memTimer;
+    private int _memTimerMinutes = 30;
+    private bool _memThreshold;
+    private int _memThresholdPercent = 80;
+    private ElementReference _timerPanel;      // v0.2.2：滑杆面板，随开关弹性开合
+    private ElementReference _thresholdPanel;
+    private ElementReference _timerSlider;     // v0.2.2：弹性滑杆（React Bits ElasticSlider 风格）
+    private ElementReference _thresholdSlider;
+    private DotNetObjectReference<Settings>? _sliderCb;
+
+    private static string FmtMb(long? bytes)
+        => bytes is null or < 0 ? "—" : ResumableDownload.FormatBytes(bytes.Value);
+
+    private string Pct() => _mem is null ? "—" : _mem.SysPercent.ToString("F0");
+
+    private void OnMemSnap(MemoryService.MemorySnapshot snap) =>
+        _ = InvokeAsync(() => { _mem = snap; StateHasChanged(); });
+
+    /// <summary>开关切换：展开 = 先让 Blazor 摘掉 display:none 再播动画；
+    /// 收起 = 趁面板还可见先播收拢动画，播完才真正隐藏（保证两个方向的动画都能看见）。</summary>
+    private async Task ToggleMemTimer()
+    {
+        if (_memTimer)
+        {
+            await AnimatePanelAsync(_timerPanel, false);
+            _memTimer = false;
+        }
+        else
+        {
+            _memTimer = true;
+            StateHasChanged();
+            await AnimatePanelAsync(_timerPanel, true);
+        }
+        SaveMemCfg();
+        StateHasChanged();
+    }
+
+    private async Task ToggleMemThreshold()
+    {
+        if (_memThreshold)
+        {
+            await AnimatePanelAsync(_thresholdPanel, false);
+            _memThreshold = false;
+        }
+        else
+        {
+            _memThreshold = true;
+            StateHasChanged();
+            await AnimatePanelAsync(_thresholdPanel, true);
+        }
+        SaveMemCfg();
+        StateHasChanged();
+    }
+
+    /// <summary>滑杆面板随开关弹性开合（与下拉菜单同款 GSAP 曲线，见 interop.js collapseToggle）。
+    /// JS 万一不可用：上面的 try/catch 让开关仍然立即生效，只是没有动画。</summary>
+    private async Task AnimatePanelAsync(ElementReference el, bool open)
+    {
+        try { await JS.InvokeVoidAsync("junigridJs.collapseToggle", el, open); } catch { }
+    }
+    private void SaveMemCfg()
+    {
+        var cfg = Cfg.Current;
+        cfg.MemTimerEnabled = _memTimer;
+        cfg.MemTimerMinutes = _memTimerMinutes;
+        cfg.MemThresholdEnabled = _memThreshold;
+        cfg.MemThresholdPercent = _memThresholdPercent;
+        Cfg.Save(cfg);
+    }
+
+    /// <summary>弹性滑杆拖动结束回调（JS → .NET）：落值 + 保存。</summary>
+    [JSInvokable]
+    public void OnElasticValue(string id, double value)
+    {
+        if (id == "timer") _memTimerMinutes = (int)Math.Clamp(value, 5, 240);
+        else if (id == "threshold") _memThresholdPercent = (int)Math.Clamp(value, 50, 95);
+        else return;
+        SaveMemCfg();
+        StateHasChanged();
+    }
+
+    private async Task CompressNow()
+    {
+        // 一键全压：自身（GC + 工作集换出）+ WebView2 子进程（工作集换出）
+        var (before, after) = await Task.Run(() => Mem.CompressSelf());
+        var msg = $"自身 {ResumableDownload.FormatBytes(before)} → {ResumableDownload.FormatBytes(after)}";
+        var wv = await Task.Run(() => Mem.TrimWebView2());
+        if (wv.count > 0)
+            msg += $"；WebView2（{wv.count} 进程）{ResumableDownload.FormatBytes(wv.before)} → {ResumableDownload.FormatBytes(wv.after)}";
+        _mem = Mem.GetSnapshot();
+        StateHasChanged();
+        await JS.InvokeVoidAsync("junigridJs.toast", "已压缩：" + msg);
+    }
+
+    private async Task TrimGameNow()
+    {
+        var n = await Task.Run(() => Mem.TrimGameWorkingSet());
+        await JS.InvokeVoidAsync("junigridJs.toast",
+            n > 0 ? $"已清理 {n} 个游戏进程的工作集" : "游戏未在运行", n > 0 ? null : "err");
+    }
+
+    // ─── v0.2.1：缓存与存储 ───
+    private List<StorageCategory> _cats = new();
+
+    private string FmtSize(string id)
+    {
+        if (Storage.IsComputing(id)) return "计算中…";
+        var b = Storage.GetSize(id);
+        return b < 0 ? "—" : ResumableDownload.FormatBytes(b);
+    }
+
+    private void OnStorageStats() => _ = InvokeAsync(StateHasChanged);
+
+    private async Task CleanCat(string id)
+    {
+        var msg = await Storage.CleanCategoryAsync(id);
+        _cats = Storage.GetCategories();
+        await JS.InvokeVoidAsync("junigridJs.toast", msg);
+    }
+
+    // ─── 清理确认弹窗：单项与一键共用 ───
+    private string? _pendingCleanId;
+    private bool _confirmCleanAll;
+
+    private string CleanConfirmText
+    {
+        get
+        {
+            if (_confirmCleanAll)
+            {
+                var n = _cats.Count(x => x.Cleanable);
+                return $"将逐个清理全部 {n} 项可清理缓存。\n\n"
+                     + "正在使用的文件会自动跳过；游戏卸载回收站清空后无法恢复。";
+            }
+            var c = _cats.FirstOrDefault(x => x.Id == _pendingCleanId);
+            if (c is null) return "确定清理吗？";
+            return $"将清理「{c.Name}」。\n\n{c.Tip}\n\n正在使用的文件会自动跳过。";
+        }
+    }
+
+    private void AskClean(string id) { _confirmCleanAll = false; _pendingCleanId = id; }
+    private void AskCleanAll() { _pendingCleanId = null; _confirmCleanAll = true; }
+    private void CancelClean() { _pendingCleanId = null; _confirmCleanAll = false; }
+
+    private async Task DoClean()
+    {
+        var all = _confirmCleanAll;
+        var id = _pendingCleanId;
+        CancelClean();
+        if (all)
+        {
+            foreach (var c in _cats.Where(x => x.Cleanable).ToList())
+                await Storage.CleanCategoryAsync(c.Id);
+            await JS.InvokeVoidAsync("junigridJs.toast", "全部缓存已处理完，详见任务记录");
+        }
+        else if (id is not null)
+        {
+            await CleanCat(id);
+        }
+    }
+
+    private async Task RefreshStats()
+    {
+        var ok = await Storage.RefreshAllAsync(force: true);
+        await JS.InvokeVoidAsync("junigridJs.toast",
+            ok ? "占用刷新成功" : "占用刷新失败 请重试", ok ? null : "err");
+    }
+
+    // ─── 更改统一缓存目录：可迁移项（下载/SMAPI/WebView2/Mods 备份）一起跟着走 ───
+    private string? _pendingRoot;
+
+    private void ChangeCacheRoot()
+    {
+        var dlg = new Microsoft.Win32.OpenFolderDialog { Title = "选择缓存目录" };
+        if (dlg.ShowDialog() == true) _pendingRoot = dlg.FolderName;
+    }
+
+    private void CancelChangeRoot() => _pendingRoot = null;
+
+    private async Task ConfirmChangeRoot()
+    {
+        var root = _pendingRoot;
+        _pendingRoot = null;
+        if (string.IsNullOrWhiteSpace(root)) return;
+        var msg = await Storage.MigrateCacheRootAsync(root);
+        _cats = Storage.GetCategories();
+        await JS.InvokeVoidAsync("junigridJs.toast", msg);
+    }
+
+    private async Task ResetCacheRoot()
+    {
+        var msg = await Storage.MigrateCacheRootAsync(null);
+        _cats = Storage.GetCategories();
+        await JS.InvokeVoidAsync("junigridJs.toast", msg);
+    }
+
+    private void OpenCatFolder(StorageCategory c)
+    {
+        try
+        {
+            var p = c.DisplayPath;
+            if (!Directory.Exists(p)) Directory.CreateDirectory(p);
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(p) { UseShellExecute = true });
+        }
+        catch { }
+    }
+
+    public void Dispose()
+    {
+        Mem.OnSnapshot -= OnMemSnap;
+        Storage.OnStats -= OnStorageStats;
+        _sliderCb?.Dispose();
+    }
+
+    private void SaveFilterAdult()
+    {
+        var cfg = Cfg.Current;
+        cfg.FilterAdultContent = _filterAdult;
+        Cfg.Save(cfg);   // ConfigService.Save 内部同步 NexusService.IncludeAdultContent
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadAccountsAsync();
+        _gamePath = Cfg.Current.GamePath;        _oneClickInstall = Cfg.Current.EnableOneClickInstall;
+        _autoInstall = Cfg.Current.EnableAutoInstall && _nexusPremium;   // 非会员一律默认关闭
+        if (!_nexusPremium && Cfg.Current.EnableAutoInstall)
+        {
+            // 非会员时把残留的开启态落盘为关闭，避免其他页直接读 config 误触发自动安装
+            Cfg.Current.EnableAutoInstall = false;
+            Cfg.Save(Cfg.Current);
+        }
+        _filterAdult = Cfg.Current.FilterAdultContent;
+        _showTaskDock = Cfg.Current.ShowTaskDock;
+
+        // v0.2.1：内存管理 —— 订阅快照推送（5s 一次），离开页面时 Dispose 退订
+        Mem.OnSnapshot += OnMemSnap;
+        _mem = Mem.GetSnapshot();
+        _memTimer = Cfg.Current.MemTimerEnabled;
+        _memTimerMinutes = Math.Clamp(Cfg.Current.MemTimerMinutes, 5, 240);
+        _memThreshold = Cfg.Current.MemThresholdEnabled;
+        _memThresholdPercent = Math.Clamp(Cfg.Current.MemThresholdPercent, 50, 95);
+
+        // v0.2.1：缓存与存储 —— 首次进入或过期后后台重算占用
+        Storage.OnStats += OnStorageStats;
+        _cats = Storage.GetCategories();
+        Storage.RefreshAll();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        // GSAP 弹性按钮 hover + 问号 tooltip + 禁用行像素特效绑定（内部有防重复绑定标记）
+        await JS.InvokeVoidAsync("junigridJs.initGsapFx");
+        await JS.InvokeVoidAsync("junigridJs.initPixelHover");
+        await JS.InvokeVoidAsync("junigridJs.initCursorGrid", ".jg-cursor-grid");
+        await JS.InvokeVoidAsync("junigridJs.initLogoLoop", ".jg-logoloop");
+        if (firstRender)
+        {
+            // v0.2.2：弹性滑杆绑定（值变化经 OnElasticValue 回调落配置）
+            try
+            {
+                _sliderCb = DotNetObjectReference.Create(this);
+                await JS.InvokeVoidAsync("junigridJs.elasticInit", _timerSlider, "timer", (double)_memTimerMinutes, _sliderCb);
+                await JS.InvokeVoidAsync("junigridJs.elasticInit", _thresholdSlider, "threshold", (double)_memThresholdPercent, _sliderCb);
+            }
+            catch { }
+        }
+    }
+    private void ToggleOneClick()
+    {
+        _oneClickInstall = !_oneClickInstall;
+        SaveOneClickInstall();
+    }
+
+    private void ToggleAutoInstall()
+    {
+        if (!_nexusPremium) return;
+        _autoInstall = !_autoInstall;
+        SaveAutoInstall();
+    }
+
+    private void ToggleFilterAdult()
+    {
+        _filterAdult = !_filterAdult;
+        SaveFilterAdult();
+    }
+
+    private void SaveOneClickInstall()
+    {
+        var cfg = Cfg.Current;
+        cfg.EnableOneClickInstall = _oneClickInstall;
+        Cfg.Save(cfg);
+    }
+
+    private void SaveAutoInstall()
+    {
+        var cfg = Cfg.Current;
+        // 双保险：非会员即使在 UI 外被置为 true 也不生效
+        cfg.EnableAutoInstall = _autoInstall && cfg.NexusIsPremium;
+        Cfg.Save(cfg);
+    }
+
+    private static bool IsValidGamePath(string? p)
+        => !string.IsNullOrWhiteSpace(p)
+           && Directory.Exists(p)
+           && File.Exists(Path.Combine(p, "StardewModdingAPI.exe"))
+           && Directory.Exists(Path.Combine(p, "Mods"));
+
+    private void AutoDetect()
+    {
+        var detected = Game.DetectGamePath();
+        if (!string.IsNullOrEmpty(detected))
+        {
+            _gamePath = detected;
+            if (IsValidGamePath(detected))
+            {
+                var cfg = Cfg.Current;
+                cfg.GamePath = _gamePath;
+                Cfg.Save(cfg);
+                _ = JS.InvokeVoidAsync("junigridJs.toast", "已自动检测到游戏目录并保存");
+            }
+            else
+            {
+                _ = JS.InvokeVoidAsync("junigridJs.toast", "检测到目录，但缺少 StardewModdingAPI.exe 或 Mods 文件夹", "err");
+            }
+        }
+        else
+        {
+            _ = JS.InvokeVoidAsync("junigridJs.toast", "未自动检测到游戏目录，请点「浏览...」手动选择", "err");
+        }
+    }
+
+    private void Pick()
+    {
+        var dlg = new Microsoft.Win32.OpenFolderDialog
+        {
+            Title = "选择 Stardew Valley 游戏目录"
+        };
+        if (dlg.ShowDialog() == true)
+        {
+            _gamePath = dlg.FolderName;
+            if (IsValidGamePath(_gamePath))
+            {
+                var cfg = Cfg.Current;
+                cfg.GamePath = _gamePath;
+                Cfg.Save(cfg);
+                _ = JS.InvokeVoidAsync("junigridJs.toast", "已选择游戏目录并保存");
+            }
+            else
+            {
+                _ = JS.InvokeVoidAsync("junigridJs.toast", "请选择正确的游戏目录", "err");
+            }
+        }
+    }
+
+    private void Save()
+    {
+        if (!IsValidGamePath(_gamePath))
+        {
+            _ = JS.InvokeVoidAsync("junigridJs.toast", "请选择正确的游戏目录", "err");
+            return;
+        }
+        var cfg = Cfg.Current;
+        cfg.GamePath = _gamePath;
+        Cfg.Save(cfg);
+        _ = JS.InvokeVoidAsync("junigridJs.toast", "游戏目录已保存");
+    }
+}

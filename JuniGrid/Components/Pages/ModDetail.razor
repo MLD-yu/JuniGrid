@@ -1,0 +1,734 @@
+@namespace JuniGrid.Components.Pages
+@page "/mod/{ModId:int}/{UniqueID?}"
+@using System.Text.RegularExpressions
+@inject ConfigService Cfg
+@inject NexusService NexusApi
+@inject ModService ModSvc
+@inject InstallService Installer
+@inject IJSRuntime JS
+@inject NavigationManager Nav
+
+<div class="jg-page">
+    <div class="jg-detail-topbar">
+    <button class="jg-detail-back" @onclick="GoBack" data-tip="返回" aria-label="返回">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#3d3d3d" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="15 18 9 12 15 6"></polyline>
+        </svg>
+    </button>
+
+
+    </div>
+
+    @if (_loading)
+    {
+        <div class="jg-shimmer-hero">
+            <div class="jg-shimmer-left">
+                <div class="jg-shimmer jg-shimmer-title"></div>
+                <div class="jg-shimmer jg-shimmer-line" style="width:70%"></div>
+                <div class="jg-shimmer jg-shimmer-line" style="width:55%"></div>
+                <div class="jg-shimmer jg-shimmer-btns">
+                    <div class="jg-shimmer jg-shimmer-btn"></div>
+                    <div class="jg-shimmer jg-shimmer-btn" style="width:110px"></div>
+                </div>
+                <div class="jg-shimmer jg-shimmer-line" style="width:80%;margin-top:12px"></div>
+            </div>
+            <div class="jg-shimmer jg-shimmer-cover"></div>
+        </div>
+        <div class="jg-shimmer-scrollstack">
+            <div class="jg-shimmer jg-shimmer-card"></div>
+            <div class="jg-shimmer jg-shimmer-card"></div>
+            <div class="jg-shimmer jg-shimmer-card"></div>
+        </div>
+    }
+    else if (_error is not null)
+    {
+        <div class="jg-card" style="margin-top:10px">@_error</div>
+    }
+    else if (_mod is not null)
+    {
+        @* ─── Download-4 版式：左字右图 ─── *@
+        <div class="jg-dl4-hero">
+            <div class="jg-dl4-left">
+                <h1 class="jg-dl4-title">@_mod.Name@if (_lastDownloaded is not null)
+                {
+                    <span class="jg-dl4-lastdl">最后一次安装时间是 @_lastDownloaded</span>
+                }</h1>
+                @if (!string.IsNullOrWhiteSpace(_mod.Summary))
+                {
+                    <p class="jg-dl4-sub">@_mod.Summary</p>
+                }
+
+                <div class="jg-dl4-actions">
+                    @{
+                        var alreadyInstalled = _installedFolder is not null;
+                        // v1.04.0：已装判定优先于一键安装开关 —— 无论开关与否，「Mod 列表已有该 mod」都要显示
+                        var installLabel = _installing ? "安装中…"
+                            : alreadyInstalled ? (HasUpdate ? "更新" : "Mod 列表已有该 mod")
+                            : !Cfg.Current.EnableOneClickInstall ? "在浏览器安装" : "安装";
+                        var disableInstall = _installing || (alreadyInstalled && !HasUpdate);
+                    }
+                    <button class="jg-dl4-cta" @onclick="Install" disabled="@disableInstall">
+                        @installLabel
+                        <span class="jg-dl4-cta-ico"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px"><path d="M12 3v12"/><polyline points="7 10 12 15 17 10"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg></span>
+                    </button>
+                    <button class="jg-dl4-ghost" @onclick="OpenPage" data-tip="在 Nexus 网站打开">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;vertical-align:-3px;margin-right:6px">
+                            <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
+                            <polyline points="15 3 21 3 21 9"/>
+                            <line x1="10" y1="14" x2="21" y2="3"/>
+                        </svg>
+                        官网打开
+                    </button>
+                </div>
+
+
+
+                @if (_installMsg is not null)
+                {
+                    <div class="jg-dl4-msg">@_installMsg</div>
+                }
+
+            @* ─── v0.69.5：三项手风琴（多开不互关 / 平滑展开 / 超长内部滚动且标题吸顶）─── *@
+            <div class="jg-about-acc">
+                <div class="jg-acc @(_openAccs.Contains(1) ? "open" : "")" id="jgAcc1">
+                    <div class="jg-acc-inner">
+                        <button class="jg-acc-head" @onclick="() => ToggleAcc(1)">
+                            <span class="jg-acc-no">01</span><span class="jg-acc-name">Requirements@(_requirements is { Count: > 0 } ? $"（{_requirements.Count}）" : "")</span>
+                            <svg class="jg-acc-arrow" width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                        </button>
+                        <div class="jg-acc-body">
+                            @if (_requirements is null)
+                            {
+                                <div class="jg-shimmer" style="height:16px;border-radius:5px;margin:4px 0"></div>
+                                <div class="jg-shimmer" style="height:16px;border-radius:5px;margin:4px 0;width:60%"></div>
+                            }
+                            else if (_reqFailed)
+                            {
+                                <span style="opacity:.65">要求数据拉取失败，</span><button class="jg-linklike" @onclick="OpenPage">点此到官网查看</button>
+                            }
+                            else if (_requirements.Count == 0)
+                            {
+                                <span style="opacity:.6">该模组没有前置要求。</span>
+                            }
+                            else
+                            {
+                                var nexusReqs = _requirements.Where(r => !r.External).ToList();
+                                var offsiteReqs = _requirements.Where(r => r.External).ToList();
+                                if (nexusReqs.Count > 0)
+                                {
+                                    <div class="jg-req-sub">Nexus 要求</div>
+                                    <div class="jg-req-table">
+                                        <div class="jg-req-th"><span>模组名称</span><span>注释</span></div>
+                                        @foreach (var r in nexusReqs)
+                                        {
+                                            <div class="jg-req-row">
+                                                <span class="jg-req-name">
+                                                    @if (!string.IsNullOrEmpty(r.PictureUrl))
+                                                    {
+                                                        <img class="jg-req-cover" src="@r.PictureUrl" alt="" loading="lazy" />
+                                                    }
+                                                    @if (r.ModId > 0)
+                                                    {
+                                                        <button class="jg-req-link" @onclick="() => GoDep(r.ModId, r.ModName)">@r.ModName</button>
+                                                    }
+                                                    else { @r.ModName }
+                                                </span>
+                                                <span class="jg-req-notes">@(string.IsNullOrWhiteSpace(r.Notes) ? "—" : r.Notes)</span>
+                                            </div>
+                                        }
+                                    </div>
+                                }
+                                if (offsiteReqs.Count > 0)
+                                {
+                                    <div class="jg-req-sub" style="margin-top:10px">场外需求</div>
+                                    <div class="jg-req-table">
+                                        <div class="jg-req-th"><span>模组名称</span><span>注释</span></div>
+                                        @foreach (var r in offsiteReqs)
+                                        {
+                                            <div class="jg-req-row">
+                                                <span class="jg-req-name">
+                                                    @if (!string.IsNullOrEmpty(r.Url))
+                                                    {
+                                                        <button class="jg-req-link" @onclick="() => OpenExt(r.Url)">@r.ModName</button>
+                                                    }
+                                                    else { @r.ModName }
+                                                </span>
+                                                <span class="jg-req-notes">@(string.IsNullOrWhiteSpace(r.Notes) ? "—" : r.Notes)</span>
+                                            </div>
+                                        }
+                                    </div>
+                                }
+                            }
+                        </div>
+                    </div>
+                </div>
+                <div class="jg-acc @(_openAccs.Contains(2) ? "open" : "")" id="jgAcc2">
+                    <div class="jg-acc-inner">
+                        <button class="jg-acc-head" @onclick="() => ToggleAcc(2)">
+                            <span class="jg-acc-no">02</span><span class="jg-acc-name">Translations@(_translations is { Count: > 0 } ? $"（{_translations.Count}）" : "")</span>
+                            <svg class="jg-acc-arrow" width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                        </button>
+                        <div class="jg-acc-body">
+                            @if (_translations is null) { <span style="opacity:.65">正在拉取…</span> }
+                            else if (_translations.Count == 0) { <span style="opacity:.6">暂无译本。</span> }
+                            else
+                            {
+                                @foreach (var t in _translations)
+                                {
+                                    <div class="jg-acc-row" style="align-items:center;gap:10px">
+                                        @if (!string.IsNullOrEmpty(t.PictureUrl))
+                                        {
+                                            <img class="jg-req-cover" src="@t.PictureUrl" alt="" loading="lazy" />
+                                        }
+                                        <button class="jg-req-link" style="flex:1;text-align:left" @onclick="() => GoDep(t.ModId, t.Name)">@t.Name</button>
+                                    </div>
+                                }
+                            }
+                        </div>
+                    </div>
+                </div>
+                <div class="jg-acc @(_openAccs.Contains(3) ? "open" : "")" id="jgAcc3">
+                    <div class="jg-acc-inner">
+                        <button class="jg-acc-head" @onclick="() => ToggleAcc(3)">
+                            <span class="jg-acc-no">03</span><span class="jg-acc-name">Changelogs@(_changelogs is { Count: > 0 } ? $"（{_changelogs.Count} 个版本）" : "")</span>
+                            <svg class="jg-acc-arrow" width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                        </button>
+                        <div class="jg-acc-body">
+                            @if (_changelogs is null) { <span style="opacity:.65">正在拉取…</span> }
+                            else if (_changelogs.Count == 0) { <span style="opacity:.6">暂无更新日志。</span> }
+                            else
+                            {
+                                var shownLogs = _changelogs;
+                                @foreach (var c in shownLogs)
+                                {
+                                    <div class="jg-acc-row" style="flex-direction:column;align-items:flex-start;gap:2px">
+                                        <b>v@(c.Version)</b>
+                                        @foreach (var line in c.Lines) { <span style="opacity:.75;font-size:12.5px">· @line</span> }
+                                    </div>
+                                }
+                            }
+                        </div>
+                    </div>
+                </div>
+            </div>
+            </div>
+            <div class="jg-dl4-right">
+                @if (!string.IsNullOrEmpty(_mod.PictureUrl))
+                {
+                    <img class="jg-dl4-cover jg-flip-cover" src="@_mod.PictureUrl" alt="@_mod.Name" data-flip-src="@_mod.PictureUrl" />
+                }
+                else
+                {
+                    <div class="jg-dl4-cover jg-dl4-cover-fallback">
+                        @(_mod.Name.Length > 0 ? _mod.Name[..1].ToUpperInvariant() : "?")
+                    </div>
+                }
+
+                <div class="jg-dl4-meta jg-dl4-meta-under">
+                    <span class="jg-dl4-meta-item">by
+                        @* ─── v1.04.0：作者名可点击跳转个人主页 + blur 高光（深#3d3d3d/浅#ffffff）+ hover 头像预览（GSAP easeReverse）─── *@
+                        <span class="jg-author-wrap" id="jgAuthorTip">
+                            <button type="button" class="jg-author-name" @onclick="OpenAuthorPage" aria-label="查看作者主页">
+                                <span class="jg-author-hl"></span>
+                                <span class="jg-author-name-txt">@(_mod.Author ?? "Unknown")</span>
+                            </button>
+                            <span class="jg-author-bubble" id="jgAuthorBubble">
+                                @if (!string.IsNullOrEmpty(_authorAvatar))
+                                {
+                                    <img class="jg-author-ava" src="@_authorAvatar" alt="" />
+                                }
+                                else
+                                {
+                                    <span class="jg-author-ava jg-author-ava-fb">@(_mod.Author is { Length: > 0 } a ? a[..1].ToUpperInvariant() : "U")</span>
+                                }
+                                <span class="jg-author-bubble-txt">查看 TA 的主页 →</span>
+                            </span>
+                        </span>
+                    </span>
+                    <span class="jg-dl4-dot">·</span>
+                    @* v1.06.7：优先显示最新 MAIN 文件版本 —— 作者常忘改 mod 页的声明版本字段
+                       （声明 0.2.8 但最新文件已是 0.2.9），文件版本才与列表更新徽标、官网一致 *@
+                    <span class="jg-dl4-meta-item">v@(_latestFile?.Version is { Length: > 0 } lv ? lv : _mod.Version)</span>
+                    <span class="jg-dl4-dot">·</span>
+                    <span class="jg-dl4-meta-item"><svg class="jg-meta-ico" viewBox="0 0 24 24" fill="none" stroke="#3d3d3d" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><polyline points="7 10 12 15 17 10"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>@FormatDownloads(_mod.Downloads)</span>
+                    <span class="jg-dl4-dot">·</span>
+                    <span class="jg-dl4-meta-item"><svg class="jg-meta-ico" viewBox="0 0 24 24" fill="none" stroke="#3d3d3d" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 10v12"/><path d="M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 2a3.13 3.13 0 0 1 3 3.88Z"/></svg>@_mod.Endorsements</span>
+                    @* ─── v1.04.0：mod 大小（box 图标）固定在「更新于」之前；0 B 也照样显示 ─── *@
+                    <span class="jg-dl4-dot">·</span>
+                    <span class="jg-dl4-meta-item"><svg class="jg-meta-ico" viewBox="0 0 24 24" fill="none" stroke="#3d3d3d" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="12" x2="2" y2="12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><line x1="6" y1="16" x2="6.01" y2="16"/><line x1="10" y1="16" x2="10.01" y2="16"/></svg>@FormatBytes(_latestFile?.Size ?? 0)</span>
+                    @if (!string.IsNullOrEmpty(_mod.UpdatedAt))
+                    {
+                        <span class="jg-dl4-dot">·</span>
+                        <span class="jg-dl4-meta-item">更新于 @_mod.UpdatedAt</span>
+                    }
+                </div>
+            </div>
+        </div>
+
+        @* ─── v0.69.8：详细介绍（独立通栏模块，在整个 hero 模块下方，图片/链接原样渲染，支持翻译）─── *@
+        @if (!string.IsNullOrWhiteSpace(_mod.DescriptionHtml))
+        {
+            <div class="jg-detail-section jg-detail-full">
+                <div class="jg-detail-section-title">详细介绍</div>
+                <div class="jg-moddetail-desc jg-desc-with-imgs">@((MarkupString)NormalizeGrayColors(_mod.DescriptionHtml))</div>
+            </div>
+        }
+
+        @* ─── Flip 放大用的 modal 容器 ─── *@
+        <div class="jg-flip-modal" id="jgFlipModal">
+            <div class="jg-flip-overlay"></div>
+            <div class="jg-flip-content"></div>
+        </div>
+    }
+</div>
+
+@code {
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            // v0.72.1：.jg-main 是 MainLayout 的共享滚动容器 —— 从列表页滚到 y 再进详情，
+            // 详情页会继承 y，一打开就停在半中间。详情页永远从顶部开始；
+            // 返回列表的位置由 Mods 页 OpenDetail 存的快照恢复，两条路互不影响。
+            try { await JS.InvokeVoidAsync("junigridJs.setScroll", ".jg-main", 0); } catch { }
+        }
+        if (!_loading && _mod is not null)
+        {
+            try { await JS.InvokeVoidAsync("junigridJs.modDetailInit"); } catch { }
+            // v1.04.0：by 作者名 blur 高光 + hover 头像预览（GSAP easeReverse）
+            try { await JS.InvokeVoidAsync("junigridJs.authorTipInit", "jgAuthorTip", "jgAuthorBubble"); } catch { }
+            if (_pendingAnimAcc > 0)
+            {
+                var animId = "jgAcc" + _pendingAnimAcc;
+                var animOpen = _pendingAnimOpening;
+                _pendingAnimAcc = 0;
+                try { await JS.InvokeVoidAsync("junigridJs.accAnimate", animId, animOpen); } catch { }
+            }
+            try { await JS.InvokeVoidAsync("junigridJs.accMeasureScroll"); } catch { }
+        }
+    }
+
+    [Parameter] public int ModId { get; set; }
+    /// <summary>同一 Nexus Mod 可能含多个子包（共享 UpdateKey），靠 UniqueID 二次定位到具体那条。</summary>
+    [Parameter] public string? UniqueID { get; set; }
+
+    private string _key = "";
+    private NexusModDetail? _mod;
+    // v0.72.0：最新 MAIN 文件（可更新判定与一键直装 InstallModDirectAsync 同一权威源）
+    private NexusFileInfo? _latestFile;
+    // v1.04.0：作者头像（data URI，hover 预览气泡用；拉取失败用首字母兜底）
+    private string? _authorAvatar;
+    private bool _loading = true;
+    private string? _error;
+    private string? _installedFolder;
+    private bool _installing;
+    private string? _installMsg;
+
+    // 多图图集（v0.69.3：画廊已下线，此列表仅保留供封面 flip 放大取源）
+    private List<string> _imgUrls = new();
+
+    // v0.69.5：最后安装时间 / Requirements(GraphQL v2) / 三项手风琴（多开）
+    private string? _lastDownloaded;
+    private bool _reqFailed;
+    private readonly HashSet<int> _openAccs = new();
+    private List<NexusRequirementEx>? _requirements;
+    private List<NexusTranslationItem>? _translations;
+    private List<NexusChangelog>? _changelogs;
+
+    // 本地已装的 mod 全集（用于依赖匹配）
+    private IReadOnlyList<ModEntry> _localMods = Array.Empty<ModEntry>();
+    /// <summary>当前详情页这个 mod 的本地条目（null = 未安装）。读它的 Dependencies 列依赖。</summary>
+    private ModEntry? _thisEntry;
+
+    // 传递依赖展开结果（含间接依赖 + CPF 宿主）
+    private List<ResolvedDep> _resolvedDeps = new();
+
+    // v1.06.8：详情数据内存缓存 —— 依赖跳转 A→B→返回 A 不再重新走网络，A 秒开。
+    // 静态字段跨组件实例存活；TTL 10 分钟内重复进同一详情零请求。
+    private static readonly Dictionary<int, (NexusModDetail Mod, NexusFileInfo? Latest, DateTime At)> _detailCache = new();
+    private static readonly TimeSpan DetailCacheTtl = TimeSpan.FromMinutes(10);
+
+    protected override async Task OnParametersSetAsync()
+    {
+        _loading = true;
+        _error = null;
+        _mod = null;
+        _latestFile = null;
+        _imgUrls = new();
+        _lastDownloaded = null;
+        _reqFailed = false;
+        _openAccs.Clear();
+        _requirements = null;
+        _translations = null;
+        _changelogs = null;
+        _installMsg = null;
+        _key = Cfg.Current.NexusApiKey;
+
+        if (string.IsNullOrEmpty(_key))
+        {
+            _loading = false;
+            _error = "还没配置 Nexus API Key —— 先到「Nexus」页粘贴你的 Personal API Key。";
+            return;
+        }
+
+        // 这个 mod 是不是已经装了？装了的话安装按钮变成"更新到原文件夹"
+        _localMods = ModSvc.Scan(Cfg.Current.GamePath);
+        // 同 NexusModId 可能存在多个子包（如 [CC]/[CS]/[DLL]/[FTM] 共用 UpdateKey）。
+        // 优先按路由带来的 UniqueID 精确定位；没带（旧路由/依赖跳转）才退化到按 ModId 取第一个。
+        _thisEntry = !string.IsNullOrEmpty(UniqueID)
+            ? _localMods.FirstOrDefault(m => m.NexusModId == ModId
+                && string.Equals(m.UniqueID, UniqueID, StringComparison.OrdinalIgnoreCase))
+            : _localMods.FirstOrDefault(m => m.NexusModId == ModId);
+        _installedFolder = _thisEntry?.Folder;
+        ResolveDepTree();
+
+        try
+        {
+            // v1.06.8：缓存命中（10 分钟内看过）直接用，返回 A 秒开不转圈；未命中才走网络
+            if (!_detailCache.TryGetValue(ModId, out var hit) || DateTime.UtcNow - hit.At > DetailCacheTtl)
+            {
+                var mod = await NexusApi.GetModDetailAsync(_key, ModId);
+                if (mod is null) { _error = "拉取失败 —— 检查网络或 API Key 是否有效。"; }
+                else
+                {
+                    // v0.72.0：拉最新 MAIN 文件做可更新判定（与一键直装同源）。失败静默。
+                    NexusFileInfo? latest = null;
+                    try { latest = await NexusApi.GetLatestMainFileAsync(_key, ModId); }
+                    catch { latest = null; }
+                    hit = (mod, latest, DateTime.UtcNow);
+                    _detailCache[ModId] = hit;
+                }
+            }
+            if (_error is null && hit.Mod is not null)
+            {
+                _mod = hit.Mod;
+                _latestFile = hit.Latest;
+                _imgUrls = _mod.ImageUrls.Where(u => !string.IsNullOrWhiteSpace(u)).ToList();
+            }
+
+            // v0.69.0：最后下载时间 = 本地记录 ∪ N 网下载历史（取较新者；端点失效则静默）
+            if (_mod is not null)
+            {
+                if (Cfg.Current.ModLastDownload.TryGetValue(ModId.ToString(), out var localDl))
+                    _lastDownloaded = localDl;
+                _ = Task.Run(async () =>
+                {
+                    // v0.69.5：后台并行补齐 —— Requirements(GraphQL v2) + 页面附加数据 + 更新日志
+                    try
+                    {
+                        var req = await NexusApi.GetModRequirementsWithCoversAsync(ModId);
+                        if (req is null) { _reqFailed = true; _requirements = new(); }
+                        else _requirements = req;
+                        await InvokeAsync(StateHasChanged);
+                    }
+                    catch { _reqFailed = true; _requirements = new(); }
+                    try
+                    {
+                        _translations = await NexusApi.GetModTranslationsAsync(ModId, _mod?.Name ?? "") ?? new();
+                        await InvokeAsync(StateHasChanged);
+                    }
+                    catch { _translations = new(); }
+                    try
+                    {
+                        _changelogs = await NexusApi.GetChangelogsAsync(_key, ModId) ?? new();
+                        await InvokeAsync(StateHasChanged);
+                    }
+                    catch { _changelogs = new(); }
+                });
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        var hist = await NexusApi.GetDownloadHistoryAsync(_key);
+                        if (hist is not null && hist.TryGetValue(ModId, out var remote)
+                            && (_lastDownloaded is null
+                                || string.Compare(remote, _lastDownloaded, StringComparison.Ordinal) > 0))
+                        {
+                            _lastDownloaded = remote;
+                            await InvokeAsync(StateHasChanged);
+                        }
+                    }
+                    catch { /* 遗留端点失败静默 */ }
+                });
+                // v1.04.0：作者头像 —— by 作者名 hover 预览气泡用；失败静默（首字母兜底）
+                // v1.06.1：GetUploaderAvatarAsync 改走 GraphQL legacyModsByDomain ——
+                // 官网 HTML 被 Cloudflare 403、旧 GraphQL modId 过滤被服务端拒绝，两条旧通道全断
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        var av = await NexusApi.GetUploaderAvatarAsync(ModId);
+                        if (!string.IsNullOrEmpty(av))
+                        {
+                            _authorAvatar = await NexusApi.FetchAvatarAsync(av);
+                            await InvokeAsync(StateHasChanged);
+                        }
+                    }
+                    catch { }
+                });
+            }
+        }
+        catch (Exception ex)
+        {
+            _error = "拉取失败：" + ex.Message;
+        }
+        _loading = false;
+    }
+
+    /// <summary>
+    /// 一键直装：后台请求 Nexus 一次性下载链接 → 流式下载 → 装进 Mods，
+    /// 全程不出启动器。服务端拒绝直链（该 mod 强制 Premium）时，
+    /// 自动打开内置浏览器兜底。设置里关掉「一键安装」时则直接走浏览器方式。
+    /// </summary>
+    /// <summary>本地已装且 Nexus 版本【确实高于】本地 → 可更新。
+    /// v0.71.9：旧版用字符串全等判断"有更新"——v1.3.0 与 1.3.0、1.3.0 与 1.3.0.0、
+    /// 尾空格/预发布后缀等写法差异都会被误判成更新（详情页有更新按钮、列表页却没有，
+    /// 两边判定标准不一致的根因）。改为与列表页 IsUpdatable 相同的逐段数值语义化比较。
+    /// v0.72.0：比较对象改用「可更新版本」EffectiveRemoteVersion —— 与一键直装
+    /// （InstallModDirectAsync → GetLatestMainFileAsync）同一权威源。旧版比较 mod
+    /// 顶层 version（作者手填字段），主文件已到 1.3.1 时顶层还写 1.3.0，就会
+    /// 「判无更新、一点更新却装出 1.3.1」。</summary>
+    private bool HasUpdate =>
+        _thisEntry is not null && _mod is not null
+        && !string.IsNullOrWhiteSpace(EffectiveRemoteVersion) && !string.IsNullOrWhiteSpace(_thisEntry.Version)
+        && IsNewer(EffectiveRemoteVersion, _thisEntry.Version);
+
+    /// <summary>v0.72.0：可更新判定的权威远端版本 = 最新 MAIN 文件的版本；
+    /// 主文件没写版本号时退回 mod 顶层 version（旧逻辑的唯一来源）。</summary>
+    private string EffectiveRemoteVersion =>
+        !string.IsNullOrWhiteSpace(_latestFile?.Version) ? _latestFile!.Version : _mod?.Version ?? "";
+
+    /// <summary>v0.71.9：与 Mods.razor 的 IsNewer 同逻辑 —— 语义化版本逐段数值比较。
+    /// 剥离 v/V 前缀与 -beta/+build 类后缀，段数不齐按 0 补齐；完全相等 → 不是更新。</summary>
+    private static bool IsNewer(string remote, string local)
+    {
+        static int[] Parts(string v)
+        {
+            var s = v.Trim().TrimStart('v', 'V');
+            var dash = s.IndexOfAny(new[] { '-', '+', ' ' });
+            if (dash >= 0) s = s[..dash];
+            var segs = s.Split('.', StringSplitOptions.RemoveEmptyEntries);
+            var nums = new int[segs.Length];
+            for (var i = 0; i < segs.Length; i++)
+            {
+                var digits = new string(segs[i].TakeWhile(char.IsDigit).ToArray());
+                nums[i] = int.TryParse(digits, out var n) ? n : 0;
+            }
+            return nums;
+        }
+        var rp = Parts(remote); var lp = Parts(local);
+        var len = Math.Max(rp.Length, lp.Length);
+        for (var i = 0; i < len; i++)
+        {
+            var r = i < rp.Length ? rp[i] : 0;
+            var l = i < lp.Length ? lp[i] : 0;
+            if (r != l) return r > l;
+        }
+        return false;
+    }
+
+    private async Task Install()
+    {
+        if (_mod is null) return;
+        if (string.IsNullOrEmpty(_key))
+        {
+            _installMsg = "请先在「设置 → Nexus」里填入 API key 才能一键安装";
+            return;
+        }
+        if (!Cfg.Current.EnableOneClickInstall)
+        {
+            // 一键安装开关被关了 → 降级为系统浏览器手动下载
+            MainWindow.OpenNexusOverlay(
+                $"https://www.nexusmods.com/stardewvalley/mods/{ModId}?tab=files");
+            return;
+        }
+        _installing = true;
+        _installMsg = "正在后台下载安装…（大文件需要一点时间）";
+        StateHasChanged();
+        try
+        {
+            var err = await Installer.InstallModDirectAsync(ModId);
+            if (err is null)
+            {
+                _installMsg = null;   // v0.69.1：安装成功不再显示提示条（用户要求删掉）
+                _installedFolder ??= ModSvc.Scan(Cfg.Current.GamePath)
+                    .FirstOrDefault(m => m.NexusModId == ModId)?.Folder;
+            }
+            else if (err.Contains("premium", StringComparison.OrdinalIgnoreCase))
+            {
+                _installMsg = "这个 mod 需要 Premium 才能直装 —— 已为你打开系统浏览器，点 Mod Manager Download 即可自动安装";
+                MainWindow.OpenNexusOverlay(
+                    $"https://www.nexusmods.com/stardewvalley/mods/{ModId}?tab=files");
+            }
+            else
+            {
+                _installMsg = "安装失败：" + err;
+            }
+        }
+        catch (Exception ex)
+        {
+            _installMsg = "失败：" + ex.Message;
+        }
+        finally
+        {
+            _installing = false;
+        }
+    }
+
+    private void OpenPage() =>
+        UpdateService.OpenUrl($"https://www.nexusmods.com/stardewvalley/mods/{ModId}");
+
+    /// <summary>v1.04.0：by 作者名点击 → 打开作者 Nexus 个人主页。
+    /// v1.05.0：改用官网同款 /profile/{用户名}?gameId=1303 —— /users/{名字} 会 404（页面未找到）。</summary>
+    private void OpenAuthorPage()
+    {
+        var author = _mod?.Author;
+        if (string.IsNullOrWhiteSpace(author)) return;
+        UpdateService.OpenUrl("https://www.nexusmods.com/profile/"
+            + Uri.EscapeDataString(author) + "?gameId=1303");
+    }
+
+    private async Task GoBack()
+    {
+        // v0.93.0：返回来源页 —— 浏览器历史回退（Nexus 浏览页来 → 回 Nexus 且页码/tab 由状态快照恢复；
+        // Mods 列表来 → 回 Mods 并恢复滚动位置），无历史时回落 /mods。
+        try { await JS.InvokeVoidAsync("junigridJs.goBack"); }
+        catch { Nav.NavigateTo("/mods"); }
+    }
+
+    /// <summary>常用依赖 UniqueID → 友好名字。缺失依赖未装时没有本地名，靠这张表给个能看懂的名字。</summary>
+    private static string FriendlyDepName(string uniqueId)
+    {
+        if (string.IsNullOrWhiteSpace(uniqueId)) return uniqueId;
+        // 匹配时忽略大小写；用首字母小写统一选中
+        var key = uniqueId.Trim();
+        if (_depNameMap.TryGetValue(key, out var name)) return name;
+        // 易错：大小写不一致时也尝试
+        foreach (var (k, v) in _depNameMap)
+            if (string.Equals(k, key, StringComparison.OrdinalIgnoreCase)) return v;
+        return key;
+    }
+
+    private static readonly Dictionary<string, string> _depNameMap = new(StringComparer.OrdinalIgnoreCase)
+    {
+        // 常见 SMAPI 框架依赖（这些是确定的名字，缺失时用它替代生硬的 UniqueID）
+        { "Pathoschild.ContentPatcher", "内容补丁器 (Content Patcher)" },
+        { "Pathoschild.LookupAnything", "查看一切 (Lookup Anything)" },
+        { "spacechase0.JsonAssets", "JSON 资源包 (JsonAssets)" },
+        { "spacechase0.GenericModConfigMenu", "通用模组配置 (GMCM)" },
+        { "spacechase0.SpaceCore", "SpaceCore" },
+        { "PeacefulEnd.CustomCompanions", "自定义伴侣 (Custom Companions)" },
+        { "Esca.FarmTypeManager", "农场类型管理器 (FTM)" },
+        { "Cherry.ExpandedPreconditionsUtility", "扩展前置条件 (EPU)" },
+        { "bcmpinc.StardewHack", "StardewHack" },
+        { "bcmpinc.WearMoreRings", "更多戒指槽 (Wear More Rings)" },
+        { "MuseumHeir.CJBCheatsMenu", "CJB 作弊菜单" },
+        { "SMAPI", "SMAPI" },
+    };
+
+    /// <summary>依赖项（含间接依赖展开后的一项）。</summary>
+    private sealed class ResolvedDep
+    {
+        public string UniqueID = "";
+        public string Name = "";
+        public string? Version;
+        public int? NexusModId;
+        public string? CoverUrl;
+        public bool Installed;
+        public bool Required = true;
+    }
+
+    /// <summary>
+    /// BFS 展开当前 mod 的"传递依赖 + CPF 宿主"（去环、去重）。只收"必需"依赖，
+    /// 可选依赖（后端已从 Dependencies 过滤）不参与递归。
+    /// </summary>
+    private void ResolveDepTree()
+    {
+        _resolvedDeps.Clear();
+        if (_thisEntry is null) return;
+
+        var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        // 同一 UniqueID 可能被重复安装（同名文件夹多份），ToDictionary 严格模式会抛重复键，
+        // 这里遇重复保留第一条即可，BFS 照常用它定位已装依赖。
+        var byUid = new Dictionary<string, ModEntry?>(StringComparer.OrdinalIgnoreCase);
+        foreach (var m in _localMods)
+            if (!string.IsNullOrWhiteSpace(m.UniqueID))
+                byUid.TryAdd(m.UniqueID, m);
+
+        // 从本 mod 的所有依赖 + CP 宿主 出发
+        var queue = new Queue<string>();
+        foreach (var d in _thisEntry.HasManifest ? _thisEntry.Dependencies : new List<string>())
+            if (!string.IsNullOrWhiteSpace(d)) queue.Enqueue(d);
+        foreach (var h in _thisEntry.ContentPackIds)
+            if (!string.IsNullOrWhiteSpace(h)) queue.Enqueue(h);
+
+        while (queue.Count > 0)
+        {
+            var uid = queue.Dequeue();
+            if (!visited.Add(uid)) continue;
+
+            var installed = byUid.TryGetValue(uid, out var depEntry) ? depEntry : null;
+            var cover = installed is not null
+                && Cfg.Current.ModCovers.TryGetValue(installed.Folder, out var cu) ? cu : null;
+
+            _resolvedDeps.Add(new ResolvedDep
+            {
+                UniqueID = uid,
+                Name = installed?.Name ?? FriendlyDepName(uid),
+                Version = installed?.Version,
+                NexusModId = installed?.NexusModId,
+                CoverUrl = cover,
+                Installed = installed is not null
+            });
+
+            // 递归它的依赖（已装才能继续展开）
+            if (installed is not null)
+            {
+                foreach (var sub in installed.Dependencies.Concat(installed.ContentPackIds))
+                    if (!string.IsNullOrWhiteSpace(sub)) queue.Enqueue(sub);
+            }
+        }
+    }
+
+    /// <summary>依赖 → 跳它的详情页。拿得到 mod_id 就进内部详情；拿不到（=0）才降级到 Nexus 搜索。</summary>
+    private void GoDep(int modId, string name)
+    {
+        if (modId > 0)
+        {
+            Nav.NavigateTo($"mod/{modId}");
+            return;
+        }
+        if (!string.IsNullOrWhiteSpace(name))
+            UpdateService.OpenUrl("https://www.nexusmods.com/stardewvalley/search/?gsearch="
+                + Uri.EscapeDataString(name));
+    }
+
+    // v0.69.2：手风琴开关 / 打开外部链接
+    private int _pendingAnimAcc;
+    private bool _pendingAnimOpening;
+    private void ToggleAcc(int n)
+    {
+        var opening = !_openAccs.Contains(n);
+        if (opening) _openAccs.Add(n); else _openAccs.Remove(n);
+        _pendingAnimAcc = n; _pendingAnimOpening = opening;   // DOM 更新后在 OnAfterRenderAsync 播 GSAP
+    }
+    private static void OpenExt(string url) => UpdateService.OpenUrl(url);
+
+    /// <summary>把详情富文本里写死的灰色文字颜色改成继承色，避免暗色模式下看不清。</summary>
+    private static string NormalizeGrayColors(string html)
+    {
+        if (string.IsNullOrEmpty(html)) return html ?? "";
+        return Regex.Replace(html,
+            @"(?i)color\s*:\s*(#(77|88|99|aa){2,3}\b|gray|grey|dimgray|darkgray|darkgrey|lightgray|lightgrey)",
+            "color: inherit");
+    }
+
+    private static string FormatDownloads(long n) =>
+        n >= 1_000_000 ? $"{n / 1_000_000.0:0.#}M"
+        : n >= 1_000 ? $"{n / 1_000.0:0.#}K"
+        : n.ToString();
+
+    /// <summary>v1.04.0：文件大小格式化（详情页统计行「大小」；0 也显示成 0 B）。</summary>
+    private static string FormatBytes(long b) => b >= 1_048_576 ? (b / 1_048_576.0).ToString("0.#") + " MB"
+        : b >= 1024 ? (b / 1024.0).ToString("0.#") + " KB" : b + " B";
+}

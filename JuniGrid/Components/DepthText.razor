@@ -1,0 +1,50 @@
+@namespace JuniGrid.Components
+@inject IJSRuntime JS
+
+@* v0.93.0：React Bits DepthText 的 Blazor 移植 —— 3D 挤出文字，指针视差 + 空闲自动环绕 *@
+<span class="depth-text" @ref="_root"
+      style="--dt-persp:@(Perspective)px;--dt-size:@FontSize;--dt-weight:@FontWeight;--dt-face:@FaceColor;--dt-shadow:@(Shadow ? $"0 14px 22px color-mix(in srgb,{DepthColor} 30%,transparent),0 2px 5px rgba(0,0,0,.22)" : "none")">
+    <span class="depth-text__stage">
+        @foreach (var L in _layers)
+        {
+            <span aria-hidden="true" class="depth-text__layer" style="color:@L.Color;transform:translateZ(@(L.Z)px)">@Text</span>
+        }
+        <span class="depth-text__face">@Text</span>
+    </span>
+</span>
+
+@code {
+    [Parameter] public string Text { get; set; } = "";
+    [Parameter] public int Layers { get; set; } = 18;
+    [Parameter] public double Depth { get; set; } = 1.2;
+    [Parameter] public string FaceColor { get; set; } = "#f8fafc";
+    [Parameter] public string DepthColor { get; set; } = "#3d3d3d";
+    [Parameter] public double Tilt { get; set; } = 7.5;
+    [Parameter] public string FontSize { get; set; } = "16px";
+    [Parameter] public int FontWeight { get; set; } = 800;
+    [Parameter] public bool Shadow { get; set; } = true;
+    [Parameter] public int Perspective { get; set; } = 900;
+
+    private ElementReference _root;
+    private readonly List<(string Color, string Z)> _layers = new();
+
+    protected override void OnParametersSet()
+    {
+        _layers.Clear();
+        var n = Math.Clamp(Layers, 2, 48);
+        for (var li = 0; li < n; li++)
+        {
+            var idx = n - li;
+            var prog = n <= 1 ? 1.0 : (double)idx / n;
+            var mix = (int)Math.Round((1 - prog * prog) * 72 + 4);
+            _layers.Add(($"color-mix(in srgb,{FaceColor} {mix}%,{DepthColor})",
+                (-idx * Depth).ToString("0.###", System.Globalization.CultureInfo.InvariantCulture)));
+        }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+            try { await JS.InvokeVoidAsync("junigridJs.depthTextInit", _root, Tilt); } catch { }
+    }
+}

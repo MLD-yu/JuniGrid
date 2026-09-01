@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>JuniGrid</title>
+    <base href="/" />
+
+    <link rel="stylesheet" href="_content/Microsoft.FluentUI.AspNetCore.Components/css/reboot.css" />
+    <link rel="stylesheet" href="css/app.css?v=1.07.3" />
+
+    <style>
+        /* 高度用 100%（而非 100vh）：WebView2 下窗口最大化 / 高 DPI 缩放时，
+           100vh 会与 WebView 实际内容高度产生偏差，导致 #app 底部被 overflow:hidden
+           裁掉、内容滚不到底。用 100% 跟随 html/body 的实际高度链更稳。 */
+        html, body { height: 100%; }
+        #app {
+            height: 100%;
+            border-radius: 10px;   /* 与 Win11 DWM 窗口圆角（约8px）匹配 */
+            overflow: hidden;
+            /* 默认深品牌色：保证第一帧不是白闪（启动动画盖在它上面）；
+               主界面皮肤（浅色/暗色）由 .jg-shell 主体自己提供，不依赖 #app 底色 */
+            background: linear-gradient(135deg, #101e16 0%, #0b1510 100%);
+        }
+        /* 最大化时 DWM 圆角消失，CSS 圆角也要同步归零 */
+        body.jg-max #app { border-radius: 0; }
+        @media (prefers-color-scheme: dark) {
+            #app { background: linear-gradient(135deg, #1c1c1e 0%, #202225 100%); }
+        }
+        #blazor-error-ui {
+            position: fixed;
+            left: 16px; right: 16px; bottom: 16px;
+            display: none;
+            padding: 14px 18px;
+            border-radius: 12px;
+            background: #fde7e9;
+            color: #c50f1f;
+            font-size: 13px;
+            z-index: 9999;
+            box-shadow: 0 6px 24px rgba(0,0,0,0.18);
+        }
+        #blazor-error-ui.show { display: block; }
+        #blazor-error-ui a { color: #c50f1f; }
+    </style>
+</head>
+<body>
+    <!-- 最先执行：立即打上 jg-booting，让 .jg-shell 从第一帧就被藏起，避免露出浅色底 -->
+    <script>document.body.classList.add('jg-booting');</script>
+    <!-- Blazor 挂载点：保持为空，Blazor 启动后会把整个应用渲染进这里 -->
+    <div id="app"></div>
+
+    <!-- Blazor 挂载前的兜底覆盖层：透明，不再画 logo。
+         PCL 式 splash 由 WPF SplashWindow.xaml 负责显示；这里只用来防
+         Blazor 挂载瞬间露出 shell。 -->
+    <div id="jg-splash" aria-hidden="true"></div>
+
+    <div id="blazor-error-ui">
+        <span id="err-msg">JuniGrid 启动出错</span> —
+        <a href="" class="reload" onclick="location.reload();return false;">重新加载</a>
+        <a class="dismiss" style="float:right;cursor:pointer"
+           onclick="document.getElementById('blazor-error-ui').classList.remove('show')">🗙</a>
+    </div>
+
+    <script>
+        function showErr(msg) {
+            const el = document.getElementById('blazor-error-ui');
+            if (!el) return;
+            document.getElementById('err-msg').textContent = msg;
+            el.classList.add('show');
+        }
+
+        window.addEventListener('error', e =>
+            showErr('JS 错误: ' + (e.message || '未知') + ' @ ' + (e.filename || '?') + ':' + (e.lineno || '?')));
+        window.addEventListener('unhandledrejection', e =>
+            showErr('Promise 拒绝: ' + (e.reason?.message || e.reason || '未知')));
+
+        setTimeout(() => {
+            // Blazor 挂载成功的标志：.jg-shell 出现在 #app 里
+            if (!document.querySelector('#app .jg-shell')) {
+                showErr('Blazor 启动超时（5s）— 组件树未挂载');
+            }
+        }, 5000);
+    </script>
+
+    <script src="js/vendor/gsap.min.js"></script>
+    <script src="js/vendor/Flip.min.js"></script>
+    <script src="js/vendor/ScrollTrigger.min.js"></script>
+    <script>
+        // v0.25.0：禁用鼠标滚轮缩放页面（Ctrl+滚轮），以及 Ctrl+加号/减号/0
+        window.addEventListener('wheel', function (e) {
+            if (e.ctrlKey) { e.preventDefault(); }
+        }, { passive: false });
+        window.addEventListener('keydown', function (e) {
+            if (e.ctrlKey && (e.key === '+' || e.key === '-' || e.key === '='
+                              || e.key === '0' || e.key === 'Add' || e.key === 'Subtract')) {
+                e.preventDefault();
+            }
+        });
+    </script>
+    <!-- v0.2.2：interop.js 必须排在 blazor.webview.js 之前 —— Blazor 引擎一加载就可能立刻
+         渲染并回调 OnAfterRenderAsync 里的 junigridJs.*。此前引擎在前、两个 gsap CDN 插件
+         夹在中间，CDN 一慢/一挂 junigridJs 就未定义（TitleBar/MainLayout 报
+         "junigridJs was undefined" 未观察异常）。gsap 插件已本地化 + 引擎最后加载，竞态归零。 -->
+    <script src="js/interop.js?v=1.07.3"></script>
+    <script>junigridJs.splashInit();</script>
+    <script src="_framework/blazor.webview.js"></script>
+</body>
+</html>

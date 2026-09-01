@@ -1,0 +1,132 @@
+@namespace JuniGrid.Components.Layout
+@inject IJSRuntime JS
+@implements IAsyncDisposable
+
+<div class="jg-titlebar">
+    <div class="jg-titlebar-drag" @ref="_dragZone">
+        <div class="jg-brand">
+            <img class="jg-logo-img" src="assets/junigrid-logo-64.png" alt="JG" style="width:24px;height:24px;border-radius:6px" />
+            <div class="jg-brand-text">
+                <span class="jg-brand-name">JuniGrid</span>
+            </div>
+        </div>
+    </div>
+
+    <div class="jg-titlebar-actions">
+        <button class="jg-winbtn" @onclick="Minimize" title="最小化">—</button>
+        <button class="jg-winbtn" @onclick="ToggleMax" title="@(_isMax ? "还原" : "最大化")">@(_isMax ? "❐" : "☐")</button>
+        <button class="jg-winbtn jg-winbtn-close" @onclick="Close" title="关闭">✕</button>
+    </div>
+</div>
+
+@code {
+    private ElementReference _dragZone;
+    private DotNetObjectReference<TitleBar>? _selfRef;
+    private bool _isMax;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        _selfRef = DotNetObjectReference.Create(this);
+        // 兜底：万一 junigridJs 还没就绪（脚本加载异常），首渲染的 Task 不能变成未观察异常
+        try { await JS.InvokeVoidAsync("junigridJs.enableWindowDrag", _dragZone, _selfRef); }
+        catch { }
+
+        // 跟踪窗口最大化状态：最大化时按钮图标换成「还原」形状（❐），并给 body
+        // 加 jg-max 类去掉 CSS 圆角（DWM 在最大化时圆角会消失）。
+        var w = GetWindow();
+        if (w is not null)
+        {
+            _isMax = w.WindowState == System.Windows.WindowState.Maximized;
+            w.StateChanged += OnWindowStateChanged;
+            await SyncMaxClass();
+        }
+    }
+
+    private void OnWindowStateChanged(object? sender, EventArgs e)
+    {
+        var w = GetWindow();
+        _isMax = w?.WindowState == System.Windows.WindowState.Maximized;
+        _ = InvokeAsync(async () =>
+        {
+            await SyncMaxClass();
+            StateHasChanged();
+        });
+    }
+
+    private async Task SyncMaxClass()
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("junigridJs.setMaximized", _isMax);
+            await JS.InvokeVoidAsync("junigridJs.restored");   // 从最小化恢复时移除缩小淡出样式
+        }
+        catch { /* JS 还没就绪时忽略 */ }
+    }
+
+    // ---- 拖动窗口（JS mousedown → 这里；必须在左键按住时调用 DragMove）----
+    [JSInvokable]
+    public void BeginDrag()
+    {
+        var w = GetWindow();
+        if (w is null) return;
+        try
+        {
+            if (w.WindowState == System.Windows.WindowState.Maximized)
+                w.WindowState = System.Windows.WindowState.Normal;
+            w.DragMove();
+        }
+        catch (InvalidOperationException)
+        {
+            // 鼠标已松开时 DragMove 会抛这个，正常忽略
+        }
+    }
+
+    [JSInvokable]
+    public void ToggleMaximize() => ToggleMax();
+
+    // ---- 窗口按钮 ----
+    private async Task Minimize()
+    {
+        var w = GetWindow();
+        if (w is null) return;
+        // 无边框窗口最小化：直接用 StaticMethod.ShowWindow(Win32) 强制最小化，
+        // 保证连同 WebView 子窗口一起从屏幕撤出，避免残留透明交互窗
+        // （最小化后原位置桌面点不动）。
+        try
+        {
+            await JS.InvokeVoidAsync("junigridJs.animateMinimize");
+        }
+        catch { }
+        MainWindow.MinimizeWindow();
+    }
+
+    private void ToggleMax()
+    {
+        var w = GetWindow();
+        if (w is null) return;
+        w.WindowState = w.WindowState == System.Windows.WindowState.Maximized
+            ? System.Windows.WindowState.Normal
+            : System.Windows.WindowState.Maximized;
+    }
+
+    private void Close() => GetWindow()?.Close();
+
+    private static System.Windows.Window? GetWindow()
+    {
+        var app = System.Windows.Application.Current;
+        if (app is null) return null;
+        if (app.MainWindow is not null) return app.MainWindow;
+        foreach (System.Windows.Window w in app.Windows)
+            return w;
+        return null;
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        var w = GetWindow();
+        if (w is not null) w.StateChanged -= OnWindowStateChanged;
+        _selfRef?.Dispose();
+        return ValueTask.CompletedTask;
+    }
+}

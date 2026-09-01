@@ -1,0 +1,13 @@
+@namespace JuniGrid.Components
+
+<Router AppAssembly="@typeof(Routes).Assembly">
+    <Found Context="routeData">
+        <RouteView RouteData="@routeData" DefaultLayout="@typeof(MainLayout)" />
+        <FocusOnNavigate RouteData="@routeData" Selector="h1" />
+    </Found>
+    <NotFound>
+        <LayoutView Layout="@typeof(MainLayout)">
+            <p>页面走丢了，Junimo 帮你送回 <a href="/">首页</a>。</p>
+        </LayoutView>
+    </NotFound>
+</Router>

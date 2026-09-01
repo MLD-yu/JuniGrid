@@ -1,0 +1,38 @@
+<Project Sdk="Microsoft.NET.Sdk.Razor">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows10.0.17763.0</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>JuniGrid</RootNamespace>
+    <AssemblyName>JuniGrid</AssemblyName>
+    <ApplicationIcon>Assets\junigrid-logo.ico</ApplicationIcon>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.Components.WebView.Wpf" Version="10.0.*" />
+    <PackageReference Include="Microsoft.FluentUI.AspNetCore.Components" Version="4.*" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.*" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Debug" Version="10.0.*" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Resource Include="Assets\junigrid-logo.ico" />
+    <Resource Include="Assets\junigrid-logo-256.png" />
+  </ItemGroup>
+
+  <!--
+    CRITICAL: Razor SDK auto-includes wwwroot as Content but does NOT copy
+    it to the output dir by default in WPF hybrid projects. We use <Update>
+    (not <Include>) to modify the SDK-provided items instead of duplicating.
+  -->
+  <ItemGroup>
+    <Content Update="wwwroot\**\*.*">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+</Project>
