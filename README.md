@@ -43,6 +43,14 @@ dotnet publish JuniGrid/JuniGrid.csproj -c Release
 
 
 
+## 支持赞助
+
+如果对你有帮助，可以请作者喝杯咖啡吗
+
+<img src="sponsor-cards.png" alt="赞助收款码" width="480" />
+
+**MLD/MLD（\*禺）** ——扫码前请确定收款人信息
+
 ## 许可
 
 保留所有权利。本项目同时作为 Nexus Mods API 团队注册审核的源码材料。

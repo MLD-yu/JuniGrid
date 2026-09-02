@@ -273,10 +273,15 @@
                     </div>
                 </div>
                 <div class="jg-sponsor">
-                    <div class="jg-sponsor-title">支持赞助：</div>
-                    <div class="jg-sponsor-sub">如果对你有帮助，可以请作者喝杯咖啡吗</div>
-                    <img class="jg-sponsor-qr" src="assets/sponsor-cards.png" alt="赞助收款码" />
-                    <div class="jg-sponsor-sub" style="margin-top:8px">MLD/MLD（*禺）——扫码前请确定收款人信息</div>
+                    <div class="jg-sponsor-title">赞助支持：</div>
+                    <div class="jg-sponsor-sub">如果它能帮到你，可以请作者喝杯咖啡</div>
+                    <div class="jg-sponsor-tabs">
+                        <button type="button" class="jg-sponsor-tab @(_sponsorWechat ? "active" : "")" @onclick='() => _sponsorWechat = true'>微信</button>
+                        <button type="button" class="jg-sponsor-tab @(!_sponsorWechat ? "active" : "")" @onclick='() => _sponsorWechat = false'>支付宝</button>
+                    </div>
+                    <img class="jg-sponsor-qr"
+                         src="@(_sponsorWechat ? "assets/sponsor-wechat.jpg" : "assets/sponsor-alipay.jpg")"
+                         alt="@(_sponsorWechat ? "微信赞赏码" : "支付宝收款码")" />
                 </div>
             </div>
         </div>
@@ -320,6 +325,7 @@
     private string _nexusName = "";
     private string? _nexusAvatar;
     private bool   _nexusPremium;
+    private bool   _sponsorWechat = true;
 
     private void NexusLogout()
     {
