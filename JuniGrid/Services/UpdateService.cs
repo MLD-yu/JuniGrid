@@ -407,10 +407,10 @@ public sealed class UpdateService
     /// <summary>流式下载到文件，避免大文件占用内存。
     /// v1.07：断点续传/自动重试统一走 ResumableDownload（掉连接不再从 0 重下）。</summary>
     private static Task DownloadToFileAsync(
-        string url, string dest, IProgress<InstallProgress>? progress)
+        string url, string dest, IProgress<InstallProgress>? progress, CancellationToken ct = default)
     {
         return ResumableDownload.RunAsync(DownloadHttp, url, dest,
-            (msg, pct, spd) => progress?.Report(new InstallProgress(msg, pct, spd)));
+            (msg, pct, spd) => progress?.Report(new InstallProgress(msg, pct, spd)), ct: ct);
     }
 
     /// <summary>把字节数显示成可读的 KB/MB/GB 文本。</summary>

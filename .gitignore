@@ -9,3 +9,13 @@ obj/
 $null
 NVIDIA Corporation/
 *.bak
+
+# installer payload & build output (generated from publish/sc)
+installer/JuniGridInstaller/payload.lz
+installer/JuniGridInstaller/payload.zip
+installer/publish/
+
+# build outputs & local artifacts
+dist-tmp/
+publish/
+.workbuddy/

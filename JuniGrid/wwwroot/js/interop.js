@@ -147,9 +147,11 @@ window.junigridJs = {
         if (!el) return;
         el.addEventListener('mousedown', e => {
             if (e.button !== 0) return;              // left button only
+            if (e.target.closest && e.target.closest('.jg-upd-btn')) return;   // 更新按钮不能顺带拖动窗口
             dotNetRef.invokeMethodAsync('BeginDrag');
         });
-        el.addEventListener('dblclick', () => {
+        el.addEventListener('dblclick', e => {
+            if (e.target.closest && e.target.closest('.jg-upd-btn')) return;
             dotNetRef.invokeMethodAsync('ToggleMaximize');
         });
     }
@@ -171,8 +173,7 @@ window.junigridJs.pixelReveal = function (canvasSel) {
 
     const cell = 14;
     const cols = Math.ceil(w / cell), rows = Math.ceil(h / cell);
-    const dark = matchMedia('(prefers-color-scheme: dark)').matches;
-    const bg = dark ? '#1c1e1c' : '#161616';
+    const bg = '#161616';
 
     // 每个像素的揭示时刻：x 归一化 + 随机抖动 → 0..1 区间
     const reveal = [];
@@ -863,6 +864,43 @@ window.junigridJs.tiltPerspective = function (selector, opts) {
     document.addEventListener('mousedown', hide, true);
 })();
 
+// ------------------ v1.x：设置页「?」帮助问号的 GSAP 弹性 tooltip ------------------
+// hover 弹入（elastic），移开立即消失（不走反向动画）；事件委托，Blazor 重渲染无需重新绑定
+(function () {
+    function bubbleOf(wrap) { return wrap.querySelector('.jg-help-tip-bubble'); }
+    function btnOf(wrap) { return wrap.querySelector('.jg-help-tip-btn'); }
+    function close(wrap) {
+        if (wrap._tipTl) { wrap._tipTl.kill(); wrap._tipTl = null; }
+        var b = bubbleOf(wrap), btn = btnOf(wrap);
+        if (b) gsap.set(b, { autoAlpha: 0, y: 14, scale: 0.4, xPercent: -50 });
+        if (btn) gsap.set(btn, { scale: 1 });
+    }
+    document.addEventListener('mouseover', function (e) {
+        var wrap = e.target.closest ? e.target.closest('.jg-help-tip') : null;
+        if (!wrap) return;
+        var bubble = bubbleOf(wrap), btn = btnOf(wrap);
+        if (!bubble) return;
+        if (wrap._tipTl) wrap._tipTl.kill();
+        wrap._tipTl = gsap.timeline({ paused: true })
+            .to(bubble, {
+                autoAlpha: 1, y: 0, scale: 1, duration: 1,
+                ease: 'elastic.out(1.2, 0.3)'
+            }, 0)
+            .to(btn, {
+                scale: 1.3, duration: 0.8,
+                ease: 'elastic.out(1.2, 0.3)'
+            }, 0);
+        wrap._tipTl.timeScale(1).play();
+    });
+    document.addEventListener('mouseout', function (e) {
+        var wrap = e.target.closest ? e.target.closest('.jg-help-tip') : null;
+        if (!wrap) return;
+        // 仍在问号/气泡内部移动时不关闭
+        if (e.relatedTarget && wrap.contains(e.relatedTarget)) return;
+        close(wrap);   // 要求：移开直接关闭，不要 GSAP 反向动画
+    });
+})();
+
 
 
 // ============ v0.59.0：mod 详情页图片点击放大（含原位置占位符防塌陷）============
@@ -1056,6 +1094,26 @@ window.junigridJs.userTipInit = function (wrapId, bubbleId) {
     });
     document.addEventListener("click", function (e) {
         if (isOpen && !wrap.contains(e.target)) setOpen(false);
+    });
+};
+
+// v1.0.17：标题栏自更新按钮悬浮气泡 —— easeReverse demo 问号气泡同款：
+// elastic 弹入；移开不做反向动画，瞬间归位（约定同 userTipInit 的收回）。
+// 入参接受 ElementReference（元素对象）或 id 字符串。
+window.junigridJs.updTipInit = function (wrap, bubble) {
+    if (typeof wrap === "string") wrap = document.getElementById(wrap);
+    if (typeof bubble === "string") bubble = document.getElementById(bubble);
+    if (!wrap || !bubble || wrap.__updTipBound) return;
+    wrap.__updTipBound = true;
+    if (typeof gsap === "undefined") { wrap.classList.add("jg-upd-tip-nogsap"); return; }
+    // 居中用 xPercent:-50 交给 GSAP 托管 —— CSS translateX(-50%) 会被 GSAP 的 transform 覆盖
+    gsap.set(bubble, { autoAlpha: 0, xPercent: -50, y: -14, scale: 0.4, transformOrigin: "top center" });
+    var tl = gsap.timeline({ paused: true })
+        .to(bubble, { autoAlpha: 1, y: 0, scale: 1, duration: 1.0, ease: "elastic.out(1.2, 0.3)" }, 0);
+    wrap.addEventListener("mouseenter", function () { tl.timeScale(1).play(); });
+    wrap.addEventListener("mouseleave", function () {
+        tl.pause(0);
+        gsap.set(bubble, { autoAlpha: 0, xPercent: -50, y: -14, scale: 0.4 });
     });
 };
 

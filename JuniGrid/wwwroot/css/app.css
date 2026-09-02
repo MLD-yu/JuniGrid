@@ -79,10 +79,6 @@ body.jg-booting #app > * { opacity: 0 !important; visibility: hidden !important;
     overflow: hidden;
     background: linear-gradient(135deg, #f3f6fb 0%, #eef2f8 100%);
 }
-@media (prefers-color-scheme: dark) {
-    .jg-shell { background: linear-gradient(135deg, #1c1c1e 0%, #202225 100%); }
-    body { color: #f2f2f2; }
-}
 
 .jg-body { display: flex; flex: 1; min-height: 0; min-width: 0; overflow: hidden; }
 .jg-content { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; height: 100%; }
@@ -99,15 +95,18 @@ body.jg-booting #app > * { opacity: 0 !important; visibility: hidden !important;
     scrollbar-width: none;              /* Firefox：隐藏滚动条（仍可滚动） */
 }
 .jg-main::-webkit-scrollbar { display: none; }   /* WebKit：隐藏滚动条（仍可滚动） */
-@media (prefers-color-scheme: dark) {
-    .jg-main { background: #1c1e1c; }            /* 深色模式：内容区换深底，与 shell 一致 */
-}
+
 /* 最大化越界裁切已在 WM_GETMINMAXINFO 根治，底部留白只需要一点点 */
 .jg-page { max-width: 1440px; margin: 0 auto; padding-bottom: 16px; }
 .jg-page-wide { max-width: 1680px; margin: 0 auto; padding-bottom: 16px; }
 
 /* -------- Titlebar -------- */
+/* v1.0.17：position+z-index 提升整个标题栏层叠上下文 —— backdrop-filter 会创建
+   独立层叠上下文，SelfUpdateButton 的悬浮气泡若不提升会被后绘制的白色内容区盖住。
+   5000 = 高于内容区内一切元素（批量栏 50、排序下拉 1000），低于全屏遮罩（99990+） */
 .jg-titlebar {
+    position: relative;
+    z-index: 5000;
     height: 40px;
     display: flex;
     align-items: stretch;
@@ -116,9 +115,6 @@ body.jg-booting #app > * { opacity: 0 !important; visibility: hidden !important;
     border-bottom: 1px solid rgba(0,0,0,0.06);
     border-top-left-radius: 10px;
     border-top-right-radius: 10px;
-}
-@media (prefers-color-scheme: dark) {
-    .jg-titlebar { background: rgba(30,30,32,0.7); border-bottom-color: rgba(255,255,255,0.06); }
 }
 
 .jg-titlebar-drag { flex: 1; display: flex; align-items: center; padding: 0 14px; }
@@ -160,9 +156,6 @@ body.jg-max .jg-winbtn-close { border-radius: 0; }
     scrollbar-width: none;                       /* 隐藏侧栏滚动条（仍可滚动） */
 }
 .jg-account::-webkit-scrollbar { display: none; }
-@media (prefers-color-scheme: dark) {
-    .jg-account { background: rgba(30,30,32,0.5); border-right-color: rgba(255,255,255,0.06); }
-}
 
 /* Steam 用户信息垂直居中，启动按钮+版本贴底 */
 .jg-account-mid {
@@ -175,6 +168,20 @@ body.jg-max .jg-winbtn-close { border-radius: 0; }
     margin: auto 0;
 }
 
+/* v1.0.7：侧边栏官方/SMAPI 切换行 —— pills 占满剩余宽度，右侧留给自更新按钮 */
+.jg-mode-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+}
+.jg-mode-row .jg-mode-pills { flex: 1 1 auto; width: auto; }
+.jg-mode-row .jg-upd-btn {
+    flex: 0 0 auto;
+    margin-left: 0;
+    padding: 6px;
+    border-radius: 50%;
+}
 .jg-mode-pills {
     position: relative;              /* 滑块定位锚点 */
     display: flex;
@@ -183,8 +190,7 @@ body.jg-max .jg-winbtn-close { border-radius: 0; }
     width: 100%;
     padding: 4px;
     border-radius: 999px;
-    background: rgba(0, 0, 0, 0.04);   /* 浅色轨道 */
-}
+    background: rgba(0, 0, 0, 0.04);   /* 浅色轨道 */}
 .jg-mode-pills .jg-pill {
     position: relative;
     z-index: 1;
@@ -226,11 +232,6 @@ body.jg-max .jg-winbtn-close { border-radius: 0; }
 .jg-pill:hover { color: rgba(10, 10, 10, 0.85); }
 .jg-pill.active { color: #fff; font-weight: 600; }
 .jg-pill[disabled] { opacity: .5; cursor: not-allowed; }
-@media (prefers-color-scheme: dark) {
-    .jg-mode-pills { background: rgba(255, 255, 255, 0.08); }
-    .jg-pill { color: rgba(255, 255, 255, 0.9); }
-    .jg-pill:hover { color: #fff; }
-}
 
 .jg-avatar-wrap { position: relative; margin-top: 8px; }
 .jg-avatar {
@@ -465,23 +466,11 @@ body.jg-max .jg-winbtn-close { border-radius: 0; }
 }
 .jg-remark-input:focus { border-color: #4c6fce; box-shadow: 0 0 0 3px rgba(76, 111, 206, 0.18); }
 .jg-remark-count { font-size: 11.5px; color: #999; text-align: right; margin: 6px 0 14px; }
-@media (prefers-color-scheme: dark) {
-    .jg-dialog { background: #2a2a2e; border-color: rgba(255,255,255,0.1); }
-    .jg-remark-title { color: #eaeaea; }
-    .jg-remark-mod { color: #9a9a9a; }
-    .jg-remark-input { background: #1f1f22; border-color: rgba(255,255,255,0.14); color: #eaeaea; }
-    .jg-remark-count { color: #7a7a7a; }
-    .jg-dialog-actions .jg-btn { background: #3a3a40; color: #ddd; }
-    .jg-dialog-actions .jg-btn:hover { background: #45454c; }
-}
 
 .jg-version { font-size: 11.5px; opacity: 0.65; text-align: center; }
 .jg-uptodate { color: #107c10; opacity: 1; }
 .jg-updatehint { color: #b4009e; font-weight: 600; opacity: 1; }
-@media (prefers-color-scheme: dark) {
-    .jg-uptodate { color: #6ccb5f; }
-    .jg-updatehint { color: #d478e8; }
-}
+
 .jg-linkbtn {
     background: none;
     border: 0;
@@ -505,11 +494,6 @@ body.jg-max .jg-winbtn-close { border-radius: 0; }
 .jg-panel-msg.ok { background: rgba(16,124,16,0.10); color: #107c10; }
 .jg-panel-msg.err { background: rgba(232,17,35,0.10); color: #c50f1f; }
 .jg-panel-msg.upd { background: rgba(180,0,158,0.10); color: #b4009e; }
-@media (prefers-color-scheme: dark) {
-    .jg-panel-msg.ok { color: #6ccb5f; }
-    .jg-panel-msg.err { color: #f1707b; }
-    .jg-panel-msg.upd { color: #d478e8; }
-}
 
 /* -------- Top nav (horizontal) -------- */
 .jg-topnav {
@@ -524,9 +508,7 @@ body.jg-max .jg-winbtn-close { border-radius: 0; }
     /* 不裁剪：让选中块（.jg-topnav-thumb）向下漏进内容区，与内容同色无缝接通，
        否则会被裁在顶栏底边，勾出一道分界线，看着不像“从内容区自己突出来” */
 }
-@media (prefers-color-scheme: dark) {
-    .jg-topnav { background: rgba(30,30,32,0.45); }
-}
+
 /* 选中高亮滑块：纯色素，向下延伸到内容区（同色无缝打通）；点其他项时左移/宽度由 JS 平移过去 */
 .jg-topnav-thumb {
     position: absolute;
@@ -542,9 +524,7 @@ body.jg-max .jg-winbtn-close { border-radius: 0; }
     transition: left 260ms cubic-bezier(.45,0,.25,1), width 260ms cubic-bezier(.45,0,.25,1);
     will-change: left, width;
 }
-@media (prefers-color-scheme: dark) {
-    .jg-topnav-thumb { background: rgba(255,255,255,0.14); box-shadow: none; }
-}
+
 /* v0.25.0：纯图标顶栏项 —— flex:1 均分 + 悬浮胶囊 tooltip */
 .jg-topnav-item {
     position: relative;
@@ -575,11 +555,92 @@ body.jg-max .jg-winbtn-close { border-radius: 0; }
     background: transparent;
 }
 
-/* 导航项 tooltip 由通用 JS 白色跟随胶囊接管（.jg-close-tip），此处不再用 ::after */
-@media (prefers-color-scheme: dark) {
-    .jg-topnav-item:hover { background: rgba(255,255,255,0.08); }
-    .jg-topnav-item.active { background: transparent; }
+/* v1.0.2：标题栏自更新按钮 —— 无更新时完全不渲染 */
+.jg-upd-btn {
+    display: inline-flex; align-items: center; gap: 4px;
+    background: transparent; border: 0; cursor: pointer;
+    color: #19943C;  /* logo 绿 */
+    margin-left: 8px; padding: 3px; border-radius: 6px; line-height: 0;
 }
+.jg-upd-btn:hover { color: #21B04A; background: rgba(25, 148, 60, 0.12); }
+.jg-upd-btn:disabled { cursor: default; }
+.jg-upd-btn svg { fill: currentColor; }
+.jg-upd-pct { font-size: 11px; font-weight: 600; line-height: 1; color: inherit; }
+
+/* 圆环更新按钮：环、绿盘、箭头在同一个 SVG 里（无 CSS 对齐问题）。
+   26x26 单体图标；环轨道淡绿，填充弧从 12 点方向顺时针闭合 = 下载完成。 */
+.jg-upd-btn { display: inline-flex; align-items: center; line-height: 0; }
+.jg-upd-btn svg { fill: none; }
+.jg-upd-ring-track { fill: none; stroke: currentColor; opacity: 0.2; stroke-width: 2.2; }
+.jg-upd-ring-fill {
+    fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round;
+    transform: rotate(-90deg); transform-origin: 50% 50%;
+    transition: stroke-dashoffset 0.3s ease;
+}
+.jg-upd-icon circle { fill: currentColor; }
+.jg-upd-icon path { fill: #fff; }
+.jg-upd-running .jg-upd-ring-track { opacity: 0.12; }
+
+/* v1.0.17：更新按钮悬浮提示气泡 —— 奶油底 rgb(253,251,219)，GSAP elastic 弹入、
+   移开瞬间消失（动画与显隐由 interop.js updTipInit 接管，默认 hidden） */
+.jg-upd-wrap {
+    position: relative;
+    display: inline-flex;
+    margin-left: 8px;
+}
+.jg-upd-wrap .jg-upd-btn { margin-left: 0; }   /* 外边距挪到 wrap，气泡以按钮为锚居中 */
+.jg-upd-tip {
+    position: absolute;
+    top: calc(100% + 10px);
+    left: 50%;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: rgb(253, 251, 219);
+    color: #0e100f;
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1;
+    padding: 8px 12px;
+    border-radius: 6px;
+    white-space: nowrap;
+    pointer-events: none;
+    visibility: hidden;
+    opacity: 0;
+    z-index: 9999;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.16);
+    will-change: transform;
+}
+.jg-upd-tip::after {   /* 指向按钮的向上小箭头 */
+    content: "";
+    position: absolute;
+    bottom: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    border: 6px solid transparent;
+    border-bottom-color: rgb(253, 251, 219);
+}
+/* gsap 未就绪时的兜底：纯 CSS 悬停直显（无动画） */
+.jg-upd-tip-nogsap .jg-upd-tip {
+    visibility: visible;
+    opacity: 1;
+    transform: translateX(-50%);
+}
+.jg-upd-tip-nogsap:hover .jg-upd-tip { visibility: visible; opacity: 1; }
+/* 下载中：转圈圆 */
+.jg-upd-tip-spin {
+    width: 12px;
+    height: 12px;
+    flex: none;
+    border: 2px solid rgba(14, 16, 15, 0.2);
+    border-top-color: #19943C;
+    border-radius: 50%;
+    animation: jg-upd-spin 0.8s linear infinite;
+}
+@keyframes jg-upd-spin { to { transform: rotate(360deg); } }
+
+
+/* 导航项 tooltip 由通用 JS 白色跟随胶囊接管（.jg-close-tip），此处不再用 ::after */
 
 /* -------- Hero + cards -------- */
 .jg-hero {
@@ -603,9 +664,7 @@ body.jg-max .jg-winbtn-close { border-radius: 0; }
     background: var(--neutral-layer-1, #ffffff);
     border: 1px solid rgba(0,0,0,0.06);
 }
-@media (prefers-color-scheme: dark) {
-    .jg-card { background: rgba(255,255,255,0.04); border-color: rgba(255,255,255,0.06); }
-}
+
 .jg-grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
 .jg-grid-4 {
     display: grid;
@@ -686,12 +745,7 @@ body.jg-max .jg-winbtn-close { border-radius: 0; }
 }
 .jg-cmdsend:hover:not(:disabled) { background: #000; transform: translateY(-1px); }
 .jg-cmdsend:disabled { opacity: .45; cursor: not-allowed; }
-@media (prefers-color-scheme: dark) {
-    .jg-loginput { border-top-color: rgba(255,255,255,0.06); }
-    .jg-cmdcaps { border-color: rgba(255,255,255,0.16); background: rgba(255,255,255,0.05); }
-    .jg-cmdcaps:focus-within { border-color: #eaeaea; box-shadow: 0 0 0 1px rgba(234,234,234,0.25); }
-    .jg-cmdsend { background: #0a0a0a; border: 1px solid rgba(255,255,255,0.24); }
-}
+
 /* 日志框底部状态条（行数统计） */
 .jg-logfooter {
     padding: 6px 12px;
@@ -699,12 +753,6 @@ body.jg-max .jg-winbtn-close { border-radius: 0; }
     opacity: .65;
     border-top: 1px solid rgba(0,0,0,0.06);
     border-radius: 0 0 8px 8px;
-}
-@media (prefers-color-scheme: dark) {
-    .jg-logfooter { border-top-color: rgba(255,255,255,0.06); }
-}
-@media (prefers-color-scheme: dark) {
-    .jg-logtail, .jg-logview { background: rgba(0,0,0,0.3); }
 }
 
 .jg-logline { white-space: pre-wrap; word-break: break-all; }
@@ -722,14 +770,6 @@ body.jg-max .jg-winbtn-close { border-radius: 0; }
 .jg-logline.info  { color: #1a1a1a; }
 .jg-logline.trace { color: #8a8a8a; }
 .jg-logline.sys   { color: #107c10; }
-@media (prefers-color-scheme: dark) {
-    .jg-logline.err   { color: #f1707b; }
-    .jg-logline.upd   { color: #d478e8; }
-    .jg-logline.warn  { color: #e5a00d; }
-    .jg-logline.info  { color: #e5e5e5; }
-    .jg-logline.trace { color: #9a9a9a; }
-    .jg-logline.sys   { color: #6ccb5f; }
-}
 
 /* v1.07.0：日志页右侧分类图例已删（错误/诊断/可更新/信息/警告） */
 
@@ -781,10 +821,7 @@ body.jg-max .jg-winbtn-close { border-radius: 0; }
 }
 .jg-update-link:hover { background: rgba(194,57,179,0.16); }
 .jg-update-link[disabled] { opacity: .55; cursor: not-allowed; }
-@media (prefers-color-scheme: dark) {
-    .jg-update-link { color: #d478e8; border-color: #a0509e; background: rgba(194,57,179,0.12); }
-    .jg-update-link:hover { background: rgba(194,57,179,0.22); }
-}
+
 .jg-mod-updmsg { font-size: 11.5px; margin-top: 6px; }
 .jg-mod-updmsg.checking  { color: #1a1a1a; }
 .jg-mod-updmsg.updating  { color: #1a1a1a; }
@@ -792,13 +829,6 @@ body.jg-max .jg-winbtn-close { border-radius: 0; }
 .jg-mod-updmsg.available { color: #b4009e; }
 .jg-mod-updmsg.failed    { color: #e81123; }
 .jg-mod-updmsg.premium   { color: #d97b00; }
-@media (prefers-color-scheme: dark) {
-    .jg-mod-updmsg.checking, .jg-mod-updmsg.updating { color: #e5e5e5; }
-    .jg-mod-updmsg.updated   { color: #6ccb5f; }
-    .jg-mod-updmsg.available { color: #d478e8; }
-    .jg-mod-updmsg.failed    { color: #f1707b; }
-    .jg-mod-updmsg.premium   { color: #e5a00d; }
-}
 
 /* -------- Mod action buttons + chips (browse tabs) -------- */
 .jg-mod-actions { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
@@ -823,11 +853,6 @@ body.jg-max .jg-winbtn-close { border-radius: 0; }
 }
 .jg-mini-btn.danger-outline { color: #c50f1f; border-color: rgba(232,17,35,0.4); }
 .jg-mini-btn.danger-outline:hover { background: rgba(232,17,35,0.08); }
-@media (prefers-color-scheme: dark) {
-    .jg-mini-btn { border-color: rgba(255,255,255,0.16); }
-    .jg-mini-btn:hover { background: rgba(255,255,255,0.07); }
-    .jg-mini-btn.danger-outline { color: #f1707b; border-color: rgba(241,112,123,0.4); }
-}
 
 .jg-chips { display: flex; gap: 8px; flex-wrap: wrap; }
 .jg-chip {
@@ -844,10 +869,6 @@ body.jg-max .jg-winbtn-close { border-radius: 0; }
 .jg-chip:hover { background: rgba(0,0,0,0.04); }
 .jg-chip.active { background: #1a1a1a; color: #fff; border-color: #1a1a1a; }
 .jg-chip[disabled] { opacity: .5; cursor: not-allowed; }
-@media (prefers-color-scheme: dark) {
-    .jg-chip { border-color: rgba(255,255,255,0.14); }
-    .jg-chip:hover { background: rgba(255,255,255,0.06); }
-}
 
 /* -------- Mod covers + in-app detail page -------- */
 .jg-mod-cover-sm {
@@ -915,10 +936,6 @@ body.jg-max .jg-winbtn-close { border-radius: 0; }
 .jg-gallery-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .jg-gallery-thumb.active { border-color: #1a1a1a; }
 .jg-gallery-thumb:hover:not(.active) { border-color: rgba(15,127,255,0.5); }
-@media (prefers-color-scheme: dark) {
-    .jg-gallery-nav { background: rgba(40,40,42,0.9); border-color: rgba(255,255,255,0.15); color: #e5e5e5; }
-    .jg-gallery-thumbs { background: rgba(255,255,255,0.03); }
-}
 
 .jg-modlink {
     color: inherit;
@@ -928,9 +945,7 @@ body.jg-max .jg-winbtn-close { border-radius: 0; }
     cursor: pointer;
 }
 .jg-modlink:hover { color: #1a1a1a; text-decoration: underline; }
-@media (prefers-color-scheme: dark) {
-    .jg-modlink:hover { color: #e5e5e5; }
-}
+
 .jg-moddetail-desc {
     font-size: 13px;
     line-height: 1.7;
@@ -980,9 +995,7 @@ body.jg-max .jg-winbtn-close { border-radius: 0; }
     border: 1px solid rgba(0,0,0,0.08);
     transition: transform 140ms ease, box-shadow 140ms ease, border-color 140ms ease;
 }
-@media (prefers-color-scheme: dark) {
-    .jg-browsecard { background: rgba(255,255,255,0.05); border-color: rgba(255,255,255,0.08); }
-}
+
 .jg-browsecard:hover {
     transform: translateY(-2px);
     box-shadow: 0 8px 24px rgba(0,0,0,0.14);
@@ -1018,10 +1031,7 @@ body.jg-max .jg-winbtn-close { border-radius: 0; }
     opacity: 1;
 }
 .jg-browsecard-install.installed:hover { background: rgba(0,0,0,0.05); }
-@media (prefers-color-scheme: dark) {
-    .jg-browsecard-install.installed { background: rgba(255,255,255,0.06); border-color: rgba(255,255,255,0.10); color: #9aa0a6; }
-    .jg-browsecard-install.installed:hover { background: rgba(255,255,255,0.06); }
-}
+
 @media (max-width: 640px) {
     .jg-browsegrid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
 }
@@ -1039,16 +1049,12 @@ body.jg-max .jg-winbtn-close { border-radius: 0; }
     cursor: pointer;
     transition: background 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
 }
-@media (prefers-color-scheme: dark) {
-    .jg-modrow { background: rgba(255,255,255,0.04); border-color: rgba(255,255,255,0.06); }
-}
+
 .jg-modrow:hover {
     background: rgba(0,0,0,0.05);
     border-color: rgba(0,0,0,0.12);
 }
-@media (prefers-color-scheme: dark) {
-    .jg-modrow:hover { background: rgba(255,255,255,0.06); border-color: rgba(255,255,255,0.10); }
-}
+
 .jg-modrow.selected {
     background: rgba(0,0,0,0.07);
     border-color: rgba(0,0,0,0.32);
@@ -1092,10 +1098,7 @@ body.jg-max .jg-winbtn-close { border-radius: 0; }
     opacity: 0.75;
     flex-shrink: 0;
 }
-@media (prefers-color-scheme: dark) {
-    .jg-tag { background: rgba(255,255,255,0.08); }
-    .jg-modrow-title .upd { color: #d478e8; }
-}
+
 .jg-modrow-desc {
     font-size: 12px;
     opacity: 0.6;
@@ -1142,10 +1145,6 @@ body.jg-max .jg-winbtn-close { border-radius: 0; }
     font-size: 11.5px;
     font-weight: 600;
 }
-@media (prefers-color-scheme: dark) {
-    .jg-rowbtn { color: #e5e5e5; border-color: rgba(121,184,255,0.35); }
-    .jg-rowbtn.danger { color: #f1707b; border-color: rgba(241,112,123,0.35); }
-}
 
 /* 批量操作悬浮条（跟着内容区走，居中于 mod 列表；left:20% ≈ 左侧账户栏宽度） */
 .jg-batchbar-anchor {
@@ -1175,31 +1174,18 @@ body.jg-max .jg-batchbar-anchor { bottom: 28px; }
     max-width: calc(100% - 32px);
     flex-wrap: wrap;
 }
-@media (prefers-color-scheme: dark) {
-    .jg-batchbar {
-        background: rgba(36,36,38,0.92);
-        border-color: rgba(255,255,255,0.10);
-        box-shadow: 0 8px 30px rgba(0,0,0,0.45);
-    }
-}
 
 /* 去更新按钮（紫色，跟 SMAPI 更新同色） */
 .jg-rowbtn.upd { color: #b4009e; border-color: rgba(194,57,179,0.4); }
 .jg-rowbtn.upd:hover { background: rgba(194,57,179,0.12); }
-@media (prefers-color-scheme: dark) {
-    .jg-rowbtn.upd { color: #d478e8; border-color: rgba(212,120,232,0.4); }
-}
+
 /* 已是最新版本：更新按钮变灰 */
 .jg-rowbtn.latest { color: #b0b6bc; border-color: rgba(0,0,0,0.12); cursor: default; }
 .jg-rowbtn.latest:hover { background: transparent; }
-@media (prefers-color-scheme: dark) {
-    .jg-rowbtn.latest { color: #6d7378; border-color: rgba(255,255,255,0.14); }
-}
 
 /* ---- 最小化的缩小淡出过渡（接近原生窗口观感）---- */
 #app { transition: transform .18s ease, opacity .18s ease; }
 body.jg-minimizing #app { transform: scale(0.96); opacity: 0; }
-
 
 /* 下载任务悬浮小图标（右下角） —— absolute 挂在 .jg-shell 里
    原因：WPF 无边框最大化会把窗口伸出工作区约 8px，fixed 相对视口定位会跟着伸，
@@ -1258,10 +1244,6 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
     border-radius: 999px; padding: 7px 16px; font-size: 13px; cursor: pointer;
 }
 .jg-tfilter.active { background: #141414; color: #fff; border-color: #141414; }
-@media (prefers-color-scheme: dark) {
-    .jg-tfilter { background: rgba(255,255,255,0.06); border-color: rgba(255,255,255,0.14); color: #ddd; }
-    .jg-tfilter.active { background: #f2f2f2; color: #111; border-color: #f2f2f2; }
-}
 
 /* v0.2.2：任务页「任务类型」下拉胶囊 —— 本体点击=回「全部」，只有小箭头才弹菜单 */
 .jg-tf-kind {
@@ -1289,15 +1271,6 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
 .jg-tf-kind.active .jg-tf-caret { border-left-color: rgba(255,255,255,0.3); }
 .jg-tf-caret:hover { background: rgba(0,0,0,0.08); }
 .jg-tf-kind.active .jg-tf-caret:hover { background: rgba(255,255,255,0.2); }
-@media (prefers-color-scheme: dark) {
-    .jg-tf-kind { background: rgba(255,255,255,0.06); border-color: rgba(255,255,255,0.14); color: #ddd; }
-    .jg-tf-kind.active { background: #f2f2f2; color: #111; border-color: #f2f2f2; }
-    .jg-tf-kind .jg-sort-menu { color: #ddd; }
-    .jg-tf-caret { border-left-color: rgba(255,255,255,0.18); }
-    .jg-tf-kind.active .jg-tf-caret { border-left-color: rgba(0,0,0,0.22); }
-    .jg-tf-caret:hover { background: rgba(255,255,255,0.1); }
-    .jg-tf-kind.active .jg-tf-caret:hover { background: rgba(0,0,0,0.12); }
-}
 
 /* ─── v1.06.6：下载信息下拉（GSAP easeReverse 弹性展开）─── */
 .jg-taskdrop-trigger {
@@ -1318,12 +1291,6 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
     border-bottom: 1px solid rgba(0,0,0,0.05); word-break: break-word;
 }
 .jg-taskdrop-item:last-child { border-bottom: none; }
-@media (prefers-color-scheme: dark) {
-    .jg-taskdrop-trigger { color: #aaa; }
-    .jg-taskdrop-trigger:hover { background: rgba(255,255,255,0.08); }
-    .jg-taskdrop-menu { background: rgba(30,30,32,0.92); border-color: rgba(255,255,255,0.12); }
-    .jg-taskdrop-item { color: #ccc; border-bottom-color: rgba(255,255,255,0.06); }
-}
 
 /* ─── v1.06.6：下载页灰底改回白色；黑圆返回改透明底黑箭头；清理全部胶囊 ─── */
 .jg-tasks-back {
@@ -1334,10 +1301,7 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
     transition: background .15s;
 }
 .jg-tasks-back:hover { background: rgba(0,0,0,0.05); }
-@media (prefers-color-scheme: dark) {
-    .jg-tasks-back { color: #e5e5e5; }
-    .jg-tasks-back:hover { background: rgba(255,255,255,0.08); }
-}
+
 .jg-tasks-clear {
     border: none; cursor: pointer;
     background: #141414; color: #fff;
@@ -1356,10 +1320,7 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
     transition: transform .15s, background .15s;
 }
 .jg-tasks-cancel:hover { background: rgba(0,0,0,0.06); transform: scale(1.04); }
-@media (prefers-color-scheme: dark) {
-    .jg-tasks-cancel { border-color: rgba(255,255,255,0.22); }
-    .jg-tasks-cancel:hover { background: rgba(255,255,255,0.08); }
-}
+
 .jg-tasks-confirm-mask {
     position: fixed; inset: 0; z-index: 999990;
     background: rgba(0,0,0,0.35);
@@ -1371,13 +1332,9 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
     width: min(360px, 86vw);
     box-shadow: 0 18px 48px rgba(0,0,0,0.3);
 }
-@media (prefers-color-scheme: dark) {
-    .jg-tasks-confirm { background: #2a2a2e; color: #eee; }
-}
 
 /* ─── v1.06.4：任务卡片的 PCL2 风格步骤列表（✓ 完成 / 蓝色% 当前 / ✕ 失败）─── */
 /* v1.06.6：合并进上方的黑色版本（图二图三的蓝色全部改黑），此处不再重复定义 */
-
 
 /* Mod 行 —— 版本号后的紫色新版本小标签（极简提示） */
 .jg-newver {
@@ -1386,7 +1343,6 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
     color:#b4009e; background:rgba(180,0,158,0.08);
     border:1px solid rgba(180,0,158,0.25); border-radius:10px;
 }
-
 
 /* 有活跃任务时给右下角胶囊让出 96px */
 /* 启动按钮：hover 像素溶解的第二态“点击启动！”白底黑字蒙版 */
@@ -1482,7 +1438,6 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
     from { opacity: 0; transform: translateY(10px); }
     to   { opacity: 1; transform: translateY(0); }
 }
-
 
 /* ── v0.32.0：Mod 管理工具条（chips + 排序下拉 + 展开式搜索） ── */
 .jg-mods-toolbar {
@@ -1637,19 +1592,6 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
 }
 .jg-search-clear:hover { opacity: 1; background: rgba(0,0,0,0.06); }
 
-@media (prefers-color-scheme: dark) {
-    .jg-sort-trigger { background: rgba(30,30,32,0.55); border-color: rgba(255,255,255,0.16); }
-    .jg-sort-trigger:hover { background: rgba(255,255,255,0.07); }
-    .jg-sort-menu { background: rgba(30,30,32,0.94); border-color: rgba(255,255,255,0.12); box-shadow: 0 12px 32px rgba(0,0,0,0.45); }
-    /* v1.07.0：Nexus 页视觉内层的暗色皮肤（与上一行 .jg-sort-menu 保持一致） */
-    .jg-nexus-scope .jg-sort-menu-in { background: rgba(30,30,32,0.94); border-color: rgba(255,255,255,0.12); box-shadow: 0 12px 32px rgba(0,0,0,0.45); }
-    .jg-sort-item:hover { background: rgba(255,255,255,0.10); }
-    .jg-sort-item.active { background: rgba(255,255,255,0.14); color: #e5e5e5; }
-    .jg-search-x { background: rgba(30,30,32,0.55); border-color: rgba(255,255,255,0.16); }
-    .jg-search-clear:hover { background: rgba(255,255,255,0.08); }
-}
-
-
 /* ── v0.36.0：AnimatedList 顶/底渐变遮罩 ── */
 .jg-al-gradient {
     position: sticky;
@@ -1688,15 +1630,6 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
     bottom: 0;
     background: linear-gradient(to top, #ffffff, rgba(255,255,255,0));
 }
-@media (prefers-color-scheme: dark) {
-    .jg-al-gradient-top::before {
-        background: linear-gradient(to bottom, #1c1e1c, rgba(28,30,28,0));
-    }
-    .jg-al-gradient-bottom::before {
-        background: linear-gradient(to top, #1c1e1c, rgba(28,30,28,0));
-    }
-}
-
 
 /* ── v0.39.0：Nexus 登录流程（顶级界面设计：黑白为主、胶囊、柔和阴影、入场动效） ── */
 .jg-login-btn {
@@ -1845,22 +1778,6 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
     to   { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
 }
 
-@media (prefers-color-scheme: dark) {
-    .jg-login-card { background: rgba(28,30,28,0.97); border-color: rgba(255,255,255,0.09); }
-    .jg-login-option { background: rgba(255,255,255,0.04); border-color: rgba(255,255,255,0.12); }
-    .jg-login-option:hover { border-color: rgba(255,255,255,0.6); }
-    .jg-login-option-disabled:hover { border-color: rgba(255,255,255,0.12); }
-    .jg-login-option-icon { background: rgba(255,255,255,0.08); color: #e5e5e5; }
-    .jg-login-input { background: rgba(255,255,255,0.05); border-color: rgba(255,255,255,0.16); color: #eee; }
-    .jg-login-input:focus { border-color: #e5e5e5; box-shadow: 0 0 0 3px rgba(255,255,255,0.10); }
-    .jg-login-get { background: rgba(255,255,255,0.05); border-color: rgba(255,255,255,0.16); color: #eee; }
-    .jg-login-get:hover { border-color: rgba(255,255,255,0.55); }
-    .jg-login-confirm { background: linear-gradient(135deg, #f0f0f0, #d8d8d8); color: #161616; }
-    .jg-login-btn { background: linear-gradient(135deg, #f0f0f0, #d8d8d8); color: #161616; }
-    .jg-login-spinner.large { border-color: rgba(255,255,255,0.18); border-top-color: #e5e5e5; }
-}
-
-
 /* ── v0.41.0：批量栏图标按钮（SVG 透明底 #3d3d3d） ── */
 .jg-icon-btn {
     display: inline-flex;
@@ -1887,16 +1804,6 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
 .jg-rowbtn.upd svg { color: #b4009e; }
 .jg-rowbtn.danger svg { color: #c50f1f; }
 
-@media (prefers-color-scheme: dark) {
-    .jg-icon-btn svg { color: #d4d4d4; }
-    .jg-icon-btn[disabled] svg { color: #6a6a6a; }
-    .jg-icon-btn.danger-outline svg { color: #f1707b; }
-    .jg-rowbtn svg { color: #d4d4d4; }
-    .jg-rowbtn.upd svg { color: #d478e8; }
-    .jg-rowbtn.danger svg { color: #f1707b; }
-}
-
-
 /* -- v0.42.0：批量栏/行内纯图标按钮 + 胶囊提示（data-tip）+ 计数单行 -- */
 .jg-batchbar-count { font-weight: 600; white-space: nowrap; }
 .jg-ico { position: relative; padding: 6px 10px; }
@@ -1907,13 +1814,6 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
 /* 行内按钮图标同样随窗口放缩 */
 .jg-rowbtn-icon { width: clamp(15px, 1.4vw, 19px); height: clamp(15px, 1.4vw, 19px); object-fit: contain; }
 /* 胶囊提示 —— 批量栏按钮与行操作按钮共用同一套样式 */
-
-@media (prefers-color-scheme: dark) {
-    .jg-ico img { filter: invert(0.85); opacity: .8; }
-    .jg-ico svg { color: #d4d4d4; }
-    .jg-ico[disabled] svg { color: #6a6a6a; }
-}
-
 
 /* -- v0.43.1：全局 toast（黑底白字默认 / 红底白字报错）-- */
 .jg-toast-live {
@@ -1927,7 +1827,6 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
 }
 .jg-toast-live.err { background: rgba(198,15,31,0.96); color: #fff; }
 
-
 /* -- v0.45.0：mod 分类标签（仿 PCL2，简介前的小胶囊）-- */
 .jg-cat {
     display: inline-block; padding: 1px 8px; margin-right: 6px;
@@ -1935,10 +1834,6 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
     font-size: 11px; font-weight: 600; line-height: 1.5;
     vertical-align: 1px; white-space: nowrap;
 }
-@media (prefers-color-scheme: dark) {
-    .jg-cat { background: rgba(255,255,255,0.12); color: #bbb; }
-}
-
 
 /* -- v0.46.0：存档（Profile）下拉 + 删除确认对话框 -- */
 .jg-profile-dd { position: relative; display: inline-block; }
@@ -1980,18 +1875,6 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
 .jg-modal-title { font-size: 16px; font-weight: 700; color: #1a1a1a; margin-bottom: 10px; }
 .jg-modal-body { font-size: 13.5px; color: #444; line-height: 1.65; margin-bottom: 18px; }
 .jg-modal-actions { display: flex; justify-content: flex-end; gap: 10px; }
-
-@media (prefers-color-scheme: dark) {
-    .jg-profile-item.active { background: rgba(255,255,255,0.14); }
-    .jg-profile-name { color: #e0e0e0; }
-    .jg-profile-name:hover { background: rgba(255,255,255,0.10); }
-    .jg-profile-add { color: #aaa; }
-    .jg-profile-input { background: #2a2a2c; border-color: rgba(255,255,255,0.22); color: #e5e5e5; }
-    .jg-modal { background: #232325; }
-    .jg-modal-title { color: #eaeaea; }
-    .jg-modal-body { color: #bbb; }
-}
-
 
 /* -- v0.47.0：存档下拉动画配套 + 虚线添加胶囊 + 问号帮助按钮 -- */
 .jg-profile-menu {
@@ -2057,14 +1940,6 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
     border: 6px solid transparent; border-top-color: rgba(22,22,22,0.94);
 }
 
-@media (prefers-color-scheme: dark) {
-    .jg-profile-addcap { border-color: rgba(255,255,255,0.3); color: #aaa; }
-    .jg-profile-addcap:hover { background: rgba(255,255,255,0.07); border-color: rgba(255,255,255,0.55); color: #e5e5e5; }
-    .jg-help-btn { border-color: rgba(255,255,255,0.25); color: #999; }
-    .jg-help-btn:hover { border-color: rgba(255,255,255,0.55); color: #eaeaea; background: rgba(255,255,255,0.06); }
-}
-
-
 /* -- v0.48.0 -- */
 /* 存档下拉菜单与触发按钮右对齐（修溢出显示不全） */
 .jg-profile-menu { left: auto; right: 0; transform: none; }
@@ -2096,12 +1971,6 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
     opacity: 0; visibility: hidden;
     transition: opacity 120ms ease 120ms;
 }
-@media (prefers-color-scheme: dark) {
-    .jg-help-bubble { background: rgba(40,40,42,0.98); color: #eaeaea; border-color: rgba(255,255,255,0.14); }
-    .jg-help-bubble::after { border-bottom-color: rgba(40,40,42,0.98); }
-    .jg-cursor-tip { background: rgba(42,42,44,0.97); color: #eaeaea; border-color: rgba(255,255,255,0.12); }
-}
-
 
 /* -- v0.49.0：存档项 hover/active 复用排序菜单样式 -- */
 .jg-profile-menu .jg-profile-item {
@@ -2116,23 +1985,10 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
 .jg-profile-menu .jg-profile-item .jg-profile-name { background: none !important; }
 .jg-profile-menu .jg-profile-item.active .jg-profile-name { font-weight: 600; color: #1a1a1a; }
 
-@media (prefers-color-scheme: dark) {
-    .jg-profile-menu .jg-profile-item:hover:not(.active) { background: rgba(255,255,255,0.10) !important; }
-    .jg-profile-menu .jg-profile-item.active,
-    .jg-profile-menu .jg-profile-item.active:hover { background: rgba(255,255,255,0.14) !important; }
-    .jg-profile-menu .jg-profile-item.active .jg-profile-name { color: #e5e5e5; }
-}
-
-
 /* -- v0.50.0：批量栏确认删除的外部取消遮罩 -- */
 .jg-batchbar { position: relative; z-index: 9501; }
 
-
-
 /* ============ v0.53.0：启动页折叠 + 详情页 Download-4 + Shimmer + ScrollStack + Flip ============ */
-
-
-
 
 /* 返回按钮：透明底 + SVG */
 .jg-detail-back {
@@ -2455,35 +2311,7 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
     cursor: pointer;
 }
 
-@media (prefers-color-scheme: dark) {
-    .jg-account-hider { background: #26262a; border-color: rgba(255, 255, 255, 0.12); color: #e5e5e5; }
-    .jg-account-hider:hover { background: #34343a; }
-    .jg-detail-back:hover { background: rgba(255, 255, 255, 0.08); }
-    .jg-detail-back svg { stroke: #e5e5e5 !important; }
-    .jg-shimmer { background: linear-gradient(90deg, rgba(255,255,255,0.05) 0%, rgba(255,255,255,0.12) 40%, rgba(255,255,255,0.05) 80%); background-size: 600px 100%; }
-    .jg-detail-section { background: #1e1e20; border-color: rgba(255,255,255,0.08); box-shadow: 0 4px 24px rgba(0,0,0,0.4); }
-    .jg-detail-section-title { color: #f0f0f0; }
-    .jg-flip-box { border-color: rgba(255,255,255,0.15); }
-}
-
 /* v0.55.0：深色模式下 hero 依然深底 */
-@media (prefers-color-scheme: dark) {
-    .jg-dl4-hero {
-        background: #1e1e20;
-        color: #f0f0f0;
-        border-color: rgba(255, 255, 255, 0.08);
-        box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
-    }
-    .jg-dl4-title { color: #f6f6f6; }
-    .jg-dl4-sub { color: #c8c8c8; }
-    .jg-dl4-meta { color: #b0b0b0; }
-    .jg-dl4-meta-item b { color: #f6f6f6; }
-    .jg-dl4-ghost { color: #f6f6f6; border-color: rgba(255, 255, 255, 0.18); }
-    .jg-dl4-ghost:hover { background: rgba(255, 255, 255, 0.08); border-color: rgba(255, 255, 255, 0.32); }
-    .jg-dl4-msg { background: rgba(255, 255, 255, 0.06); color: #dcdcdc; }
-    .jg-shimmer-hero { background: #1e1e20; color: #f0f0f0; }
-}
-
 
 /* ============ v0.56.0：Edge 翻译器 + 详情图 + 封面放大 ============ */
 
@@ -2512,17 +2340,6 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
 }
 
 /* Flip modal 里的图片完整显示 */
-
-@media (prefers-color-scheme: dark) {
-    .jg-meta-ico { stroke: #c8c8c8; }
-    .jg-dl4-cta { background: #f0f0f0; color: #1a1a1a; }
-    .jg-dl4-cta:hover:not(.disabled):not(:disabled) { background: #fff; }
-    .jg-dl4-cta.disabled, .jg-dl4-cta:disabled { background: rgba(255,255,255,0.12); color: rgba(255,255,255,0.45); }
-    .jg-moddetail-desc img.jg-desc-img:hover {
-        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
-    }
-}
-
 
 /* ============ v0.59.0：mod 列表 shimmer 骨架 + 图片放大占位符 + 页面切换轻量化 ============ */
 
@@ -2566,19 +2383,12 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
     flex: none;
 }
 
-@media (prefers-color-scheme: dark) {
-    .jg-modrow-shimmer { background: #1e1e20; border-color: rgba(255, 255, 255, 0.08); }
-}
-
 /* 图片放大占位符 */
 .jg-zoom-placeholder {
     background: rgba(0, 0, 0, 0.04);
     border-radius: 10px;
     border: 1px dashed rgba(0, 0, 0, 0.08);
     box-sizing: border-box;
-}
-@media (prefers-color-scheme: dark) {
-    .jg-zoom-placeholder { background: rgba(255, 255, 255, 0.04); border-color: rgba(255, 255, 255, 0.08); }
 }
 
 /* 页面切换过渡轻量化：把 v0.31.0 的每子项动画简化成整块淡入，减少重排卡顿 */
@@ -2600,7 +2410,6 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
     font-size: 11px; font-weight: 700; letter-spacing: .02em;
     line-height: 1.55; white-space: nowrap;
 }
-
 
 /* ===== v0.69.0：详情页新增模块 ===== */
 /* 标题旁的「关于」问号（仿 GSAP easeReverse demo 的粉色渐变圆） */
@@ -2694,7 +2503,6 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
 .jg-file-desc { font-size: 12.5px; color: #555; line-height: 1.6; margin-top: 8px; }
 .jg-file-btns { display: flex; gap: 8px; margin-top: 10px; }
 
-
 /* ===== v0.69.1：文件页签行式列表（官网式）===== */
 .jg-frow { border: 1px solid rgba(0,0,0,.09); border-radius: 10px; margin-bottom: 6px; background: #fff; overflow: hidden; }
 .jg-frow-head {
@@ -2715,7 +2523,6 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
 .jg-about-acc { background: #fff; border: 1px solid rgba(0,0,0,.07); border-radius: 14px; padding: 2px 14px; }
 .jg-dl4-meta-under { margin-top: 10px; flex-wrap: wrap; justify-content: flex-start; }
 
-
 /* ═══ v0.69.3：Requirements（官网同款深色表格）═══ */
 .jg-req { margin-top: 18px; border: 1px solid rgba(0,0,0,.1); border-radius: 12px; overflow: hidden; background: #fff; }
 .jg-req-head { display: flex; align-items: baseline; gap: 12px; padding: 13px 16px; cursor: pointer; user-select: none; background: rgba(0,0,0,.025); }
@@ -2735,7 +2542,6 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
 .jg-req-name .jg-linklike:hover { text-decoration: underline; }
 .jg-req-notes { color: #555; font-size: 12.5px; }
 
-
 /* ═══ v0.69.5：左栏手风琴填充 + 右侧封面吸顶 + 手风琴多开/内部滚动/标题吸顶 ═══ */
 .jg-dl4-hero { align-items: flex-start; }
 .jg-dl4-left { min-width: 0; }
@@ -2749,7 +2555,6 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
 .jg-acc.open .jg-acc-arrow { transform: rotate(180deg); }
 .jg-acc-body { padding: 4px 0 12px; }
 
-
 /* ═══ v0.69.6：手风琴滚动条按需出现（展开完成前隐藏，内容超高才出）═══ */
 .jg-acc-inner { scrollbar-width: none; }
 .jg-acc-inner::-webkit-scrollbar { width: 0; height: 0; }
@@ -2757,7 +2562,6 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
 .jg-acc.open.jg-acc-scroll .jg-acc-inner::-webkit-scrollbar-thumb { background: rgba(0,0,0,.18); border-radius: 3px; }
 .jg-req-row { display: grid; grid-template-columns: 1fr 1fr; padding: 9px 14px; font-size: 13px; align-items: center; }
 .jg-req-row + .jg-req-row { border-top: 1px solid rgba(0,0,0,.06); }
-
 
 /* ═══ v0.69.7：Requirements 链接去下划线 + 封面缩略图 ═══ */
 .jg-req-link { background: none; border: none; padding: 0; cursor: pointer; font-size: 13px;
@@ -2769,16 +2573,13 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
 .jg-detail-section { margin-top: 18px; }
 .jg-detail-section-title { font-size: 14.5px; font-weight: 700; color: #1a1a1a; margin-bottom: 8px; }
 
-
 /* ═══ v0.69.9：手风琴头部悬浮时不压内容 + 头部实心背景 + Body 顶部空出 ═══ */
 .jg-acc-head { background: #fff; }
 .jg-acc.open .jg-acc-body { padding-top: 8px; }
 .jg-acc-inner { position: relative; }
 
-
 /* ═══ v0.70.0：hover 实色背景（旧 rgba 半透明 + sticky 导致下层文字透过来叠字）═══ */
 .jg-acc-head:hover { background: #f4f4f4 !important; }
-
 
 /* ═══ v0.70.1：用户头像 tooltip（easeReverse 风格）═══ */
 .jg-user-tip { position: relative; display: inline-block; }
@@ -2808,7 +2609,6 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
 /* v1.08.0：卡片改点击开合（hover 自动开关已废除）—— .open 由 JS 在开/关时同步翻转，
    开启态气泡必须可交互，否则「查看主页/退出登录」点不了、点击会穿透到下方 mod 卡 */
 .jg-user-tip.open .jg-user-tip-bubble { pointer-events: auto; }
-
 
 /* ═══ v0.70.2：Tooltip 桥接（消除头像与 bubble 之间 12px hover 死区）═══ */
 /* v1.05.1：桥接 14→22px，配合 400ms 关闭延迟 —— 从头像拖到卡片不再中途关闭 */
@@ -2855,20 +2655,6 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
 .jg-modcard2-skel { pointer-events: none; }
 .jg-modcard2-skel .jg-modcard2-cover { aspect-ratio: 16/9; }
 /* v0.75.0：深色模式才用深色卡片（整站默认白色系）*/
-@media (prefers-color-scheme: dark) {
-    .jg-modcard2 { background: #24242a; border-color: rgba(255,255,255,.08); color: #e5e5e5;
-        box-shadow: none; }
-    .jg-modcard2:hover { box-shadow: 0 8px 24px rgba(0,0,0,.35); border-color: rgba(255,255,255,.14); }
-    .jg-modcard2-title { color: #f5f5f5; }
-    .jg-modcard2-summary { color: #bbb; }
-    .jg-modcard2-time { color: #999; }
-    .jg-modcard2-category { color: #ff96f9; }
-    .jg-modcard2-cat-chip { color: #b9b9c0; border-color: rgba(255,255,255,.18); background: rgba(255,255,255,.05); }
-    .jg-modcard2-stats { border-top-color: rgba(255,255,255,.06); color: #ccc; }
-    .jg-modcard2-cover-wrap { background: rgba(0,0,0,.35); }
-    .jg-modcard2-fb { color: rgba(255,255,255,.35); }
-}
-
 
 /* ═══ v0.71.0：Showcase 4 风分类 pills ═══ */
 .jg-pill-row { display: flex; gap: 7px; flex-wrap: wrap; margin-top: 12px; padding-top: 12px;
@@ -2887,15 +2673,12 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
 .jg-mode-pills .jg-pill.active { background: transparent !important; color: #fff; font-weight: 600; }
 .jg-pill-n { opacity: .55; font-size: 11px; margin-left: 3px; }
 
-
 /* ═══ v0.71.1：存档重命名 input 占满剩余宽度 ═══ */
 .jg-profile-item .jg-profile-input { flex: 1; min-width: 0; }
-
 
 /* ═══ v0.71.2：存档遮罩点穿（防 z-index 意外覆盖时仍不拦点击）═══ */
 /* v0.71.7：删除旧的 pointer-events:none 禁用 —— 它把 v0.71.6 的可点遮罩整体废了，
    导致排序/存档下拉点外部收不回。遮罩恢复可点，菜单靠 z-index:9500 高于遮罩 9000。 */
-
 
 /* ═══ v0.71.3：存档重命名铅笔按钮 ═══ */
 .jg-profile-rename { background: transparent; border: none; cursor: pointer; padding: 4px;
@@ -2927,18 +2710,9 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
     transition: transform .15s ease, background .15s ease;
 }
 .jg-profile-headconfirm:hover { background: #000; transform: scale(1.08); }
-@media (prefers-color-scheme: dark) {
-    .jg-profile-headinput { background: #2a2a2c; color: #e5e5e5; border-color: rgba(255,255,255,0.22); }
-    .jg-mode-pills .jg-pill { color: rgba(255,255,255,0.55); }
-    .jg-mode-pills .jg-pill.active { color: #fff; }
-}
 
 /* v0.71.6：排序下拉与遮罩层叠 —— 排序 dd 提到遮罩(9000)之上，点菜单不触发收回 */
 .jg-sort-dd { z-index: 9500; }
-@media (prefers-color-scheme: dark) {
-    .jg-mode-pills .jg-pill { color: rgba(255,255,255,0.6) !important; }
-    .jg-mode-pills .jg-pill.active { color: #fff !important; }
-}
 
 /* v0.72.4：滚动恢复待落位期间隐藏行列表（visibility 保留占位，limit 可算），
    落位后同帧摘除 —— 浏览器永远画不出「列表在顶部」的那一帧，消除闪屏 */
@@ -2958,11 +2732,6 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
 .jg-timerange { background: #fff; color: #3d3d3d; border: 1px solid rgba(0,0,0,.14);
     border-radius: 999px; padding: 5px 12px; font-size: 12px; cursor: pointer; outline: none; }
 .jg-timerange:hover { border-color: rgba(0,0,0,.3); }
-@media (prefers-color-scheme: dark) {
-    .jg-timerange { background: #2b2b2f; color: #ddd; border-color: rgba(255,255,255,.12); }
-    .jg-timerange:hover { border-color: rgba(255,255,255,.28); }
-    .jg-modcard2-avatar-fb { background: #3a3a3f; color: #bbb; }
-}
 
 /* ─── v0.74.0：Nexus 搜索岛 + 官网风首页 ───
    v1.06.2：恢复「放大镜按钮 + 点击向右展开」形态 —— CSS 默认收起 40px（无 JS 时的初始态），
@@ -2988,10 +2757,7 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
 }
 .jg-island-btn:hover { background: rgba(0,0,0,0.05); }
 .jg-island-btn svg { display: block; }
-@media (prefers-color-scheme: dark) {
-    .jg-island-btn { color: #b8b8c0; }
-    .jg-island-btn:hover { background: rgba(255,255,255,0.08); }
-}
+
 .jg-island-field { display: flex; align-items: center; overflow: hidden; flex: 1; padding: 0 14px; }
 .jg-island-input {
     border: none;
@@ -3053,10 +2819,6 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
     transition: background .15s, border-color .15s, transform .15s;
 }
 .jg-viewall-cap:hover { background: rgba(0,0,0,.05); border-color: rgba(0,0,0,.26); transform: translateY(-1px); }
-@media (prefers-color-scheme: dark) {
-    .jg-viewall-cap { background: #2b2b2f; border-color: rgba(255,255,255,.14); color: #ddd; box-shadow: none; }
-    .jg-viewall-cap:hover { background: #333338; border-color: rgba(255,255,255,.28); }
-}
 
 .jg-trend-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 .jg-trend-big {
@@ -3142,11 +2904,6 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
     transition: background .15s, transform .15s; flex: none; padding: 0; }
 .jg-browse-back:hover { background: rgba(0,0,0,.05); transform: translateX(-1px); }
 .jg-browse-back svg { width: 18px; height: 18px; }
-@media (prefers-color-scheme: dark) {
-    .jg-browse-back { background: #2a2a2c; border-color: rgba(255,255,255,.18); }
-    .jg-browse-back:hover { background: rgba(255,255,255,.08); }
-    .jg-browse-back svg polyline { stroke: #e5e5e5; }
-}
 
 /* ─── v0.90.0：分页器（对照官网）─── */
 .jg-pager { display: flex; justify-content: space-between; align-items: center; gap: 12px;
@@ -3162,12 +2919,6 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
 .jg-pager-jump { width: 58px; padding: 5px 8px; border: 1px solid rgba(0,0,0,.14);
     border-radius: 999px; font-size: 12px; text-align: center; outline: none; }
 .jg-pager-jump:focus { border-color: rgba(0,0,0,.35); }
-@media (prefers-color-scheme: dark) {
-    .jg-pager-btn { background: #2a2a2c; color: #e5e5e5; border-color: rgba(255,255,255,.14); }
-    .jg-pager-btn:hover:not(:disabled) { background: rgba(255,255,255,.08); }
-    .jg-pager-btn.cur { background: #e5e5e5; color: #1d1d1f; border-color: #e5e5e5; }
-    .jg-pager-jump { background: #2a2a2c; color: #e5e5e5; border-color: rgba(255,255,255,.14); }
-}
 
 /* ─── v0.93.0：DepthText 3D 挤出文字（React Bits 移植）─── */
 .depth-text { display: inline-block; perspective: var(--dt-persp); isolation: isolate; vertical-align: middle; }
@@ -3266,17 +3017,6 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
 .jg-nexus-scope .jg-note { font-size: 14px; }
 
 /* 深色模式下阴影加强一点，更立体 */
-@media (prefers-color-scheme: dark) {
-    .jg-nexus-scope .jg-nexus-logo {
-        filter: drop-shadow(0 4px 12px rgba(0,0,0,.55)) drop-shadow(0 1px 3px rgba(0,0,0,.4));
-    }
-    .jg-nexus-scope svg {
-        filter: drop-shadow(0 1px 2px rgba(0,0,0,.55));
-    }
-    .jg-nexus-scope .jg-user-tip-avatar {
-        box-shadow: 0 2px 8px rgba(0,0,0,.55), 0 1px 2px rgba(0,0,0,.4);
-    }
-}
 
 /* ─── v1.00.0：Trending 板块 Grainient 背景 + 退出登录按钮 + Logo 可点（仅 Nexus 页）─── */
 .jg-nexus-scope .jg-home-sec-hero {
@@ -3358,10 +3098,6 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
     padding: 0; flex: none;
 }
 .jg-nexus-scope .jg-back-btn:hover { background: rgba(0,0,0,.05); transform: translateX(-1px); }
-@media (prefers-color-scheme: dark) {
-    .jg-nexus-scope .jg-back-btn { background: #2a2a2c; color: #e5e5e5; border-color: rgba(255,255,255,.14); }
-    .jg-nexus-scope .jg-back-btn:hover { background: rgba(255,255,255,.08); }
-}
 
 /* 「查看全部」按钮：#3d3d3d 文字+图标，背景透明，带网格图标 */
 .jg-nexus-scope .jg-viewall {
@@ -3372,10 +3108,6 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
 }
 .jg-nexus-scope .jg-viewall:hover { background: rgba(0,0,0,.06); }
 .jg-nexus-scope .jg-viewall svg { color: #3d3d3d; }
-@media (prefers-color-scheme: dark) {
-    .jg-nexus-scope .jg-viewall { color: #e5e5e5; }
-    .jg-nexus-scope .jg-viewall svg { color: #e5e5e5; }
-}
 
 /* Tab 图标与文字对齐 */
 .jg-nexus-scope .jg-chip { display: inline-flex; align-items: center; }
@@ -3405,11 +3137,6 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
 }
 .jg-nexus-scope .jg-search-exact-sub { font-size: 12px; color: #b8860b; margin-top: 3px; font-weight: 600; }
 .jg-nexus-scope .jg-search-exact-go { font-size: 13px; color: #3d3d3d; opacity: .6; flex: none; }
-@media (prefers-color-scheme: dark) {
-    .jg-nexus-scope .jg-search-exact { background: #24242a; border-color: rgba(255,255,255,.1); }
-    .jg-nexus-scope .jg-search-exact-name { color: #f5f5f5; }
-    .jg-nexus-scope .jg-search-exact-go { color: #e5e5e5; }
-}
 
 /* ─── v1.03.0：Trending 卡片 hover 动效（此前只有 Mods 卡片有）─── */
 .jg-nexus-scope .jg-trend-big { transition: transform .2s ease, box-shadow .2s ease; }
@@ -3488,9 +3215,6 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
     border-radius: 12px;
     background: rgba(0,0,0,.02);
 }
-@media (prefers-color-scheme: dark) {
-    .jg-adult-verify { border-color: rgba(255,255,255,.12); background: rgba(255,255,255,.03); }
-}
 
 /* ═══ v1.05.0：右侧下拉右对齐（倒序/时间下拉贴窗口右缘时菜单不再超出界面）═══ */
 .jg-sort-dd.jg-dd-right .jg-sort-menu { left: auto; right: 0; }
@@ -3542,11 +3266,6 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
     transition: background 120ms ease;
 }
 .jg-pill-ghost:hover { background: rgba(0,0,0,0.06); }
-@media (prefers-color-scheme: dark) {
-    .jg-pill-dark { border: 1px solid rgba(255,255,255,0.28); }
-    .jg-pill-ghost { border-color: rgba(255,255,255,0.28); }
-    .jg-pill-ghost:hover { background: rgba(255,255,255,0.08); }
-}
 
 /* -------- v1.06.9：危险操作红胶囊（删除 mod / 关闭游戏确认键）-------- */
 .jg-pill-danger {
@@ -3575,9 +3294,6 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
 }
 .jg-mods-folder-btn:hover { background: rgba(0,0,0,0.06); transform: translateY(-1px); }
 .jg-mods-folder-btn:active { transform: translateY(0); }
-@media (prefers-color-scheme: dark) {
-    .jg-mods-folder-btn:hover { background: rgba(255,255,255,0.08); }
-}
 
 /* 设置页 · Nexus 未登录时的胶囊登录按钮 */
 .jg-nexus-login-btn {
@@ -3629,17 +3345,6 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
     font-weight: 600;
 }
 .jg-path-btn.primary:hover { background: #000; }
-@media (prefers-color-scheme: dark) {
-    .jg-path-btn { border-color: rgba(255, 255, 255, 0.22); }
-    .jg-path-btn:hover { background: rgba(255, 255, 255, 0.08); }
-    /* 保存按钮保持黑底白字（与全局 toast 同款） */
-    .jg-path-btn.primary {
-        background: #111;
-        border-color: #111;
-        color: #fff;
-    }
-    .jg-path-btn.primary:hover { background: #000; }
-}
 
 /* v0.2.2：设置页开关行 —— 整行可点、黑色滑块、开启态行底黑色标记线 */
 .jg-switch-col {
@@ -3673,7 +3378,10 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
 .jg-switch-row:hover::after { width: 100%; }
 .jg-switch-row:hover { background: rgba(0, 0, 0, 0.03); }
 .jg-switch-row.disabled:hover::after { width: 0; }
-.jg-switch-row.disabled { opacity: .45; cursor: not-allowed; }
+.jg-switch-row.disabled { cursor: not-allowed; }
+/* 用颜色/局部透明变淡，而不是整行 opacity —— 否则父级透明度会把「?」的气泡提示一起压淡 */
+.jg-switch-row.disabled { color: rgba(32, 32, 32, 0.45); }
+.jg-switch-row.disabled .jg-switch { opacity: .45; }
 
 .jg-switch {
     position: relative;
@@ -3697,15 +3405,6 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
     transition: left 140ms ease;
 }
 .jg-switch-row.on .jg-switch-knob { left: 20px; }
-@media (prefers-color-scheme: dark) {
-    .jg-switch { background: rgba(255, 255, 255, 0.25); }
-    .jg-switch-row:hover { background: rgba(255, 255, 255, 0.05); }
-    /* 开启态保持黑底白字同款的黑滑块；深色下黑看不清，改用白底黑点反转 */
-    .jg-switch-row.on .jg-switch { background: #f5f5f5; }
-    .jg-switch-row.on .jg-switch-knob { background: #111; }
-    .jg-switch-row::after { background: #f5f5f5; }
-    .jg-switch-row.disabled:hover::after { width: 0; }
-}
 
 /* v0.2.2：设置页年龄验证弹窗 */
 .jg-modal-overlay {
@@ -3724,9 +3423,6 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
     border-radius: 14px;
     padding: 18px 20px;
     box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
-}
-@media (prefers-color-scheme: dark) {
-    .jg-modal { background: #1f1f1f; color: #f5f5f5; }
 }
 
 /* v0.2.1：内存管理 —— 摘要条 + 占用小卡 + 滑杆行 */
@@ -3808,11 +3504,6 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
     font-variant-numeric: tabular-nums;
     color: #333;
 }
-@media (prefers-color-scheme: dark) {
-    .es-track { background: rgba(255, 255, 255, 0.16); }
-    .es-fill { background: #f2f2f2; }
-    .es-value { color: #ddd; }
-}
 
 /* v0.2.1：缓存与存储 —— 分类行 */
 .jg-store-row {
@@ -3836,13 +3527,6 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
     border-radius: 999px;
     padding: 0 6px;
     line-height: 15px;
-}
-@media (prefers-color-scheme: dark) {
-    .jg-mem-line { background: rgba(255, 255, 255, 0.06); }
-    .jg-kv { background: rgba(255, 255, 255, 0.05); }
-    .jg-slider { accent-color: #f5f5f5; }
-    .jg-store-row { border-bottom-color: rgba(255, 255, 255, 0.08); }
-    .jg-store-tag { border-color: rgba(255, 255, 255, 0.3); }
 }
 
 /* v0.2.2：禁用开关行的像素特效画布（React Bits PixelCard 移植） */
@@ -3872,6 +3556,81 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
     flex-direction: column;
     gap: 10px;
     margin-top: 10px;
+}
+
+/* 关于卡片：左信息 / 右赞助 */
+.jg-about-main {
+    display: flex;
+    align-items: flex-start;
+    gap: 24px;
+}
+.jg-about-leftcol {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+/* 赞助支持区 */
+.jg-sponsor {
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    padding-left: 24px;
+    border-left: 1px solid rgba(0, 0, 0, .08);
+}
+.jg-sponsor-title {
+    font-size: 20px;
+    font-weight: 800;
+    color: #111;
+    line-height: 1.2;
+}
+.jg-sponsor-sub {
+    font-size: 12px;
+    opacity: .65;
+}
+.jg-sponsor-tabs {
+    display: flex;
+    gap: 8px;
+    margin-top: 2px;
+}
+.jg-sponsor-tab {
+    appearance: none;
+    border: 1px solid rgba(0, 0, 0, .14);
+    background: #fff;
+    color: #333;
+    font-size: 13px;
+    font-weight: 600;
+    padding: 7px 18px;
+    border-radius: 999px;
+    cursor: pointer;
+    transition: background .18s ease, color .18s ease, border-color .18s ease;
+}
+.jg-sponsor-tab:hover { border-color: rgba(0, 0, 0, .3); }
+.jg-sponsor-tab.active {
+    background: #111;
+    border-color: #111;
+    color: #fff;
+}
+.jg-sponsor-qr {
+    width: 180px;
+    height: 180px;
+    object-fit: contain;
+    border-radius: 10px;
+    background: #fff;
+    border: 1px solid rgba(0, 0, 0, .08);
+    padding: 6px;
+}
+@media (max-width: 720px) {
+    .jg-about-main { flex-direction: column; }
+    .jg-sponsor {
+        padding-left: 0;
+        border-left: none;
+        align-self: center;
+    }
 }
 .jg-about-title-row { display: flex; align-items: center; gap: 10px; }
 
@@ -4007,4 +3766,53 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
 .jg-copy-toast.show {
     opacity: 1;
     transform: translateX(-50%) translateY(0);
+}
+
+/* ─── v1.x：设置页「?」帮助问号 + GSAP 弹性 tooltip（gsap demo easeReverse 同款）─── */
+.jg-help-tip {
+    position: relative;
+    display: inline-flex;
+    flex: none;
+}
+.jg-help-tip-btn {
+    width: 16px; height: 16px;
+    border-radius: 50%;
+    background: #0e100f;            /* 黑底白问号 */
+    color: #fff;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 11px; font-weight: 600; line-height: 1;
+    cursor: help;
+    user-select: none;
+    transform-origin: center;
+}
+.jg-help-tip-bubble {
+    position: absolute;
+    bottom: calc(100% + 12px);
+    left: 50%;
+    transform: translateX(-50%);
+    width: max-content;
+    max-width: 260px;
+    background: #fffce1;
+    color: #0e100f;
+    padding: 8px 14px;
+    border-radius: 8px;
+    font-size: 12px;
+    line-height: 1.6;
+    white-space: normal;
+    text-align: left;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.12);
+    pointer-events: none;
+    visibility: hidden;
+    opacity: 0;
+    transform-origin: bottom center;
+    z-index: 30;
+}
+.jg-help-tip-bubble::after {
+    content: "";
+    position: absolute;
+    top: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    border: 6px solid transparent;
+    border-top-color: #fffce1;
 }

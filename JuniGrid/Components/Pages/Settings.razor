@@ -80,6 +80,14 @@
             <div class="jg-switch-row @(_autoInstall ? "on" : "") @(!_nexusPremium ? "disabled" : "")" @onclick="ToggleAutoInstall">
                 <span style="display:flex;align-items:center;gap:8px">
                     <span>自动安装更新</span>
+                    @if (!_nexusPremium)
+                    {
+                        @* v1.x：GSAP 弹性 tooltip 问号（仅非 Premium 显示），hover 弹出、移开立即消失 *@
+                        <span class="jg-help-tip">
+                            <span class="jg-help-tip-btn">?</span>
+                            <span class="jg-help-tip-bubble">此功能仅 Nexus Mods Premium 用户可用<br />当 mod 管理页面有 mod 需要更新时，系统会自动为您更新</span>
+                        </span>
+                    }
                 </span>
                 <span class="jg-switch"><span class="jg-switch-knob"></span></span>
             </div>
@@ -90,7 +98,11 @@
         <div style="font-weight:600">内容过滤</div>
         <div class="jg-switch-col">
             <div class="jg-switch-row @(_filterAdult ? "on" : "")" @onclick="ToggleFilterAdult">
-                <span>过滤色情内容</span>
+                <span>过滤成人内容</span>
+                <span class="jg-switch"><span class="jg-switch-knob"></span></span>
+            </div>
+            <div class="jg-switch-row @(_onlyAdult ? "on" : "")" @onclick="ToggleOnlyAdult">
+                <span>只显示成人内容</span>
                 <span class="jg-switch"><span class="jg-switch-knob"></span></span>
             </div>
         </div>
@@ -219,42 +231,52 @@
     <div class="jg-card jg-cursor-grid" style="margin-top:12px">
         <div style="font-weight:600">关于</div>
         <div class="jg-about">
-            <div class="jg-about-title-row">
-                <span class="jg-pixel-title">JuniGrid</span>
-                <span class="jg-about-title-side">
-                    <span class="jg-shiny">· v1.0.0</span>
-                    <span class="jg-about-desc">Your helper for Stardew Valley.</span>
-                </span>
-            </div>
-            <div class="jg-author-row">
-                <span>作者：</span>
-                <img src="assets/author-avatar.jpg" alt="MLD avatar" class="jg-author-avatar" />
-                <span class="jg-pixel-name">MLD</span>
-            </div>
-            <div class="jg-logoloop" aria-label="联系方式">
-                <div class="jg-ll-track">
-                    <ul class="jg-ll-seq">
-                        <li class="jg-ll-item">
-                            <a class="jg-ll-link" href="https://github.com/MLD-yu" target="_blank" rel="noreferrer noopener" title="GitHub">
-                                <img src="assets/logos/logo-github.svg" alt="GitHub" />
-                            </a>
-                        </li>
-                        <li class="jg-ll-item">
-                            <a class="jg-ll-link" href="javascript:void(0)" data-copy="yu2109292229@gmail.com" title="Gmail">
-                                <img src="assets/logos/logo-gmail.svg" alt="Gmail" />
-                            </a>
-                        </li>
-                        <li class="jg-ll-item">
-                            <a class="jg-ll-link" href="https://space.bilibili.com/385452339" target="_blank" rel="noreferrer noopener" title="哔哩哔哩">
-                                <img src="assets/logos/logo-bilibili.svg" alt="哔哩哔哩" />
-                            </a>
-                        </li>
-                        <li class="jg-ll-item">
-                            <a class="jg-ll-link" href="https://www.douyin.com/user/MS4wLjABAAAA-5M0Kcg98EjyHuB9G2LYJ1lMRFwDjMIIjVwMYT8xXBfXVOBo8eiU12Qms7yddDDn" target="_blank" rel="noreferrer noopener" title="抖音">
-                                <img src="assets/logos/logo-douyin.svg" alt="抖音" />
-                            </a>
-                        </li>
-                    </ul>
+            <div class="jg-about-main">
+                <div class="jg-about-leftcol">
+                    <div class="jg-about-title-row">
+                        <span class="jg-pixel-title">JuniGrid</span>
+                        <span class="jg-about-title-side">
+                            <span class="jg-shiny">· v@(AppInfo.Version)</span>
+                            <span class="jg-about-desc">Your helper for Stardew Valley.</span>
+                        </span>
+                    </div>
+                    <div class="jg-author-row">
+                        <span>作者：</span>
+                        <img src="assets/author-avatar.jpg" alt="MLD avatar" class="jg-author-avatar" />
+                        <span class="jg-pixel-name">MLD</span>
+                    </div>
+                    <div class="jg-logoloop" aria-label="联系方式">
+                        <div class="jg-ll-track">
+                            <ul class="jg-ll-seq">
+                                <li class="jg-ll-item">
+                                    <a class="jg-ll-link" href="https://github.com/MLD-yu" target="_blank" rel="noreferrer noopener" title="GitHub">
+                                        <img src="assets/logos/logo-github.svg" alt="GitHub" />
+                                    </a>
+                                </li>
+                                <li class="jg-ll-item">
+                                    <a class="jg-ll-link" href="javascript:void(0)" data-copy="yu2109292229@gmail.com" title="Gmail">
+                                        <img src="assets/logos/logo-gmail.svg" alt="Gmail" />
+                                    </a>
+                                </li>
+                                <li class="jg-ll-item">
+                                    <a class="jg-ll-link" href="https://space.bilibili.com/385452339" target="_blank" rel="noreferrer noopener" title="哔哩哔哩">
+                                        <img src="assets/logos/logo-bilibili.svg" alt="哔哩哔哩" />
+                                    </a>
+                                </li>
+                                <li class="jg-ll-item">
+                                    <a class="jg-ll-link" href="https://www.douyin.com/user/MS4wLjABAAAA-5M0Kcg98EjyHuB9G2LYJ1lMRFwDjMIIjVwMYT8xXBfXVOBo8eiU12Qms7yddDDn" target="_blank" rel="noreferrer noopener" title="抖音">
+                                        <img src="assets/logos/logo-douyin.svg" alt="抖音" />
+                                    </a>
+                                </li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+                <div class="jg-sponsor">
+                    <div class="jg-sponsor-title">支持赞助：</div>
+                    <div class="jg-sponsor-sub">如果对你有帮助，可以请作者喝杯咖啡吗</div>
+                    <img class="jg-sponsor-qr" src="assets/sponsor-cards.png" alt="赞助收款码" />
+                    <div class="jg-sponsor-sub" style="margin-top:8px">MLD/MLD（*禺）——扫码前请确定收款人信息</div>
                 </div>
             </div>
         </div>
@@ -315,8 +337,7 @@
     }
 
     private async Task LoadAccountsAsync()
-    {
-        // Q4: 全部从 config 缓存瞬读，不再进设置页就拉网
+    {        // Q4: 全部从 config 缓存瞬读，不再进设置页就拉网
         _steam = Steam.GetProfile();
         var cfg = Cfg.Current;
         _nexusName = cfg.NexusUserName;
@@ -365,10 +386,11 @@
     private bool _oneClickInstall;
     private bool _autoInstall;
 
-    // ─── 过滤色情内容：默认开启，点击直接切换 ───
+    // ─── 过滤成人内容 / 只显示成人内容：互斥开关（最多一个开，可同时关），默认过滤开启 ───
     private bool _filterAdult = true;
+    private bool _onlyAdult;
 
-    private bool _showTaskDock = true;
+    private bool _showTaskDock;
 
     private void ToggleTaskDock()
     {
@@ -594,11 +616,13 @@
         _sliderCb?.Dispose();
     }
 
+
     private void SaveFilterAdult()
     {
         var cfg = Cfg.Current;
         cfg.FilterAdultContent = _filterAdult;
-        Cfg.Save(cfg);   // ConfigService.Save 内部同步 NexusService.IncludeAdultContent
+        cfg.OnlyAdultContent = _onlyAdult;
+        Cfg.Save(cfg);   // ConfigService.Save 内部同步 NexusService 的成人内容查询开关
     }
 
     protected override async Task OnInitializedAsync()
@@ -613,6 +637,7 @@
             Cfg.Save(Cfg.Current);
         }
         _filterAdult = Cfg.Current.FilterAdultContent;
+        _onlyAdult = Cfg.Current.OnlyAdultContent;
         _showTaskDock = Cfg.Current.ShowTaskDock;
 
         // v0.2.1：内存管理 —— 订阅快照推送（5s 一次），离开页面时 Dispose 退订
@@ -664,6 +689,14 @@
     private void ToggleFilterAdult()
     {
         _filterAdult = !_filterAdult;
+        if (_filterAdult) _onlyAdult = false;   // 互斥：开过滤就关「只显示」
+        SaveFilterAdult();
+    }
+
+    private void ToggleOnlyAdult()
+    {
+        _onlyAdult = !_onlyAdult;
+        if (_onlyAdult) _filterAdult = false;   // 互斥：开「只显示」就关过滤
         SaveFilterAdult();
     }
 

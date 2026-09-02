@@ -1,0 +1,191 @@
+@namespace JuniGrid.Components.Layout
+@inject SelfUpdateService SelfUpdate
+@inject IJSRuntime JS
+
+@* 自更新按钮交互（v1.0.18 定稿）：
+   —— 无更新时完全不渲染；
+   —— 检测到新版本 → 按钮出现（不自动下载）：
+        · 未下载                → 悬浮气泡「发现新版本vX.Y.Z，点击下载安装」
+        · 缓存已完整（下载过）  → 气泡「点击安装」+ 满环，点击直接再弹向导
+        · 下载中                → 气泡 转圈+「下载中」（按钮圆环同步进度，断点续传）
+        · 下载失败              → 气泡「下载失败，点击重试」
+   —— 鼠标移开 → 气泡瞬间消失（无退场动画）；
+   —— 点击 → 未下载时开始下载；下载完成自动弹出安装向导并退出本应用（v1.0.14 行为回归）；
+   —— 向导被用户直接关掉 → 缓存保留，下次启动/点击直接「点击安装」再弹；
+   —— 安装成功后，下次启动自动清掉版本 ≤ 当前 的缓存安装包。 *@
+
+@if (_selfUpdate is not null)
+{
+    <div class="jg-upd-wrap" @ref="_wrap">
+        <button class="jg-upd-btn @(_downloading ? "jg-upd-running" : "")" @onclick="OnUpdateClick"
+                aria-label="@TipText">
+            @* 环、绿盘、箭头画在同一个 SVG 坐标系里 —— 永远对中，不依赖 CSS 绝对定位 *@
+            <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true">
+                <circle cx="12" cy="12" r="10.5" fill="none" stroke="currentColor" stroke-opacity="0.2" stroke-width="2.2" />
+                <circle class="jg-upd-ring-fill" cx="12" cy="12" r="10.5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"
+                        stroke-dasharray="@RingCircumference.ToString("0.##")"
+                        stroke-dashoffset="@RingOffset.ToString("0.##")" />
+                <g class="jg-upd-icon">
+                    <circle cx="12" cy="12" r="6.5" fill="#19943C" stroke="none" />
+                    <path d="M12 8.2 L15.2 11.4 L13.2 11.4 L13.2 15.8 L10.8 15.8 L10.8 11.4 L8.8 11.4 Z" fill="#fff" stroke="none" />
+                </g>
+            </svg>
+        </button>
+        <div class="jg-upd-tip" @ref="_bubble" role="tooltip">
+            @if (_downloading)
+            {
+                <span class="jg-upd-tip-spin" aria-hidden="true"></span>
+                <span>下载中</span>
+            }
+            else if (_ready)
+            {
+                <span>点击安装</span>
+            }
+            else if (_failed)
+            {
+                <span>下载失败，点击重试</span>
+            }
+            else
+            {
+                <span>@TipText</span>
+            }
+        </div>
+    </div>
+}
+
+@code {
+    private SelfUpdateInfo? _selfUpdate;
+    private bool _downloading;          // 正在后台下载
+    private bool _ready;                // 安装包已缓存，点击即可弹向导
+    private bool _failed;               // 下载失败（点击重试，断点续传）
+    private double? _progressPercent;
+    private ElementReference _wrap;
+    private ElementReference _bubble;
+
+    // 圆环几何：24x24 viewBox 里 r=10.5；填充弧从 12 点方向开始（CSS rotate），
+    // 下载到 100% 时恰好闭合成整圆。
+    private const double RingCircumference = 2 * Math.PI * 10.5;
+    private double RingOffset => _downloading && _progressPercent is > 0
+        ? RingCircumference * (1 - Math.Min(1, _progressPercent.Value / 100))
+        : _ready ? 0              // 缓存就绪 = 满环
+        : RingCircumference;      // 完全偏移 = 不显示弧线
+
+    private string TipText => _downloading ? "下载中"
+        : _ready ? "点击安装"
+        : _failed ? "下载失败，点击重试"
+        : $"发现新版本v{_selfUpdate?.LatestVersion}，点击下载安装";
+
+    /// <summary>静默检查（约 1 秒后执行）；有更新 → 按钮出现。不自动下载、不自动安装。</summary>
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        // 按钮出现后绑定悬浮气泡（JS 侧有 __updTipBound 防重绑；wrap 若被 Blazor 重建会自动补绑）
+        if (_selfUpdate is not null)
+        {
+            try { await JS.InvokeVoidAsync("junigridJs.updTipInit", _wrap, _bubble); } catch { }
+        }
+        if (!firstRender) return;
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(1000);
+            await CheckForSelfUpdateAsync();
+        });
+    }
+
+    private async Task CheckForSelfUpdateAsync()
+    {
+        var info = await SelfUpdate.CheckAsync();
+        if (info is not { HasUpdate: true }) return;   // 已是最新 / 离线 / 被限流：按钮保持隐藏
+        // v1.0.18：启动即认缓存 —— 之前下载过且完整（.done 在）就跳过「点击下载」直接「点击安装」
+        var cached = SelfUpdate.CachedInstallerPath(info);
+        await InvokeAsync(() =>
+        {
+            _selfUpdate = info;
+            _ready = cached is not null;
+            StateHasChanged();
+        });
+    }
+
+    /// <summary>点击「下载」：缓存已完整直接就绪；否则断点续传下载到缓存目录。</summary>
+    private async Task EnsureDownloadAsync()
+    {
+        var info = _selfUpdate;
+        if (info is null || _downloading || _ready) return;
+        if (SelfUpdate.CachedInstallerPath(info) is not null)
+        {
+            _ready = true;
+            await InvokeAsync(StateHasChanged);
+            return;
+        }
+        _downloading = true;
+        _failed = false;
+        _progressPercent = null;
+        await InvokeAsync(StateHasChanged);
+        try
+        {
+            var path = await SelfUpdate.EnsureInstallerAsync(info,
+                (msg, pct) => InvokeAsync(() =>
+                {
+                    _progressPercent = pct;
+                    StateHasChanged();
+                }));
+            _downloading = false;
+            _ready = true;
+            await InvokeAsync(StateHasChanged);
+            // v1.0.18：下载完成自动弹出安装向导并退出本应用（v1.0.14 行为回归）；
+            // 向导被关掉也不影响缓存，下次启动/点击直接「点击安装」再弹
+            LaunchInstallerAndExit(path);
+        }
+        catch (Exception ex)
+        {
+            // 下载失败：气泡提示重试（已下载的部分保留，点击续传）
+            _downloading = false;
+            _failed = true;
+            AppLog.Warn("SelfUpdate", $"安装包下载失败：{ex.Message}");
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private void OnUpdateClick()
+    {
+        if (_selfUpdate is null || _downloading) return;   // 下载中点击不响应（悬浮气泡看状态）
+        // 已缓存 → 直接弹安装向导；向导被关掉也无妨，缓存还在，下次点击再弹
+        var path = SelfUpdate.CachedInstallerPath(_selfUpdate);
+        if (path is null)
+        {
+            _ = EnsureDownloadAsync();   // 未下载 → 点击开始下载
+            return;
+        }
+        LaunchInstallerAndExit(path);
+    }
+
+    /// <summary>
+    /// v1.0.14：弹出安装向导并退出本应用。
+    /// 关键改动：安装器不再由本进程直接拉起（v1.0.12 的 800ms 延迟存在竞态 ——
+    /// 向导开始解压时旧应用可能还没退干净，Inno 替换被占用的 DLL 会无限等待，
+    /// 表现为「安装进度条卡死、全屏点不动」）。改为分离式启动：独立进程等待
+    /// 本进程完全退出后再启动安装器；本进程立即开始正常退出，并带看门狗 ——
+    /// 若 Shutdown 因 WebView2 释放死锁挂住，强制 Environment.Exit 释放文件锁。
+    /// </summary>
+    private void LaunchInstallerAndExit(string path)
+    {
+        try
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo("powershell.exe",
+                $"-NoProfile -WindowStyle Hidden -Command \"Wait-Process -Id {Environment.ProcessId} -Timeout 15 -ErrorAction SilentlyContinue; Start-Process -FilePath '{path}'\"")
+            { CreateNoWindow = true, UseShellExecute = false };
+            System.Diagnostics.Process.Start(psi);
+        }
+        catch
+        {
+            SelfUpdate.LaunchInstaller(path);   // 兜底：分离失败就直接拉起
+        }
+
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(500);
+            try { System.Windows.Application.Current?.Dispatcher.Invoke(() => System.Windows.Application.Current.Shutdown()); } catch { }
+            await Task.Delay(3500);
+            Environment.Exit(0);   // 看门狗：正常退出卡死时强制结束，保证文件锁释放
+        });
+    }
+}

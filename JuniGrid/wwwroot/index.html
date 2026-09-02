@@ -7,7 +7,7 @@
     <base href="/" />
 
     <link rel="stylesheet" href="_content/Microsoft.FluentUI.AspNetCore.Components/css/reboot.css" />
-    <link rel="stylesheet" href="css/app.css?v=1.07.3" />
+    <link rel="stylesheet" href="css/app.css?v=1.08.0" />
 
     <style>
         /* 高度用 100%（而非 100vh）：WebView2 下窗口最大化 / 高 DPI 缩放时，
@@ -24,9 +24,7 @@
         }
         /* 最大化时 DWM 圆角消失，CSS 圆角也要同步归零 */
         body.jg-max #app { border-radius: 0; }
-        @media (prefers-color-scheme: dark) {
-            #app { background: linear-gradient(135deg, #1c1c1e 0%, #202225 100%); }
-        }
+        
         #blazor-error-ui {
             position: fixed;
             left: 16px; right: 16px; bottom: 16px;

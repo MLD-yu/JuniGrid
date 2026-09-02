@@ -384,6 +384,9 @@ public sealed class NexusService
     /// <summary>v0.79.0：成人内容总开关 —— false=浏览/搜索 GraphQL 追加 adultContent:false 过滤条件。
     /// 由 ConfigService 按「设置 → 过滤色情内容」开关同步（FilterAdultContent=true ⇒ 这里=false）。</summary>
     public static bool IncludeAdultContent = true;
+    /// <summary>「只显示成人内容」开关 —— true 时浏览/搜索 GraphQL 追加 adultContent:true 过滤条件
+    /// （优先级高于 IncludeAdultContent，两者互斥由 ConfigService 保证）。默认关闭。</summary>
+    public static bool OnlyAdultContent = false;
     /// <summary>v0.81.0：最近一次榜单查询服务端报告的 totalCount（分页器「第 x / N 页 · 共 X 个」的数据源）。</summary>
     public int? LastBrowseTotalCount;
     /// <summary>v0.96.0：Surprise 榜服务端 random 排序种子 —— 翻页期间保持不变保证页序连续，「换一批」时换新种子。</summary>
@@ -914,8 +917,10 @@ public sealed class NexusService
             {
                 "{gameId:{value:\"" + gameId + "\"}}"
             };
-            // v0.79.0：成人内容按总开关条件过滤（IncludeAdultContent=false 时才加过滤条件）
-            if (!IncludeAdultContent)
+            // 只显示成人内容优先；否则按总开关在关闭时过滤成人内容
+            if (OnlyAdultContent)
+                conds.Add("{adultContent:{value:true, op:EQUALS}}");
+            else if (!IncludeAdultContent)
                 conds.Add("{adultContent:{value:false, op:EQUALS}}");
             if (!string.IsNullOrWhiteSpace(categoryName))
                 conds.Add("{categoryName:{value:\"" + categoryName.Replace("\"", "") + "\", op:EQUALS}}");

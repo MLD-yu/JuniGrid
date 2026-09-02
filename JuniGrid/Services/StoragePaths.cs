@@ -34,6 +34,11 @@ public static class StoragePaths
         ? Path.Combine(TempRoot, "smapi-installer")
         : Path.Combine(CacheRoot, "smapi-installer");
 
+    /// <summary>应用自更新安装包缓存（v1.0.8）。跟随缓存目录 —— 取消安装后文件保留，可续传/重装。</summary>
+    public static string SelfUpdateDir => CacheRoot is null
+        ? Path.Combine(TempRoot, "self-update")
+        : Path.Combine(CacheRoot, "self-update");
+
     /// <summary>WebView2 用户数据目录（含登录态与网络缓存）。跟随缓存目录，变更后重启生效——
     /// MainWindow 启动时先执行遗留迁移再设 WEBVIEW2_USER_DATA_FOLDER。</summary>
     public static string WebView2Dir => CacheRoot is null

@@ -9,18 +9,20 @@
 @implements IDisposable
 
 <aside class="jg-account">
-    <div class="jg-mode-pills @(_cfg.LaunchMode)">
-        <span class="jg-pill-thumb"></span>
-        <button class="jg-pill @(_cfg.LaunchMode == "steam" ? "active" : "")"
-                disabled="@(_busy || _isRunning)" @onclick='() => SetMode("steam")'>
-            <img src="assets/steam.svg" alt="Steam" style="width:18px;height:18px;vertical-align:-3px;margin-right:6px;" />
-            官方
-        </button>
-        <button class="jg-pill @(_cfg.LaunchMode == "smapi" ? "active" : "")"
-                disabled="@(_busy || _isRunning)" @onclick='() => SetMode("smapi")'>
-            <img src="assets/smapi-pufferchick.svg" alt="SMAPI" style="width:18px;height:18px;vertical-align:-3px;margin-right:6px;border-radius:4px;" />
-            SMAPI
-        </button>
+    <div class="jg-mode-row">
+        <div class="jg-mode-pills @(_cfg.LaunchMode)">
+            <span class="jg-pill-thumb"></span>
+            <button class="jg-pill @(_cfg.LaunchMode == "steam" ? "active" : "")"
+                    disabled="@(_busy || _isRunning)" @onclick='() => SetMode("steam")'>
+                <img src="assets/steam.svg" alt="Steam" style="width:18px;height:18px;vertical-align:-3px;margin-right:6px;" />
+                官方
+            </button>
+            <button class="jg-pill @(_cfg.LaunchMode == "smapi" ? "active" : "")"
+                    disabled="@(_busy || _isRunning)" @onclick='() => SetMode("smapi")'>
+                <img src="assets/smapi-pufferchick.svg" alt="SMAPI" style="width:18px;height:18px;vertical-align:-3px;margin-right:6px;border-radius:4px;" />
+                SMAPI
+            </button>
+        </div>
     </div>
 
     <div class="jg-account-mid">

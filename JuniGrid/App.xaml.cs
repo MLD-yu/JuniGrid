@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IO;
 using System.IO.Pipes;
 using System.Windows;
@@ -28,8 +29,23 @@ public partial class App : Application
     /// <summary>An nxm:// link that arrived before the DI container was ready.</summary>
     public static string? PendingNxmLink { get; set; }
 
+    private static bool _uninstallMode;
+
     protected override void OnStartup(StartupEventArgs e)
     {
+        // 卸载模式（JuniGrid.exe --uninstall 或安装目录里的独立 Uninstall.exe）：
+        // 跳过单实例/管道/splash，只显示卸载向导。
+        // 必须在 mutex 之前分流——主实例在跑时控制面板也要能拉起卸载器。
+        var exeName = Path.GetFileName(Environment.ProcessPath) ?? "";
+        _uninstallMode = e.Args.Any(a => a.Equals("--uninstall", StringComparison.OrdinalIgnoreCase))
+                         || exeName.Equals("Uninstall.exe", StringComparison.OrdinalIgnoreCase);
+        if (_uninstallMode)
+        {
+            ShutdownMode = ShutdownMode.OnExplicitShutdown;
+            base.OnStartup(e);
+            return;
+        }
+
         var nxmArg = e.Args.FirstOrDefault(
             a => a.StartsWith("nxm://", StringComparison.OrdinalIgnoreCase));
 
@@ -46,9 +62,19 @@ public partial class App : Application
                     w.WriteLine(nxmArg);
                 }
                 catch { /* main instance unreachable — just exit */ }
+                Shutdown();
+                return;
             }
-            Shutdown();
-            return;
+
+            // 不带 nxm 链接的二次启动 = 用户明确要再开一次。最典型是升级装完后
+            // 启动：旧实例若因权限不足/竞态没被安装器关掉，会一直占着单实例锁，
+            // 原来的处理是无声退出，表现为「点了没反应、开出来的还是旧版」。改为
+            // 关掉旧实例后由本实例接管。
+            if (!TryTakeOverSingleInstance())
+            {
+                Shutdown();
+                return;
+            }
         }
 
         // Catch EVERYTHING — UI thread, background threads, unobserved tasks.
@@ -62,9 +88,48 @@ public partial class App : Application
         base.OnStartup(e);
     }
 
+    /// <summary>单实例锁被占时（无 nxm 转发场景）：结束其它 JuniGrid 实例并等锁释放。
+    /// 注意只按进程名 "JuniGrid" 匹配 —— 安装器是 JuniGridSetup、卸载向导是
+    /// Uninstall.exe，进程名都不同，不会误伤。返回 false = 5 秒内仍拿不到锁
+    /// （如旧实例提权运行无法终止），调用方放弃启动。</summary>
+    private static bool TryTakeOverSingleInstance()
+    {
+        try
+        {
+            var self = Environment.ProcessId;
+            foreach (var p in Process.GetProcessesByName("JuniGrid"))
+            {
+                if (p.Id == self) { p.Dispose(); continue; }
+                try { p.Kill(entireProcessTree: true); } catch { }
+                p.Dispose();
+            }
+        }
+        catch { }
+
+        // 持有者被杀后锁被废弃，WaitOne 抛 AbandonedMutexException 时其实已拿到所有权
+        for (var i = 0; i < 20; i++)
+        {
+            try
+            {
+                if (_mutex!.WaitOne(TimeSpan.FromMilliseconds(250))) return true;
+            }
+            catch (AbandonedMutexException)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /// <summary>Startup 事件占位 —— 真正的 splash → main 编排放在这里。</summary>
     private void OnAppStartup(object sender, StartupEventArgs e)
     {
+        if (_uninstallMode)
+        {
+            new UninstallWindow().Show();
+            return;
+        }
+
         // 1) 先弹透明 splash 窗口（logo 停 0.5s → 淡入 1.2s）
         var splash = new SplashWindow();
         splash.Show();

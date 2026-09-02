@@ -2,7 +2,6 @@
 @inject NavigationManager Nav
 @inject PageRefreshService PageRefresh
 @inject IJSRuntime JS
-@implements IDisposable
 
 <nav class="jg-topnav">
     @* 选中高亮块：淡绿底、向下延伸到内容区，像“从内容区露出的一块”；left/width 由 JS 平移到当前激活项 *@
@@ -10,7 +9,9 @@
     @foreach (var item in Items)
     {
         @* v0.24.0：纯图标导航 + 悬浮胶囊提示。
-           data-tip 供 CSS ::after 气泡显示，不再渲染文字 span。 *@
+           data-tip 供 CSS ::after 气泡显示，不再渲染文字 span。
+           （v1.0.17：更新提示统一收口到标题栏自更新按钮的悬浮气泡，
+             设置图标上的红点角标是设置页更新时代的残留，已移除） *@
         <NavLink class="jg-topnav-item" ActiveClass="active" Match="@item.Match" href="@item.Href"
                  data-tip="@item.Label" aria-label="@item.Label"
                  @onclick="() => OnIconClick(item)">
@@ -46,8 +47,6 @@
         // 每次渲染后都重定位（双 rAF 内部保证等 .active 就位），Mod 强制刷新跳动一并覆盖
         try { await JS.InvokeVoidAsync("junigridJs.placeNavThumb"); } catch { }
     }
-
-    public void Dispose() { }
 
     // v1.06.7：只有点击「当前已停留页面」的图标（mods/nexus）才发刷新信号，
     // 页面订阅后重新扫描/拉取/检查更新；从其它页点图标 = 正常导航（组件重建自然加载，

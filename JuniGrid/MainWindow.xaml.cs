@@ -132,6 +132,8 @@ public partial class MainWindow : Window
             // v0.2.1：缓存与存储管理 + 内存管理
             services.AddSingleton<StorageService>();
             services.AddSingleton<MemoryService>();
+            // v1.0.2：应用自更新检查
+            services.AddSingleton<SelfUpdateService>();
             var provider = services.BuildServiceProvider();
             Resources.Add("services", provider);
             App.Services = provider;
@@ -142,6 +144,9 @@ public partial class MainWindow : Window
 
             // v0.2.1：内存管理后台循环随启动常驻 —— 定时/阈值自动压缩不依赖设置页是否打开过
             _ = provider.GetRequiredService<MemoryService>();
+
+            // v1.0.2：启动后台检查一次应用新版本（不阻塞 UI，失败静默）
+            provider.GetRequiredService<SelfUpdateService>().StartBackgroundCheck();
 
             InitializeComponent();
         // v0.35.0：吞掉 "no browser renderer with ID" 未观察异常（页面切换时残留的 JS 调用打到已销毁 renderer）
@@ -166,6 +171,11 @@ public partial class MainWindow : Window
                 try
                 {
                     _wv2 = args.WebView;   // v0.2.1：留存引用，最小化时挂起 WebView2 省内存
+                    // 未渲染帧的兜底色默认是白色：最小化恢复/可见性切换的瞬间会先闪白再出
+                    // 内容（浅色主题下是"白→内容"跳变）。设为 shell 主题色后，
+                    // 任何"还没内容"的帧都是界面本来的浅色，恢复全程无色跳。
+                    args.WebView.DefaultBackgroundColor =
+                        System.Drawing.Color.FromArgb(0xFF, 0xF3, 0xF6, 0xFB);
                     args.WebView.CoreWebView2.WebMessageReceived += (_, e) =>
                     {
                         try
@@ -191,6 +201,16 @@ public partial class MainWindow : Window
             // （现象：最小化后只有桌面/桌面图标点不动，应用/开始/任务栏正常）。
             // 这里在进入 Minimized 时强制把 WebView2 宿主隐藏（不再驻留屏幕），
             // 还原时再恢复可见，杜绝该残留命中区。
+            //
+            // 恢复闪烁修复（v1.0.9）：此前恢复时 WebView 要延迟 60ms 才显示，
+            // 期间露出窗口底色；WebView2 又被 TrySuspendAsync 挂起，Resume 后
+            // 渲染器要几百毫秒才产出新帧，未渲染帧按默认白色呈现 ——
+            // 黑一闪 → 白一闪 → 内容，就是"一闪一闪"。现在：
+            // ① 窗口底色与 WebView2 DefaultBackgroundColor 都 = 浅色主题色；
+            // ② 恢复时立即显示 WebView（不再等待）；
+            // ③ 只用 MemoryUsageTargetLevel Low/Normal 省内存（官方文档明确
+            //    不许与 TrySuspendAsync/Resume 混用），不中断帧呈现 ——
+            //    恢复瞬间直接重现最小化前的最后一帧，全程无色跳。
             StateChanged += (_, e2) =>
             {
                 var isMin = WindowState == System.Windows.WindowState.Minimized;
@@ -198,27 +218,12 @@ public partial class MainWindow : Window
                 {
                     var target = isMin ? Visibility.Collapsed : Visibility.Visible;
                     if (blazorWebView.Visibility == target) return;
+                    try { blazorWebView.Visibility = target; }
+                    catch (Exception ex) { Log("WebView 可见性同步异常: " + ex.Message); }
                     if (isMin)
-                    {
-                        try { blazorWebView.Visibility = target; }
-                        catch (Exception ex) { Log("WebView 可见性同步异常: " + ex.Message); }
-                        // v0.2.1：窗口收起后把 WebView2 调到低内存目标并挂起 + 换出宿主工作集
                         _ = EnterLowMemoryModeAsync();
-                    }
                     else
-                    {
-                        // v0.2.1：先唤醒挂起的 WebView2 再恢复显示
                         ExitLowMemoryMode();
-                        // v0.52.0：恢复时延迟 60ms 再显示 WebView（等它产出内容帧），
-                        // 期间窗口浅色底色兜底，黑闪变无缝浅色过渡。
-                        // v0.52.0：160ms 太长导致明显黑屏，60ms 已足够 WebView2 产出第一帧。
-                        Task.Delay(60).ContinueWith(_ => Dispatcher.Invoke(() =>
-                        {
-                            try { blazorWebView.Visibility = Visibility.Visible; }
-                            catch (Exception ex) { Log("WebView 可见性同步异常: " + ex.Message); }
-                        }));
-                    }
-
                 });
             };
 
@@ -349,8 +354,11 @@ public partial class MainWindow : Window
     private bool _closing;
 
     // v0.2.1：最小化省内存 —— WebView2 是常驻内存大头（渲染整个 UI 的 Chromium 多进程）。
-    // 最小化时把内存使用目标调 Low 并挂起（微软给后台窗口的官方省内存姿态，SDK 1.0.3179 支持）；
-    // 恢复时先 Resume 唤醒再延迟显示（沿用既有 60ms 防黑闪编排）。宿主自身的工作集也一并换出。
+    // v1.0.9：只切 MemoryUsageTargetLevel Low/Normal（官方给后台窗口的省内存姿态，
+    // 文档明确要求与 TrySuspendAsync/Resume 二选一、不得混用）。不再挂起 WebView2：
+    // 挂起会停掉帧呈现，恢复时渲染器唤醒要几百毫秒，是"最小化恢复一闪一闪"的主因之一；
+    // Low 档同样会把浏览器进程内存大量换出磁盘，且不中断呈现，恢复即显最后一帧。
+    // 宿主自身的工作集仍一并换出。
     private Microsoft.Web.WebView2.Wpf.WebView2CompositionControl? _wv2;
 
     private async Task EnterLowMemoryModeAsync()
@@ -360,8 +368,6 @@ public partial class MainWindow : Window
         {
             try { core.MemoryUsageTargetLevel = CoreWebView2MemoryUsageTargetLevel.Low; }
             catch { /* 旧 WebView2 运行时不支持该属性，跳过 */ }
-            try { await core.TrySuspendAsync(); }
-            catch (Exception ex) { Log("WebView2 挂起失败: " + ex.Message); }
         }
         try { Services.MemoryService.TrimWorkingSet(); } catch { }
     }
@@ -370,7 +376,6 @@ public partial class MainWindow : Window
     {
         var core = _wv2?.CoreWebView2;
         if (core is null) return;
-        try { core.Resume(); } catch { }
         try { core.MemoryUsageTargetLevel = CoreWebView2MemoryUsageTargetLevel.Normal; }
         catch { /* 同上 */ }
     }

@@ -29,3 +29,19 @@
 
 ## 运行
 dotnet restore && dotnet run --project JuniGrid
+
+## 打安装包（Riot 风格自研安装器 v2）
+
+```
+powershell -File installer\build-installer.ps1 -SkipAppPublish   # 复用现有 publish\sc，日常打包
+powershell -File installer\build-installer.ps1                   # 重新发布主程序后打包
+```
+
+产物：`dist-tmp\JuniGrid-cn-v<版本>-setup.exe`（WPF 单文件安装器，内嵌 publish\sc）。
+
+- 版本号单一来源：`JuniGrid\Services\AppInfo.cs`（脚本自动读取并注入）
+- 立绘/字样/Logo：`installer\JuniGridInstaller\Assets\`
+- 注意：安装包**不要放在 OneDrive 同步目录里直接运行**（压缩 bundle 与 OneDrive 冲突），
+  下载/复制到本地目录（如 Downloads）后正常。
+- 旧版 Inno 脚本 `installer.iss` 保留备用；自研安装器沿用同一卸载 AppId，
+  老用户升级时安装器会静默移除旧版，控制面板不会出现双入口。

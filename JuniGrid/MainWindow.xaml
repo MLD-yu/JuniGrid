@@ -11,7 +11,7 @@
         WindowStyle="None"
         ResizeMode="CanResize"
         AllowsTransparency="False"
-        Background="#0B1510"
+        Background="#F3F6FB"
         ShowInTaskbar="True"
         Icon="Assets/junigrid-logo.ico">
 

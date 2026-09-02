@@ -1,0 +1,38 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>JuniGridInstaller</RootNamespace>
+    <AssemblyName>JuniGridSetup</AssemblyName>
+    <!-- 与 JuniGrid\Services\AppInfo.cs 保持一致；build-installer.ps1 会用 AppInfo.cs 里的版本号覆盖它 -->
+    <Version>1.0.15</Version>
+    <ApplicationIcon>..\..\JuniGrid\Assets\junigrid-logo.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <DebugType>none</DebugType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="SharpCompress" Version="0.48.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Resource Include="Assets\keyart.png" />
+    <Resource Include="Assets\logo.png" />
+  </ItemGroup>
+
+  <!-- 安装内容：publish\sc 的 LZMA 固实容器（由 make-payload.ps1 / build-installer.ps1 经 PayloadTool 生成） -->
+  <ItemGroup>
+    <EmbeddedResource Include="payload.lz" Condition="Exists('payload.lz')" />
+  </ItemGroup>
+
+  <!-- payload.lz 缺失时兜底自动生成（正常走 build-installer.ps1） -->
+  <Target Name="EnsurePayload" BeforeTargets="BeforeBuild" Condition="!Exists('$(MSBuildThisFileDirectory)payload.lz')">
+    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildThisFileDirectory)..\make-payload.ps1&quot;" />
+  </Target>
+
+</Project>

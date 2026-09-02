@@ -5,7 +5,6 @@
 @inject ModService Mods
 @inject LauncherService Launcher
 @inject UpdateService Updater
-@implements IDisposable
 
 <div class="jg-page">
     <div class="jg-grid-4">
@@ -39,22 +38,6 @@
             </div>
         </div>
     </div>
-
-    @if (_recentLogs.Count > 0)
-    {
-        <div class="jg-card" style="margin-top:12px">
-            <div style="font-weight:600;margin-bottom:6px">
-                📋 SMAPI 实时输出
-                <span style="font-weight:400;font-size:12px;opacity:.6">（完整日志见「SMAPI 日志」页）</span>
-            </div>
-            <div class="jg-logtail">
-                @foreach (var line in _recentLogs)
-                {
-                    <div class="jg-logline @LogLineClassifier.Classify(line)">@line</div>
-                }
-            </div>
-        </div>
-    }
 </div>
 
 @code {
@@ -63,9 +46,6 @@
     private string? _gameVersion;
     private int _totalModCount;
     private int _activeModCount;
-
-    private const int MaxTailLines = 12;
-    private readonly List<string> _recentLogs = new();
 
     protected override void OnInitialized()
     {
@@ -87,21 +67,6 @@
         var mods = Mods.Scan(_cfg.GamePath);
         _totalModCount = mods.Count;
         _activeModCount = mods.Count(m => !m.Disabled);
-
-        Launcher.OnLogLine += HandleLogLine;
-    }
-
-    public void Dispose() => Launcher.OnLogLine -= HandleLogLine;
-
-    private void HandleLogLine(string line)
-    {
-        InvokeAsync(() =>
-        {
-            _recentLogs.Add(line);
-            if (_recentLogs.Count > MaxTailLines)
-                _recentLogs.RemoveAt(0);
-            StateHasChanged();
-        });
     }
 
     private static string FormatTime(string iso) =>

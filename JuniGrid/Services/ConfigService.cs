@@ -46,9 +46,13 @@ public sealed class ConfigService
             SyncStoragePaths();
         }
 
-        /// <summary>把「过滤色情内容」开关同步到 NexusService 的静态查询开关（浏览 GraphQL 是否加 adult 过滤条件）。</summary>
-        private void SyncAdultFilter() =>
-            NexusService.IncludeAdultContent = !Current.FilterAdultContent;
+    /// <summary>把「过滤成人内容 / 只显示成人内容」两个互斥开关同步到 NexusService 的静态查询开关
+    /// （浏览 GraphQL 是否加 adult 过滤条件）。</summary>
+    private void SyncAdultFilter()
+    {
+        NexusService.OnlyAdultContent = Current.OnlyAdultContent;
+        NexusService.IncludeAdultContent = !Current.OnlyAdultContent && !Current.FilterAdultContent;
+    }
 
         /// <summary>v0.2.1：把统一缓存目录同步到 StoragePaths 静态入口 —— 各服务取路径零改动即时生效。</summary>
         private void SyncStoragePaths() =>
@@ -217,6 +221,8 @@ public sealed class JuniGridConfig
     /// 关闭时设置页要求输入出生年月日验证年满 18 周岁（仅本地校验，不联网比对）。
     /// </summary>
     public bool FilterAdultContent { get; set; } = true;
+    /// <summary>「只显示成人内容」开关，与 FilterAdultContent 互斥（两者最多一个开启，可同时关闭）。默认关闭。</summary>
+    public bool OnlyAdultContent { get; set; } = false;
     /// <summary>
     /// Nexus 一键安装（免弹浏览器、后台直接下载并装进 Mods）。默认开启；
     /// 关闭后详情页的「安装」按钮改为打开内置浏览器兜底。
@@ -238,7 +244,7 @@ public sealed class JuniGridConfig
     public bool EnableAutoInstall { get; set; } = false;
 
     /// <summary>v0.2.2：任务管理悬浮窗常驻开关。开启常驻显示；关闭后仅在下载任务运行时显示。</summary>
-    public bool ShowTaskDock { get; set; } = true;
+    public bool ShowTaskDock { get; set; } = false;
     public string NexusAvatarDataUri { get; set; } = "";
 
     /// <summary>累计游玩时间（分钟）。LauncherService 在游戏进程退出时累加。</summary>
