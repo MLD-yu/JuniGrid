@@ -47,7 +47,7 @@ dotnet publish JuniGrid/JuniGrid.csproj -c Release
 
 如果对你有帮助，可以请作者喝杯咖啡吗
 
-<img src="https://github.com/MLD-yu/JuniGrid/releases/download/v1.1.0/sponsor-cards.png" alt="赞助收款码" width="640" />
+<img src="https://raw.githubusercontent.com/MLD-yu/JuniGrid/main/JuniGrid/wwwroot/assets/sponsor-cards.png" alt="赞助收款码" width="640" />
 
 <sub>MLD/MLD（\*禺）——扫码前请确定收款人信息</sub>
 
