@@ -45,7 +45,7 @@ dotnet publish JuniGrid/JuniGrid.csproj -c Release
 
 ## 支持赞助
 
-如果对你有帮助，可以请作者喝杯咖啡吗
+如果你喜欢JuniGrid，可以请作者喝杯咖啡吗
 
 <img src="https://raw.githubusercontent.com/MLD-yu/JuniGrid/main/JuniGrid/wwwroot/assets/sponsor-cards.png" alt="赞助收款码" width="640" />
 
