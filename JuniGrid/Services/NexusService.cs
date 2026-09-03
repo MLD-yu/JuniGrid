@@ -38,6 +38,16 @@ public sealed class NexusService
         return r;
     }
 
+    // v1.08：宽容客户端 —— 详情页/按需单请求专用。Nexus API 单请求实测要 5~8 秒，
+    // 详情页要串 7 个请求，15s 快速失败通道必然超时。批量检查更新仍走 Http(15s)。
+    private static readonly HttpClient SlowHttp = CreateSlow();
+    private static HttpClient CreateSlow()
+    {
+        var h = CreateClient();
+        h.Timeout = TimeSpan.FromSeconds(45);
+        return h;
+    }
+
     /// <summary>Mod metadata (name + current version + cover). null on error.</summary>
     /// <summary>v0.46.0：拉取本游戏的官方分类表（category_id → 名称），调用方缓存进 config。</summary>
     public async Task<Dictionary<int, string>?> GetCategoriesAsync(string apiKey)
@@ -76,7 +86,7 @@ public sealed class NexusService
     /// <summary>Full mod detail for the in-app detail page (incl. HTML description + cover).</summary>
     public async Task<NexusModDetail?> GetModDetailAsync(string apiKey, int modId)
     {
-        using var res = await Http.SendAsync(Req(apiKey, $"{Base}/mods/{modId}.json"));
+        using var res = await SlowHttp.SendAsync(Req(apiKey, $"{Base}/mods/{modId}.json"));
         if (!res.IsSuccessStatusCode) return null;
         using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
         var root = doc.RootElement;
@@ -234,9 +244,9 @@ public sealed class NexusService
 }
 
     /// <summary>Newest MAIN file (fallback: newest file of any category).</summary>
-    public async Task<NexusFileInfo?> GetLatestMainFileAsync(string apiKey, int modId)
+    public async Task<NexusFileInfo?> GetLatestMainFileAsync(string apiKey, int modId, bool patient = false)
     {
-        using var res = await Http.SendAsync(Req(apiKey, $"{Base}/mods/{modId}/files.json"));
+        using var res = await (patient ? SlowHttp : Http).SendAsync(Req(apiKey, $"{Base}/mods/{modId}/files.json"));
         if (!res.IsSuccessStatusCode) return null;
         using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
         if (!doc.RootElement.TryGetProperty("files", out var files)) return null;
@@ -325,7 +335,7 @@ public sealed class NexusService
     /// <summary>v0.69.0：mod 的更新日志（版本 → 变更行）。对应官网 LOGS 页签的 Changelogs。</summary>
     public async Task<List<NexusChangelog>?> GetChangelogsAsync(string apiKey, int modId)
     {
-        using var res = await Http.SendAsync(Req(apiKey, $"{Base}/mods/{modId}/changelogs.json"));
+        using var res = await SlowHttp.SendAsync(Req(apiKey, $"{Base}/mods/{modId}/changelogs.json"));
         if (!res.IsSuccessStatusCode) return null;
         using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
         var list = new List<NexusChangelog>();
@@ -572,7 +582,7 @@ public sealed class NexusService
     {
         try
         {
-            using var res = await Http.GetAsync(
+            using var res = await SlowHttp.GetAsync(
                 $"https://www.nexusmods.com/stardewvalley/mods/{modId}");
             if (!res.IsSuccessStatusCode) return null;
             var html = await res.Content.ReadAsStringAsync();
@@ -660,7 +670,7 @@ public sealed class NexusService
     {
         try
         {
-            using var res = await Http.SendAsync(Req(apiKey,
+            using var res = await SlowHttp.SendAsync(Req(apiKey,
                 "https://api.nexusmods.com/v1/user/download_history.json"));
             if (!res.IsSuccessStatusCode) return null;
             using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
@@ -1147,7 +1157,7 @@ public sealed class NexusService
         {
             if (string.IsNullOrWhiteSpace(url)) return null;
             if (url.Contains("/missing", StringComparison.OrdinalIgnoreCase)) return null;
-            using var res = await Http.GetAsync(url);
+            using var res = await SlowHttp.GetAsync(url);
             if (!res.IsSuccessStatusCode) return null;
             // v1.08.0：无头像用户的 ID 直链会 307 重定向到 missing 占位图 —— 重定向后的最终 URL
             // 要再查一次（原 URL 不含 /missing，落点含）

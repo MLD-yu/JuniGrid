@@ -16,14 +16,22 @@ namespace JuniGrid.Services;
 public static class ResumableDownload
 {
     public static async Task RunAsync(HttpClient http, string url, string destPath,
-        Action<string, double?, double?> report, int maxAttempts = 5, CancellationToken ct = default)
+        Action<string, double?, double?> report, int maxAttempts = 5, CancellationToken ct = default,
+        IEnumerable<string>? fallbackUrls = null)
     {
+        // v1.08：镜像候选 —— 直连失败且尚未写入字节时立刻切换下一候选，
+        // 不再在死链上耗尽全部重试（旧逻辑 4 次重试 ≈ 干等 80 秒才轮到镜像）。
+        // 已有半截数据时优先在当前主机续传（候选主机字节一致，续传也随时可换）。
+        var candidates = new List<string> { url };
+        if (fallbackUrls is not null) candidates.AddRange(fallbackUrls);
+        var candIndex = 0;
+
         long written = 0, totalBytes = 0;
         for (int attempt = 1; ; attempt++)
         {
             try
             {
-                using var req = new HttpRequestMessage(HttpMethod.Get, url);
+                using var req = new HttpRequestMessage(HttpMethod.Get, candidates[candIndex]);
                 if (written > 0)
                     req.Headers.Range = new RangeHeaderValue(written, null);
                 using var res = await http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
@@ -57,7 +65,7 @@ public static class ResumableDownload
 
                     var percent = totalBytes <= 0 ? 0.0 : Math.Min(100.0, written * 100.0 / totalBytes);
                     double? speed = null;
-                    if (DateTime.UtcNow - lastReport > TimeSpan.FromSeconds(0.4)
+                    if (DateTime.UtcNow - lastReport > TimeSpan.FromSeconds(1.0)   // v1.08：0.4s→1s，降低进度刷新对 UI 的冲击
                         || (totalBytes > 0 && written >= totalBytes))
                     {
                         speed = (written - lastWritten) / (DateTime.UtcNow - lastReport).TotalSeconds / 1024.0 / 1024.0;
@@ -71,8 +79,18 @@ public static class ResumableDownload
             catch (Exception ex) when (attempt < maxAttempts && ex is not OperationCanceledException)
             {
                 var pct = totalBytes > 0 ? Math.Min(99.0, written * 100.0 / totalBytes) : 0.0;
-                report($"连接中断（{ex.Message}），从 {FormatBytes(written)} 处续传（重试 {attempt}/{maxAttempts - 1}）…", pct, 0);
-                await Task.Delay(TimeSpan.FromSeconds(attempt));
+                if (written == 0 && candIndex < candidates.Count - 1)
+                {
+                    // 一个字节都没下到（连接不通）→ 立刻换镜像，不等重试耗尽
+                    candIndex++;
+                    report($"直连失败，切换镜像下载（{candIndex}/{candidates.Count - 1}）…", 0, 0);
+                    await Task.Delay(TimeSpan.FromMilliseconds(500));
+                }
+                else
+                {
+                    report($"连接中断（{ex.Message}），从 {FormatBytes(written)} 处续传（重试 {attempt}/{maxAttempts - 1}）…", pct, 0);
+                    await Task.Delay(TimeSpan.FromSeconds(attempt));
+                }
             }
         }
     }

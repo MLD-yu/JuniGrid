@@ -89,7 +89,38 @@ public sealed class ModService
             catch (IOException ioe) { AppLog.Warn("Mods", "扫描跳过(IO): " + Path.GetFileName(dir) + " - " + ioe.Message); continue; }
             catch (UnauthorizedAccessException) { AppLog.Warn("Mods", "扫描跳过(无权限): " + Path.GetFileName(dir)); continue; }
         }
-        return results;
+        // v1.08：UniqueID 判重 —— 同一个 mod 的禁用副本（.X）与启用副本（X）并存时
+        // 只显示一份（常见于：旧副本被禁用后又重新下载/重装了新副本）。规则：优先保留
+        // 启用的那份；同为启用/禁用则保留版本号高的。被隐藏的副本留在磁盘不动，不删文件。
+        var byUid = new Dictionary<string, ModEntry>(StringComparer.OrdinalIgnoreCase);
+        var ordered = new List<ModEntry>();
+        foreach (var e in results)
+        {
+            var uid = e.UniqueID?.Trim();
+            if (string.IsNullOrWhiteSpace(uid)) { ordered.Add(e); continue; }
+            if (byUid.TryGetValue(uid, out var prev))
+            {
+                ModEntry keep = prev, drop = e;
+                var prevBetter = !prev.Disabled && e.Disabled;
+                var dropBetter = prev.Disabled && !e.Disabled;
+                if (dropBetter) { keep = e; drop = prev; }
+                else if (!prevBetter && !dropBetter)
+                {
+                    var vp = Version.TryParse((prev.Version ?? "").TrimStart('v', 'V'), out var a) ? a : null;
+                    var ve = Version.TryParse((e.Version ?? "").TrimStart('v', 'V'), out var b) ? b : null;
+                    if (ve is not null && (vp is null || ve > vp)) { keep = e; drop = prev; }
+                }
+                ordered.Remove(drop);
+                ordered.Add(keep);
+                AppLog.Warn("Mods", $"[判重] UniqueID {uid} 存在多份：显示 {keep.Folder}，隐藏 {drop.Folder}");
+            }
+            else
+            {
+                byUid[uid] = e;
+                ordered.Add(e);
+            }
+        }
+        return ordered;
     }
 
     // ------------------------------------------------------------------
@@ -121,7 +152,17 @@ public sealed class ModService
             if (targetName == topLevel) return null;
 
             var dest = Path.Combine(modsDir, targetName);
-            if (Directory.Exists(dest)) return "已存在同名文件夹，无法重命名";
+            if (Directory.Exists(dest))
+            {
+                // v1.08：目标已存在 = 同一 mod 的重复副本（如禁用的 .X 与新装的 X 并存）。
+                // 把旧的重复副本挪进 .junigrid_trash（不真删，可找回），再完成本次改名。
+                var trash = Path.Combine(modsDir, ".junigrid_trash");
+                Directory.CreateDirectory(trash);
+                var grave = Path.Combine(trash,
+                    targetName.TrimStart('.') + "-" + DateTime.Now.ToString("yyyyMMdd_HHmmss"));
+                Directory.Move(dest, grave);
+                AppLog.Warn("Mods", $"[判重清理] 重复副本 {targetName} 已移入回收站（{Path.GetFileName(grave)}）");
+            }
             // v0.44.0：src 和 dest 都在同一个 Mods 目录下，Directory.Move 是纯元数据
             // 重命名（瞬时，不复制内容）。原 MoveDirectorySafe 遇占用会走"复制+删源"，
             // 大 mod 要搬几百 MB → 批量启禁巨慢的根因。改用瞬时改名，占用时让 Windows
@@ -517,7 +558,10 @@ public sealed class ModService
                 Author = root["Author"]?.Type == Newtonsoft.Json.Linq.JTokenType.String ? (string)root["Author"]! : "Unknown",
                 Version = root["Version"]?.Type == Newtonsoft.Json.Linq.JTokenType.String ? (string)root["Version"]! : "?",
                 Description = root["Description"]?.Type == Newtonsoft.Json.Linq.JTokenType.String ? (string)root["Description"]! : "",
-                UniqueID = root["UniqueID"]?.Type == Newtonsoft.Json.Linq.JTokenType.String ? (string)root["UniqueID"]! : "",
+                // v1.08：忽略大小写读取 —— SMAPI 内置 mod 的 manifest 写的是 "UniqueId"，
+                // 严格匹配会读空导致同一 mod 的禁用/启用副本无法判重（列表出现两行）。
+                UniqueID = (root.GetValue("UniqueID", StringComparison.OrdinalIgnoreCase)?.Type == Newtonsoft.Json.Linq.JTokenType.String
+                    ? (string)root.GetValue("UniqueID", StringComparison.OrdinalIgnoreCase)! : ""),
                 NexusModId = nexusId,
                 GitHubRepo = githubRepo,
                 Dependencies = deps,

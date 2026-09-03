@@ -60,11 +60,13 @@ public sealed class UpdateService
     // ------------------------------------------------------------------
     // SMAPI update check (GitHub Releases API)
     // ------------------------------------------------------------------
-    public async Task<SmapiUpdateInfo> CheckSmapiAsync(string? installedVersion)
+    public async Task<SmapiUpdateInfo> CheckSmapiAsync(string? installedVersion, bool force = false)
     {
         // 缓存策略：同一个本地版本或 20 分钟内的成功结果直接用；
         // 上次失败（GitHub 限流/断网）不永久缓存，用户点「↻ 检查更新」时重试。
-        if (_cached is not null
+        // v1.08：force = 手动刷新，绕过 5 分钟缓存强制重查。
+        if (!force
+            && _cached is not null
             && _cached.Error is null
             && _cached.ForVersion == installedVersion
             && DateTime.Now - _cachedAt < TimeSpan.FromMinutes(5))
@@ -156,10 +158,20 @@ public sealed class UpdateService
         {
             // HttpClient 默认跟随重定向；最终 RequestUri 形如
             // https://github.com/Pathoschild/SMAPI/releases/tag/4.5.2
-            using var resp = await Http.GetAsync(
-                "https://github.com/Pathoschild/SMAPI/releases/latest",
-                HttpCompletionOption.ResponseHeadersRead);
-            if (!resp.IsSuccessStatusCode) return null;
+            // v1.08：直连失败（国内 github.com 443 不通）时依次走镜像；
+            // 镜像回传的最终 URL 同样带 /releases/tag/，tag 解析逻辑不变。
+            HttpResponseMessage? resp = null;
+            foreach (var url in GithubUrls("https://github.com/Pathoschild/SMAPI/releases/latest"))
+            {
+                try
+                {
+                    resp = await Http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead);
+                    if (resp.IsSuccessStatusCode) break;
+                    resp.Dispose(); resp = null;
+                }
+                catch { /* 换下一个通道 */ }
+            }
+            if (resp is null) return null;
 
             var finalUrl = resp.RequestMessage?.RequestUri?.ToString() ?? "";
             const string marker = "/releases/tag/";
@@ -257,7 +269,10 @@ public sealed class UpdateService
 
             // 下载前先备份玩家 Mods，这样下载/解压/安装的任何一步出问题
             // 都不影响原始目录；安装完成后会把备份合并回 Mods 并删掉临时备份。
-            var modsBackup = BackupMods(gamePath);
+            // v1.08：备份是几百 MB 的整目录复制，必须离开 UI 线程（旧版同步复制，
+            // 点下下载整个界面冻结到备份结束）；进度条同时提示备份阶段。
+            progress?.Report(new InstallProgress("正在备份现有 Mods 目录…", 0, 0));
+            var modsBackup = await Task.Run(() => BackupMods(gamePath));
             if (modsBackup is not null)
                 progress?.Report(new InstallProgress("已备份现有 Mods 目录，开始下载 SMAPI…", 0, 0));
 
@@ -267,7 +282,7 @@ public sealed class UpdateService
             await DownloadToFileAsync(info.InstallerZipUrl, zip, progress);
 
             progress?.Report(new InstallProgress("正在解压安装包…"));
-            await ExtractWithRetryAsync(zip, temp, progress);
+            await Task.Run(() => ExtractWithRetryAsync(zip, temp, progress));   // v1.08：离开 UI 线程
 
             // 兜底：如果这个 zip 是「double-zipped」外壳，解出来还是 zip，自动再解一层。
             var innerZip = Directory
@@ -276,7 +291,7 @@ public sealed class UpdateService
             if (innerZip is not null)
             {
                 progress?.Report(new InstallProgress("检测到内层压缩包，正在再次解压…"));
-                await ExtractWithRetryAsync(innerZip, temp, progress);
+                await Task.Run(() => ExtractWithRetryAsync(innerZip, temp, progress));   // v1.08
             }
 
             // SMAPI 4.5.x 的官方安装器有个已知问题：它在 --install --no-prompt 模式
@@ -311,13 +326,14 @@ public sealed class UpdateService
             var extracted = Path.Combine(temp, "smapi-files");
             Directory.CreateDirectory(extracted);
             progress?.Report(new InstallProgress("正在解压安装内容…", 95));
-            await ExtractWithRetryAsync(dat, extracted, progress);
+            await Task.Run(() => ExtractWithRetryAsync(dat, extracted, progress));   // v1.08
 
             if (!File.Exists(Path.Combine(extracted, "StardewModdingAPI.exe")))
                 return "SMAPI 安装包内没有 StardewModdingAPI.exe（安装包异常）";
 
             // 先清掉旧 SMAPI 文件再复制新文件（避免文件锁定/残留版本文件）。
-            CopySmapiBundle(extracted, gamePath);
+            // v1.08：复制/清理都是上百 MB 的磁盘工作，不能冻 UI。
+            await Task.Run(() => CopySmapiBundle(extracted, gamePath));
 
             // 更新结束后保留游戏自带的 deps.json、runtimeconfig.json，SMAPI 的
             // StardewModdingAPI.deps.json 需要在游戏主文件基础上生成/覆盖。
@@ -331,14 +347,14 @@ public sealed class UpdateService
             if (modsBackup is not null)
             {
                 progress?.Report(new InstallProgress("正在恢复 Mod 文件夹…", 100));
-                RestoreMods(modsBackup, Path.Combine(gamePath, "Mods"));
+                await Task.Run(() => RestoreMods(modsBackup, Path.Combine(gamePath, "Mods")));   // v1.08：离开 UI 线程
             }
             CopyBuiltinMods(Path.Combine(extracted, "Mods"), Path.Combine(gamePath, "Mods"));
 
             // 然后删除这次更新产生的临时备份目录。
             if (modsBackup is not null)
             {
-                TryDeleteBackup(modsBackup);
+                await Task.Run(() => TryDeleteBackup(modsBackup));   // v1.08：删除备份也是大 IO
             }
 
             progress?.Report(new InstallProgress($"SMAPI {info.LatestVersion} 安装完成", 100, 0));
@@ -405,12 +421,33 @@ public sealed class UpdateService
     }
 
     /// <summary>流式下载到文件，避免大文件占用内存。
-    /// v1.07：断点续传/自动重试统一走 ResumableDownload（掉连接不再从 0 重下）。</summary>
+    /// v1.07：断点续传/自动重试统一走 ResumableDownload（掉连接不再从 0 重下）。
+    /// v1.08：GitHub 资源自动附带镜像候选 —— 直连 0 字节失败立刻切换镜像。</summary>
     private static Task DownloadToFileAsync(
         string url, string dest, IProgress<InstallProgress>? progress, CancellationToken ct = default)
     {
+        var fallback = url.StartsWith("https://github.com/", StringComparison.OrdinalIgnoreCase)
+            ? GithubUrls(url).Skip(1)
+            : null;
         return ResumableDownload.RunAsync(DownloadHttp, url, dest,
-            (msg, pct, spd) => progress?.Report(new InstallProgress(msg, pct, spd)), ct: ct);
+            (msg, pct, spd) => progress?.Report(new InstallProgress(msg, pct, spd)),
+            fallbackUrls: fallback, ct: ct);
+    }
+
+    // ------------------------------------------------------------------
+    // v1.08：国内加速 —— GitHub 直连失败（443 连接被拒）自动切换镜像前缀
+    // 2026-09 实测：ghfast.top / gh-proxy.com / ghproxy.net 均可代理
+    // releases/download；api.github.com 仅 gh-proxy.com 支持。
+    // ------------------------------------------------------------------
+    internal static readonly string[] GithubMirrorPrefixes =
+        { "https://ghfast.top/", "https://gh-proxy.com/", "https://ghproxy.net/" };
+
+    /// <summary>依次给出：原始 URL → 各镜像前缀 URL。逐个尝试直到成功。</summary>
+    public static IEnumerable<string> GithubUrls(string url)
+    {
+        yield return url;
+        foreach (var p in GithubMirrorPrefixes)
+            yield return p + url;
     }
 
     /// <summary>把字节数显示成可读的 KB/MB/GB 文本。</summary>
@@ -554,39 +591,44 @@ public sealed class UpdateService
     // ------------------------------------------------------------------
     // Mod 的 GitHub 更新源（免费、无需 key、可直接下载）
     // ------------------------------------------------------------------
-    /// <summary>repo = "owner/name"。返回最新 release 的版本号 + zip 资产地址。</summary>
+    /// <summary>repo = "owner/name"。返回最新 release 的版本号 + zip 资产地址。
+    /// v1.08：api.github.com 直连失败时走 gh-proxy.com 镜像（实测唯一代理 API 可用的镜像）。</summary>
     public async Task<GitHubModRelease?> CheckModGitHubAsync(string repo)
     {
-        try
+        var api = $"https://api.github.com/repos/{repo}/releases/latest";
+        foreach (var url in GithubUrls(api))
         {
-            var json = await Http.GetStringAsync(
-                $"https://api.github.com/repos/{repo}/releases/latest");
-            using var doc = JsonDocument.Parse(json);
-            var root = doc.RootElement;
-
-            var tag = root.TryGetProperty("tag_name", out var t) ? t.GetString() ?? "" : "";
-            if (string.IsNullOrEmpty(tag)) return null;
-
-            string? zip = null;
-            if (root.TryGetProperty("assets", out var assets))
+            try
             {
-                foreach (var a in assets.EnumerateArray())
+                var json = await Http.GetStringAsync(url);
+                using var doc = JsonDocument.Parse(json);
+                var root = doc.RootElement;
+
+                var tag = root.TryGetProperty("tag_name", out var t) ? t.GetString() ?? "" : "";
+                if (string.IsNullOrEmpty(tag)) return null;
+
+                string? zip = null;
+                if (root.TryGetProperty("assets", out var assets))
                 {
-                    var name = a.TryGetProperty("name", out var n) ? n.GetString() ?? "" : "";
-                    if (name.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+                    foreach (var a in assets.EnumerateArray())
                     {
-                        zip = a.TryGetProperty("browser_download_url", out var d)
-                            ? d.GetString() : null;
-                        break;
+                        var name = a.TryGetProperty("name", out var n) ? n.GetString() ?? "" : "";
+                        if (name.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+                        {
+                            zip = a.TryGetProperty("browser_download_url", out var d)
+                                ? d.GetString() : null;
+                            break;
+                        }
                     }
                 }
+                return new GitHubModRelease(tag, zip);
             }
-            return new GitHubModRelease(tag, zip);
+            catch
+            {
+                continue;   // 换下一个通道（镜像/直连）再试
+            }
         }
-        catch
-        {
-            return null;   // 网络问题 / 仓库没有 release —— 交给 Nexus 源兜底
-        }
+        return null;   // 全部通道失败 —— 交给 Nexus 源兜底
     }
 
     private static string Normalize(string? v) => (v ?? "").Trim().TrimStart('v', 'V');

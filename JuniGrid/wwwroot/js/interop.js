@@ -274,6 +274,20 @@ window.junigridJs.animatedListInit = function (scrollSel, listSel) {
         onScroll();
     }
 };
+// v1.08：过滤/搜索切换时调用 —— 清掉旧行的入场动画内联样式（IntersectionObserver
+// 写入的 opacity/transform），让新过滤结果直接显示，不重播整表动画
+window.junigridJs.animatedListReset = function (listSel) {
+    const list = document.querySelector(listSel);
+    if (!list) return;
+    list.querySelectorAll('[data-al]').forEach(el => {
+        el.style.opacity = '';
+        el.style.transform = '';
+        el.style.transition = '';
+        if (el.__alBound && list.__alObs) list.__alObs.unobserve(el);
+        el.__alBound = false;
+    });
+};
+
 // v0.35.0：导航滑块实时同步 —— 路由变化/窗口缩放/刷新都立即重定位（双重 rAF 等布局稳定）
 window.junigridJs.placeNavThumb = function () {
     const nav = document.querySelector('.jg-topnav');

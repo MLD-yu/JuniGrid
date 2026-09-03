@@ -11,6 +11,7 @@
 @inject NavigationManager Nav
 @inject IJSRuntime JS
 @inject TaskCenterService Center
+@inject CoverCacheService Covers
 @implements IDisposable
 
 <div class="jg-page">
@@ -27,8 +28,8 @@
                 </button>
             </div>
             <div style="opacity:.7;font-size:13px">
-                @* v1.06.9：检查更新期间用骨架屏遮列表，头部提示保持简洁 *@
-                @if (_initialLoading || _checkingUpdates) { <span>正在加载 mod 列表…</span> }
+                @* v1.08：骨架屏只负责磁盘扫描阶段；检查更新期间列表照常显示 *@
+                @if (_initialLoading) { <span>正在加载 mod 列表…</span> }
                 else { <text>共 @_mods.Count 个（@_mods.Count(m => !m.Disabled) 已启用）</text> }
             </div>
         </div>
@@ -194,12 +195,27 @@
         {
             <div class="jg-dd-overlay" @onclick="CloseSort"></div>
         }
-        <div class="jg-chips" role="group">
+        <div class="jg-chips" role="group" style="align-items:center">
         @foreach (var f in _filterOptions)
         {
-            <button class="jg-chip @(_filter == f.Key ? "active" : "")" @onclick="() => SetFilter(f.Key)">
+            <button class="jg-chip @(_filter == f.Key ? "active" : "")"
+                    style="@(f.Key == "updatable" && FailedCheckCount > 0 ? "position:relative" : "")"
+                    @onclick="() => SetFilter(f.Key)">
                 @f.Label<span style="opacity:.7;font-weight:400"> · @CountFor(f.Key)</span>
+                @if (f.Key == "updatable" && FailedCheckCount > 0)
+                {
+                    @* v1.08：有检查失败的 mod → 可更新标签右上角小红点 *@
+                    <span style="position:absolute;top:-3px;right:-3px;width:8px;height:8px;border-radius:50%;background:#e81123;box-shadow:0 0 0 2px var(--jg-bg,#fff)"></span>
+                }
             </button>
+        }
+        @if (FailedCheckCount > 0)
+        {
+            <span style="font-size:12px;color:#c50f1f;opacity:.85;white-space:nowrap">更新检查超时，请检查网络（@FailedCheckCount 个未完成）</span>
+        }
+        else if (_checkingUpdates)
+        {
+            <span style="font-size:12px;opacity:.6;white-space:nowrap">正在检查更新…</span>
         }
         </div>
         <div class="jg-search-x @(_searchOpen ? "open" : "")">
@@ -216,7 +232,7 @@
 
     @* ── 单行 mod 列表 ── *@
     @* v1.06.9：首次加载 或 检查更新未完成 → 一律显示 shimmer 骨架屏，真实列表 display:none *@
-    @if (_initialLoading || _checkingUpdates)
+    @if (_initialLoading)
     {
         <div class="jg-modrows jg-modrows-skeleton">
             @for (var i = 0; i < 8; i++)
@@ -232,7 +248,7 @@
             }
         </div>
     }
-    <div class="jg-modrows" style="@((_initialLoading || _checkingUpdates) ? "display:none" : "")">
+    <div class="jg-modrows" style="@(_initialLoading ? "display:none" : "")">
         @foreach (var group in Groups)
         {
             @if (group.Key != "")
@@ -257,6 +273,7 @@
                     var cover = GetCover(m);
                     var missing = MissingDeps(m);
                     <div class="jg-modrow @(_selected.Contains(m.Folder) ? "selected" : "")"
+                         @key="m.Folder"
                          data-al
                          @onclick="() => ToggleSelect(m.Folder)">
 
@@ -306,10 +323,7 @@
                                     ⚠️ 缺少依赖：@string.Join("、", missing)
                                 </div>
                             }
-                            @if (st.Message is not null)
-                            {
-                                <div class="jg-mod-updmsg @st.Status" style="white-space:normal">@st.Message</div>
-                            }
+                            @* v1.08：检查失败/超时不再在行内显示红字，统一收进筛选栏提示 *@
                         </div>
 
                         @* ── hover 浮现的操作按钮 ── *@
@@ -522,6 +536,13 @@
     {
         _renamingProfile = name;
         _renameBuffer = name;
+        // v1.08：改名时收起存档下拉 —— 输入框+确定按钮已经独立成头，下拉继续开着
+        // 只会挡视线，还允许同时点别的存档项，状态容易乱。
+        if (_profileOpen)
+        {
+            _profileOpen = false;
+            _ = JS.InvokeVoidAsync("junigridJs.profileDropdown", ".jg-profile-dd", false);
+        }
     }
 
     private void OnRenameKey(KeyboardEventArgs e, string oldName)
@@ -568,9 +589,21 @@
         get
         {
             var list = Cfg.Current.ModProfiles;
-            if (list.Count == 0 || list[0].Name != "默认")
-                list.Insert(0, new ModProfile { Name = "默认" });
-            return list;
+            // v1.08：按名字（忽略大小写）去重 —— 历史 bug 曾写入重名档（如两个"默认"、
+            // 空壳"Default"）。同名保留第一个；若已有的空壳而后来的有启用清单，则用后者替换。
+            var deduped = new List<ModProfile>();
+            foreach (var p in list)
+            {
+                var same = deduped.FirstOrDefault(x => x.Name.Equals(p.Name, StringComparison.OrdinalIgnoreCase));
+                if (same is null) { deduped.Add(p); continue; }
+                if ((same.EnabledModUids?.Count ?? 0) == 0 && (p.EnabledModUids?.Count ?? 0) > 0)
+                    deduped[deduped.IndexOf(same)] = p;
+            }
+            if (deduped.Count == 0 || deduped[0].Name != "默认")
+                deduped.Insert(0, new ModProfile { Name = "默认" });
+            if (deduped.Count != list.Count)
+                Cfg.Current.ModProfiles = deduped;   // 去重结果同步回配置，下次落盘即修复
+            return deduped;
         }
     }
 
@@ -583,7 +616,7 @@
         var active = ActiveProfileName;
         // v0.71.4："默认"存档同样快照 —— 旧版直接 return，"默认"的启用清单永远停在旧状态，
         // 切出去再切回来会被"还原"成陈旧清单（用户看到的串档另一根因）。
-        var p = Cfg.Current.ModProfiles.FirstOrDefault(x => x.Name == active);
+        var p = Cfg.Current.ModProfiles.FirstOrDefault(x => x.Name.Equals(active, StringComparison.OrdinalIgnoreCase));
         if (p is null) return;
         // v0.50.0：写回前先重扫，确保 _mods 反映磁盘真实状态（否则依赖联动刚改完、
         // _mods 还是旧的，写回的是陈旧数据 → 串档）
@@ -600,7 +633,14 @@
 
     private async Task ToggleProfile()
     {
+        if (_deletingProfile is not null) return;   // v1.08：删除确认期间禁开
         _profileOpen = !_profileOpen;
+        // v1.08：两个下拉互斥 —— 开存档就关排序
+        if (_profileOpen && _sortOpen)
+        {
+            _sortOpen = false;
+            try { await JS.InvokeVoidAsync("junigridJs.dropdownToggle", ".jg-sort-dd", false); } catch { }
+        }
         _renamingProfile = null; _renameBuffer = "";   // v0.71.4：开合下拉时退出重命名态
         if (!_profileOpen) { _addingProfile = false; _newProfileName = ""; }
         try { await JS.InvokeVoidAsync("junigridJs.profileDropdown", ".jg-profile-dd", _profileOpen); } catch { }
@@ -648,6 +688,12 @@
     private void AskDeleteProfile(string name)
     {
         _deletingProfile = name;
+        // v1.08：弹删除确认框时把排序下拉也一并收起
+        if (_sortOpen)
+        {
+            _sortOpen = false;
+            _ = JS.InvokeVoidAsync("junigridJs.dropdownToggle", ".jg-sort-dd", false);
+        }
         if (_profileOpen)
         {
             _profileOpen = false;
@@ -855,7 +901,14 @@
 
     private async Task ToggleSort()
     {
+        if (_deletingProfile is not null) return;   // v1.08：删除确认期间禁开
         _sortOpen = !_sortOpen;
+        // v1.08：两个下拉互斥 —— 开排序就关存档
+        if (_sortOpen && _profileOpen)
+        {
+            _profileOpen = false;
+            try { await JS.InvokeVoidAsync("junigridJs.profileDropdown", ".jg-profile-dd", false); } catch { }
+        }
         try { await JS.InvokeVoidAsync("junigridJs.dropdownToggle", ".jg-sort-dd", _sortOpen); } catch { }
     }
 
@@ -938,7 +991,18 @@
         _ => 0,
     };
 
-    private void SetFilter(string key) { _filter = key; }
+    private bool _skipListAnimOnce;
+
+    // v1.08：检查失败（超时等）的 mod 数量 —— 驱动筛选栏提示与"可更新"红点
+    private int FailedCheckCount => _states.Values.Count(s => s.Status == "failed");
+
+    private void SetFilter(string key)
+    {
+        _filter = key;
+        // v1.08：切换过滤 = 换一批行。标记本帧跳过入场动画、改为直接清掉旧行内联
+        // 样式（opacity/transform），避免整表重新播 0.2s 动画造成的"不流畅/闪动"。
+        _skipListAnimOnce = true;
+    }
 
     private void ClearSearch() { SearchText = ""; }
 
@@ -977,7 +1041,21 @@
             _entryRestoreRan = true;
             try { await JS.InvokeVoidAsync("junigridJs.cancelScrollRestore", ".jg-main"); } catch { }
         }
-        try { await JS.InvokeVoidAsync("junigridJs.animatedListInit", ".jg-main", ".jg-modrows"); } catch { }
+        if (_skipListAnimOnce)
+        {
+            // v1.08：过滤切换 —— 清掉旧行的动画内联样式直接显示，不重播入场动画
+            _skipListAnimOnce = false;
+            _listStructureDirty = false;
+            try { await JS.InvokeVoidAsync("junigridJs.animatedListReset", ".jg-modrows"); } catch { }
+        }
+        else if (firstRender || _listStructureDirty)
+        {
+            // v1.08：入场动画只在列表结构变化时初始化 —— 此前每次渲染都对全部行
+            // 做强制布局（getBoundingClientRect × N），检查更新每完成一个 mod 触发
+            // 一次渲染，63 行 × 每秒数次 = 进页面卡顿的主因之一。
+            _listStructureDirty = false;
+            try { await JS.InvokeVoidAsync("junigridJs.animatedListInit", ".jg-main", ".jg-modrows"); } catch { }
+        }
         if (firstRender)
         {
             // v0.45.0：记忆 /mods 滚动位置 —— 进详情页再返回时恢复到原来滚动的高度，
@@ -1020,6 +1098,8 @@
 
     /// <summary>vNext：通用进入恢复只跑一次的闸门（骨架屏期不跑，列表显示后的第一次渲染跑）。</summary>
     private bool _entryRestoreRan;
+    // v1.08：列表结构脏标记 —— Rescan 换血后才需要重新绑定入场动画观察器
+    private bool _listStructureDirty = true;
 
     private void ToggleGroup(string key)
     {
@@ -1040,7 +1120,7 @@
     /// <summary>是否「有可用更新」：状态里记录了远端版本、且比当前版本新（复用行内逻辑）。</summary>
     private bool IsUpdatable(ModEntry m)
     {
-        if (m.Disabled) return false;
+        // v1.08：禁用的 mod 同样计入"可更新"（只查不装；启用后即可更新）
         var st = GetState(m.Folder);
         return st.RemoteVersion is not null && IsNewer(st.RemoteVersion, m.Version);
     }
@@ -1167,15 +1247,20 @@
     }
 
 
+    private void OnCoverCached()
+    {
+        if (!_disposed) _ = InvokeAsync(StateHasChanged);
+    }
+
     private string? GetCover(ModEntry m)
     {
         var st = GetState(m.Folder);
-        if (st.PictureUrl is not null) return st.PictureUrl;
-        if (Cfg.Current.ModCovers.TryGetValue(m.Folder, out var url)) return url;
+        if (st.PictureUrl is not null) return Covers.Get(st.PictureUrl);
+        if (Cfg.Current.ModCovers.TryGetValue(m.Folder, out var url)) return Covers.Get(url);
         // v0.43.0：禁用后 folder 变为 ".X/..."，封面缓存仍停留在启用时的 "X/..." key，
         // 用规范化 key（去掉顶层 . 前缀）兜底，禁用/启用两种状态都能看到封面
         var norm = NormCoverKey(m.Folder);
-        return norm != m.Folder && Cfg.Current.ModCovers.TryGetValue(norm, out var url2) ? url2 : null;
+        return norm != m.Folder && Cfg.Current.ModCovers.TryGetValue(norm, out var url2) ? Covers.Get(url2) : null;
     }
 
     private static string NormCoverKey(string folder)
@@ -1195,7 +1280,12 @@
 
     protected override void OnInitialized()
     {
+        Covers.Changed += OnCoverCached;   // v1.08：图片后台缓存完成后刷新
         _apiKey = Cfg.Current.NexusApiKey;
+        // v1.08：从任务中心恢复 SMAPI 任务状态 —— 页面离开再回来组件会重建，
+        // _smapiUpdating 归零会导致按钮重新可点、重复创建下载任务。
+        _smapiUpdating = Center.Items.Any(t =>
+            t.Status == "running" && t.Title.StartsWith("SMAPI", StringComparison.OrdinalIgnoreCase));
         var gp = Cfg.Current.GamePath;
         if (_svSmapiPath == gp && _svSmapiVersionCache is not null)
         {
@@ -1229,6 +1319,11 @@
             Rescan(scanned);
             _initialLoading = false;
             await CheckUpdates(force: true);
+            // v1.08：刷新同时重新探测 SMAPI（安装/升级后 exe 已变，静态缓存是旧版本）
+            // 并强制重查远端新版 —— 此前刷新永远拿 5 分钟缓存，看不到刚装好的新状态。
+            _smapiVersion = Game.ProbeSmapiVersion(Cfg.Current.GamePath);
+            _smapiIcon = Game.GetSmapiIconDataUri(Cfg.Current.GamePath);
+            _smapiUpdate = await Updater.CheckSmapiAsync(_smapiVersion, force: true);
             StateHasChanged();
             // vNext：手动刷新 = 从头看起 —— 归顶并把 0 写进滚动存档，
             // 否则刷新后不滚动就离开，下次回来会恢复到刷新前的旧位置
@@ -1245,6 +1340,7 @@
     public void Dispose()
     {
         _disposed = true;
+        Covers.Changed -= OnCoverCached;
         Installer.OnChanged -= OnInstallerChanged;
         PageRefresh.OnRefresh -= OnPageRefresh;
         // vNext：留下扫描快照 —— 从其它页回来时先用它秒显列表，后台再重扫磁盘
@@ -1269,6 +1365,10 @@
 
     protected override async Task OnInitializedAsync()
     {
+        // v1.08：进页立刻后台预取全部已知名封面（本地缓存命中则零请求），
+        // 用户还在看列表时图片已就绪 —— 首次加载体感的关键抢跑。
+        Covers.Prewarm(Cfg.Current.ModCovers.Values);
+
         // vNext：进页两条路 —— ①有跨页快照（从其它页回来）：直接用快照秒显列表，
         // 磁盘重扫丢到后台，扫完无感替换；②冷启动无快照：shimmer 骨架 + 后台线程扫描。
         if (_svMods is { Count: > 0 } snap)
@@ -1385,6 +1485,8 @@
     /// （扫描本身不碰 UI 状态，选中集合清理在 UI 线程做，避免与渲染并发）。</summary>
     private void Rescan(IReadOnlyList<ModEntry>? preScanned = null)
     {
+
+        _listStructureDirty = true;   // v1.08：列表换血，入场动画观察器需重绑
         _mods = preScanned ?? ModSvc.Scan(Cfg.Current.GamePath);
         // 清掉已经不在列表里的选中项
         _selected.RemoveWhere(f => !_mods.Any(m => m.Folder == f));
@@ -1872,8 +1974,9 @@
 
     private async Task CheckUpdates(bool force = false)
     {
+        // v1.08：禁用的 mod 也检查更新 —— 用户禁用 ≠ 不想更新，只查不装，无副作用
         var targets = _mods
-            .Where(m => (m.NexusModId is not null || m.GitHubRepo is not null) && !m.Disabled)
+            .Where(m => m.NexusModId is not null || m.GitHubRepo is not null)
             // v0.44.0：60 分钟内已查过的跳过（瞬时不发请求），远程版本状态仍保留显示
             // v1.06.7：force=true（顶栏点当前页图标刷新）无视 TTL 强制全量重查 ——
             // 否则装了旧版 mod 后刷新，mod 在 1 小时内被查过就直接跳过，「检查不到更新」
@@ -1915,8 +2018,107 @@
     /// 没返回的少数 mod 才落到逐个 files.json 精查，精查结果连同新指纹回写缓存。
     /// 常规进页（重启应用后 / 超 60 分钟 TTL）从 N 个请求塌缩到 ~N/50 个，微光骨架
     /// 从几十秒降到约 1 秒。批次整体失败时全部走精查（与旧版行为一致，宁可慢不可错）。</summary>
+    // ------------------------------------------------------------------
+    // v1.08：国内快道 —— smapi.io 官方 web API 批量预查
+    // 一次 POST 查全部 mod（Cloudflare 国内直连约 1 秒，不挂 VPN 也不超时）。
+    // folder → 最新版本号；null = 快道没查到该 mod（继续走 Nexus 精查）。
+    // 整体请求失败时整个字段为 null，行为退回原来的 Nexus/GitHub 流程。
+    // ------------------------------------------------------------------
+    private Dictionary<string, string?>? _smapiPrecheck;
+
+    // v1.08：预查结果会话级缓存 uid → (最新版, 时间)。10 分钟内重复刷新直接命中，
+    // 连 smapi.io 那一个请求都省掉。null 版本（快道确认已最新）同样缓存。
+    private static readonly Dictionary<string, (string? Ver, DateTime At)> SmapiPrecheckCache = new();
+    private static readonly TimeSpan SmapiPrecheckTtl = TimeSpan.FromMinutes(10);
+
+    private static readonly HttpClient SmapiWebHttp = CreateSmapiWebHttp();
+    private static HttpClient CreateSmapiWebHttp()
+    {
+        var h = new HttpClient();
+        h.DefaultRequestHeaders.UserAgent.ParseAdd("JuniGrid-Launcher");
+        h.Timeout = TimeSpan.FromSeconds(15);
+        return h;
+    }
+
+    private async Task SmapiBatchPrecheck(List<ModEntry> targets)
+    {
+        _smapiPrecheck = null;
+        if (targets.Count == 0) return;
+
+        var keyOf = (ModEntry m) => string.IsNullOrEmpty(m.UniqueID) ? $"FAKE.Nexus.{m.NexusModId ?? 0}" : m.UniqueID;
+
+        // v1.08：先吃会话缓存 —— 全部命中就零请求完成预查
+        var needFetch = new List<ModEntry>();
+        foreach (var m in targets)
+        {
+            if (SmapiPrecheckCache.TryGetValue(keyOf(m), out var hit)
+                && DateTime.UtcNow - hit.At < SmapiPrecheckTtl)
+                continue;
+            needFetch.Add(m);
+        }
+        if (needFetch.Count == 0)
+        {
+            _smapiPrecheck = targets.ToDictionary(
+                m => m.Folder,
+                m => SmapiPrecheckCache.TryGetValue(keyOf(m), out var h) ? h.Ver : null);
+            return;
+        }
+
+        // 同 UniqueID/ID 装了多份（本体+旧副本）时同 id 只发一次，结果共享回填
+        var payload = System.Text.Json.JsonSerializer.Serialize(new
+        {
+            mods = needFetch.Select(m => new
+            {
+                id = keyOf(m),
+                updateKeys =
+                    (m.NexusModId is int nid ? new[] { $"nexus:{nid}" } : Array.Empty<string>())
+                    .Concat(m.GitHubRepo is string gh ? new[] { $"github:{gh}" } : Array.Empty<string>()),
+                installedVersion = m.Version,
+            }),
+        });
+
+        try
+        {
+            using var resp = await SmapiWebHttp.PostAsync(
+                "https://smapi.io/api/v4.0.0/mods",
+                new StringContent(payload, System.Text.Encoding.UTF8, "application/json"));
+            if (!resp.IsSuccessStatusCode) return;
+            using var doc = System.Text.Json.JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+
+            var versionById = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+            foreach (var item in doc.RootElement.EnumerateArray())
+            {
+                var id = item.TryGetProperty("id", out var i) ? i.GetString() : null;
+                var ver = item.TryGetProperty("suggestedUpdate", out var su)
+                    && su.ValueKind == System.Text.Json.JsonValueKind.Object
+                    && su.TryGetProperty("version", out var v) ? v.GetString() : null;
+                if (!string.IsNullOrEmpty(id)) versionById[id] = ver;
+            }
+
+            foreach (var m in targets)
+            {
+                var k = keyOf(m);
+                if (versionById.TryGetValue(k, out var v))
+                    SmapiPrecheckCache[k] = (v ?? "", DateTime.UtcNow);
+            }
+            _smapiPrecheck = targets.ToDictionary(
+                m => m.Folder,
+                m => SmapiPrecheckCache.TryGetValue(keyOf(m), out var h) ? h.Ver : null);
+            // 值语义：非空字符串 = 快道给出的最新版本；空字符串 = 快道确认已是最新；
+            // null = 快道没覆盖（无 UpdateKey / 不在索引）→ 精查兜底。
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warn("Mods", "[国内快道] smapi.io 预查失败（退回 Nexus/GitHub）: " + ex.Message);
+        }
+    }
+
     private async Task RunCheckPipeline(List<ModEntry> targets)
     {
+        // v1.08：smapi.io 快道与 Nexus 指纹批查并行跑（原先串行，白等一个网络往返）；
+        // 预查结果在精查阶段开始前才真正需要。
+        var smapiTask = SmapiBatchPrecheck(targets);
+
         var precise = targets;
         Dictionary<int, string>? fpUpdatedAt = null;   // modId → 批量指纹的 updatedAt（精查成功后回写缓存用）
         if (!string.IsNullOrEmpty(_apiKey))
@@ -1966,6 +2168,8 @@
             }
         }
 
+        await smapiTask;   // v1.08：精查前等快道结果（此时通常已并行完成）
+
         if (precise.Count > 0)
         {
             var semaphore = new SemaphoreSlim(32);   // v1.06.8：只检测不下载，并发拉满 32 路
@@ -2004,13 +2208,36 @@
     /// </summary>
     private async Task CheckOnlyOne(ModEntry m,
         System.Collections.Concurrent.ConcurrentDictionary<int, Task<NexusFileInfo?>>? sharedFetch = null,
-        IReadOnlyDictionary<int, string>? fpUpdatedAt = null)
+        IReadOnlyDictionary<int, string>? fpUpdatedAt = null,
+        bool isRetry = false)
     {
         var prevRemote = _states.TryGetValue(m.Folder, out var prev) ? prev.RemoteVersion : null;
         var st = _states[m.Folder] = new ModUpdateState { Status = "checking", RemoteVersion = prevRemote };
         _lastCheckedUtc[m.Folder] = DateTime.UtcNow;
         try
         {
+            // v1.08：smapi.io 批量快道命中 → 零请求直接采用结果。
+            //   非空 = 快道给出的最新版本；空字符串 = 快道确认已是最新；
+            //   null = 快道没覆盖该 mod（无 UpdateKey/不在索引），继续原流程精查。
+            if (_smapiPrecheck is not null && _smapiPrecheck.TryGetValue(m.Folder, out var preVer))
+            {
+                if (preVer is not null)
+                {
+                    if (preVer.Length > 0)
+                    {
+                        st.RemoteVersion = preVer;
+                        RememberRemoteVersion(m.Folder, preVer);
+                        st.Status = IsNewer(preVer, m.Version) ? "available" : "latest";
+                    }
+                    else
+                    {
+                        st.Status = "latest";
+                    }
+                    StateHasChanged();
+                    return;
+                }
+            }
+
             // v0.68.2：N 网源优先检测，无 N 网源或拉取失败才查 GitHub
             // v0.72.0：检测源与安装源统一 —— 以 files.json 最新 MAIN 文件的版本为准
             // （与 UpdateOne/一键直装 GetLatestMainFileAsync 同一权威源）。旧逻辑取
@@ -2085,10 +2312,32 @@
         }
         catch (Exception ex)
         {
-            st.Status = "failed"; st.Message = ex.Message;
+            // v1.08：超时/网络抖动自动重试一次；仍失败才标红并给中文友好提示
+            if (!isRetry && IsTransientNetworkError(ex))
+            {
+                await Task.Delay(800);
+                await CheckOnlyOne(m, sharedFetch, fpUpdatedAt, isRetry: true);
+                return;
+            }
+            st.Status = "failed"; st.Message = FriendlyUpdateError(ex);
         }
         StateHasChanged();
     }
+
+    /// <summary>请求超时/网络失败 → 中文友好提示；其余异常保留原始信息方便排查。</summary>
+    private static string FriendlyUpdateError(Exception ex)
+    {
+        if (ex is TaskCanceledException or OperationCanceledException
+            || ex.Message?.Contains("HttpClient.Timeout", StringComparison.Ordinal) == true)
+            return "检查更新超时（Nexus 连接不稳），已自动重试仍失败，请稍后重试";
+        if (ex is HttpRequestException)
+            return "网络连接失败，请检查网络后重试";
+        return ex.Message ?? "未知错误";
+    }
+
+    private static bool IsTransientNetworkError(Exception ex)
+        => ex is TaskCanceledException or OperationCanceledException or HttpRequestException
+           || ex.Message?.Contains("HttpClient.Timeout", StringComparison.Ordinal) == true;
 
     private async Task RunUpdatePipeline(List<ModEntry> targets)
     {
@@ -2131,7 +2380,7 @@
         StateHasChanged();
     }
 
-    private async Task UpdateOne(ModEntry m)
+    private async Task UpdateOne(ModEntry m, bool isRetry = false)
     {
         // v0.61.0：新建 state 时保留旧 RemoteVersion，避免可更新列表在检查瞬间被清空再重建（图三闪烁）
         var prevRemote = _states.TryGetValue(m.Folder, out var prev) ? prev.RemoteVersion : null;
@@ -2292,7 +2541,14 @@
         }
         catch (Exception ex)
         {
-            st.Status = "failed"; st.Message = ex.Message;
+            // v1.08：超时/网络抖动自动重试一次；仍失败才标红并给中文友好提示
+            if (!isRetry && IsTransientNetworkError(ex))
+            {
+                await Task.Delay(800);
+                await UpdateOne(m, isRetry: true);
+                return;
+            }
+            st.Status = "failed"; st.Message = FriendlyUpdateError(ex);
         }
         StateHasChanged();
     }
@@ -2316,6 +2572,30 @@
                     Center.Report(task, p.Message, p.Percent, p.SpeedMBps);
                     onTick?.Invoke(p.Message, p.Percent, p.SpeedMBps);
                 }));
+            // v1.08：GitHub 资源直连失败（国内 443 被拒）自动切换镜像前缀重试；
+            // Nexus CDN 是签名 URL，镜像无法代理，维持直连。
+            if (url.Contains("github.com/", StringComparison.OrdinalIgnoreCase)
+                && !url.StartsWith("https://api.github.com/", StringComparison.Ordinal))
+            {
+                Exception? last = null;
+                foreach (var candidate in UpdateService.GithubUrls(url))
+                {
+                    try
+                    {
+                        if (candidate != url)
+                        {
+                            try { System.IO.File.Delete(zipPath); } catch { }
+                            Center.Report(task, "GitHub 直连失败，切换镜像下载…", 0, 0);
+                        }
+                        await Nexus.DownloadFileAsync(candidate, zipPath, progress);
+                        Center.Finish(task, true, "下载完成");
+                        return;
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException) { last = ex; }
+                }
+                throw last!;
+            }
+
             await Nexus.DownloadFileAsync(url, zipPath, progress);
             Center.Finish(task, true, "下载完成");
         }
@@ -2337,6 +2617,10 @@
     private async Task InstallSmapi()
     {
         if (_smapiUpdating) return;
+        // v1.08：任务中心级防重 —— 页面重建导致 _smapiUpdating 归零的间隙也拦得住
+        if (Center.Items.Any(t => t.Status == "running"
+                && t.Title.StartsWith("SMAPI", StringComparison.OrdinalIgnoreCase)))
+        { ShowNotice("err", "SMAPI 任务进行中，请等它完成"); return; }
         if (_smapiUpdate is null || _smapiUpdate.LatestVersion is null || _smapiUpdate.InstallerZipUrl is null)
         {
             ShowNotice("err", "还没拿到 SMAPI 下载地址，请稍后再试（或检查网络）。");
@@ -2350,8 +2634,7 @@
         var progress = new Progress<UpdateService.InstallProgress>(p =>
             _ = InvokeAsync(() => Center.Report(task, p.Message, p.Percent, p.SpeedMBps)));
 
-        // 跳到任务页看实时进度
-        Nav.NavigateTo("/tasks");
+        // v1.08：不再自动跳转任务页 —— 右下角任务胶囊即可看进度，不打断当前页面
 
         try
         {
@@ -2385,6 +2668,9 @@
     private async Task UpdateSmapi()
     {
         if (_smapiUpdating) return;
+        if (Center.Items.Any(t => t.Status == "running"
+                && t.Title.StartsWith("SMAPI", StringComparison.OrdinalIgnoreCase)))
+        { ShowNotice("err", "SMAPI 任务进行中，请等它完成"); return; }
         if (_smapiUpdate is null || _smapiUpdate.LatestVersion is null) return;
 
         _smapiUpdating = true;

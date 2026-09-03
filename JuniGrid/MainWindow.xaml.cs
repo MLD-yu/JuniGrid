@@ -134,6 +134,8 @@ public partial class MainWindow : Window
             services.AddSingleton<MemoryService>();
             // v1.0.2：应用自更新检查
             services.AddSingleton<SelfUpdateService>();
+            // v1.08：Nexus 封面/图片本地缓存（国内 CDN 直连极慢）
+            services.AddSingleton<CoverCacheService>();
             var provider = services.BuildServiceProvider();
             Resources.Add("services", provider);
             App.Services = provider;
@@ -184,6 +186,25 @@ public partial class MainWindow : Window
                             if (msg == "ui-ready") App.NotifyUiReady();
                         }
                         catch { }
+                    };
+                    // v1.0.9：WebView2 子进程崩溃自愈 —— 渲染进程挂掉时 Reload 重启它，
+                    // 浏览器进程挂掉时记录日志（此时只能整窗重建，先保证不无声死掉）
+                    args.WebView.CoreWebView2.ProcessFailed += (_, pf) =>
+                    {
+                        try
+                        {
+                            Log($"WebView2 进程失败: kind={pf.ProcessFailedKind}, exitCode={pf.ExitCode}, reason={pf.FailureSourceModulePath}");
+                            if (pf.ProcessFailedKind == CoreWebView2ProcessFailedKind.RenderProcessUnresponsive
+                                || pf.ProcessFailedKind == CoreWebView2ProcessFailedKind.RenderProcessExited)
+                            {
+                                Dispatcher.BeginInvoke(() =>
+                                {
+                                    try { args.WebView.CoreWebView2.Reload(); Log("WebView2 渲染进程已 Reload 恢复"); }
+                                    catch (Exception rex) { Log("Reload 恢复失败: " + rex.Message); }
+                                });
+                            }
+                        }
+                        catch (Exception pex) { Log("ProcessFailed 处理异常: " + pex.Message); }
                     };
                 }
                 catch (Exception ex) { Log("WebMessageReceived hook failed: " + ex.Message); }
@@ -363,21 +384,31 @@ public partial class MainWindow : Window
 
     private async Task EnterLowMemoryModeAsync()
     {
-        var core = _wv2?.CoreWebView2;
-        if (core is not null)
+        // 注意：CoreWebView2 的 getter 在 WebView2 尚未初始化或浏览器进程已崩溃时
+        // 会直接抛异常，必须整体包进 try/catch，否则最小化/还原一瞬间就炸掉 UI 线程
+        try
         {
-            try { core.MemoryUsageTargetLevel = CoreWebView2MemoryUsageTargetLevel.Low; }
-            catch { /* 旧 WebView2 运行时不支持该属性，跳过 */ }
+            var core = _wv2?.CoreWebView2;
+            if (core is not null)
+            {
+                try { core.MemoryUsageTargetLevel = CoreWebView2MemoryUsageTargetLevel.Low; }
+                catch { /* 旧 WebView2 运行时不支持该属性，跳过 */ }
+            }
         }
+        catch (Exception ex) { Log("EnterLowMemoryMode 跳过: " + ex.Message); }
         try { Services.MemoryService.TrimWorkingSet(); } catch { }
     }
 
     private void ExitLowMemoryMode()
     {
-        var core = _wv2?.CoreWebView2;
-        if (core is null) return;
-        try { core.MemoryUsageTargetLevel = CoreWebView2MemoryUsageTargetLevel.Normal; }
-        catch { /* 同上 */ }
+        try
+        {
+            var core = _wv2?.CoreWebView2;
+            if (core is null) return;
+            try { core.MemoryUsageTargetLevel = CoreWebView2MemoryUsageTargetLevel.Normal; }
+            catch { /* 同上 */ }
+        }
+        catch (Exception ex) { Log("ExitLowMemoryMode 跳过: " + ex.Message); }
     }
 
     /// <summary>Blazor 页面调这里：在主窗口内打开 Nexus 浏览覆盖层。</summary>

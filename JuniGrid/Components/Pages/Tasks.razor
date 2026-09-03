@@ -61,7 +61,7 @@
                 {
                     var dropId = "jgDrop-" + t.Id.ToString("N");
                     var arrowId = "jgArr-" + t.Id.ToString("N");
-                    <div class="jg-card" style="margin-bottom:10px;">
+                    <div class="jg-card" @key="t.Id" style="margin-bottom:10px;">
                         <div style="display:flex;justify-content:space-between;align-items:center;">
                             <div style="font-weight:600;word-break:break-word;overflow-wrap:anywhere;flex:1;min-width:0;">@t.Title</div>
                             <button class="jg-rowbtn" @onclick="() => Remove(t)" title="移除">×</button>
@@ -84,13 +84,24 @@
 
                         @* ─── 下载信息下拉面板（GSAP easeReverse 弹性展开；进度噪声行不进入）───
                            v1.07：展开态由 class（_openDrops）驱动 —— 下载中频繁重渲染也不会丢展开状态；
-                           gsap 只负责动画过程，动画结束清除内联样式，稳态归 CSS 管 *@
-                        @if (UsefulLines(t).Any())
+                           gsap 只负责动画过程，动画结束清除内联样式，稳态归 CSS 管
+                           v1.08.1：面板渲染条件与触发按钮对齐（Log.Count > 0）—— 旧版只在
+                           UsefulLines 有内容时才渲染面板，日志全是进度噪声时点按钮会
+                           因 #jgDrop-* 不存在而在 JS 里静默 return，表现为「点了没反应」；
+                           现在按钮在面板必在，无有效日志时显示占位行 *@
+                        @if (t.Log.Count > 0)
                         {
                             <div class="jg-taskdrop-menu @(_openDrops.Contains(t.Id) ? "open" : "")" id="@dropId">
-                                @foreach (var line in UsefulLines(t))
+                                @if (UsefulLines(t).Any())
                                 {
-                                    <div class="jg-taskdrop-item">@line</div>
+                                    @foreach (var line in UsefulLines(t))
+                                    {
+                                        <div class="jg-taskdrop-item">@line</div>
+                                    }
+                                }
+                                else
+                                {
+                                    <div class="jg-taskdrop-item">暂无详细日志（正在后台处理，请稍候…）</div>
                                 }
                             </div>
                         }

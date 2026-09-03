@@ -1,6 +1,7 @@
 @namespace JuniGrid.Components.Pages
 @page "/nexus"
 @implements IDisposable
+@inject CoverCacheService Covers
 @inject ConfigService Cfg
 @inject NexusService NexusApi
 @inject NexusSsoService Sso
@@ -68,7 +69,7 @@
                 <div class="jg-user-tip" id="jgUserTip">
                     @if (!string.IsNullOrEmpty(_userAvatar))
                     {
-                        <img class="jg-user-tip-avatar" src="@_userAvatar" alt="avatar" />
+                        <img class="jg-user-tip-avatar" src="@Covers.Get(_userAvatar)" alt="avatar" />
                     }
                     else
                     {
@@ -141,7 +142,7 @@
                         <div class="jg-trend-big" @onclick="() => OpenDetail(mod.Id)">
                             @if (!string.IsNullOrEmpty(mod.PictureUrl ?? mod.ThumbnailUrl))
                             {
-                                <img class="jg-trend-big-cover" src="@(mod.PictureUrl ?? mod.ThumbnailUrl)" loading="lazy" alt="" />
+                                <img class="jg-trend-big-cover" src="@Covers.Get(mod.PictureUrl ?? mod.ThumbnailUrl)" loading="lazy" alt="" />
                             }
                             <div class="jg-trend-big-info">
                                 <div class="jg-trend-big-name">@mod.Name</div>
@@ -162,7 +163,7 @@
                             <div class="jg-trend-sm" @onclick="() => OpenDetail(mod.Id)">
                                 @if (!string.IsNullOrEmpty(mod.ThumbnailUrl ?? mod.PictureUrl))
                                 {
-                                    <img class="jg-trend-sm-cover" src="@(mod.ThumbnailUrl ?? mod.PictureUrl)" loading="lazy" alt="" />
+                                    <img class="jg-trend-sm-cover" src="@Covers.Get(mod.ThumbnailUrl ?? mod.PictureUrl)" loading="lazy" alt="" />
                                 }
                                 else
                                 {
@@ -223,7 +224,7 @@
                             <div class="jg-modcard2-cover-wrap">
                                 @if (!string.IsNullOrEmpty(mod.ThumbnailUrl) || !string.IsNullOrEmpty(mod.PictureUrl))
                                 {
-                                    <img class="jg-modcard2-cover" src="@(mod.ThumbnailUrl ?? mod.PictureUrl)" loading="lazy" alt="" />
+                                    <img class="jg-modcard2-cover" src="@Covers.Get(mod.ThumbnailUrl ?? mod.PictureUrl)" loading="lazy" alt="" />
                                 }
                                 else
                                 {
@@ -277,7 +278,7 @@
                 <div class="jg-search-exact" @onclick="() => OpenDetail(_exactMod.Id)">
                     @if (!string.IsNullOrEmpty(exPic))
                     {
-                        <img class="jg-search-exact-cover" src="@exPic" alt="" />
+                        <img class="jg-search-exact-cover" src="@Covers.Get(exPic)" alt="" />
                     }
                     else
                     {
@@ -308,7 +309,7 @@
                             <div class="jg-modcard2-cover-wrap">
                                 @if (!string.IsNullOrEmpty(mod.ThumbnailUrl) || !string.IsNullOrEmpty(mod.PictureUrl))
                                 {
-                                    <img class="jg-modcard2-cover" src="@(mod.ThumbnailUrl ?? mod.PictureUrl)" loading="lazy" alt="" />
+                                    <img class="jg-modcard2-cover" src="@Covers.Get(mod.ThumbnailUrl ?? mod.PictureUrl)" loading="lazy" alt="" />
                                 }
                                 else
                                 {
@@ -483,7 +484,7 @@
                             <div class="jg-modcard2-cover-wrap">
                                 @if (!string.IsNullOrEmpty(mod.ThumbnailUrl) || !string.IsNullOrEmpty(mod.PictureUrl))
                                 {
-                                    <img class="jg-modcard2-cover" src="@(mod.ThumbnailUrl ?? mod.PictureUrl)" loading="lazy" alt="" />
+                                    <img class="jg-modcard2-cover" src="@Covers.Get(mod.ThumbnailUrl ?? mod.PictureUrl)" loading="lazy" alt="" />
                                 }
                                 else
                                 {
@@ -633,7 +634,7 @@
                 <div class="jg-login-success-inner">
                     @if (!string.IsNullOrEmpty(_userAvatar))
                     {
-                        <img class="jg-login-avatar" src="@_userAvatar" alt="avatar" />
+                        <img class="jg-login-avatar" src="@Covers.Get(_userAvatar)" alt="avatar" />
                     }
                     else
                     {
@@ -1181,8 +1182,11 @@
     // v0.85.0：Dispose 统一收敛到下方完整实现（JS 清理 + 引用释放），此处删除旧单行版本避免重复定义
 
     // v1.06.7：顶栏点「当前页」NEXUS MODS 图标 → 按当前视图重新拉取数据
+    private void OnCoverCached() => _ = InvokeAsync(StateHasChanged);
+
     protected override void OnInitialized()
     {
+        Covers.Changed += OnCoverCached;   // v1.08
         PageRefresh.OnRefresh += OnPageRefresh;
     }
 
@@ -1493,6 +1497,7 @@ protected override async Task OnInitializedAsync()
     // v0.90.0：懒加载已移除，Dispose 只需清理搜索防抖
     public void Dispose()
     {
+        Covers.Changed -= OnCoverCached;
         // v0.93.0：离开页面前快照当前浏览状态（返回时恢复）
         _nexusDisposed = true;
         PageRefresh.OnRefresh -= OnPageRefresh;
