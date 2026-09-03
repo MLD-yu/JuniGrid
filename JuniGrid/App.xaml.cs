@@ -21,6 +21,8 @@ public partial class App : Application
     // 命名管道把链接递给主实例，然后自己退出。
     private const string MutexName = "JuniGrid.SingleInstance";
     private const string PipeName = "JuniGrid.NxmPipe";
+    /// <summary>二次启动经管道发给主实例的激活指令。</summary>
+    private const string ActivateCommand = "jg:activate";
     private static Mutex? _mutex;
 
     /// <summary>DI container, set by MainWindow right after BuildServiceProvider.</summary>
@@ -66,10 +68,15 @@ public partial class App : Application
                 return;
             }
 
-            // 不带 nxm 链接的二次启动 = 用户明确要再开一次。最典型是升级装完后
-            // 启动：旧实例若因权限不足/竞态没被安装器关掉，会一直占着单实例锁，
-            // 原来的处理是无声退出，表现为「点了没反应、开出来的还是旧版」。改为
-            // 关掉旧实例后由本实例接管。
+            // 不带 nxm 链接的二次启动 = 用户又点了一次快捷方式。标准做法是把
+            // 已有实例的窗口激活置前（任务栏高亮、可立即操作），本实例直接退出。
+            // 只有联系不上主实例（如升级装完后旧实例占锁、管道无响应）才走旧的
+            // 「结束其它实例后接管」兜底，避免「点了没反应、开出来的还是旧版」。
+            if (TryActivateExistingInstance())
+            {
+                Shutdown();
+                return;
+            }
             if (!TryTakeOverSingleInstance())
             {
                 Shutdown();
@@ -270,7 +277,12 @@ public partial class App : Application
                     using var r = new StreamReader(server);
                     var link = await r.ReadLineAsync();
                     if (!string.IsNullOrWhiteSpace(link))
-                        await Dispatcher.InvokeAsync(() => DispatchNxm(link));
+                    {
+                        if (link == ActivateCommand)
+                            await Dispatcher.InvokeAsync(ActivateExistingWindow);
+                        else
+                            await Dispatcher.InvokeAsync(() => DispatchNxm(link));
+                    }
                 }
                 catch
                 {
@@ -288,6 +300,45 @@ public partial class App : Application
         else
             PendingNxmLink = link;
     }
+
+    /// <summary>二次启动时通知主实例激活窗口。管道连不上（主实例不存在/假死）返回 false，
+    /// 调用方再走接管兜底。</summary>
+    private static bool TryActivateExistingInstance()
+    {
+        try
+        {
+            using var client = new NamedPipeClientStream(".", PipeName, PipeDirection.Out);
+            client.Connect(1500);
+            using var w = new StreamWriter(client) { AutoFlush = true };
+            w.WriteLine(ActivateCommand);
+            return true;
+        }
+        catch { return false; }
+    }
+
+    /// <summary>把主窗口还原/置前并交给用户操作（= 用户说的「选中状态」：任务栏高亮、
+    /// 窗口获得前台焦点）。后台进程无权直接抢焦点，需借 Win32 allow foreground 链路。</summary>
+    private static void ActivateExistingWindow()
+    {
+        try
+        {
+            var w = Current.MainWindow;
+            if (w is null) return;
+            if (w.WindowState == WindowState.Minimized)
+                w.WindowState = WindowState.Normal;
+            w.Show();
+            w.Activate();
+            var hwnd = new System.Windows.Interop.WindowInteropHelper(w).Handle;
+            if (hwnd != IntPtr.Zero)
+            {
+                SetForegroundWindow(hwnd);
+            }
+        }
+        catch (Exception ex) { LogInfo("ActivateExistingWindow: " + ex.Message); }
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool SetForegroundWindow(IntPtr hWnd);
 
     private void OnDispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)
     {
