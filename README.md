@@ -47,9 +47,9 @@ dotnet publish JuniGrid/JuniGrid.csproj -c Release
 
 如果对你有帮助，可以请作者喝杯咖啡吗
 
-<img src="sponsor-cards.png" alt="赞助收款码" width="480" />
+<img src="sponsor-cards.png" alt="赞助收款码" width="640" />
 
-**MLD/MLD（\*禺）** ——扫码前请确定收款人信息
+<sub>MLD/MLD（\*禺）——扫码前请确定收款人信息</sub>
 
 ## 许可
 
