@@ -136,6 +136,8 @@ public partial class MainWindow : Window
             services.AddSingleton<SelfUpdateService>();
             // v1.08：Nexus 封面/图片本地缓存（国内 CDN 直连极慢）
             services.AddSingleton<CoverCacheService>();
+            // v1.1.5：每日游玩时长统计（首页 GitHub 式热力图数据源）
+            services.AddSingleton<PlayTimeService>();
             var provider = services.BuildServiceProvider();
             Resources.Add("services", provider);
             App.Services = provider;
@@ -147,10 +149,20 @@ public partial class MainWindow : Window
             // v0.2.1：内存管理后台循环随启动常驻 —— 定时/阈值自动压缩不依赖设置页是否打开过
             _ = provider.GetRequiredService<MemoryService>();
 
+            // v1.1.5：游玩时长统计循环随启动常驻 —— 不管首页开不开都在累计
+            _ = provider.GetRequiredService<PlayTimeService>();
+
             // v1.0.2：启动后台检查一次应用新版本（不阻塞 UI，失败静默）
             provider.GetRequiredService<SelfUpdateService>().StartBackgroundCheck();
 
             InitializeComponent();
+            // v1.1.2b：最小尺寸完全由 WM_GETMINMAXINFO hook 按【物理像素】1536×864 强制
+            //（用户设计规定值；hook 内坐标即物理像素，直接生效）。
+            // 必须放在 InitializeComponent 之后 —— XAML 里的 MinWidth/MinHeight(1536/864 DIP)
+            // 会在高 DPI 下换算成更大的物理值把窗口二次拉大，覆盖这里清零前的设置。
+            // WPF 属性清零让位给 hook，拖拽下限 = 1536×864PX 精确不放大。
+            MinWidth = 0;
+            MinHeight = 0;
         // v0.35.0：吞掉 "no browser renderer with ID" 未观察异常（页面切换时残留的 JS 调用打到已销毁 renderer）
         // v0.43.0：全项目未处理异常 / 未观察任务异常统一写入 juni-grid.log
         AppDomain.CurrentDomain.UnhandledException += (_, e) =>
@@ -324,6 +336,8 @@ public partial class MainWindow : Window
         // 拦截 WM_GETMINMAXINFO，把最大尺寸/位置限制在系统工作区（避开任务栏）。
         var src = HwndSource.FromHwnd(hwnd);
         src?.AddHook(WndProcClampMaximized);
+        // v1.1.2b：窗口尺寸检查点 —— 到达 1974×1383PX / 1536×864PX 时记录窗口状态
+        SizeChanged += OnWindowSizeChanged;
     }
 
     // 把最大化的范围锁定到工作区，消除无边框最大化的底部越界裁切。
@@ -341,10 +355,24 @@ public partial class MainWindow : Window
         mm.ptMaxPosition = new POINT32(wa.Left, wa.Top);
         mm.ptMaxSize = new POINT32(wa.Right - wa.Left, wa.Bottom - wa.Top);
         mm.ptMaxTrackSize = new POINT32(wa.Right - wa.Left, wa.Bottom - wa.Top);
+        // v1.1.2：拖拽最小尺寸强制 —— 设计值 1536×864 指的是【物理像素】，直接按设备像素写入
+        // （hook 里的一切坐标都是物理像素，不要再乘 DPI）。此前误乘 DPI 导致最小值被放大、
+        // 用户永远拖不到规定的 1536×864；更早版本则根本没设此项，窗口能拖到几百像素宽。
+        // 小屏兜底：最小值不超过本屏工作区，否则小屏上窗口永远缩不小。
+        try
+        {
+            var minW = (int)Math.Min(1536, wa.Right - wa.Left);
+            var minH = (int)Math.Min(864, wa.Bottom - wa.Top);
+            mm.ptMinTrackSize = new POINT32(minW, minH);
+        }
+        catch { }
         Marshal.StructureToPtr(mm, lParam, false);
         handled = true;
         return IntPtr.Zero;
     }
+
+    [DllImport("user32.dll")]
+    private static extern uint GetDpiForWindow(IntPtr hwnd);
 
     [StructLayout(LayoutKind.Sequential)]
     private struct POINT32 { public int X, Y; public POINT32(int x, int y) { X = x; Y = y; } }
@@ -446,6 +474,87 @@ public partial class MainWindow : Window
         }
     }
 
+    // ─── v1.1.7：窗口尺寸策略：启动即最大化（XAML WindowState）+ 最小 1536×864 ───
+    // 从最大化点「还原」时固定恢复到 1974×1383，不用系统 RestoreBounds 里记的旧尺寸
+    // （那可能是很久之前随手拖出来的小窗，还原出来突兀）。
+    private bool _wasMaximized;
+
+    protected override void OnStateChanged(EventArgs e)
+    {
+        base.OnStateChanged(e);
+        if (WindowState == System.Windows.WindowState.Maximized) { _wasMaximized = true; return; }
+        if (WindowState == System.Windows.WindowState.Normal && _wasMaximized)
+        {
+            _wasMaximized = false;
+            // 还原动画期间直接改尺寸会被状态机打回，调度到本布局拍之后执行
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                // v1.1.2c：还原尺寸（开源通用）—— 按【工作区比例】锁定，而非固定物理像素。
+                // 校准基准：2560×1528 工作区上为 1974×1110PX（16:9），即宽 77.1%、高 72.6%。
+                // 任何分辨率/缩放下都占工作区相同比例：作者屏上精确 1974×1110PX；
+                // 1080p 小屏自动等比缩小不裁剪；4K 大屏等比放大保持观感一致（主流软件行为）。
+                var hwnd = new WindowInteropHelper(this).Handle;
+                var dpi = hwnd != IntPtr.Zero ? (int)GetDpiForWindow(hwnd) : 96;
+                if (dpi <= 0) dpi = 96;
+                var scale = dpi / 96.0;
+                var wa = SystemParameters.WorkArea;
+                var waPhysW = wa.Width * scale;     // 工作区物理像素
+                var waPhysH = wa.Height * scale;
+
+                var physW = Math.Min(waPhysW - 16, Math.Max(400.0, waPhysW * (1974.0 / 2560.0)));
+                var physH = Math.Min(waPhysH - 16, Math.Max(300.0, waPhysH * (1110.0 / 1528.0)));
+
+                Width = Math.Max(MinWidth, Math.Round(physW / scale));
+                Height = Math.Max(MinHeight, Math.Round(physH / scale));
+                _restoreTargetPhysW = physW;   // 供尺寸检查点比对（本屏的还原期望尺寸）
+                _restoreTargetPhysH = physH;
+
+                // 还原位置越界兜底 —— Normal 位置若还停在屏外挂载的 -32000 附近
+                //（旧版本启动时留下的），还原后窗口整个在屏幕外，表现为"窗口消失"。
+                if (Left < wa.Left - 100 || Left + Width > wa.Right + 100
+                    || Top < wa.Top - 100 || Top + Height > wa.Bottom + 100)
+                {
+                    Left = Math.Max(wa.Left, (wa.Width - Width) / 2 + wa.Left);
+                    Top = Math.Max(wa.Top, (wa.Height - Height) / 2 + wa.Top);
+                }
+                Log($"[还原] 目标工作区 77.1%×72.6%（=本屏 {physW:F0}×{physH:F0}PX）→ 实际 " +
+                    $"Width={Width:F0} Height={Height:F0} DIP = {Width * scale:F0}×{Height * scale:F0}PX (dpi={dpi}, scale={scale:0.##})");
+                // v1.1.2c：检查点必然记录（SizeChanged 版本可能因布局时序漏触发）
+                Log($"[尺寸检查点] ★ 到达还原标准尺寸（本屏期望 {physW:F0}×{physH:F0}PX，" +
+                    $"实际 {Width * scale:F0}×{Height * scale:F0}PX，Width={Width:F0} Height={Height:F0} DIP，" +
+                    $"dpi={dpi}，WindowState={WindowState}，Left={Left:F0} Top={Top:F0}）");
+            }));
+        }
+    }
+
+    // 本屏还原期望尺寸（物理像素），由还原逻辑写入，供尺寸检查点比对
+    private double _restoreTargetPhysW, _restoreTargetPhysH;
+
+    // v1.1.2b：用户要求 —— 窗口到达规定尺寸时记录状态。
+    // 还原尺寸检查点 = 本屏还原期望值（2560×1528 参考屏上即 1974×1110PX）；
+    // 最小尺寸检查点 = 固定 1536×864PX。
+    private void OnWindowSizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        try
+        {
+            var hwnd = new WindowInteropHelper(this).Handle;
+            if (hwnd == IntPtr.Zero) return;
+            var dpi = (int)GetDpiForWindow(hwnd);
+            if (dpi <= 0) return;
+            var scale = dpi / 96.0;
+            var pw = ActualWidth * scale;
+            var ph = ActualHeight * scale;
+            if (_restoreTargetPhysW > 0 && Math.Abs(pw - _restoreTargetPhysW) < 4 && Math.Abs(ph - _restoreTargetPhysH) < 4)
+                Log($"[尺寸检查点] ★ 到达还原标准尺寸（本屏期望 {_restoreTargetPhysW:F0}×{_restoreTargetPhysH:F0}PX，" +
+                    $"实际 {pw:F0}×{ph:F0}PX，Width={ActualWidth:F0} Height={ActualHeight:F0} DIP，dpi={dpi}，WindowState={WindowState}，Left={Left:F0} Top={Top:F0}）" +
+                    (_restoreTargetPhysW < 1970 ? " ≈ 1974×1110PX 基准" : ""));
+            else if (Math.Abs(pw - 1536) < 4 && Math.Abs(ph - 864) < 4)
+                Log($"[尺寸检查点] ★ 到达最小标准尺寸 1536×864PX（实际 {pw:F0}×{ph:F0}PX，" +
+                    $"Width={ActualWidth:F0} Height={ActualHeight:F0} DIP，dpi={dpi}，WindowState={WindowState}，Left={Left:F0} Top={Top:F0}）");
+        }
+        catch { }
+    }
+
     /// <summary>用 Win32 ShowWindow 强制作最小化，确保无边框窗口真正从屏幕撤出，避免残留透明交互窗拦截鼠标。</summary>
     public static void MinimizeWindow()
     {
@@ -454,6 +563,33 @@ public partial class MainWindow : Window
         var hwnd = new System.Windows.Interop.WindowInteropHelper(w).Handle;
         if (hwnd != IntPtr.Zero) ShowWindow(hwnd, SW_MINIMIZE);
         else w.WindowState = System.Windows.WindowState.Minimized;
+    }
+
+    // ─── v1.1.1：深浅主题 —— 窗口底色与 WebView2 兜底帧色跟随前端 data-theme ───
+    // 圆角外壳外的四角露出的是 WPF 窗口底色；WebView2 未出帧的瞬间显示 DefaultBackgroundColor。
+    // 两者必须与前端 shell 底色一致，否则深色主题下四角/恢复瞬间会闪浅色。
+    private static readonly System.Windows.Media.Color ThemeColorLight =
+        System.Windows.Media.Color.FromArgb(0xFF, 0xF3, 0xF6, 0xFB);
+    private static readonly System.Windows.Media.Color ThemeColorDark =
+        System.Windows.Media.Color.FromArgb(0xFF, 0x1C, 0x1E, 0x23);
+
+    /// <summary>前端切换主题后调用（TitleBar）：同步 WPF 窗口底色 + WebView2 兜底帧色。</summary>
+    public static void ApplyShellTheme(bool dark)
+    {
+        var app = System.Windows.Application.Current;
+        var w = app?.MainWindow as MainWindow;
+        if (w is null) return;
+        w.Dispatcher.Invoke(() =>
+        {
+            var color = dark ? ThemeColorDark : ThemeColorLight;
+            w.Background = new System.Windows.Media.SolidColorBrush(color);
+            try
+            {
+                if (w._wv2 is not null)
+                    w._wv2.DefaultBackgroundColor = System.Drawing.Color.FromArgb(color.A, color.R, color.G, color.B);
+            }
+            catch { }
+        });
     }
 
     /// <summary>

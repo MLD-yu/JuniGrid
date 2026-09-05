@@ -1,0 +1,847 @@
+/* ============================================================
+   mods：Mod 管理页 —— 封面 / 单行列表 / 任务中心 / 筛选 / 工具条
+   ============================================================ */
+/* -------- Mod action buttons + chips (browse tabs) -------- */
+.jg-mod-actions { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+.jg-mini-btn {
+    padding: 4px 10px;
+    border-radius: 8px;
+    border: 1px solid var(--jg-line-strong);
+    background: transparent;
+    color: inherit;
+    font-size: 12px;
+    font-family: inherit;
+    cursor: pointer;
+    transition: background 120ms ease;
+}
+.jg-mini-btn:hover { background: var(--jg-well); }
+.jg-mini-btn[disabled] { opacity: .5; cursor: not-allowed; }
+.jg-mini-btn.danger {
+    background: #e81123;
+    border-color: #e81123;
+    color: #fff;
+    font-weight: 600;
+}
+.jg-mini-btn.danger-outline { color: #c50f1f; border-color: rgba(232,17,35,0.4); }
+.jg-mini-btn.danger-outline:hover { background: rgba(232,17,35,0.08); }
+
+.jg-chips { display: flex; gap: 8px; flex-wrap: wrap; }
+.jg-chip {
+    padding: 6px 14px;
+    border-radius: 999px;
+    border: 1px solid var(--jg-line-strong);
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+    font-size: 13px;
+    font-family: inherit;
+    transition: all 120ms ease;
+}
+.jg-chip:hover { background: var(--jg-well); }
+.jg-chip.active { background: var(--jg-ink); color: var(--jg-on-ink); border-color: var(--jg-outline); }
+.jg-chip[disabled] { opacity: .5; cursor: not-allowed; }
+
+/* -------- Mod covers + in-app detail page -------- */
+.jg-mod-cover-sm {
+    width: 56px; height: 56px;
+    border-radius: 8px;
+    object-fit: cover;
+    flex-shrink: 0;
+    background: var(--jg-track);
+}
+.jg-mod-hero {
+    width: 100%;
+    max-height: 220px;
+    object-fit: cover;
+    display: block;
+    background: var(--jg-track);
+}
+
+/* -------- Mod 详情页多图画廊 -------- */
+.jg-modgallery {
+    position: relative;
+    display: block;
+}
+.jg-modgallery-main { max-height: 300px; }
+.jg-gallery-nav {
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    border: 1px solid var(--jg-line-strong);
+    background: var(--jg-glass-85);
+    color: var(--jg-text);
+    font-size: 20px;
+    line-height: 1;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+    transition: background 120ms ease;
+}
+.jg-gallery-nav:hover:not(:disabled) { background: var(--jg-ink); color: var(--jg-on-ink); }
+.jg-gallery-nav:disabled { opacity: 0.35; cursor: default; }
+.jg-gallery-nav.left { left: 10px; }
+.jg-gallery-nav.right { right: 10px; }
+.jg-gallery-thumbs {
+    display: flex;
+    gap: 6px;
+    padding: 8px 12px;
+    overflow-x: auto;
+    background: var(--jg-well);
+}
+.jg-gallery-thumb {
+    flex-shrink: 0;
+    width: 56px;
+    height: 40px;
+    padding: 0;
+    border: 2px solid transparent;
+    border-radius: 6px;
+    overflow: hidden;
+    cursor: pointer;
+    background: transparent;
+}
+.jg-gallery-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.jg-gallery-thumb.active { border-color: var(--jg-outline); }
+.jg-gallery-thumb:hover:not(.active) { border-color: rgba(15,127,255,0.5); }
+
+.jg-modlink {
+    color: inherit;
+    font-weight: 600;
+    text-decoration: none;
+    word-break: break-word;
+    cursor: pointer;
+}
+.jg-modlink:hover { color: var(--jg-text); text-decoration: underline; }
+
+.jg-moddetail-desc {
+    font-size: 13px;
+    line-height: 1.7;
+    opacity: 0.9;
+    word-break: break-word;
+}
+.jg-moddetail-desc img { max-width: 100%; border-radius: 8px; }
+.jg-moddetail-desc a { color: var(--jg-text); }
+.jg-moddetail-desc ol, .jg-moddetail-desc ul { padding-left: 22px; margin: 6px 0; }
+.jg-moddetail-desc li { margin: 2px 0; }
+.jg-moddetail-desc blockquote {
+    margin: 8px 0;
+    padding: 6px 12px;
+    border-left: 3px solid var(--jg-outline);
+    background: rgba(15,127,255,0.06);
+    border-radius: 4px;
+}
+.jg-moddetail-desc pre {
+    background: var(--jg-well);
+    padding: 10px 12px;
+    border-radius: 6px;
+    overflow-x: auto;
+    font-family: Consolas, Monaco, monospace;
+    font-size: 12px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-word;
+    margin: 8px 0;
+}
+.jg-moddetail-desc h1, .jg-moddetail-desc h2, .jg-moddetail-desc h3,
+.jg-moddetail-desc h4, .jg-moddetail-desc h5 { margin: 10px 0 4px; line-height: 1.4; }
+.jg-moddetail-desc hr { border: 0; border-top: 1px solid var(--jg-line-strong); margin: 10px 0; }
+
+/* -------- Nexus 浏览榜单（N 网浏览页风格卡片网格）-------- */
+.jg-browsegrid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+    gap: 16px;
+    margin-top: 12px;
+}
+.jg-browsecard {
+    display: flex;
+    flex-direction: column;
+    border-radius: 12px;
+    overflow: hidden;
+    background: var(--neutral-layer-1, #ffffff);
+    border: 1px solid var(--jg-line);
+    transition: transform 140ms ease, box-shadow 140ms ease, border-color 140ms ease;
+}
+
+.jg-browsecard:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 24px rgba(0,0,0,0.14);
+    border-color: rgba(15,127,255,0.4);
+}
+.jg-browsecard-top { cursor: pointer; }
+.jg-browsecard-cover { width: 100%; aspect-ratio: 1 / 1; object-fit: cover; display: block; background: var(--jg-track); }
+.jg-browsecard-cover-fallback {
+    width: 100%; aspect-ratio: 1 / 1;
+    display: flex; align-items: center; justify-content: center;
+    background: linear-gradient(135deg, #5aa9ff, #1a1a1a);
+    color: #fff; font-size: 34px; font-weight: 700;
+}
+.jg-browsecard-title {
+    font-weight: 600; font-size: 13px; line-height: 1.3;
+    margin: 8px 10px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.jg-browsecard-title:hover { color: var(--jg-text); }
+.jg-browsecard-meta { font-size: 11px; opacity: 0.55; margin: 2px 10px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.jg-browsecard-desc {
+    font-size: 11.5px; opacity: 0.6; line-height: 1.5;
+    margin: 6px 10px 0;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.jg-browsecard-actions { display: flex; gap: 6px; margin: 10px 10px 12px; margin-top: auto; }
+.jg-browsecard-actions .jg-browsecard-install { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* 已安装：整钮变灰并去交互 */
+.jg-browsecard-install.installed {
+    background: var(--jg-well);
+    border-color: var(--jg-line-strong);
+    color: var(--jg-text-3);
+    cursor: default;
+    opacity: 1;
+}
+.jg-browsecard-install.installed:hover { background: var(--jg-well); }
+
+@media (max-width: 640px) {
+    .jg-browsegrid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
+}
+
+/* -------- Mod 单行列表（PCL 风格）------ */
+.jg-modrows { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; }
+.jg-modrow {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    background: var(--neutral-layer-1, #ffffff);
+    border: 1px solid var(--jg-line);
+    cursor: pointer;
+    transition: background 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.jg-modrow:hover {
+    background: var(--jg-well);
+    border-color: var(--jg-line-strong);
+}
+
+.jg-modrow.selected {
+    background: var(--jg-hover);
+    border-color: var(--jg-line-heavy);
+    box-shadow: inset 3px 0 0 var(--jg-outline);
+}
+
+.jg-modrow-icon {
+    width: 44px; height: 44px;
+    border-radius: 8px;
+    object-fit: cover;
+    flex-shrink: 0;
+    background: var(--jg-track);
+}
+.jg-modrow-icon-fallback {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: linear-gradient(135deg, #5aa9ff, #1a1a1a);
+    color: #fff;
+    font-size: 18px;
+    font-weight: 700;
+}
+
+.jg-modrow-text { min-width: 0; flex: 1; }
+.jg-modrow-title { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.jg-modrow-title .name {
+    font-weight: 600;
+    font-size: 14px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.jg-modrow-title .divider { opacity: 0.3; flex-shrink: 0; }
+.jg-modrow-title .ver { font-size: 12px; opacity: 0.55; white-space: nowrap; flex-shrink: 0; }
+.jg-modrow-title .upd { color: #b4009e; font-size: 12px; font-weight: 600; white-space: nowrap; flex-shrink: 0; }
+.jg-tag {
+    font-size: 11px;
+    padding: 1px 8px;
+    border-radius: 999px;
+    background: var(--jg-track);
+    opacity: 0.75;
+    flex-shrink: 0;
+}
+
+.jg-modrow-desc {
+    font-size: 12px;
+    opacity: 0.6;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-top: 2px;
+}
+
+/* hover 浮现的操作按钮 */
+.jg-modrow-actions {
+    display: flex;
+    gap: 4px;
+    opacity: 0;
+    transition: opacity 120ms ease;
+    flex-shrink: 0;
+}
+.jg-modrow:hover .jg-modrow-actions,
+.jg-modrow.selected .jg-modrow-actions { opacity: 1; }
+.jg-rowbtn {
+    width: 30px; height: 30px;
+    border-radius: 8px;
+    border: 1px solid var(--jg-line-heavy);
+    background: transparent;
+    color: var(--jg-text);
+    cursor: pointer;
+    font-size: 13px;
+    font-family: inherit;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+    transition: background 120ms ease;
+}
+.jg-rowbtn:hover { background: var(--jg-hover); }
+.jg-rowbtn.danger { color: #c50f1f; border-color: rgba(232,17,35,0.35); }
+.jg-rowbtn.danger:hover { background: rgba(232,17,35,0.10); }
+.jg-rowbtn.confirm {
+    background: #e81123;
+    border-color: #e81123;
+    color: #fff;
+    width: auto;
+    padding: 0 8px;
+    font-size: 11.5px;
+    font-weight: 600;
+}
+
+/* 批量操作悬浮条（跟着内容区走，居中于 mod 列表；left:20% ≈ 左侧账户栏宽度） */
+.jg-batchbar-anchor {
+    position: fixed;
+    left: 20%;
+    right: 0;
+    bottom: 18px;
+    display: flex;
+    justify-content: center;
+    pointer-events: none;
+    z-index: 50;
+}
+body.jg-max .jg-batchbar-anchor { bottom: 28px; }
+.jg-batchbar {
+    pointer-events: auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 14px;
+    border-radius: 14px;
+    background: var(--jg-glass-85);
+    backdrop-filter: blur(20px) saturate(180%);
+    border: 1px solid var(--jg-line);
+    box-shadow: 0 8px 30px rgba(0,0,0,0.15);
+    z-index: 50;
+    font-size: 12.5px;
+    max-width: calc(100% - 32px);
+    flex-wrap: wrap;
+}
+
+/* 去更新按钮（紫色，跟 SMAPI 更新同色） */
+.jg-rowbtn.upd { color: #b4009e; border-color: rgba(194,57,179,0.4); }
+.jg-rowbtn.upd:hover { background: rgba(194,57,179,0.12); }
+
+/* 已是最新版本：更新按钮变灰 */
+.jg-rowbtn.latest { color: var(--jg-text-4); border-color: var(--jg-line-strong); cursor: default; }
+.jg-rowbtn.latest:hover { background: transparent; }
+
+/* ---- 最小化的缩小淡出过渡（接近原生窗口观感）---- */
+#app { transition: transform .18s ease, opacity .18s ease; }
+body.jg-minimizing #app { transform: scale(0.96); opacity: 0; }
+
+/* 下载任务悬浮小图标（右下角） —— absolute 挂在 .jg-shell 里
+   原因：WPF 无边框最大化会把窗口伸出工作区约 8px，fixed 相对视口定位会跟着伸，
+   导致胶囊被任务栏遮挡。改成 absolute 相对 .jg-shell（真正的可视裁剪容器）后，
+   无论正常/最大化，胶囊始终稳稳落在可视区右下。 */
+.jg-taskdock {
+    position: absolute; right: 20px; bottom: 20px; z-index: 9999;
+    max-width: calc(100% - 40px);       /* 相对 .jg-shell，绝不超出内部 */
+    width: auto; height: auto;          /* v1.06.7：贴合内容大小，胶囊形 */
+    min-width: 160px; min-height: 56px; /* v1.06.7：单行状态（全部完成/暂无任务）也要有两行状态的体量 */
+    display: flex; align-items: center; justify-content: center;
+    background: var(--jg-ink); color: var(--jg-on-ink); border: none;    /* v1.06.4：常态纯黑胶囊 */
+    padding: 10px 22px; border-radius: 999px; cursor: pointer;   /* v1.06.6：内边距加大撑起胶囊，文字不变 */
+    box-shadow: 0 6px 20px rgba(0,0,0,0.25);
+    transition: box-shadow .15s, background .3s;   /* 不过渡 transform：GSAP 透视倾斜要逐帧写 inline transform */
+    overflow: hidden;                   /* 进度填充层不溢出圆角 */
+}
+/* 下载中：胶囊整体变灰；黑色填充层按下载进度从左往右覆盖，100% 时回到纯黑 */
+.jg-taskdock.running { background: #7d7d80; }
+.jg-taskdock-fill {
+    position: absolute; left: 0; top: 0; bottom: 0; z-index: 0;
+    width: 0%;
+    background: var(--jg-ink);                /* 与常态黑色一致 = 灰底被进度「填回」黑色 */
+    transition: width .35s ease;
+    pointer-events: none;
+}
+.jg-taskdock-body { position: relative; z-index: 1; text-align: center; min-width: 0; }
+/* 最大化时窗口伸出工作区，再内收 20px 双保险 */
+body.jg-max .jg-taskdock {
+    right: 40px; bottom: 40px;
+}
+body.jg-max .jg-taskdock .jg-taskdock-title,
+body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.jg-taskdock:hover { box-shadow: 0 10px 26px rgba(0,0,0,0.3); }
+.jg-taskdock-title { font-weight:600; font-size:13px; line-height:1.1; }
+.jg-taskdock-sub { font-size:11px; opacity:.85; margin-top:4px; }
+
+/* ─── v1.07：全部完成态 —— 胶囊 morph 成圆 + 白色对号（gsap taskDockMorph 驱动形变）─── */
+.jg-taskdock-check {
+    position: absolute; left: 50%; top: 50%; z-index: 1;
+    width: 26px; height: 26px;
+    margin-left: -13px; margin-top: -13px;
+    opacity: 0; pointer-events: none; /* 常态隐藏，morph 完成态由 gsap 弹出 */
+}
+/* 无 gsap 兜底：直接呈现最终圆态（有 gsap 时内联样式接管，此规则不生效） */
+.jg-taskdock.done {
+    width: 56px; min-width: 56px; height: 56px; min-height: 56px; padding: 0;
+}
+.jg-taskdock.done .jg-taskdock-check { opacity: 1; }
+.jg-taskdock.done .jg-taskdock-body { opacity: 0; }
+
+/* ─── v1.06.6：筛选导航（全部/正在下载/成功/失败，选中黑底白字胶囊）─── */
+.jg-tfilters { display: flex; gap: 8px; flex-wrap: wrap; margin: 0 0 14px; }
+.jg-tfilter {
+    border: 1px solid var(--jg-line-strong); background: var(--jg-card); color: var(--jg-text-2);
+    border-radius: 999px; padding: 7px 16px; font-size: 13px; cursor: pointer;
+}
+.jg-tfilter.active { background: var(--jg-ink); color: var(--jg-on-ink); border-color: var(--jg-outline); }
+
+/* v0.2.2：任务页「任务类型」下拉胶囊 —— 本体点击=回「全部」，只有小箭头才弹菜单 */
+.jg-tf-kind {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    border: 1px solid var(--jg-line-strong);
+    background: var(--jg-card);
+    color: var(--jg-text-2);
+    border-radius: 999px;
+    padding: 7px 8px 7px 16px;
+    font-size: 13px;
+    cursor: pointer;
+    user-select: none;
+}
+.jg-tf-kind.active { background: var(--jg-ink); color: var(--jg-on-ink); border-color: var(--jg-outline); }
+/* 菜单嵌在胶囊内，必须把文字色从胶囊的选中态（黑底白字）里夺回来，否则白字落白底 */
+.jg-tf-kind .jg-sort-menu { color: var(--jg-text-2); }
+.jg-tf-caret {
+    display: inline-flex;
+    padding: 2px 6px;
+    border-radius: 999px;
+    border-left: 1px solid var(--jg-line-strong);
+}
+.jg-tf-kind.active .jg-tf-caret { border-left-color: rgba(255,255,255,0.3); }
+.jg-tf-caret:hover { background: var(--jg-hover); }
+.jg-tf-kind.active .jg-tf-caret:hover { background: rgba(255,255,255,0.2); }
+
+/* ─── v1.06.6：下载信息下拉（GSAP easeReverse 弹性展开）─── */
+.jg-taskdrop-trigger {
+    border: none; background: transparent; cursor: pointer; color: var(--jg-text-2);
+    display: inline-flex; padding: 2px; border-radius: 4px;
+}
+.jg-taskdrop-trigger:hover { background: var(--jg-track); }
+.jg-taskdrop-menu {
+    visibility: hidden; opacity: 0; height: 0; overflow: hidden;
+    margin-top: 8px; background: var(--jg-glass-85);
+    border: 1px solid var(--jg-line-strong); border-radius: 10px;
+}
+/* v1.07：展开稳态由 class 保证（gsap 动画结束后清内联样式，状态归 CSS 管，
+   下载中频繁重渲染也不会把已展开的面板打回隐藏） */
+.jg-taskdrop-menu.open { visibility: visible; opacity: 1; height: auto; }
+/* ─── v1.1.3：任务详情时间线（像素方块→对勾）─── */
+.jg-tl { padding: 10px 14px 12px; }
+.jg-tl-empty { padding: 6px 2px; font-size: 12px; color: var(--jg-text-3); }
+.jg-tl-row {
+    display: flex; align-items: center; gap: 12px;
+    font-size: 12.5px; color: var(--jg-text); min-height: 30px; word-break: break-word;
+    animation: jg-tl-rowin .3s ease;   /* 只有新追加的行会入场，旧行不重播 */
+}
+@keyframes jg-tl-rowin { from { opacity: 0; transform: translateY(6px); } }
+.jg-tl-row[data-status="running"] { font-weight: 500; }
+.jg-tl-row[data-status="done"]    { color: var(--tl-green); }
+.jg-tl-row[data-status="final"]   { color: var(--tl-green); font-weight: 600; }
+.jg-tl-row[data-status="error"]   { color: var(--tl-red); font-weight: 600; }
+.jg-tl-icon { width: 30px; height: 30px; display: grid; place-items: center; flex: none; position: relative; }
+.jg-tl-text { flex: 1; min-width: 0; }
+/* 步骤间虚线连接（替代旧的分割线） */
+.jg-tl-connector { width: 30px; height: 15px; display: flex; justify-content: center; flex: none; }
+.jg-tl-connector i { border-left: 2px dotted #c4c4c4; height: 100%; }
+/* 对勾 / 叉标记：描边圈；final 和 error 为实心底+白线条 */
+.jg-tl-mark { width: 22px; height: 22px; display: block; }
+.jg-tl-mark circle { fill: none; stroke: var(--c); stroke-width: 2; }
+.jg-tl-mark path   { fill: none; stroke: var(--c); stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+.jg-tl-row[data-status="final"] .jg-tl-mark circle,
+.jg-tl-row[data-status="error"] .jg-tl-mark circle { fill: var(--c); }
+.jg-tl-row[data-status="final"] .jg-tl-mark path,
+.jg-tl-row[data-status="error"] .jg-tl-mark path   { stroke: #fff; }
+/* 3x3 像素方块：小·快速 + 每格发光（drop-shadow 跟随阶段色） */
+.jg-pxgrid {
+    --cell: 6px; --gap: 1.5px; --dur: 1.1s;
+    display: grid; grid-template-columns: repeat(3, var(--cell)); gap: var(--gap);
+    filter: drop-shadow(0 0 4px var(--c));
+}
+.jg-pxgrid i {
+    width: var(--cell); height: var(--cell); background: var(--c); border-radius: 1px;
+    opacity: .15; transform: scale(.5);
+    animation: jg-px-pop var(--dur) ease-in-out infinite;
+    animation-delay: calc(var(--i) * var(--dur) / 8);
+}
+.jg-pxgrid i.center { animation: jg-px-breathe var(--dur) ease-in-out infinite; }
+@keyframes jg-px-pop {
+    0%        { opacity: .15; transform: scale(.5); }
+    15%       { opacity: 1;   transform: scale(1.25); }
+    35%       { opacity: .6;  transform: scale(1); }
+    60%, 100% { opacity: .15; transform: scale(.5); }
+}
+@keyframes jg-px-breathe { 0%,100% { opacity: .25; transform: scale(.7); } 50% { opacity: .7; transform: scale(1); } }
+.jg-tl { --tl-green: #1a9c5b; --tl-red: #e5484d; --tl-blue: #3b82f6; --tl-black: #1a1a1a; }
+@media (prefers-reduced-motion: reduce) { .jg-pxgrid i { animation: none; opacity: .8; transform: none; } }
+
+/* ─── v1.06.6：下载页灰底改回白色；黑圆返回改透明底黑箭头；清理全部胶囊 ─── */
+.jg-tasks-back {
+    width: 42px; height: 42px; border-radius: 50%;
+    border: none; cursor: pointer;
+    background: transparent; color: var(--jg-text);
+    display: inline-flex; align-items: center; justify-content: center;
+    transition: background .15s;
+}
+.jg-tasks-back:hover { background: var(--jg-well); }
+
+.jg-tasks-clear {
+    border: none; cursor: pointer;
+    background: var(--jg-ink); color: var(--jg-on-ink);
+    border-radius: 999px; padding: 10px 26px;
+    font-size: 13px; font-weight: 600; font-family: inherit;
+    box-shadow: 0 6px 18px rgba(0,0,0,0.18);
+    transition: transform .15s, box-shadow .15s, opacity .15s;
+}
+.jg-tasks-clear:hover { transform: scale(1.04); box-shadow: 0 10px 24px rgba(0,0,0,0.26); }
+.jg-tasks-clear:disabled { opacity: .4; cursor: default; transform: none; box-shadow: none; }
+.jg-tasks-cancel {
+    border: 1px solid var(--jg-line-strong); cursor: pointer;
+    background: transparent; color: inherit;
+    border-radius: 999px; padding: 9px 24px;
+    font-size: 13px; font-weight: 600; font-family: inherit;
+    transition: transform .15s, background .15s;
+}
+.jg-tasks-cancel:hover { background: var(--jg-track); transform: scale(1.04); }
+
+.jg-tasks-confirm-mask {
+    position: fixed; inset: 0; z-index: 999990;
+    background: rgba(0,0,0,0.35);
+    display: flex; align-items: center; justify-content: center;
+}
+.jg-tasks-confirm {
+    background: var(--jg-card); color: var(--jg-text);
+    border-radius: 14px; padding: 22px 24px;
+    width: min(360px, 86vw);
+    box-shadow: 0 18px 48px rgba(0,0,0,0.3);
+}
+
+/* ─── v1.06.4：任务卡片的 PCL2 风格步骤列表（✓ 完成 / 蓝色% 当前 / ✕ 失败）─── */
+/* v1.06.6：合并进上方的黑色版本（图二图三的蓝色全部改黑），此处不再重复定义 */
+
+/* Mod 行 —— 版本号后的紫色新版本小标签（极简提示） */
+.jg-newver {
+    display:inline-block; margin-left:6px; padding:1px 8px;
+    font-size:11px; font-weight:600;
+    color:#b4009e; background:rgba(180,0,158,0.08);
+    border:1px solid rgba(180,0,158,0.25); border-radius:10px;
+}
+
+/* 有活跃任务时给右下角胶囊让出 96px */
+/* 启动按钮：hover 像素溶解的第二态“点击启动！”白底黑字蒙版 */
+.jg-launch-big { overflow: hidden; }
+.px-launch-mask {
+    position: absolute;
+    inset: 0;
+    z-index: 4;
+    background: #f0fceb;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: inherit;
+    color: var(--jg-text);
+}
+.px-launch-txt {
+    font-size: 16px;
+    font-weight: 700;
+    color: var(--jg-text);
+    letter-spacing: 0.5px;
+}
+/* 网格像素窗口：盖在 mask 之上，逐个 reveal */
+.px-grid {
+    border-radius: inherit;
+}
+
+/* ── Mod 管理页：检查/刷新期间 GSAP 弹性加载动画（v0.31.0：加大画布 + 柔和色 + 独占空间） ── */
+.jg-mods-loading {
+    /* 独占整块列表空间，与顶部搜索栏之间留 40px；下方留 60px，让四个方块的 keyframes（y +80/-10/+30）不撞边 */
+    margin: 40px auto 60px;
+    padding: 80px 0 100px;
+    min-height: 260px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 0;
+}
+.jg-mods-loading .box {
+    width: 30px;
+    height: 30px;
+    margin: 0 14px;
+    border-radius: 8px;
+    display: inline-block;
+    will-change: transform;
+}
+.jg-mods-loading .gradient-green {
+    position: relative;
+    overflow: hidden;
+    /* v0.31.0：对角线线性渐变：左上#9efd58 → 右下#00e359 + 叠加噪声微粒（磨砂质感） */
+    background: linear-gradient(135deg, #9efd58 0%, #00e359 100%);
+}
+.jg-mods-loading .gradient-green::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)' opacity='0.08'/%3E%3C/svg%3E");
+    mix-blend-mode: overlay;
+    pointer-events: none;
+}
+
+/* ── v0.31.0：PCL 式页面切换入场动画（.jg-main 每次切页触发） ── */
+.jg-main {
+    /* v0.42.0：去掉常驻 will-change: transform —— 它会把 position:fixed 的后代
+       （批量栏）变成相对 .jg-main 定位，导致批量栏跟着页面滚动 */
+}
+.jg-page-enter {
+    animation: jg-page-in 380ms cubic-bezier(.22, 1, .36, 1) both;
+}
+@keyframes jg-page-in {
+    from {
+        opacity: 0;
+        transform: translateY(14px);
+        filter: blur(3px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+        filter: blur(0);
+    }
+}
+/* 内部一级块 —— 用 stagger 让页面元素依次浮上来，PCL 那种"活起来"的感觉 */
+.jg-page-enter > * {
+    animation: jg-child-in 420ms cubic-bezier(.22, 1, .36, 1) both;
+}
+.jg-page-enter > *:nth-child(1) { animation-delay: 40ms; }
+.jg-page-enter > *:nth-child(2) { animation-delay: 90ms; }
+.jg-page-enter > *:nth-child(3) { animation-delay: 140ms; }
+.jg-page-enter > *:nth-child(4) { animation-delay: 190ms; }
+.jg-page-enter > *:nth-child(5) { animation-delay: 240ms; }
+.jg-page-enter > *:nth-child(6) { animation-delay: 290ms; }
+@keyframes jg-child-in {
+    from { opacity: 0; transform: translateY(10px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ── v0.32.0：Mod 管理工具条（chips + 排序下拉 + 展开式搜索） ── */
+.jg-mods-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 12px;
+    flex-wrap: nowrap;
+    min-width: 0;
+}
+.jg-mods-toolbar .jg-chips { flex-wrap: wrap; min-width: 0; }
+/* v0.34.0：DOM 已扁平化（排序/chips/搜索同级），右对齐由 .jg-search-x 自己承担 */
+
+/* 排序下拉 */
+.jg-sort-dd { position: relative; }
+.jg-sort-trigger {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 14px;
+    border-radius: 999px;
+    border: 1px solid var(--jg-line-strong);
+    background: var(--jg-glass-40);
+    color: inherit;
+    font-size: 13px;
+    font-family: inherit;
+    cursor: pointer;
+    transition: background 120ms ease;
+}
+.jg-sort-trigger:hover { background: var(--jg-well); }
+.jg-sort-arrow { display: block; transform-origin: center center; }
+.jg-sort-menu {
+    position: absolute;
+    top: calc(100% + 8px);
+    left: 0;
+    min-width: 156px;
+    padding: 6px;
+    border-radius: 14px;
+    border: 1px solid var(--jg-line-strong);
+    background: var(--jg-glass-95);
+    backdrop-filter: saturate(180%) blur(20px);
+    box-shadow: 0 12px 32px rgba(0,0,0,0.14);
+    visibility: hidden;
+    opacity: 0;
+    transform: translateY(-10px) scale(0.92);
+    transform-origin: top left;
+    z-index: 1000;
+    pointer-events: none;
+}
+.jg-sort-dd.open .jg-sort-menu {
+    visibility: visible;
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    pointer-events: auto;
+}
+/* v1.07.0：触顶桥 —— trigger→菜单之间 8px 空隙划入命中区域，鼠标移向菜单不再中途滑出下拉 */
+.jg-sort-menu::before { content: ''; position: absolute; left: 0; right: 0; top: -14px; height: 14px; }
+/* v1.07.0：Nexus 页菜单拆两层 —— 弹性动画只作用在 .jg-sort-menu-in（视觉层），
+   外层盒子（含触顶桥）保持最终矩形不动，命中区域从打开第一帧起 = 最终位置，
+   动画期间不再「看着开了、其实命中在下方 mod 卡上」。皮肤值须与 .jg-sort-menu 保持一致。 */
+.jg-nexus-scope .jg-sort-menu {
+    padding: 0; border: 0; background: transparent; box-shadow: none;
+    backdrop-filter: none; opacity: 1; transform: none;
+}
+.jg-nexus-scope .jg-sort-menu-in {
+    padding: 6px;
+    border-radius: 14px;
+    border: 1px solid var(--jg-line-strong);
+    background: var(--jg-glass-95);
+    backdrop-filter: saturate(180%) blur(20px);
+    box-shadow: 0 12px 32px rgba(0,0,0,0.14);
+}
+/* v0.33.0：并入上方 .jg-sort-menu 主规则 */
+.jg-sort-item {
+    display: flex;
+    align-items: center;
+    width: 100%;
+    padding: 8px 12px;
+    border: 0;
+    border-radius: 9px;
+    background: transparent;
+    color: inherit;
+    font-size: 13px;
+    font-family: inherit;
+    text-align: left;
+    cursor: pointer;
+    white-space: nowrap;
+}
+.jg-sort-item:hover { background: var(--jg-hover); }
+.jg-sort-item.active { background: var(--jg-hover-strong); color: var(--jg-text); font-weight: 600; }
+
+/* 展开式搜索 */
+.jg-search-x {
+    display: flex;
+    align-items: center;
+    margin-left: auto;          /* v0.34.0：贴最右；展开时向左延伸占据 chips 右侧剩余空间 */
+    width: 40px;
+    height: 40px;
+    border-radius: 999px;
+    border: 1px solid var(--jg-line-strong);
+    background: var(--jg-glass-40);
+    overflow: hidden;
+    flex-shrink: 0;
+    box-sizing: border-box;
+}
+.jg-search-x.open { width: 220px; }
+.jg-search-btn {
+    flex: 0 0 38px;
+    height: 38px;
+    border: 0;
+    background: transparent;
+    font-size: 15px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: inherit;
+}
+.jg-search-btn:hover { transform: scale(1.08); }
+.jg-search-btn img { filter: none; opacity: 0.75; }
+.jg-search-x:hover .jg-search-btn img { opacity: 1; }
+.jg-search-field {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding-right: 10px;
+    flex: 1;
+    min-width: 0;
+    visibility: hidden;
+    opacity: 0;
+}
+.jg-search-x.open .jg-search-field { visibility: visible; opacity: 1; }
+.jg-search-input {
+    flex: 1;
+    min-width: 0;
+    border: 0;
+    outline: none;
+    background: transparent;
+    font-family: inherit;
+    font-size: 13px;
+    color: inherit;
+}
+.jg-search-clear {
+    border: 0;
+    background: transparent;
+    cursor: pointer;
+    opacity: 0.55;
+    font-size: 12px;
+    color: inherit;
+    padding: 4px 6px;
+    border-radius: 999px;
+}
+.jg-search-clear:hover { opacity: 1; background: var(--jg-track); }
+
+/* ── v0.36.0：AnimatedList 顶/底渐变遮罩 ── */
+.jg-al-gradient {
+    position: sticky;
+    left: 0;
+    right: 0;
+    height: 0;
+    pointer-events: none;
+    z-index: 50;
+    transition: opacity 0.3s ease;
+}
+.jg-al-gradient-top {
+    top: 0;
+    /* sticky 占位 0 高，用内部伪元素画出真实渐变，避免挤压内容 */
+    float: inline-start;
+}
+.jg-al-gradient-top::before,
+.jg-al-gradient-bottom::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    height: 50px;
+    pointer-events: none;
+}
+.jg-al-gradient-top::before {
+    top: 0;
+    background: linear-gradient(to bottom, var(--jg-content), transparent);
+}
+.jg-al-gradient-bottom {
+    bottom: 0;
+    /* 用 sticky 相对 .jg-main 滚动视口，避免页面入场 animation 的 transform
+       把 fixed 变成相对滚动容器定位，导致遮罩跟着内容一起滚 */
+    height: 0;
+}
+.jg-al-gradient-bottom::before {
+    bottom: 0;
+    background: linear-gradient(to top, var(--jg-content), transparent);
+}
+

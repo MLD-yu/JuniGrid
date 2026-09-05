@@ -35,7 +35,7 @@
         </div>
         <div style="display:flex;align-items:center;gap:8px">
             @* v0.47.0：存档下拉挪到最右；GSAP easeReverse 弹性开合（参照官方 demo）*@
-            <div class="jg-profile-dd @(_profileOpen ? "open" : "")">
+            <div class="jg-profile-dd @(_profileOpen ? "open" : "")" data-dd="profile">
                 @* v0.71.4：重命名挪到下拉按钮右边 —— 点铅笔后按钮变输入框、铅笔变确定，改名只在这一个位置发生 *@
                 @if (_renamingProfile is not null)
                 {
@@ -116,7 +116,7 @@
             else
             {
                 <img class="jg-modrow-icon" src="assets/smapi-pufferchick.svg" alt="SMAPI"
-                     style="border-radius:8px;background:#fff;padding:2px" />
+                     style="border-radius:8px;background:var(--jg-card);padding:2px" />
             }
             <div style="min-width:0;flex:1">
                 <div style="font-weight:700">
@@ -177,7 +177,7 @@
 
     @* ── v0.34.0 工具条：排序在前 → 筛选 chips → 搜索（点击向右延伸，SVG 图标） ── *@
     <div class="jg-mods-toolbar">
-        <div class="jg-sort-dd @(_sortOpen ? "open" : "")">
+        <div class="jg-sort-dd @(_sortOpen ? "open" : "")" data-dd="sort">
             <button class="jg-sort-trigger" @onclick="ToggleSort">
                 排序方式
                 <svg class="jg-sort-arrow" width="12" height="12" viewBox="0 0 12 12" fill="none">
@@ -190,11 +190,9 @@
                 <button class="jg-sort-item @(_sortMode == "alpha" ? "active" : "")" @onclick='() => SetSort("alpha")'>首字母</button>
             </div>
         </div>
-        @* v0.71.6：排序下拉打开时铺一层透明遮罩，点"除下拉框本身以外"的地方即收回 *@
-        @if (_sortOpen)
-        {
-            <div class="jg-dd-overlay" @onclick="CloseSort"></div>
-        }
+        @* v1.1.2：遮罩改常驻 DOM + class 随状态绑定（原 @if 渲染比 JS 慢一拍：
+           dropdownToggle 同帧翻转 .open 时遮罩元素还不存在，开菜单后点外部收不掉） *@
+        <div class="jg-dd-overlay" data-dd="sort" @(_sortOpen ? "open" : "") @onclick="CloseSort"></div>
         <div class="jg-chips" role="group" style="align-items:center">
         @foreach (var f in _filterOptions)
         {
@@ -205,7 +203,7 @@
                 @if (f.Key == "updatable" && FailedCheckCount > 0)
                 {
                     @* v1.08：有检查失败的 mod → 可更新标签右上角小红点 *@
-                    <span style="position:absolute;top:-3px;right:-3px;width:8px;height:8px;border-radius:50%;background:#e81123;box-shadow:0 0 0 2px var(--jg-bg,#fff)"></span>
+                    <span style="position:absolute;top:-3px;right:-3px;width:8px;height:8px;border-radius:50%;background:#e81123;box-shadow:0 0 0 2px var(--jg-bg)"></span>
                 }
             </button>
         }
@@ -385,7 +383,7 @@
                                 </button>
                             }
                             <button class="jg-rowbtn danger" data-tip="删除"
-                                    @onclick:stopPropagation @onclick="() => _pendingDeleteMod = m">
+                                    @onclick:stopPropagation @onclick="() => AskDeleteMod(m)">
                                 <img class="jg-rowbtn-icon" src="assets/actions/delete.svg" alt="" draggable="false" />
                             </button>
                         </div>
@@ -428,7 +426,7 @@
         <button class="jg-mini-btn jg-ico" data-tip="禁用" disabled="@(!anyEnabled)" @onclick="() => BatchSetDisabled(true)">
             <img src="assets/actions/disable.svg" alt="" draggable="false" />
         </button>
-        <button class="jg-mini-btn danger-outline jg-ico" data-tip="删除" @onclick="() => _pendingBatchDelete = true">
+        <button class="jg-mini-btn danger-outline jg-ico" data-tip="删除" @onclick="AskBatchDelete">
             <img src="assets/actions/delete.svg" alt="" draggable="false" />
         </button>
         <button class="jg-mini-btn jg-ico" data-tip="取消选择" @onclick="ClearSelection">
@@ -459,12 +457,10 @@
     </div>
 }
 
-    @if (_profileOpen)
-    {
-        @* v0.71.6：存档下拉打开时铺透明遮罩，点"除下拉框本身以外"的地方收回。
-           存档 dd z-index:9500 高于遮罩 9000，点菜单本身不会误触发。 *@
-        <div class="jg-dd-overlay" @onclick="CloseProfile"></div>
-    }
+    @* v0.71.6：存档下拉打开时铺透明遮罩，点"除下拉框本身以外"的地方收回。
+       v1.1.2：改常驻 DOM + class 随状态绑定 —— 原 @if 渲染比 profileDropdown 的
+       同帧 .open 翻转慢一拍，遮罩永远追不上菜单，点外部收不掉。 *@
+    <div class="jg-dd-overlay" data-dd="profile" @(_profileOpen ? "open" : "") @onclick="CloseProfile"></div>
 
     @* v0.46.0：删除存档确认对话框 *@
     @if (_deletingProfile is not null)
@@ -488,6 +484,10 @@
             <div class="jg-modal" @onclick:stopPropagation>
                 <div class="jg-modal-title">删除 mod</div>
                 <div class="jg-modal-body">确定删除所选mod？</div>
+                <label class="jg-modal-trash-opt">
+                    <input type="checkbox" @bind="_deleteToTrash" />
+                    <span>移入mod回收站（不勾选将彻底删除）</span>
+                </label>
                 <div class="jg-modal-actions">
                     <button type="button" class="jg-pill-ghost" @onclick="CancelDeleteMods">取消</button>
                     <button type="button" class="jg-pill-danger" @onclick="ConfirmDeleteMods">确定删除</button>
@@ -510,6 +510,9 @@
     private long _checkingTick;
     private ModEntry? _pendingDeleteMod;   // 待确认删除的单个 mod（弹窗确认后真正卸载）
     private bool _pendingBatchDelete;      // 待确认的批量删除（弹窗确认后真正卸载）
+    // v1.09：删除确认弹窗里的"移入mod回收站"复选框 —— 默认不勾（沿用旧的彻底删除），
+    // 勾选后删除的 mod 进 Mods/.junigrid_trash 常驻回收站，可从 设置→存储 打开手动还原
+    private bool _deleteToTrash;
     private bool _coversDirty;
 
     // ---- 备注/重命名弹窗 ----
@@ -688,7 +691,13 @@
     private void AskDeleteProfile(string name)
     {
         _deletingProfile = name;
-        // v1.08：弹删除确认框时把排序下拉也一并收起
+        CloseDropdownsForDialog();
+    }
+
+    /// <summary>v1.1.1：任何模态弹窗（删除/备注）打开前收起全部下拉 ——
+    /// 弹窗遮罩(99998)虽已盖住下拉(9500)，但遮罩点击只关弹窗，下拉会一直挂在遮罩下。</summary>
+    private void CloseDropdownsForDialog()
+    {
         if (_sortOpen)
         {
             _sortOpen = false;
@@ -699,6 +708,18 @@
             _profileOpen = false;
             _ = JS.InvokeVoidAsync("junigridJs.profileDropdown", ".jg-profile-dd", false);
         }
+    }
+
+    private void AskDeleteMod(ModEntry m)
+    {
+        CloseDropdownsForDialog();
+        _pendingDeleteMod = m;
+    }
+
+    private void AskBatchDelete()
+    {
+        CloseDropdownsForDialog();
+        _pendingBatchDelete = true;
     }
     private void CancelDeleteProfile() => _deletingProfile = null;
 
@@ -1528,10 +1549,11 @@
     {
         var mod = _pendingDeleteMod;
         var batch = _pendingBatchDelete;
+        var toTrash = _deleteToTrash;
         _pendingDeleteMod = null;
         _pendingBatchDelete = false;
-        if (mod is not null) Uninstall(mod);
-        else if (batch) BatchDelete();
+        if (mod is not null) Uninstall(mod, toTrash);
+        else if (batch) BatchDelete(toTrash);
     }
 
     /// <summary>v0.71.0：跳详情前记住列表滚动位置（静态字段，组件销毁后仍存活）。</summary>
@@ -1591,6 +1613,7 @@
     // ------------------------------------------------------------------
     private void OpenRemark(ModEntry m)
     {
+        CloseDropdownsForDialog();
         _remarkFolder = m.Folder;
         _remarkOriginal = m.Name;
         Cfg.Current.ModRemarks.TryGetValue(m.Folder, out var cur);
@@ -1726,11 +1749,11 @@
         Cfg.Save(Cfg.Current);
     }
 
-    private void Uninstall(ModEntry m)
+    private void Uninstall(ModEntry m, bool toTrash)
     {
-        var err = ModSvc.Uninstall(Cfg.Current.GamePath, m.Folder);
+        var err = ModSvc.Uninstall(Cfg.Current.GamePath, m.Folder, toTrash);
         if (err is not null) ShowNotice("err", err);
-        else ShowNotice("ok", $"已删除 {m.Name}");
+        else ShowNotice("ok", toTrash ? $"已移入回收站 {m.Name}" : $"已删除 {m.Name}");
         Rescan();
     }
 
@@ -1815,17 +1838,19 @@
         Cfg.Save(Cfg.Current);
     }
 
-    private void BatchDelete()
+    private void BatchDelete(bool toTrash)
     {
         _pendingBatchDelete = false;
         var count = _selected.Count;
         var failed = 0;
         foreach (var folder in _selected.ToList())
-            if (ModSvc.Uninstall(Cfg.Current.GamePath, folder) is not null)
+            if (ModSvc.Uninstall(Cfg.Current.GamePath, folder, toTrash) is not null)
                 failed++;
 
         ShowNotice(failed == 0 ? "ok" : "err",
-            failed == 0 ? $"已删除 {count} 个 mod" : $"{failed} 个删除失败");
+            failed == 0
+                ? toTrash ? $"已移入回收站 {count} 个 mod" : $"已删除 {count} 个 mod"
+                : $"{failed} 个删除失败");
         ClearSelection();
         Rescan();
     }
@@ -2643,7 +2668,7 @@
 
             if (err is null)
             {
-                Center.Finish(task, true, $"✅ SMAPI {_smapiUpdate.LatestVersion} 安装完成");
+                Center.Finish(task, true, $"SMAPI {_smapiUpdate.LatestVersion} 安装完成");
                 _smapiVersion = Game.ProbeSmapiVersion(Cfg.Current.GamePath);
                 _smapiUpdate = await Updater.CheckSmapiAsync(_smapiVersion);
                 // 安装完成后重新扫描 mod 列表（SMAPI 自带 ConsoleCommands/SaveBackup 会进列表）
@@ -2690,7 +2715,7 @@
 
             if (err is null)
             {
-                Center.Finish(task, true, $"✅ SMAPI 已更新到 {_smapiUpdate.LatestVersion}");
+                Center.Finish(task, true, $"SMAPI 已更新到 {_smapiUpdate.LatestVersion}");   // v1.1.3：✅ 已删 —— 时间线末行自带实心绿勾
                 _smapiVersion = Game.ProbeSmapiVersion(Cfg.Current.GamePath);
                 _smapiUpdate = await Updater.CheckSmapiAsync(_smapiVersion);
             }

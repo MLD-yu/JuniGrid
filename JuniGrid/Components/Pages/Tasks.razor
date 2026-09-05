@@ -15,11 +15,11 @@
                 </svg>
             </button>
             <div style="margin-top:24px;font-size:13px;opacity:.7;">总进度</div>
-            <div style="font-size:26px;font-weight:600;color:#141414;">@Center.TotalPercent.ToString("F2") %</div>
+            <div style="font-size:26px;font-weight:600;color:var(--jg-text)">@Center.TotalPercent.ToString("F2") %</div>
             <div style="margin-top:16px;font-size:13px;opacity:.7;">下载速度</div>
-            <div style="font-size:22px;font-weight:600;color:#141414;">@Center.TotalSpeedMBps.ToString("F2") M/s</div>
+            <div style="font-size:22px;font-weight:600;color:var(--jg-text)">@Center.TotalSpeedMBps.ToString("F2") M/s</div>
             <div style="margin-top:16px;font-size:13px;opacity:.7;">剩余任务</div>
-            <div style="font-size:22px;font-weight:600;color:#141414;">@Center.RunningCount</div>
+            <div style="font-size:22px;font-weight:600;color:var(--jg-text)">@Center.RunningCount</div>
             <div style="margin-top:24px;">
                 <button class="jg-tasks-clear" @onclick="AskClear" data-tip="清理当前筛选下的所有任务"
                         disabled="@(!VisibleItems().Any())">清理全部</button>
@@ -78,8 +78,8 @@
                                 </button>
                             }
                         </div>
-                        <div style="height:6px;background:rgba(0,0,0,0.08);border-radius:3px;margin-top:6px;">
-                            <div style="height:100%;border-radius:3px;background:@(t.Status=="failed"?"#e11d48":"#141414");width:@(t.Percent)%"></div>
+                        <div style="height:6px;background:var(--jg-track);border-radius:3px;margin-top:6px;">
+                            <div style="height:100%;border-radius:3px;background:@(t.Status=="failed"?"#e11d48":"var(--jg-ink)");width:@(t.Percent)%"></div>
                         </div>
 
                         @* ─── 下载信息下拉面板（GSAP easeReverse 弹性展开；进度噪声行不进入）───
@@ -92,17 +92,72 @@
                         @if (t.Log.Count > 0)
                         {
                             <div class="jg-taskdrop-menu @(_openDrops.Contains(t.Id) ? "open" : "")" id="@dropId">
-                                @if (UsefulLines(t).Any())
+                                <div class="jg-tl">
+                                @{
+                                    var lines = UsefulLines(t).ToList();
+                                    int[] ringOrder = { 0, 1, 2, 5, 8, 7, 6, 3 };   // 3x3 环绕顺时针（0 左上起）
+                                }
+                                @if (lines.Count == 0)
                                 {
-                                    @foreach (var line in UsefulLines(t))
+                                    <div class="jg-tl-empty">暂无详细日志（正在后台处理，请稍候…）</div>
+                                }
+                                @for (var i = 0; i < lines.Count; i++)
+                                {
+                                    var line = lines[i];
+                                    var isLast = i == lines.Count - 1;
+                                    // 运行中任务的最后一行 = 进行中（像素方块）；已完成任务的末行 = 实心绿勾；失败任务末行 = 红叉
+                                    var status = t.Status == "running" && isLast ? "running"
+                                               : t.Status == "failed" && isLast ? "error"
+                                               : t.Status == "done" && isLast ? "final"
+                                               : "done";
+                                    var phase = PhaseOf(line);   // backup=蓝 / connect=红 / 其它=黑
+                                    var iconColor = status == "done" || status == "final" ? "var(--tl-green)"
+                                                  : status == "error" ? "var(--tl-red)"
+                                                  : phase == "backup" ? "var(--tl-blue)"
+                                                  : phase == "connect" ? "var(--tl-red)"
+                                                  : "var(--tl-black)";
+                                    <div class="jg-tl-row" data-status="@status" style="--c:@iconColor">
+                                        <div class="jg-tl-icon">
+                                            @if (status == "running")
+                                            {
+                                                <div class="jg-pxgrid">
+                                                    @for (var c = 0; c < 9; c++)
+                                                    {
+                                                        if (c == 4)
+                                                        {
+                                                            <i class="center"></i>
+                                                        }
+                                                        else
+                                                        {
+                                                            <i style="--i:@(Array.IndexOf(ringOrder, c))"></i>
+                                                        }
+                                                    }
+                                                </div>
+                                            }
+                                            else if (status == "error")
+                                            {
+                                                <svg class="jg-tl-mark" viewBox="0 0 26 26"><circle cx="13" cy="13" r="12"/><path d="M8.5 8.5l9 9M17.5 8.5l-9 9"/></svg>
+                                            }
+                                            else if (status == "final")
+                                            {
+                                                @* 末行 Success：实心绿底白勾（不变）*@
+                                                <svg class="jg-tl-check jg-tl-mark" viewBox="0 0 26 26"><circle cx="13" cy="13" r="12"/><path d="M7 13.5l4 4 8-9"/></svg>
+                                            }
+                                            else
+                                            {
+                                                @* 弧线开口对勾：缺口在右上 1 点半方向，勾尾伸向缺口（同视频样式）*@
+                                                <svg class="jg-tl-check jg-tl-mark" viewBox="0 0 26 26"><path d="M21.49 4.51A12 12 0 1 1 13 1"/><path d="M7 13.5l4 4 8.5-9.5"/></svg>
+                                            }
+                                        </div>
+                                        <span class="jg-tl-text">@line</span>
+                                    </div>
+                                    @if (i < lines.Count - 1 || t.Status == "running")
                                     {
-                                        <div class="jg-taskdrop-item">@line</div>
+                                        @* ── v1.1.3：步骤间虚线连接（运行中末行后面也带一节，表示后续还有）── *@
+                                        <div class="jg-tl-connector"><i></i></div>
                                     }
                                 }
-                                else
-                                {
-                                    <div class="jg-taskdrop-item">暂无详细日志（正在后台处理，请稍候…）</div>
-                                }
+                                </div>
                             </div>
                         }
                     </div>
@@ -198,6 +253,11 @@
             // 下拉外点关闭 + 箭头动画绑定（复用日志页同款组件）
             try { await JS.InvokeVoidAsync("junigridJs.logsFilterInit", "#jgKindFilter"); } catch { }
         }
+        // v1.1.3：给展开着的任务时间线挂观察器 —— 检测「像素方块→对勾」的切换并播放变形动画
+        foreach (var id in _openDrops)
+        {
+            try { await JS.InvokeVoidAsync("junigridJs.taskTimelineWatch", "#jgDrop-" + id.ToString("N")); } catch { }
+        }
     }
 
     // ─── 日志清洗：进度噪声不显示 ───
@@ -217,6 +277,16 @@
             if (line.Length == 0 || ProgressNoise.IsMatch(line)) continue;
             yield return line;
         }
+    }
+
+    // ─── v1.1.3：日志行 → 阶段（关键词自动匹配）───
+    // 备份/恢复 → 蓝；连接/服务器 → 红；下载/安装/解压/其它 → 黑。
+    // 完成勾统一绿、失败统一红，在标记渲染处决定，与这里的阶段色无关。
+    private static string PhaseOf(string line)
+    {
+        if (line.Contains("备份") || line.Contains("恢复")) return "backup";
+        if (line.Contains("连接") || line.Contains("服务器")) return "connect";
+        return "work";
     }
 
     // ─── 下载信息下拉：每任务一个展开状态，GSAP 动画在 JS 里 ───

@@ -131,6 +131,28 @@ public partial class App : Application
     /// <summary>Startup 事件占位 —— 真正的 splash → main 编排放在这里。</summary>
     private void OnAppStartup(object sender, StartupEventArgs e)
     {
+        // v1.1.2：WebView2 运行时前置检测 —— 正常 Win10/11 预装，但 Windows 沙盒、
+        // LTSC/精简系统可能没有。缺失时裸异常是一屏英文堆栈（界面永远出不来），
+        // 这里弹中文提示告诉用户装一下再启动。
+        try
+        {
+            _ = Microsoft.Web.WebView2.Core.CoreWebView2Environment.GetAvailableBrowserVersionString();
+        }
+        catch (Exception ex)
+        {
+            LogInfo("WebView2 运行时缺失: " + ex.Message);
+            System.Windows.MessageBox.Show(
+                "检测到系统缺少 Microsoft WebView2 运行时，JuniGrid 的界面依赖它。\n\n" +
+                "请下载并安装一次（装完重新启动本程序）：\n" +
+                "https://go.microsoft.com/fwlink/p/?LinkId=2124703\n\n" +
+                "提示：Windows 沙盒是一次性系统，每次新开沙盒都需要重新安装。\n" +
+                $"技术信息：{ex.Message}",
+                "JuniGrid 无法启动：缺少 WebView2 运行时",
+                System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
+            Shutdown();
+            return;
+        }
+
         if (_uninstallMode)
         {
             new UninstallWindow().Show();
@@ -154,22 +176,37 @@ public partial class App : Application
             if (revealed) return;
             revealed = true;
             LogInfo("RevealMain: 显示主窗口");
+            // v1.1.7：启动即最大化。不能在 XAML 里写 WindowState="Maximized" ——
+            // 主窗口以 ShowActivated=false 屏外挂载，WPF 禁止该状态与 Maximized 组合 Show
+            // （直接抛 InvalidOperationException，启动即崩）。
+            // v1.1.2：先移回屏内再最大化 —— 窗口还挂在 (-32000,-32000) 时 Windows
+            // 算不出最大化几何，Maximized 会被吞掉、窗口停留在屏外小窗（实测）。
+            // v1.1.2：非前台揭示时 Maximized 偶发被吞 → 300ms 后复查补一次，确保一定最大化。
             main!.Left = targetLeft;
-            main.Top = targetTop + 34;
+            main!.Top = targetTop;
+            main.WindowState = WindowState.Maximized;
             main.Activate();
-
-            // 位置滑入
-            var slide = new DoubleAnimation
+            _ = Task.Run(async () =>
             {
-                From = targetTop + 34, To = targetTop,
-                Duration = TimeSpan.FromMilliseconds(460),
-                EasingFunction = new System.Windows.Media.Animation.CubicEase
-                { EasingMode = System.Windows.Media.Animation.EasingMode.EaseOut }
-            };
-            main.BeginAnimation(System.Windows.Window.TopProperty, slide);
-
-            // v0.21.0：用 Win32 层 alpha 从 0 → 255 淡入（DWM 合成器直接控制像素）
-            // 淡入完成后自动移除 WS_EX_LAYERED，恢复零开销正常合成路径
+                // 非前台揭示时 Maximized 偶发被 Windows 前台锁吞掉 → 分三次复查补投
+                foreach (var delay in new[] { 300, 800, 1500 })
+                {
+                    await Task.Delay(delay);
+                    var ok = await main.Dispatcher.InvokeAsync(() =>
+                    {
+                        try
+                        {
+                            if (main.WindowState == WindowState.Maximized) return true;
+                            LogInfo($"RevealMain: 复查补最大化 (state={main.WindowState})");
+                            main.WindowState = WindowState.Maximized;
+                            main.Activate();
+                            return main.WindowState == WindowState.Maximized;
+                        }
+                        catch (Exception __ex) { LogInfo("RevealMain: 复查失败 " + __ex.Message); return true; }
+                    });
+                    if (ok) break;
+                }
+            });
         }
 
         void TryReveal()

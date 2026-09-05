@@ -33,7 +33,8 @@
             }
             else
             {
-                <div class="jg-avatar jg-avatar-fallback">@AvatarInitial</div>
+                @* 未检测到 Steam（或拿不到头像）→ 用项目内置 Steam 圆标兜底，不再是首字母色块 *@
+                <img class="jg-avatar" src="assets/steam.svg" alt="Steam" />
             }
             @if (_isRunning)
             {
@@ -47,7 +48,7 @@
         </div>
     </div>
 
-    <div class="jg-launch-row @(_isRunning ? "running" : "")">
+    <div class="jg-launch-row @(_isRunning ? "running" : (_launching ? "launching" : ""))">
     <button id="launch-btn"
             class="jg-launch-big"
             disabled="@_launching"
@@ -65,7 +66,7 @@
         }
     </button>
 
-    <button class="jg-close-btn" data-tip="关闭游戏" @onclick="OnButtonClick">
+    <button class="jg-close-btn" data-tip="@(_launching ? "取消启动" : "关闭游戏")" @onclick="OnButtonClick">
         ✕
     </button>
 </div>
@@ -104,9 +105,6 @@
         _profile.Found
             ? (_profile.PersonaName ?? _profile.AccountName ?? "Steam 用户")
             : "未检测到 Steam 账户";
-
-    private string AvatarInitial =>
-        AccountLabel.Length > 0 ? AccountLabel[..1].ToUpperInvariant() : "?";
 
     private string MainButtonLabel =>
         _launching ? "启动中…" :
@@ -205,74 +203,152 @@
     private async Task Launch()
     {
         _launching = true;
+        _launchCancelled = false;   // v1.1.2c：清掉上一次的取消标记
         StateHasChanged();
         // 立刻清掉按钮上残留的像素溶解蒙版与倾斜 transform，避免盖住「启动中…」
         try { await JS.InvokeVoidAsync("junigridJs.clearLaunchFx", "#launch-btn"); } catch { }
 
         try { await JS.InvokeVoidAsync("junigridJs.popAnimate", "#launch-btn"); } catch { }
 
-        Steam.Refresh();
+        try
+        {
+            Steam.Refresh();
             _profile = Steam.GetProfile();
             StateHasChanged();
 
             LaunchResult result = _cfg.LaunchMode == "steam"
-            ? Launcher.LaunchSteam(_cfg.SteamAppId)
-            : Launcher.LaunchSmapi(_cfg.GamePath);
+                ? Launcher.LaunchSteam(_cfg.SteamAppId)
+                : Launcher.LaunchSmapi(_cfg.GamePath);
 
-        if (result.Success)
-        {
-            _cfg.LastLaunchTime = DateTime.Now.ToString("o");
-            _cfg.LastLaunchMode = _cfg.LaunchMode;
-            _cfg.TotalLaunchCount++;
-            Cfg.Save(_cfg);
-
-            if (_cfg.LaunchMode == "smapi")
+            if (result.Success)
             {
-                // 跟 PCL 一样：SMAPI 启动后自动切到日志页看输出（运行态由进程轮询接管）
-                Nav.NavigateTo("/logs");
-            }
+                _cfg.LastLaunchTime = DateTime.Now.ToString("o");
+                _cfg.LastLaunchMode = _cfg.LaunchMode;
+                _cfg.TotalLaunchCount++;
+                Cfg.Save(_cfg);
 
-            // 启动成功但进程可能还在被 Steam/运行时拉起：
-            // 保持「启动中…」直到 IsGameRunning 真正为 true（或超时），避免回弹成「▶ 启动游戏」。
-            _ = WaitForRunningAsync();
+                if (_cfg.LaunchMode == "smapi")
+                {
+                    // 跟 PCL 一样：SMAPI 启动后自动切到日志页看输出（运行态由进程轮询接管）
+                    Nav.NavigateTo("/logs");
+                }
+
+                // 启动成功但进程可能还在被 Steam/运行时拉起：
+                // 保持「启动中…」直到 IsGameRunning 真正为 true（或超时），避免回弹成「▶ 启动游戏」。
+                _ = WaitForRunningAsync();
+            }
+            else
+            {
+                // 启动失败 → toast「启动失败」并恢复按钮为可点
+                ShowToast("启动失败");
+                _launching = false;
+                StateHasChanged();
+            }
         }
-        else
+        catch (Exception ex)
         {
-            // 启动失败 → toast「启动失败」并恢复按钮为可点
-            ShowToast("启动失败");
+            // v1.1.2：Launch 全程兜底 —— 此前 _launching=true 之后任何一步抛异常
+            // （保存/导航/JS 调用等）都会让按钮永远卡在「启动中…」且无任何提示
+            AppLog.Error("AccountPanel", "启动流程异常: " + ex.Message);
+            ShowToast("启动流程异常：" + ex.Message);
             _launching = false;
             StateHasChanged();
         }
     }
 
-    // 等待游戏真正进入运行态：期间按钮持续「启动中…」；超时（如 Steam 未拉起）则回退为「▶ 启动游戏」
-    private async Task WaitForRunningAsync(int timeoutMs = 90_000)
+    // 等待游戏真正进入运行态：期间按钮持续「启动中…」；超时/Steam 退出则回退为「▶ 启动游戏」。
+    // v1.1.2c：任何退出路径（超时/取消/Steam 退出/异常）都保证复位 _launching，
+    // 绝不让按钮永久卡在「启动中…」。
+    // v1.1.2c：启动等待期的中途取消 —— 终断等待 + 关闭游戏进程（若已被拉起）。
+    private volatile bool _launchCancelled;
+    private volatile bool _cancelWatchdog;   // 取消清场看门狗运行中：期间轮询不把按钮翻成「运行中…」
+
+    private void CancelLaunch()
+    {
+        if (!_launching) return;
+        _launchCancelled = true;
+        ShowToast("已取消本次启动");
+        _launching = false;    // WaitForRunningAsync 的 finally 也会兜底复位
+        StateHasChanged();
+        // Steam 的拉起管线可能在取消之后才把游戏进程拉出来（家庭共享校验要几秒），
+        // 一次性 KillGame 会扑空 → 用看门狗持续清场 20s；期间若重新点启动则自动让位
+        _cancelWatchdog = true;
+        _ = Launcher.KillGameWatchdogAsync(20000, stopWhen: () => _launching || !_launchCancelled)
+                .ContinueWith(_ => _cancelWatchdog = false);
+    }
+
+    private async Task WaitForRunningAsync(int timeoutMs = 45_000)
     {
         var deadline = Environment.TickCount64 + timeoutMs;
-        while (!_cts.IsCancellationRequested)
+        var hinted = false;
+        var steamGoneChecks = 0;
+        var steamSeen = false;
+        try
         {
-            if (Launcher.IsGameRunning)
+            while (!_cts.IsCancellationRequested)
             {
-                // 真正进入了运行态：直接落地「运行中」，让「启动中」退出
-                _launching = false;
-                _isRunning = true;
-                StateHasChanged();
-                return;
+                // 用户点了 ✕ 取消 → 立即退出（清场由 KillGameWatchdogAsync 接管）
+                if (_launchCancelled) return;
+                if (Launcher.IsGameRunning)
+                {
+                    // 真正进入了运行态：直接落地「运行中」，让「启动中」退出
+                    _launching = false;
+                    _isRunning = true;
+                    StateHasChanged();
+                    return;
+                }
+                // Steam 官方模式下 25 秒仍无游戏进程 → 大概率 Steam 在等用户处理
+                // 弹窗（家庭共享「借用游戏」确认/登录/更新），或当前账号未拥有此游戏 ——
+                // 之前只是默默干等，用户完全不知道 Steam 那边在等他点确认
+                if (!hinted && _cfg.LaunchMode == "steam" && Environment.TickCount64 >= deadline - 20_000)
+                {
+                    hinted = true;
+                    ShowToast("游戏尚未启动：请查看 Steam 是否弹出确认窗口（如家庭共享「借用游戏」）。若此 Steam 账号未拥有本游戏，请改用 SMAPI 启动。");
+                }
+                // Steam 被关闭 → 没人能拉起游戏了，立即取消等待（之前要干等满超时，
+                // 用户"关了 Steam 按钮还是启动中"的观感即来源于此）。
+                // steam:// 协议拉起 Steam 需要几秒：先等见到过一次 Steam 才开始检测"消失"；
+                // 若 12s 内 Steam 始终没出现，同样视为启动失败收场。
+                if (_cfg.LaunchMode == "steam")
+                {
+                    if (LauncherService.IsSteamRunning) steamSeen = true;
+                    if (steamSeen && !LauncherService.IsSteamRunning)
+                    {
+                        if (++steamGoneChecks >= 8)   // 连续 ~4s 不在才判定（防瞬间抖动）
+                        {
+                            ShowToast("Steam 已退出，已取消本次启动等待。");
+                            return;
+                        }
+                    }
+                    else steamGoneChecks = 0;
+                    if (!steamSeen && Environment.TickCount64 >= deadline - 30_000)
+                    {
+                        ShowToast("Steam 一直没有运行，已取消本次启动等待。可先启动 Steam 后再试，或改用 SMAPI。");
+                        return;
+                    }
+                }
+                if (Environment.TickCount64 >= deadline)
+                {
+                    ShowToast("等待超时仍未检测到游戏进程，已恢复启动按钮。请查看 Steam 窗口是否有待处理的弹窗。");
+                    return;
+                }
+                await Task.Delay(500, _cts.Token);
             }
-            if (Environment.TickCount64 >= deadline)
-            {
-                _launching = false;
-                StateHasChanged();
-                return;
-            }
-            await Task.Delay(500, _cts.Token);
+        }
+        catch (OperationCanceledException) { }
+        finally
+        {
+            _launching = false;
+            StateHasChanged();
         }
     }
 
     // 主按钮统一入口：正在运行→弹确认框关游戏；有更新→去更新；否则启动
     private void OnButtonClick()
     {
-        if (_launching) return;
+        // v1.1.2c：启动等待期点 ✕ = 中途取消 —— 无论游戏有没有被拉起，直接终断等待并
+        // 关闭游戏进程（与「运行中」的 ✕ 同一个按钮，行为按状态分流）
+        if (_launching) { CancelLaunch(); return; }
         if (_isRunning)
         {
             _showConfirm = true;
@@ -324,7 +400,8 @@
         {
             while (!_cts.IsCancellationRequested)
             {
-                var r = Launcher.IsGameRunning;
+                // 取消清场看门狗运行期间，Steam 迟到拉起的游戏进程不算「运行中」（马上会被清掉）
+                var r = !_cancelWatchdog && Launcher.IsGameRunning;
                 if (r != _isRunning)
                 {
                     _isRunning = r;

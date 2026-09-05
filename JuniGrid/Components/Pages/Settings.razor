@@ -22,7 +22,8 @@
                 }
                 else
                 {
-                    <div style="width:36px;height:36px;border-radius:50%;background:#334155;color:#fff;display:flex;align-items:center;justify-content:center;">S</div>
+                    @* 未登录 / 拿不到头像 → 用项目内置 Steam 圆标兜底（与 Nexus 兜底图标同款式） *@
+                    <img src="assets/steam.svg" alt="steam" style="width:36px;height:36px;border-radius:50%;object-fit:cover;" />
                 }
                 <div style="flex:1">
                     <div style="font-weight:600">Steam · @(_steam.Found ? (_steam.PersonaName ?? _steam.AccountName ?? "已登录") : "未登录")</div>
@@ -618,9 +619,18 @@
     public void Dispose()
     {
         Mem.OnSnapshot -= OnMemSnap;
+        ConfigService.Saved -= OnCfgSaved;   // v1.1.4
         Storage.OnStats -= OnStorageStats;
         _sliderCb?.Dispose();
     }
+
+    // v1.1.4：配置被其它入口改动（悬浮球右键隐藏等）时，把「打开任务管理悬浮窗」
+    // 开关的 UI 拉回配置真值 —— 只回读这一个字段，不碰用户正在编辑的其它控件
+    private void OnCfgSaved() => InvokeAsync(() =>
+    {
+        _showTaskDock = Cfg.Current.ShowTaskDock;
+        StateHasChanged();
+    });
 
 
     private void SaveFilterAdult()
@@ -648,6 +658,7 @@
 
         // v0.2.1：内存管理 —— 订阅快照推送（5s 一次），离开页面时 Dispose 退订
         Mem.OnSnapshot += OnMemSnap;
+        ConfigService.Saved += OnCfgSaved;   // v1.1.4：设置页停留时悬浮球被右键隐藏 → 开关 UI 同步
         _mem = Mem.GetSnapshot();
         _memTimer = Cfg.Current.MemTimerEnabled;
         _memTimerMinutes = Math.Clamp(Cfg.Current.MemTimerMinutes, 5, 240);

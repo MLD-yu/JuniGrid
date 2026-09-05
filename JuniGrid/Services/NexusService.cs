@@ -397,6 +397,9 @@ public sealed class NexusService
     /// <summary>「只显示成人内容」开关 —— true 时浏览/搜索 GraphQL 追加 adultContent:true 过滤条件
     /// （优先级高于 IncludeAdultContent，两者互斥由 ConfigService 保证）。默认关闭。</summary>
     public static bool OnlyAdultContent = false;
+    /// <summary>成人过滤条件的版本号：开关每实际变化一次 +1（ConfigService.SyncAdultFilter 维护）。
+    /// Nexus 页快照存下取数时的版本，返回时版本对不上说明快照是旧过滤条件拉的数据 → 弃用重拉。</summary>
+    public static int AdultFilterVersion = 0;
     /// <summary>v0.81.0：最近一次榜单查询服务端报告的 totalCount（分页器「第 x / N 页 · 共 X 个」的数据源）。</summary>
     public int? LastBrowseTotalCount;
     /// <summary>v0.96.0：Surprise 榜服务端 random 排序种子 —— 翻页期间保持不变保证页序连续，「换一批」时换新种子。</summary>
@@ -739,10 +742,11 @@ public sealed class NexusService
     /// v1.07：断点续传/自动重试统一走 ResumableDownload（掉连接不再从 0 重下）。
     /// </summary>
     public Task DownloadFileAsync(string url, string destPath,
-        IProgress<NexusDownloadProgress>? progress)
+        IProgress<NexusDownloadProgress>? progress, CancellationToken ct = default)
     {
         return ResumableDownload.RunAsync(DownloadHttp, url, destPath,
-            (msg, pct, spd) => progress?.Report(new NexusDownloadProgress(msg, pct ?? 0, spd)));
+            (msg, pct, spd) => progress?.Report(new NexusDownloadProgress(msg, pct ?? 0, spd)),
+            ct: ct);
     }
 
     private static string FormatBytes(long bytes)

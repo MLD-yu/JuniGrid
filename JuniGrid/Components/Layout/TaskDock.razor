@@ -15,7 +15,7 @@
    悬浮窗可拖动（makeTaskDockDraggable，拖动超过 5px 吞掉本次点击）。 *@
 @if (Cfg.Current.ShowTaskDock || Center.RunningCount > 0)
 {
-    <button class="jg-taskdock @(Center.RunningCount > 0 ? "running" : "") @(_done ? "done" : "")" @onclick="Go" title="下载/安装任务">
+    <button class="jg-taskdock @(Center.RunningCount > 0 ? "running" : "") @(_done ? "done" : "")" @onclick="Go" @oncontextmenu="HideFromMenu" @oncontextmenu:preventDefault title="下载/安装任务（左键打开任务中心，右键隐藏悬浮窗）">
     @if (Center.RunningCount > 0)
     {
         <div class="jg-taskdock-fill" style="@($"width:{Center.TotalPercent:0}%")"></div>
@@ -93,5 +93,16 @@
             return;
         }
         Nav.NavigateTo("/tasks");
+    }
+
+    // v1.1.4：右键悬浮窗 = 隐藏 + 同步关闭设置里的「打开任务管理悬浮窗」开关（落盘）。
+    // 任务运行中右键无效 —— 那时球本就因任务常驻（渲染条件 ShowTaskDock || RunningCount>0），
+    // 关了开关球也不会消失，徒增「点了没反应」的困惑，干脆不响应。
+    private void HideFromMenu()
+    {
+        if (Center.RunningCount > 0) return;
+        var cfg = Cfg.Current;
+        cfg.ShowTaskDock = false;
+        Cfg.Save(cfg);   // Saved 事件 → 本组件 Refresh 即时消失；设置页订阅同步开关 UI
     }
 }

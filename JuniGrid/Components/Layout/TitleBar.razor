@@ -1,5 +1,6 @@
 @namespace JuniGrid.Components.Layout
 @inject IJSRuntime JS
+@inject ConfigService Cfg
 @implements IAsyncDisposable
 
 <div class="jg-titlebar">
@@ -15,6 +16,21 @@
     </div>
 
     <div class="jg-titlebar-actions">
+        @* ── v1.1.1：深浅主题开关（Element Plus 导航栏同款胶囊：浅色=太阳居左，
+             深色=月亮居右）。视觉完全由 html[data-theme] 驱动，Blazor 不需要持有状态；
+             点击走 junigridJs.toggleTheme 的 View Transitions 圆形揭示动画。 ── *@
+        <div class="jg-theme-wrap">
+            <button class="jg-theme-toggle" @onclick="ToggleThemeAsync" title="切换深色 / 浅色主题" aria-label="切换深色 / 浅色主题">
+                <span class="jg-tt-knob">
+                    <svg class="jg-tt-sun" viewBox="0 0 1024 1024" aria-hidden="true">
+                        <path fill="currentColor" d="M512 298.666667a170.666667 170.666667 0 1 0 0 341.333333 170.666667 170.666667 0 0 0 0-341.333333z m0 284.444444a113.777778 113.777778 0 1 1 0-227.555555 113.777778 113.777778 0 0 1 0 227.555555zM512 85.333333a28.444444 28.444444 0 0 1 28.444444 28.444445v56.888889a28.444444 28.444444 0 1 1-56.888888 0V113.777778a28.444444 28.444444 0 0 1 28.444444-28.444445z m0 739.555556a28.444444 28.444444 0 0 1 28.444444 28.444444v56.888889a28.444444 28.444444 0 1 1-56.888888 0v-56.888889a28.444444 28.444444 0 0 1 28.444444-28.444444zM85.333333 512a28.444444 28.444444 0 0 1 28.444445-28.444444h56.888889a28.444444 28.444444 0 1 1 0 56.888888H113.777778a28.444444 28.444444 0 0 1-28.444445-28.444444z m739.555556 0a28.444444 28.444444 0 0 1 28.444444-28.444444h56.888889a28.444444 28.444444 0 1 1 0 56.888888h-56.888889a28.444444 28.444444 0 0 1-28.444444-28.444444zM231.762946 231.762946a28.444444 28.444444 0 0 1 40.220445 0l40.220444 40.220445a28.444444 28.444444 0 1 1-40.220444 40.220444l-40.220445-40.220444a28.444444 28.444444 0 0 1 0-40.220445z m480.033219 480.033219a28.444444 28.444444 0 0 1 40.220444 0l40.220445 40.220444a28.444444 28.444444 0 1 1-40.220445 40.220445l-40.220444-40.220445a28.444444 28.444444 0 0 1 0-40.220444z m40.220444-480.033219a28.444444 28.444444 0 0 1 0 40.220445l-40.220444 40.220444a28.444444 28.444444 0 1 1-40.220444-40.220444l40.220444-40.220445a28.444444 28.444444 0 0 1 40.220444 0zM271.983391 711.796165a28.444444 28.444444 0 0 1 0 40.220444l-40.220445 40.220445a28.444444 28.444444 0 1 1-40.220444-40.220445l40.220444-40.220444a28.444444 28.444444 0 0 1 40.220445 0z"/>
+                    </svg>
+                    <svg class="jg-tt-moon" viewBox="0 0 1024 1024" aria-hidden="true">
+                        <path fill="currentColor" d="M611.817431 915.372149a448.780663 448.780663 0 0 1-117.551653-15.615723C356.800732 866.906047 246.055297 763.759853 202.887924 628.376477 141.768509 436.553056 232.815251 230.198646 415.606761 143.229517a36.488429 36.488429 0 0 1 48.730103 47.787592 249.970211 249.970211 0 0 0-15.743645 161.007307 252.457616 252.457616 0 0 0 178.344349 178.408311 249.970211 249.970211 0 0 0 161.007307-15.743645 36.488429 36.488429 0 0 1 47.787592 48.730103 444.443514 444.443514 0 0 1-223.915036 351.95297z m-135.066415-104.16663z m-135.066414-626.23753z"/>
+                    </svg>
+                </span>
+            </button>
+        </div>
         <button class="jg-winbtn" @onclick="Minimize" title="最小化">—</button>
         <button class="jg-winbtn" @onclick="ToggleMax" title="@(_isMax ? "还原" : "最大化")">@(_isMax ? "❐" : "☐")</button>
         <button class="jg-winbtn jg-winbtn-close" @onclick="Close" title="关闭">✕</button>
@@ -43,6 +59,15 @@
             w.StateChanged += OnWindowStateChanged;
             await SyncMaxClass();
         }
+
+        // v1.1.1：主题对账 —— 预置脚本已按 localStorage 打上 data-theme（防闪白的
+        // 同步快路径）；这里再用配置文件兜底对齐（localStorage 被 UWP 清理/换缓存
+        // 目录丢失时，配置文件里的选择仍生效），并让 WPF 窗口底色跟随主题。
+        var cfgTheme = string.IsNullOrWhiteSpace(Cfg.Current.Theme) ? "light" : Cfg.Current.Theme;
+        var applied = "light";
+        try { applied = await JS.InvokeAsync<string>("junigridJs.applyTheme", cfgTheme); }
+        catch { }
+        MainWindow.ApplyShellTheme(applied == "dark");
     }
 
     private void OnWindowStateChanged(object? sender, EventArgs e)
@@ -113,6 +138,20 @@
     }
 
     private void Close() => GetWindow()?.Close();
+
+    // ---- v1.1.1：深浅主题切换（动画在 JS 侧，这里负责持久化 + WPF 窗口底色）----
+    private async Task ToggleThemeAsync()
+    {
+        string next;
+        try { next = await JS.InvokeAsync<string>("junigridJs.toggleTheme") ?? "light"; }
+        catch { return; }   // JS 未就绪：不动主题，避免配置与界面脱节
+        if (!string.Equals(Cfg.Current.Theme, next, StringComparison.OrdinalIgnoreCase))
+        {
+            Cfg.Current.Theme = next;
+            Cfg.Save(Cfg.Current);
+        }
+        MainWindow.ApplyShellTheme(next == "dark");
+    }
 
     private static System.Windows.Window? GetWindow()
     {

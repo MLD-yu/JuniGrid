@@ -5,6 +5,9 @@
 @inject ModService Mods
 @inject LauncherService Launcher
 @inject UpdateService Updater
+@inject PlayTimeService PlayTime
+@inject IJSRuntime JS
+@implements IDisposable
 
 <div class="jg-page">
     <div class="jg-grid-4">
@@ -38,6 +41,78 @@
             </div>
         </div>
     </div>
+
+    @* ── v1.1.5：游玩时长热力图（GitHub contributions 风格）──
+       数据只来自 PlayTimeService 的系统统计（游戏进程每 30s 自动累计），不做手动修改入口 *@
+    <div class="jg-card jg-heat-card">
+        <div class="jg-heat-head">
+            <div class="jg-heat-title">@_heatYear 年共游玩 @FormatHours(_yearTotalSeconds)（@_yearDays 天）</div>
+            @* v1.1.6：年份选择改通用下拉（复用 dropdownToggle 的 GSAP 弹性动画 + 遮罩点外收回）；
+               jg-dd-right 让菜单右对齐（贴标题行右缘不超出卡片） *@
+            <div class="jg-sort-dd jg-dd-right jg-heat-yeardd @(_heatDdOpen ? "open" : "")" data-dd="heatyear">
+                <button class="jg-sort-trigger" @onclick="ToggleYearDd">
+                    @_heatYear 年
+                    <svg class="jg-sort-arrow" width="12" height="12" viewBox="0 0 12 12" fill="none">
+                        <path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                </button>
+                <div class="jg-sort-menu">
+                    @foreach (var y in _years)
+                    {
+                        var year = y;
+                        <button class="jg-sort-item @(_heatYear == year ? "active" : "")" @onclick="() => PickYear(year)">@year 年</button>
+                    }
+                </div>
+            </div>
+            <div class="jg-dd-overlay" data-dd="heatyear" @(_heatDdOpen ? "open" : "") @onclick="CloseYearDd"></div>
+        </div>
+        <div class="jg-heat-scroll">
+            <table class="jg-heat-grid">
+                <tr>
+                    <th class="jg-heat-wday"></th>
+                    @foreach (var m in _monthLabels)
+                    {
+                        @* 月份标签绝对定位浮在列上方，不占表格列宽（占宽会周期性撑宽月份列，
+                           小屏顶出横向滚动、大屏在 10/11/12 月处留大空隙）*@
+                        <th class="jg-heat-month"><span>@m</span></th>
+                    }
+                </tr>
+                @for (var r = 0; r < 7; r++)
+                {
+                    var row = r;
+                    <tr>
+                        <th class="jg-heat-wday">@WdayLabel(row)</th>
+                        @for (var c = 0; c < _weeks.Count; c++)
+                        {
+                            var cell = _weeks[c][row];
+                            <td>
+                                @if (cell.InYear && !cell.Future)
+                                {
+                                    <span class="jg-heat-cell l@(cell.Level)" data-tip="@Tip(cell)"></span>
+                                }
+                                else
+                                {
+                                    <span class="jg-heat-cell @(cell.Future ? "future" : "empty")"></span>
+                                }
+                            </td>
+                        }
+                    </tr>
+                }
+            </table>
+        </div>
+        <div class="jg-heat-foot">
+            <span>颜色越深 = 当天玩得越久 · 游戏运行时自动累计</span>
+            <div class="jg-heat-legend">
+                少
+                <span class="jg-heat-cell l0"></span>
+                <span class="jg-heat-cell l1"></span>
+                <span class="jg-heat-cell l2"></span>
+                <span class="jg-heat-cell l3"></span>
+                <span class="jg-heat-cell l4"></span>
+                多
+            </div>
+        </div>
+    </div>
 </div>
 
 @code {
@@ -46,6 +121,23 @@
     private string? _gameVersion;
     private int _totalModCount;
     private int _activeModCount;
+
+    // ─── v1.1.5：热力图 ───
+    private sealed record HeatCell(string Key, bool InYear, bool Future, long Seconds)
+    {
+        public int Level => Seconds <= 0 ? 0
+            : Seconds < 3600 ? 1        // <1 小时
+            : Seconds < 7200 ? 2        // 1–2 小时
+            : Seconds < 14400 ? 3       // 2–4 小时
+            : 4;                        // ≥4 小时
+    }
+
+    private int _heatYear = DateTime.Now.Year;
+    private List<int> _years = new();
+    private List<List<HeatCell>> _weeks = new();   // 每列一周（周日→周六），7 行
+    private List<string> _monthLabels = new();     // 与周列对齐的月份表头
+    private long _yearTotalSeconds;
+    private int _yearDays;
 
     protected override void OnInitialized()
     {
@@ -67,7 +159,107 @@
         var mods = Mods.Scan(_cfg.GamePath);
         _totalModCount = mods.Count;
         _activeModCount = mods.Count(m => !m.Disabled);
+
+        // v1.1.5：时长数据每 30s 可能被后台累计，订阅变化实时刷新热力图
+        PlayTime.OnChanged += OnPlayChanged;
+        RebuildHeat();
     }
+
+    private void OnPlayChanged() => InvokeAsync(RebuildHeat);
+
+    public void Dispose() => PlayTime.OnChanged -= OnPlayChanged;
+
+    private void RebuildHeat()
+    {
+        var data = PlayTime.Snapshot;
+
+        // 年份列表：首次使用 JuniGrid 的年份 → 今年 ∪ 有游玩记录的年份
+        var firstYear = DateTime.TryParse(_cfg.FirstRunDate, out var fr) ? fr.Year : DateTime.Now.Year;
+        var ys = new HashSet<int>();
+        for (var y = firstYear; y <= DateTime.Now.Year; y++) ys.Add(y);
+        foreach (var k in data.Keys)
+            if (k.Length >= 4 && int.TryParse(k.AsSpan(0, 4), out var y)) ys.Add(y);
+        _years = ys.OrderByDescending(x => x).ToList();
+
+        // 列从「1 月 1 日所在周的周日」开始，铺到 12 月 31 日（GitHub 同款布局）
+        var start = new DateTime(_heatYear, 1, 1);
+        var d = start.AddDays(-((int)start.DayOfWeek));   // 回退到周日
+        var end = new DateTime(_heatYear, 12, 31);
+        var today = DateTime.Today;
+
+        _weeks = new();
+        _monthLabels = new();
+        var monthNames = new[] { "", "1月", "2月", "3月", "4月", "5月", "6月", "7月", "8月", "9月", "10月", "11月", "12月" };
+        int lastMonth = -1;
+        long total = 0;
+        int days = 0;
+
+        while (d <= end)
+        {
+            var col = new List<HeatCell>(7);
+            int colMonth = -1;   // 本列第一个「年内」日期的月份（列头月份标签用）
+            for (var i = 0; i < 7; i++)
+            {
+                if (d.Year == _heatYear) { if (colMonth < 0) colMonth = d.Month; }
+                col.Add(new HeatCell(d.ToString("yyyy-MM-dd"), d.Year == _heatYear, d > today,
+                    d.Year == _heatYear && d <= today && data.TryGetValue(d.ToString("yyyy-MM-dd"), out var s) ? s : 0));
+                d = d.AddDays(1);
+            }
+            _weeks.Add(col);
+
+            // 月份标签：本月第一次出现的列才标，与 demo 同规则
+            if (colMonth > 0 && colMonth != lastMonth)
+            {
+                _monthLabels.Add(monthNames[colMonth]);
+                lastMonth = colMonth;
+            }
+            else _monthLabels.Add("");
+        }
+
+        foreach (var cell in _weeks.SelectMany(w => w))
+        {
+            if (cell.InYear && !cell.Future && cell.Seconds > 0) { total += cell.Seconds; days++; }
+        }
+        _yearTotalSeconds = total;
+        _yearDays = days;
+    }
+
+    // ─── v1.1.6：年份下拉（通用 dropdownToggle GSAP 动画，遮罩点外收回）───
+    private bool _heatDdOpen;
+
+    private async Task ToggleYearDd()
+    {
+        _heatDdOpen = !_heatDdOpen;
+        try { await JS.InvokeVoidAsync("junigridJs.dropdownToggle", ".jg-heat-yeardd", _heatDdOpen); } catch { }
+    }
+
+    private async Task CloseYearDd()
+    {
+        if (!_heatDdOpen) return;
+        _heatDdOpen = false;
+        try { await JS.InvokeVoidAsync("junigridJs.dropdownToggle", ".jg-heat-yeardd", false); } catch { }
+    }
+
+    private async Task PickYear(int y)
+    {
+        _heatYear = y;
+        await CloseYearDd();
+        RebuildHeat();
+    }
+
+    private static string WdayLabel(int row) => row switch
+    {
+        1 => "一", 3 => "三", 5 => "五", _ => ""
+    };
+
+    // 悬停胶囊提示（data-tip 全局委托，动态格子也能用）
+    private static string Tip(HeatCell cell) =>
+        cell.Seconds > 0
+            ? $"{Math.Round(cell.Seconds / 3600.0, 1)} 小时 · {cell.Key}"
+            : $"没有游玩 · {cell.Key}";
+
+    private static string FormatHours(long seconds) =>
+        seconds <= 0 ? "0 小时" : (seconds / 3600.0).ToString("0.0") + " 小时";
 
     private static string FormatTime(string iso) =>
         DateTime.TryParse(iso, out var t) ? t.ToString("MM-dd HH:mm") : iso;

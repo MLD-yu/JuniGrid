@@ -51,9 +51,8 @@ public sealed class CoverCacheService
     }
 
     /// <summary>
-    /// 渲染时调用：已缓存 → 返回 data URI；未缓存 → 触发后台下载并返回 null
-    /// （UI 显示占位块，下载完成后经 <see cref="Changed"/> 刷新）。
-    /// 非 http URL（本地路径/data URI）原样返回。
+    /// 渲染时调用（列表小图标）：返回 240px 缩略图 data URI；未缓存 → 触发后台下载并返回 null。
+    /// 非 http URL（本地路径/data URI）原样返回。大图场景用 <see cref="GetFull"/>。
     /// </summary>
     public string? Get(string? url)
     {
@@ -62,6 +61,50 @@ public sealed class CoverCacheService
         if (_memory.TryGetValue(url, out var cached)) return cached;
         _ = DownloadAsync(url);
         return null;
+    }
+
+    /// <summary>v1.08.2：大图场景（Nexus 页横幅、mod 详情封面）—— 返回原图 data URI，
+    /// 与缩略图分开缓存（<原始sha>.img vs w240-<sha>.img）。失败时回退缩略图。</summary>
+    public string? GetFull(string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url)) return null;
+        if (!url.StartsWith("http", StringComparison.OrdinalIgnoreCase)) return url;
+        if (_fullMemory.TryGetValue(url, out var cached)) return cached;
+        _ = DownloadFullAsync(url);
+        return null;
+    }
+
+    /// <summary>url → 原图 data URI。</summary>
+    private readonly ConcurrentDictionary<string, string?> _fullMemory = new();
+    private readonly ConcurrentDictionary<string, byte> _downloadingFull = new();
+
+    private async Task DownloadFullAsync(string url)
+    {
+        if (!_downloadingFull.TryAdd(url, 0)) return;
+        try
+        {
+            Directory.CreateDirectory(CacheDir);
+            var file = Path.Combine(CacheDir, Sha1(url) + ".img");
+            byte[] bytes;
+            if (File.Exists(file)) bytes = await File.ReadAllBytesAsync(file);
+            else
+            {
+                await DownloadGate.WaitAsync();
+                try { bytes = await Http.GetByteArrayAsync(url); }
+                finally { DownloadGate.Release(); }
+                if (bytes.Length == 0) throw new InvalidOperationException("空图片");
+                await File.WriteAllBytesAsync(file, bytes);
+            }
+            _fullMemory[url] = ToDataUri(bytes);
+            NotifyChanged();
+        }
+        catch
+        {
+            // 原图失败 → 用缩略图兜底（有总比糊掉/空白强）
+            _ = await Task.Run(async () => { await DownloadAsync(url); return true; });
+            _fullMemory[url] = _memory.TryGetValue(url, out var t) ? t : null;
+        }
+        finally { _downloadingFull.TryRemove(url, out _); }
     }
 
     /// <summary>

@@ -1,0 +1,690 @@
+/* ============================================================
+   effects：Nexus 登录流程 / 批量操作栏 / 启动页折叠 + Shimmer + ScrollStack + Flip
+   ============================================================ */
+/* ── v0.39.0：Nexus 登录流程（顶级界面设计：黑白为主、胶囊、柔和阴影、入场动效） ── */
+.jg-login-btn {
+    display: inline-flex; align-items: center; gap: 7px;
+    padding: 8px 18px; border: 0; border-radius: 999px;
+    background: var(--jg-ink-grad); color: var(--jg-on-ink);
+    font-size: 13.5px; font-weight: 600; font-family: inherit; cursor: pointer;
+    box-shadow: 0 4px 14px rgba(0,0,0,0.22);
+    transition: transform 140ms ease, box-shadow 140ms ease;
+}
+.jg-login-btn:hover { transform: translateY(-1px); box-shadow: 0 6px 20px rgba(0,0,0,0.30); }
+
+.jg-login-overlay {
+    position: fixed; inset: 0; z-index: 99990;
+    background: rgba(20,22,20,0.42);
+    backdrop-filter: blur(6px) saturate(120%);
+    display: flex; align-items: center; justify-content: center;
+    animation: jg-login-fadein 180ms ease both;
+}
+@keyframes jg-login-fadein { from { opacity: 0 } to { opacity: 1 } }
+
+.jg-login-card {
+    position: relative; width: 380px; max-width: calc(100vw - 48px);
+    padding: 26px 26px 20px; border-radius: 20px; overflow: hidden;
+    background: var(--jg-glass-95);
+    border: 1px solid var(--jg-line);
+    box-shadow: 0 24px 64px rgba(0,0,0,0.28);
+    animation: jg-login-pop 260ms cubic-bezier(.22,1,.36,1) both;
+    display: flex; flex-direction: column; gap: 14px;
+}
+@keyframes jg-login-pop {
+    from { opacity: 0; transform: translateY(14px) scale(.96); }
+    to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+.jg-login-card.success { padding-top: 0; }  /* 像素画布顶到卡片上沿 */
+
+.jg-login-title { font-size: 18px; font-weight: 700; letter-spacing: .2px; }
+.jg-login-sub { font-size: 12.5px; opacity: .6; margin-top: -8px; line-height: 1.5; }
+
+.jg-login-options { display: flex; flex-direction: column; gap: 10px; }
+.jg-login-option {
+    display: flex; align-items: center; gap: 13px;
+    padding: 13px 14px; border-radius: 14px; text-align: left;
+    border: 1.5px solid var(--jg-line); background: var(--jg-card);
+    font-family: inherit; cursor: pointer;
+    transition: border-color 140ms ease, box-shadow 140ms ease, transform 140ms ease;
+}
+.jg-login-option:hover {
+    border-color: var(--jg-line-heavy); transform: translateY(-1px);
+    box-shadow: 0 6px 18px rgba(0,0,0,0.10);
+}
+/* v1.08.4：SSO 官网授权入口 —— 官方审批通过前禁用 */
+.jg-login-option-disabled { opacity: .5; cursor: not-allowed; }
+.jg-login-option-disabled:hover { border-color: var(--jg-line); transform: none; box-shadow: none; }
+.jg-login-option-disabled .jg-login-option-icon { opacity: .6; }
+.jg-login-option-icon {
+    width: 38px; height: 38px; flex-shrink: 0; border-radius: 11px;
+    background: var(--jg-well); color: var(--jg-text);
+    display: flex; align-items: center; justify-content: center;
+}
+.jg-login-option-text { display: flex; flex-direction: column; gap: 2px; }
+.jg-login-option-name { font-size: 14px; font-weight: 650; }
+.jg-login-option-desc { font-size: 11.5px; opacity: .55; }
+
+.jg-login-input {
+    width: 100%; padding: 11px 14px; border-radius: 12px; box-sizing: border-box;
+    border: 1.5px solid var(--jg-line-strong); background: var(--jg-card);
+    font-family: inherit; font-size: 13.5px; color: inherit; outline: none;
+    transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+.jg-login-input:focus { border-color: var(--jg-outline); box-shadow: 0 0 0 3px rgba(0,0,0,0.08); }
+.jg-login-input[disabled] { opacity: .55; }
+.jg-login-error { font-size: 12px; color: #c50f1f; }
+
+.jg-login-actions { display: flex; gap: 10px; }
+.jg-login-get, .jg-login-confirm {
+    flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+    padding: 10px 0; border-radius: 12px; font-family: inherit;
+    font-size: 13.5px; font-weight: 600; cursor: pointer;
+    transition: transform 120ms ease, box-shadow 120ms ease, opacity 120ms ease;
+}
+.jg-login-get {
+    border: 1.5px solid var(--jg-line-strong); background: var(--jg-card); color: inherit;
+}
+.jg-login-get:hover { border-color: var(--jg-line-heavy); }
+.jg-login-confirm {
+    border: 0; background: var(--jg-ink-grad); color: var(--jg-on-ink);
+    box-shadow: 0 4px 14px rgba(0,0,0,0.22);
+}
+.jg-login-confirm:hover:not([disabled]) { transform: translateY(-1px); }
+.jg-login-confirm[disabled] { opacity: .45; cursor: not-allowed; }
+
+.jg-login-cancel {
+    border: 0; background: transparent; color: inherit; opacity: .55;
+    font-size: 12.5px; font-family: inherit; cursor: pointer; padding: 4px 0;
+}
+.jg-login-cancel:hover { opacity: 1; }
+
+.jg-login-waiting {
+    display: flex; align-items: center; gap: 10px; justify-content: center;
+    padding: 18px 0; font-size: 13px; opacity: .75;
+}
+
+.jg-login-spinner {
+    width: 15px; height: 15px; border-radius: 50%;
+    border: 2px solid var(--jg-on-ink-soft); border-top-color: var(--jg-on-ink);
+    animation: jg-login-spin .7s linear infinite;
+}
+.jg-login-spinner.large {
+    width: 18px; height: 18px;
+    border: 2px solid var(--jg-line-strong); border-top-color: var(--jg-outline);
+}
+@keyframes jg-login-spin { to { transform: rotate(360deg); } }
+
+/* 成功卡片：像素揭示画布 + 内容 */
+.jg-pixel-reveal {
+    position: absolute; inset: 0; z-index: 5; pointer-events: none;
+}
+.jg-login-success-inner {
+    display: flex; flex-direction: column; align-items: center; gap: 8px;
+    padding-top: 26px;
+}
+.jg-login-avatar {
+    width: 68px; height: 68px; border-radius: 50%; object-fit: cover;
+    border: 2.5px solid var(--jg-line);
+    box-shadow: 0 8px 24px rgba(0,0,0,0.16);
+}
+.jg-login-avatar.fallback {
+    background: var(--jg-ink); color: var(--jg-on-ink); font-size: 26px; font-weight: 700;
+    display: flex; align-items: center; justify-content: center;
+}
+.jg-login-success-name { font-size: 16.5px; font-weight: 700; }
+.jg-login-success-welcome { font-size: 13px; opacity: .65; }
+
+/* 成功 toast：顶部黑色浮条 */
+.jg-login-toast {
+    position: fixed; top: 20px; left: 50%; transform: translateX(-50%);
+    background: var(--jg-ink); color: var(--jg-on-ink); padding: 11px 22px; border-radius: 999px;
+    font-size: 13.5px; font-weight: 600; z-index: 999999;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.35);
+    animation: jg-login-toast-in 320ms cubic-bezier(.22,1,.36,1) both;
+    pointer-events: none; white-space: nowrap;
+}
+@keyframes jg-login-toast-in {
+    from { opacity: 0; transform: translateX(-50%) translateY(-12px) scale(.94); }
+    to   { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
+}
+
+/* ── v0.41.0：批量栏图标按钮（SVG 透明底 #3d3d3d） ── */
+.jg-icon-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 6px 12px;
+}
+.jg-icon-btn svg {
+    width: 15px;
+    height: 15px;
+    color: var(--jg-text-2);
+    flex-shrink: 0;
+}
+.jg-icon-btn[disabled] { opacity: .38; cursor: not-allowed; }
+.jg-icon-btn[disabled] svg { color: var(--jg-text-3); }
+.jg-icon-btn.danger-outline svg { color: #c50f1f; }
+.jg-icon-btn.danger-outline[disabled] svg { color: #d99; }
+
+/* 批量栏不换行：取消选择并入同一行 */
+.jg-batchbar { flex-wrap: nowrap; }
+
+/* 行内按钮 SVG 统一深色 */
+.jg-rowbtn svg { color: var(--jg-text-2); }
+.jg-rowbtn.upd svg { color: #b4009e; }
+.jg-rowbtn.danger svg { color: #c50f1f; }
+
+/* -- v0.42.0：批量栏/行内纯图标按钮 + 胶囊提示（data-tip）+ 计数单行 -- */
+.jg-batchbar-count { font-weight: 600; white-space: nowrap; }
+.jg-ico { position: relative; padding: 6px 10px; }
+.jg-ico img { width: clamp(16px, 1.6vw, 22px); height: clamp(16px, 1.6vw, 22px); display: block; opacity: .78; }
+.jg-ico svg { width: clamp(15px, 1.4vw, 20px); height: clamp(15px, 1.4vw, 20px); color: var(--jg-text-2); display: block; }
+.jg-ico[disabled] img { opacity: .3; }
+.jg-ico[disabled] svg { color: var(--jg-text-3); }
+/* 行内按钮图标同样随窗口放缩 */
+.jg-rowbtn-icon { width: clamp(15px, 1.4vw, 19px); height: clamp(15px, 1.4vw, 19px); object-fit: contain; }
+/* 胶囊提示 —— 批量栏按钮与行操作按钮共用同一套样式 */
+
+/* -- v0.43.1：全局 toast（黑底白字默认 / 红底白字报错）-- */
+.jg-toast-live {
+    position: fixed; top: 56px; left: 50%; transform: translateX(-50%);
+    z-index: 99999; padding: 10px 22px; border-radius: 999px;
+    background: rgba(22,22,22,0.94); color: #fff;
+    font-size: 13.5px; font-weight: 600; letter-spacing: .2px;
+    box-shadow: 0 8px 28px rgba(0,0,0,0.28);
+    pointer-events: none; max-width: 72vw;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.jg-toast-live.err { background: rgba(198,15,31,0.96); color: #fff; }
+
+/* -- v0.45.0：mod 分类标签（仿 PCL2，简介前的小胶囊）-- */
+.jg-cat {
+    display: inline-block; padding: 1px 8px; margin-right: 6px;
+    border-radius: 999px; background: var(--jg-hover); color: var(--jg-text-2);
+    font-size: 11px; font-weight: 600; line-height: 1.5;
+    vertical-align: 1px; white-space: nowrap;
+}
+
+/* -- v0.46.0：存档（Profile）下拉 + 删除确认对话框 -- */
+.jg-profile-dd { position: relative; display: inline-block; }
+.jg-profile-menu { min-width: 200px; }
+.jg-profile-item {
+    display: flex; align-items: center; gap: 4px;
+    padding: 2px 4px; border-radius: 8px;
+}
+.jg-profile-item.active { background: var(--jg-hover-strong); }
+.jg-profile-name {
+    flex: 1; text-align: left; background: none; border: none;
+    padding: 7px 10px; border-radius: 6px; font-size: 13px;
+    color: var(--jg-text-2); cursor: pointer; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis;
+}
+.jg-profile-name:hover { background: var(--jg-hover); }
+.jg-profile-add { color: var(--jg-text-3); font-weight: 600; }
+.jg-profile-del {
+    flex: none; width: 24px; height: 24px; border: none; border-radius: 6px;
+    background: none; color: var(--jg-text-3); font-size: 15px; line-height: 1;
+    cursor: pointer; display: flex; align-items: center; justify-content: center;
+}
+.jg-profile-del:hover { background: rgba(198,15,31,0.12); color: #c50f1f; }
+.jg-profile-input {
+    flex: 1; min-width: 0; border: 1px solid var(--jg-line-heavy); border-radius: 6px;
+    padding: 6px 8px; font-size: 13px; outline: none; background: var(--jg-card); color: var(--jg-text);
+}
+.jg-profile-input:focus { border-color: var(--jg-outline); }
+
+.jg-modal-overlay {
+    position: fixed; inset: 0; z-index: 99998;
+    background: rgba(0,0,0,0.35); backdrop-filter: blur(4px);
+    display: flex; align-items: center; justify-content: center;
+}
+.jg-modal {
+    background: var(--jg-card); border-radius: 14px; padding: 22px 24px;
+    width: min(420px, 86vw); box-shadow: 0 18px 60px rgba(0,0,0,0.3);
+}
+.jg-modal-title { font-size: 16px; font-weight: 700; color: var(--jg-text); margin-bottom: 10px; }
+.jg-modal-body { font-size: 13.5px; color: var(--jg-text-2); line-height: 1.65; margin-bottom: 18px; }
+.jg-modal-actions { display: flex; justify-content: flex-end; gap: 10px; }
+/* v1.09：删除确认弹窗里的「移入mod回收站」复选框行 */
+.jg-modal-trash-opt { display: flex; align-items: center; gap: 7px; margin: -6px 0 16px; font-size: 13px; color: var(--jg-text-2); cursor: pointer; user-select: none; }
+.jg-modal-trash-opt input { width: 15px; height: 15px; accent-color: #e5484d; cursor: pointer; flex: none; }
+
+/* -- v0.47.0：存档下拉动画配套 + 虚线添加胶囊 + 问号帮助按钮 -- */
+.jg-profile-menu {
+    visibility: hidden; opacity: 0;            /* 初始隐藏，GSAP autoAlpha 接管 */
+    pointer-events: none;
+}
+.jg-profile-dd.open .jg-profile-menu { pointer-events: auto; }
+.jg-profile-dd { z-index: 9500; }
+/* v1.07.0：遮罩常驻 DOM —— 关闭态 visibility+pointer-events 双关；打开态 .open 由
+   dropdownToggle JS 与菜单开合同帧翻转（原先遮罩靠 Blazor @if 渲染，比 JS 慢一拍，穿透窗口的根源） */
+.jg-dd-overlay { position: fixed; inset: 0; z-index: 9000; background: transparent; visibility: hidden; pointer-events: none; }
+.jg-dd-overlay.open { visibility: visible; pointer-events: auto; }
+
+/* 虚线胶囊"添加存档"按钮 */
+.jg-profile-addcap {
+    position: relative;
+    display: flex; align-items: center; justify-content: center; gap: 6px;
+    width: 100%; padding: 7px 10px; margin-top: 2px;
+    border: 1.5px dashed var(--jg-line-heavy); border-radius: 999px;
+    background: transparent; color: var(--jg-text-2); font-size: 12.5px; font-weight: 600;
+    cursor: pointer; transition: background 120ms ease, border-color 120ms ease;
+}
+.jg-profile-addcap .plus { font-size: 14px; line-height: 1; }
+.jg-profile-addcap:hover { background: var(--jg-well); border-color: var(--jg-line-heavy); color: var(--jg-text); }
+/* 悬停胶囊提示（与批量栏 data-tip 同款） */
+.jg-profile-addcap::after {
+    content: attr(data-tip);
+    position: absolute; bottom: calc(100% + 8px); left: 50%;
+    transform: translateX(-50%) translateY(4px) scale(0.94);
+    padding: 5px 12px; border-radius: 999px;
+    background: rgba(22,22,22,0.92); color: #fff;
+    font-size: 12px; font-weight: 500; white-space: nowrap; line-height: 1;
+    pointer-events: none; opacity: 0;
+    transition: opacity 140ms ease 200ms, transform 140ms ease 200ms;
+    z-index: 10000; box-shadow: 0 4px 14px rgba(0,0,0,0.22);
+}
+.jg-profile-addcap:hover::after { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
+
+/* 问号帮助按钮 */
+.jg-help-btn {
+    width: 30px; height: 30px; border-radius: 50%;
+    border: 1px solid var(--jg-line-heavy); background: transparent;
+    color: var(--jg-text-3); font-size: 14px; font-weight: 700; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transform-origin: center; flex: none;
+}
+.jg-help-btn:hover { border-color: var(--jg-line-heavy); color: var(--jg-text); background: var(--jg-well); }
+
+/* 弹性 tooltip 气泡 */
+.jg-help-bubble {
+    position: fixed; z-index: 99997; max-width: 320px;
+    transform: translate(-50%, -100%);
+    background: rgba(22,22,22,0.94); color: #fff;
+    padding: 10px 14px; border-radius: 12px;
+    font-size: 12.5px; line-height: 1.6; font-weight: 500;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+    pointer-events: none; visibility: hidden; opacity: 0;
+    white-space: normal;
+}
+.jg-help-bubble::after {
+    content: ""; position: absolute; top: 100%; left: 50%;
+    transform: translateX(-50%);
+    border: 6px solid transparent; border-top-color: rgba(22,22,22,0.94);
+}
+
+/* -- v0.48.0 -- */
+/* 存档下拉菜单与触发按钮右对齐（修溢出显示不全） */
+.jg-profile-menu { left: auto; right: 0; transform: none; }
+/* 虚线胶囊：只留居中加号 */
+.jg-profile-addcap { padding: 7px 0; }
+/* 问号气泡：白底黑字、加宽、不再一行几字；位置由 JS 计算 */
+.jg-help-bubble {
+    background: var(--jg-glass-95); color: var(--jg-text);
+    border: 1px solid var(--jg-line-strong);
+    box-shadow: 0 12px 36px rgba(0,0,0,0.20);
+    max-width: 340px; min-width: 240px; width: max-content;
+    font-size: 13px; line-height: 1.7;
+    transform: none;
+}
+.jg-help-bubble::after {
+    top: auto; bottom: 100%; left: auto; right: 14px;
+    transform: none;
+    border: 6px solid transparent; border-bottom-color: rgba(255,255,255,0.98);
+}
+/* data-tip 改跟随鼠标：关掉旧固定 ::after 提示避免双提示 */
+.jg-ico::after, .jg-profile-addcap::after { content: none !important; }
+.jg-cursor-tip {
+    position: fixed; z-index: 100000; pointer-events: none;
+    padding: 6px 13px; border-radius: 999px;
+    background: var(--jg-glass-95); color: var(--jg-text);
+    border: 1px solid var(--jg-line);
+    font-size: 12px; font-weight: 600; white-space: nowrap; line-height: 1;
+    box-shadow: 0 6px 20px rgba(0,0,0,0.16);
+    opacity: 0; visibility: hidden;
+    transition: opacity 120ms ease 120ms;
+}
+
+/* -- v0.49.0：存档项 hover/active 复用排序菜单样式 -- */
+.jg-profile-menu .jg-profile-item {
+    background: transparent !important;
+    padding: 0;
+    border-radius: 8px;
+    transition: background 100ms ease;
+}
+.jg-profile-menu .jg-profile-item:hover:not(.active) { background: var(--jg-hover) !important; }
+.jg-profile-menu .jg-profile-item.active,
+.jg-profile-menu .jg-profile-item.active:hover { background: var(--jg-hover-strong) !important; }
+.jg-profile-menu .jg-profile-item .jg-profile-name { background: none !important; }
+.jg-profile-menu .jg-profile-item.active .jg-profile-name { font-weight: 600; color: var(--jg-text); }
+
+/* -- v0.50.0：批量栏确认删除的外部取消遮罩 -- */
+.jg-batchbar { position: relative; z-index: 9501; }
+
+/* ============ v0.53.0：启动页折叠 + 详情页 Download-4 + Shimmer + ScrollStack + Flip ============ */
+
+/* 返回按钮：透明底 + SVG */
+.jg-detail-back {
+    background: transparent;
+    border: none;
+    padding: 6px;
+    border-radius: 8px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.2s;
+}
+.jg-detail-back svg {
+    width: 22px;
+    height: 22px;
+}
+.jg-detail-back:hover {
+    background: var(--jg-well);
+}
+
+/* Shimmer 微光骨架 */
+@keyframes jg-shimmer-move {
+    0% { background-position: -600px 0; }
+    100% { background-position: 600px 0; }
+}
+.jg-shimmer {
+    background: linear-gradient(90deg, var(--jg-track) 0%, var(--jg-hover-strong) 40%, var(--jg-track) 80%);
+    background-size: 600px 100%;
+    animation: jg-shimmer-move 1.4s linear infinite;
+    border-radius: 8px;
+    display: block;
+}
+.jg-shimmer-hero {
+    display: grid;
+    grid-template-columns: 1.2fr 1fr;
+    gap: 32px;
+    padding: 32px 24px;
+    background: var(--jg-card);
+    color: var(--jg-text);
+    border-radius: 16px;
+    margin-top: 14px;
+    min-height: 360px;
+    align-items: center;
+    border: 1px solid var(--jg-line);
+    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.06);
+}
+.jg-shimmer-left { display: flex; flex-direction: column; gap: 14px; }
+.jg-shimmer-title { height: 42px; width: 78%; border-radius: 6px; }
+.jg-shimmer-line { height: 14px; border-radius: 6px; }
+.jg-shimmer-btns { display: flex; gap: 10px; margin-top: 12px; }
+.jg-shimmer-btn { height: 42px; width: 140px; border-radius: 999px; }
+.jg-shimmer-cover { width: 100%; height: 320px; border-radius: 14px; }
+.jg-shimmer-scrollstack { display: flex; flex-direction: column; gap: 14px; margin-top: 18px; }
+.jg-shimmer-card { height: 120px; border-radius: 14px; }
+
+/* Download-4 版式 Hero */
+.jg-dl4-hero {
+    display: grid;
+    grid-template-columns: 1.15fr 1fr;
+    gap: 36px;
+    padding: 40px 28px 44px;
+    background: var(--jg-card);
+    color: var(--jg-text);
+    border-radius: 18px;
+    margin-top: 14px;
+    align-items: stretch;
+    position: relative;
+    overflow: hidden;
+    border: 1px solid var(--jg-line);
+    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.06);
+}
+.jg-dl4-left { display: flex; flex-direction: column; gap: 14px; }
+.jg-dl4-eyebrow {
+    font-size: 11px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    opacity: 0.55;
+    color: #fff;
+}
+.jg-dl4-title {
+    font-family: "Noto Serif SC", "Source Han Serif SC", "Songti SC", serif;
+    font-size: 44px;
+    line-height: 1.15;
+    font-weight: 600;
+    margin: 0;
+    color: var(--jg-text);
+    word-break: break-word;
+}
+.jg-dl4-sub {
+    font-size: 15px;
+    line-height: 1.65;
+    color: var(--jg-text-2);
+    margin: 4px 0 6px;
+    max-width: 440px;
+}
+.jg-dl4-actions { display: flex; align-items: center; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
+.jg-dl4-cta {
+    background: var(--jg-ink);
+    color: var(--jg-on-ink);
+    border: none;
+    padding: 12px 22px 12px 24px;
+    border-radius: 999px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 12px;
+    transition: transform 0.15s, box-shadow 0.2s, background 0.2s;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+}
+.jg-dl4-cta:hover:not(.disabled):not(:disabled) {
+    background: var(--jg-ink-hover);
+    transform: translateY(-1px);
+    box-shadow: 0 8px 22px rgba(0, 0, 0, 0.24);
+}
+.jg-dl4-cta.disabled, .jg-dl4-cta:disabled {
+    background: var(--jg-hover);
+    color: rgba(0, 0, 0, 0.45);
+    box-shadow: none;
+    cursor: default;
+}
+.jg-dl4-cta:disabled .jg-dl4-cta-ico { display: none; }
+.jg-dl4-cta-ico {
+    width: 26px;
+    height: 26px;
+    background: rgba(255, 255, 255, 0.22);
+    border-radius: 999px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+}
+.jg-dl4-cta.disabled .jg-dl4-cta-ico { background: rgba(255, 255, 255, 0.08); }
+.jg-dl4-ghost {
+    background: transparent;
+    color: var(--jg-text);
+    border: 1px solid var(--jg-line-strong);
+    padding: 11px 18px;
+    border-radius: 999px;
+    font-size: 13px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    transition: background 0.2s, border-color 0.2s;
+}
+.jg-dl4-ghost:hover { background: var(--jg-well); border-color: var(--jg-line-heavy); }
+.jg-dl4-meta {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px 4px;
+    font-size: 13px;
+    color: var(--jg-text-2);
+    margin-top: auto;
+    padding-top: 14px;
+}
+.jg-meta-ico { width: 14px; height: 14px; vertical-align: -2px; margin-right: 3px; }
+.jg-dl4-meta-item { white-space: nowrap; }
+.jg-dl4-meta-item b { font-weight: 600; color: var(--jg-text); }
+.jg-dl4-dot { opacity: 0.4; }
+.jg-dl4-msg {
+    margin-top: 8px;
+    font-size: 12.5px;
+    padding: 8px 12px;
+    background: var(--jg-well);
+    border-radius: 8px;
+    color: var(--jg-text-2);
+}
+.jg-dl4-installed {
+    margin-top: 6px;
+    font-size: 12.5px;
+    color: #7ce495;
+}
+.jg-dl4-right { position: relative; display: flex; flex-direction: column; justify-content: flex-end; }
+.jg-dl4-cover {
+    width: 100%;
+    aspect-ratio: 4 / 3;
+    object-fit: cover;
+    border-radius: 14px;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.4);
+    display: block;
+}
+.jg-dl4-cover-fallback {
+    background: linear-gradient(135deg, #3a3a3d, #1a1a1c);
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 88px;
+    font-weight: 700;
+    font-family: serif;
+}
+.jg-dl4-cover-badge {
+    position: absolute;
+    left: 14px;
+    bottom: 14px;
+    background: rgba(0, 0, 0, 0.55);
+    color: #fff;
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 11px;
+    letter-spacing: 1px;
+    backdrop-filter: blur(6px);
+}
+
+/* 详情页普通面板（v0.55.0：替代 ScrollStack） */
+.jg-detail-section {
+    background: var(--jg-card);
+    border-radius: 14px;
+    padding: 20px 22px;
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.05);
+    border: 1px solid var(--jg-line);
+    margin-top: 14px;
+}
+.jg-detail-section-title {
+    font-size: 15px;
+    font-weight: 700;
+    margin-bottom: 12px;
+    color: var(--jg-text);
+}
+
+/* Flip 图集 */
+.jg-flip-gallery {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    justify-content: flex-start;
+}
+.jg-flip-box {
+    width: calc(33.333% - 8px);
+    aspect-ratio: 1 / 1;
+    min-width: 140px;
+    padding: 6px;
+    border: 2px dashed var(--jg-line-strong);
+    border-radius: 10px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    position: relative;
+    box-sizing: border-box;
+}
+.jg-flip-box-content {
+    width: 100%;
+    height: 100%;
+    border-radius: 8px;
+    background-position: center;
+    background-size: cover;
+    cursor: pointer;
+    position: relative;
+    transition: transform 0.2s;
+}
+.jg-flip-box-content:hover {
+    transform: scale(1.02);
+}
+.jg-flip-modal {
+    width: 100%;
+    height: 100vh;
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    background: transparent;
+    /* v1.1.1：98000 —— 必须高于 .jg-dl4-right:hover 的 9700（作者气泡层级）。
+       否则鼠标悬停封面点放大时整列（含 by/版本 meta 行）都会浮在放大图上。 */
+    z-index: 98000;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transition: opacity 0.25s ease, visibility 0.25s;
+}
+.jg-flip-modal.open {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+}
+.jg-flip-modal.open .jg-flip-overlay { opacity: 0.65; }
+.jg-flip-overlay { transition: opacity 0.25s ease; }
+.jg-zoom-open {
+    max-width: 92vw !important;
+    max-height: 90vh !important;
+    width: auto !important;
+    height: auto !important;
+    aspect-ratio: auto !important;
+    object-fit: contain !important;
+    border-radius: 12px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+    cursor: zoom-out !important;
+    animation: jg-zoom-in 0.25s ease;
+}
+@keyframes jg-zoom-in {
+    from { transform: scale(0.85); opacity: 0.4; }
+    to { transform: scale(1); opacity: 1; }
+}
+.jg-flip-modal .jg-flip-content {
+    max-width: 92vw;
+    max-height: 90vh;
+    position: relative;
+    z-index: 1001;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.jg-flip-modal .jg-flip-content .jg-flip-box-content {
+    width: 100%;
+    height: 100%;
+    cursor: zoom-out;
+}
+.jg-flip-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: #000;
+    opacity: 0;
+    cursor: pointer;
+}
+
+/* v0.55.0：深色模式下 hero 依然深底 */
+

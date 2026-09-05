@@ -40,18 +40,41 @@ public sealed class ConfigService
             }
             catch
             {
+                // v1.1.2：损坏现场先留档再重置 —— 之前静默重置，用户游戏路径/登录态全丢且无法诊断；
+                // 备份带时间戳，可手工抢救关键字段，也便于定位损坏原因
+                try
+                {
+                    if (File.Exists(ConfigPath))
+                    {
+                        var backup = ConfigPath + ".corrupt-" + DateTime.Now.ToString("yyyyMMdd_HHmmss");
+                        File.Copy(ConfigPath, backup, true);
+                        AppLog.Error("Config", "配置文件解析失败，已备份为 " + Path.GetFileName(backup) + "，本次启动使用默认配置");
+                    }
+                }
+                catch { }
                 Current = new JuniGridConfig();
             }
             SyncAdultFilter();
             SyncStoragePaths();
+            // v1.1.5：首次使用日期只补写一次（老用户从本次升级后开始起算）
+            if (Current.FirstRunDate is null)
+            {
+                Current.FirstRunDate = DateTime.Now.ToString("O");
+                Save(Current);
+            }
         }
 
     /// <summary>把「过滤成人内容 / 只显示成人内容」两个互斥开关同步到 NexusService 的静态查询开关
-    /// （浏览 GraphQL 是否加 adult 过滤条件）。</summary>
+    /// （浏览 GraphQL 是否加 adult 过滤条件）。开关实际发生变化时递增 NexusService.AdultFilterVersion，
+    /// Nexus 页据此判断手里的浏览快照是不是旧过滤条件拉的、要不要弃用重拉。</summary>
     private void SyncAdultFilter()
     {
-        NexusService.OnlyAdultContent = Current.OnlyAdultContent;
-        NexusService.IncludeAdultContent = !Current.OnlyAdultContent && !Current.FilterAdultContent;
+        var only = Current.OnlyAdultContent;
+        var include = !Current.OnlyAdultContent && !Current.FilterAdultContent;
+        if (NexusService.OnlyAdultContent != only || NexusService.IncludeAdultContent != include)
+            System.Threading.Interlocked.Increment(ref NexusService.AdultFilterVersion);
+        NexusService.OnlyAdultContent = only;
+        NexusService.IncludeAdultContent = include;
     }
 
         /// <summary>v0.2.1：把统一缓存目录同步到 StoragePaths 静态入口 —— 各服务取路径零改动即时生效。</summary>
@@ -207,6 +230,10 @@ public sealed class JuniGridConfig
     public string? LastLaunchMode { get; set; }
     public int TotalLaunchCount { get; set; }
 
+    /// <summary>v1.1.5：首次使用 JuniGrid 的日期（ISO-8601，首次保存配置时补写一次）。
+    /// 首页游玩热力图的年份列表从这里起算到今年。</summary>
+    public string? FirstRunDate { get; set; }
+
     // Nexus 封面缓存：mod 文件夹名 → 封面图 URL（检查更新时顺手存，列表秒开）
     public Dictionary<string, string> ModCovers { get; set; } = new();
 
@@ -218,7 +245,7 @@ public sealed class JuniGridConfig
 
     /// <summary>
     /// 过滤色情（成人）内容开关。默认开启 —— Nexus 浏览/搜索一律排除成人内容；
-    /// 关闭时设置页要求输入出生年月日验证年满 18 周岁（仅本地校验，不联网比对）。
+    /// 与「只显示成人内容」互斥，开关切换均无年龄验证（早期版本的出生年月验证已移除）。
     /// </summary>
     public bool FilterAdultContent { get; set; } = true;
     /// <summary>「只显示成人内容」开关，与 FilterAdultContent 互斥（两者最多一个开启，可同时关闭）。默认关闭。</summary>
@@ -234,6 +261,10 @@ public sealed class JuniGridConfig
     public string NexusUserEmail { get; set; } = "";
     public string NexusProfileUrl { get; set; } = "";
     public bool   NexusIsPremium { get; set; }
+
+    /// <summary>v1.1.1：界面主题（"light" | "dark"）。标题栏开关切换并落盘；
+    /// 启动时 TitleBar 用它对齐前端（localStorage 为防闪白的同步快路径）。</summary>
+    public string Theme { get; set; } = "light";
     /// <summary>v0.69.0：modId → 最后一次从该 mod 下载文件的日期（yyyy-MM-dd）。本地安装/更新时记录，并与 N 网下载历史合并。</summary>
     public Dictionary<string, string> ModLastDownload { get; set; } = new();
     /// <summary>v0.69.0：fileId → 该文件的下载日期（仅本机经系统内下载过的）。</summary>

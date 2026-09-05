@@ -1,0 +1,306 @@
+/* ============================================================
+   base：CSS 变量 / 启动态 / Shell 布局 / 标题栏（原 app.css 开头区块）
+   ============================================================ */
+/* =============================================================
+   JuniGrid — global styles
+   Layout: TitleBar / (AccountPanel | TopNav + content)
+   ============================================================= */
+
+/* ============================================================
+   v1.1.1：深浅主题 —— 语义变量层。
+   浅色为默认值（与历史硬编码完全一致，浅色观感零变化）；
+   html[data-theme="dark"] 整套覆盖成深色。全站 CSS 一律引用这些
+   变量，切换主题只是变量换值 + 一帧 View Transitions 圆形揭示。
+   ============================================================ */
+:root {
+    color-scheme: light;
+    /* 文字（主 → 次 → 弱 → 最弱） */
+    --jg-text: #1a1a1a;
+    --jg-text-2: #555;
+    --jg-text-3: #777;
+    --jg-text-4: #9a9a9a;
+    /* 表面 */
+    --jg-shell-grad: linear-gradient(135deg, #f3f6fb 0%, #eef2f8 100%);  /* 外壳（侧栏/顶导航后面那层） */
+    --jg-content: #ffffff;               /* 信息显示模块：纯白内容区 */
+    --jg-card: #ffffff;                  /* 卡片 / 弹窗 / 列表行 */
+    --jg-bg: #ffffff;                    /* 内联样式兜底别名（= --jg-content） */
+    --jg-glass-40: rgba(255,255,255,0.55);  /* 毛玻璃：标题栏 / 排序触发钮 */
+    --jg-glass-70: rgba(255,255,255,0.72);  /* 搜索岛 / 输入胶囊 */
+    --jg-glass-85: rgba(255,255,255,0.90);  /* 批量条 / 下拉面板 */
+    --jg-glass-95: rgba(255,255,255,0.97);  /* 下拉菜单 / 气泡（接近实心） */
+    --jg-account-bg: rgba(255,255,255,0.35);
+    --jg-topnav-bg: rgba(255,255,255,0.30);
+    --jg-nav-thumb: rgba(255,255,255,0.92);
+    --jg-well: rgba(0,0,0,0.04);         /* 输入框 / 浅色凹槽底 */
+    --jg-track: rgba(0,0,0,0.05);        /* 轨道 / 进度条底 */
+    --jg-hover: rgba(0,0,0,0.06);        /* 悬停底 */
+    --jg-hover-strong: rgba(0,0,0,0.10);
+    /* 描边（弱 → 强 → 重） */
+    --jg-line: rgba(0,0,0,0.07);
+    --jg-line-strong: rgba(0,0,0,0.14);
+    --jg-line-heavy: rgba(0,0,0,0.25);
+    --jg-outline: #1a1a1a;               /* 聚焦/选中描边（深色下翻白） */
+    /* 「墨色」主按钮：浅色主题黑底白字，深色主题反转成浅底深字 */
+    --jg-ink: #141414;
+    --jg-ink-strong: #0a0a0a;
+    --jg-ink-hover: #000000;
+    --jg-ink-grad: linear-gradient(135deg, #2e2e2e, #161616);
+    --jg-on-ink: #ffffff;
+    --jg-on-ink-soft: rgba(255,255,255,0.3);
+    --jg-on-ink-dim: rgba(255,255,255,0.85);
+    --jg-pill-thumb: #0a0a0a;            /* 启动模式滑块（黑） */
+    --jg-on-thumb: #ffffff;
+    --jg-thumb-track: rgba(0,0,0,0.04);
+    --jg-dock-running: #7d7d80;          /* 任务胶囊下载中灰 */
+    /* 主题切换开关（Element Plus 导航栏同款） */
+    --jg-toggle-track: #e3e5e8;
+    --jg-toggle-track-border: rgba(0,0,0,0.08);
+    --jg-toggle-knob: #ffffff;
+    --jg-toggle-icon: #2f3238;
+}
+
+html[data-theme="dark"] {
+    color-scheme: dark;
+    --jg-text: #e7e9ee;
+    --jg-text-2: #b9bec7;
+    --jg-text-3: #8b919b;
+    --jg-text-4: #6e747e;
+    --jg-shell-grad: linear-gradient(135deg, #1c1e23 0%, #17181d 100%);
+    --jg-content: #15161a;
+    --jg-card: #1e2025;
+    --jg-bg: #15161a;
+    --jg-glass-40: rgba(28,30,36,0.55);
+    --jg-glass-70: rgba(28,30,36,0.72);
+    --jg-glass-85: rgba(28,30,36,0.90);
+    --jg-glass-95: rgba(28,30,36,0.97);
+    --jg-account-bg: rgba(28,30,36,0.45);
+    --jg-topnav-bg: rgba(28,30,36,0.30);
+    --jg-nav-thumb: rgba(40,43,50,0.92);
+    --jg-well: rgba(255,255,255,0.055);
+    --jg-track: rgba(255,255,255,0.08);
+    --jg-hover: rgba(255,255,255,0.07);
+    --jg-hover-strong: rgba(255,255,255,0.13);
+    --jg-line: rgba(255,255,255,0.08);
+    --jg-line-strong: rgba(255,255,255,0.16);
+    --jg-line-heavy: rgba(255,255,255,0.30);
+    --jg-outline: #dfe3ea;
+    --jg-ink: #e8eaee;
+    --jg-ink-strong: #f4f5f7;
+    --jg-ink-hover: #ffffff;
+    --jg-ink-grad: linear-gradient(135deg, #f2f3f5, #dfe2e8);
+    --jg-on-ink: #17181c;
+    --jg-on-ink-soft: rgba(23,24,28,0.3);
+    --jg-on-ink-dim: rgba(23,24,28,0.85);
+    --jg-pill-thumb: #eceff3;
+    --jg-on-thumb: #17181c;
+    --jg-thumb-track: rgba(255,255,255,0.10);
+    --jg-dock-running: #55585e;
+    --jg-toggle-track: #43464c;
+    --jg-toggle-track-border: rgba(255,255,255,0.10);
+    --jg-toggle-knob: #f2f3f5;
+    --jg-toggle-icon: #2f3238;
+    /* FluentUI 兜底变量（home/mods 里 var(--neutral-layer-1, #fff) 这类引用） */
+    --neutral-layer-1: #1e2025;
+    --neutral-foreground-rest: #e7e9ee;
+}
+
+/* ---- View Transitions 圆形揭示（与 element-plus.org 官网一致）----
+   切浅色：新(浅色)快照 circle 从按钮处 0 → 全屏发散；
+   切深色：旧(浅色)快照 circle 全屏 → 0 向按钮收回（四周先入夜，浅色缩回按钮）。
+   动画本体由 JS documentElement.animate 驱动（400ms ease-in），这里只关掉默认
+   交叉淡化，并在切深色时把旧快照提到新快照之上（不提升会被新视图盖住）。 */
+::view-transition-old(root),
+::view-transition-new(root) {
+    animation: none;
+    mix-blend-mode: normal;
+}
+html[data-theme-transition="to-dark"]::view-transition-old(root) {
+    z-index: 2147483646;
+}
+html[data-theme-transition="to-dark"]::view-transition-new(root) {
+    z-index: 1;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+html, body {
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+    background: transparent;
+    border-radius: 10px;   /* 匹配 Win11 DWM 圆角；这里之前遗漏了 32px 导致图三右下角背景色角比窗口大 */
+}
+body.jg-max, html:has(body.jg-max) { border-radius: 0; }
+body {
+    font-family: 'Segoe UI Variable', 'Segoe UI',
+                 -apple-system, BlinkMacSystemFont,
+                 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    color: var(--jg-text);
+}
+
+/* ============================================================
+   启动动画（独立覆盖层，位于 Blazor 之上）
+   ============================================================ */
+#jg-splash {
+    position: fixed;
+    inset: 0;
+    z-index: 99999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    /* 纯透明无底色（PCL2 风格）；动画期间应用外壳本体隐藏，只有动画可见 */
+    background: transparent;
+    transition: opacity .55s ease, visibility .55s ease;
+}
+#jg-splash.hidden { opacity: 0; visibility: hidden; pointer-events: none; }
+/* 启动中：整个应用外壳不可见，只有启动动画浮在上层。
+   WebView2 不支持真透明窗口（AllowsTransparency 必须 False），
+   所以用深品牌色封面遮住浅色页面，PCL2 式观感。 */
+/* v0.19.0 PCL 式透明启动：body/#app 全透明，只有 WPF SplashWindow 显示。
+   MainWindow 起始 Visibility=Hidden，动画结束由 WPF 层滑入并显现。
+   前端 splash 已退化为空壳，本处只保留 booting 期的隐藏语义。 */
+body.jg-booting { background: transparent !important; }
+body.jg-booting #app { background: transparent !important; }
+body.jg-booting #app > * { opacity: 0 !important; visibility: hidden !important; }
+#jg-splash { display: none; }   /* 前端 splash 不再显示，改由 WPF 层负责 */
+
+.jg-splash-stage {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+}
+#jg-splash-logo {
+    width: 96px; height: 96px;
+    border-radius: 20%;
+    box-shadow: 0 8px 40px rgba(0,0,0,.45);
+}
+.jg-splash-word {
+    display: block;
+    height: clamp(64px, 11vmin, 120px);
+    filter: drop-shadow(0 4px 18px rgba(26,154,60,.35));
+}
+.jg-splash-word text {
+    font-family: 'Segoe UI Variable', 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    font-weight: 800;
+}
+@media (max-width: 640px) {
+    .jg-splash-stage { gap: 8px; }
+    #jg-splash-logo { width: 64px; height: 64px; }
+}
+
+/* -------- Shell layout -------- */
+.jg-shell {
+    position: relative;      /* TaskDock 用 absolute 挂在这上面，保证不跑出可视区 */
+    display: flex;
+    flex-direction: column;
+    height: 100%;            /* 跟随 html/body/#app 的 100% 高度链，见 index.html 注释 */
+    border-radius: 10px;   /* 匹配 Win11 DWM 圆角，原来是 32px 导致按钮背景角比窗口角圆得多 */
+    overflow: hidden;
+    background: var(--jg-shell-grad);
+}
+
+.jg-body { display: flex; flex: 1; min-height: 0; min-width: 0; overflow: hidden; }
+.jg-content { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; height: 100%; }
+.jg-main {
+    flex: 1;
+    height: 100%;
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    background: var(--jg-content);     /* 信息显示模块：内容区底色随主题 */
+    /* 底部留白不放在滚动容器本身的 padding——容器 padding 不跟随滚动，
+       会导致最后一行贴边/被裁。改用 .jg-page 的 padding-bottom（跟随内容）。 */
+    padding: clamp(14px, 1.6vw, 28px) clamp(16px, 2vw, 40px) 0;
+    scrollbar-width: none;              /* Firefox：隐藏滚动条（仍可滚动） */
+}
+.jg-main::-webkit-scrollbar { display: none; }   /* WebKit：隐藏滚动条（仍可滚动） */
+
+/* 最大化越界裁切已在 WM_GETMINMAXINFO 根治，底部留白只需要一点点 */
+.jg-page { max-width: 1440px; margin: 0 auto; padding-bottom: 16px; }
+.jg-page-wide { max-width: 1680px; margin: 0 auto; padding-bottom: 16px; }
+
+/* -------- Titlebar -------- */
+/* v1.0.17：position+z-index 提升整个标题栏层叠上下文 —— backdrop-filter 会创建
+   独立层叠上下文，SelfUpdateButton 的悬浮气泡若不提升会被后绘制的白色内容区盖住。
+   5000 = 高于内容区内一切元素（批量栏 50、排序下拉 1000），低于全屏遮罩（99990+） */
+.jg-titlebar {
+    position: relative;
+    z-index: 5000;
+    height: 40px;
+    display: flex;
+    align-items: stretch;
+    background: var(--jg-glass-40);
+    backdrop-filter: saturate(180%) blur(20px);
+    border-bottom: 1px solid var(--jg-line);
+    border-top-left-radius: 10px;
+    border-top-right-radius: 10px;
+}
+
+.jg-titlebar-drag { flex: 1; display: flex; align-items: center; padding: 0 14px; }
+.jg-brand { display: flex; align-items: center; gap: 10px; }
+.jg-brand-text { display: flex; flex-direction: column; line-height: 1.1; }
+.jg-brand-name { font-weight: 700; font-size: 13px; }
+
+.jg-titlebar-actions { display: flex; align-items: center; }
+.jg-winbtn {
+    width: 46px; height: 40px;
+    background: transparent; border: 0; color: inherit; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 13px;
+}
+.jg-winbtn:hover { background: var(--jg-hover); }
+.jg-winbtn-close { border-top-right-radius: 10px; }
+.jg-winbtn-close:hover { background: #e81123; color: #fff; }
+
+/* ── v1.1.1：标题栏深浅主题开关（Element Plus 导航栏同款胶囊）──
+   形态完全照搬官网：40x20 圆角胶囊轨道 + 圆形旋钮，浅色=旋钮居左太阳图标，
+   深色=旋钮滑到右侧月亮图标；点击触发的圆形扩散/收回动画见 core.js toggleTheme。 */
+.jg-theme-wrap {
+    display: flex;
+    align-items: center;
+    padding: 0 12px 0 6px;
+}
+.jg-theme-toggle {
+    position: relative;
+    width: 40px;
+    height: 20px;
+    padding: 0;
+    border: 1px solid var(--jg-toggle-track-border);
+    border-radius: 999px;
+    background: var(--jg-toggle-track);
+    cursor: pointer;
+    transition: background 200ms ease, border-color 200ms ease;
+}
+.jg-theme-toggle:hover { filter: brightness(0.97); }
+html[data-theme="dark"] .jg-theme-toggle:hover { filter: brightness(1.15); }
+.jg-tt-knob {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--jg-toggle-knob);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.2);
+    transition: left 200ms ease;
+}
+html[data-theme="dark"] .jg-tt-knob { left: 22px; }
+.jg-tt-knob svg {
+    width: 10px;
+    height: 10px;
+    color: var(--jg-toggle-icon);
+    display: block;
+}
+/* 图标随主题交叉淡换：浅色显示太阳、深色显示月亮 */
+.jg-tt-sun, .jg-tt-moon { position: absolute; transition: opacity 200ms ease; }
+.jg-tt-moon { opacity: 0; }
+html[data-theme="dark"] .jg-tt-sun { opacity: 0; }
+html[data-theme="dark"] .jg-tt-moon { opacity: 1; }
+
+/* 最大化时窗口圆角被 DWM 去掉，所有 CSS 圆角同步归零 */
+body.jg-max .jg-shell,
+body.jg-max .jg-titlebar,
+body.jg-max .jg-winbtn-close { border-radius: 0; }
+

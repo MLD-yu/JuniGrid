@@ -64,6 +64,7 @@ public sealed class InstallService
             _center.Report(task, msg, pct, speed);
 
         Busy = true;
+        string? zipPath = null;   // v1.1.3：取消时清理半截包用（catch 里拿不到 try 内的局部量）
         try
         {
             Step("正在获取文件信息…", 2);
@@ -79,12 +80,15 @@ public sealed class InstallService
 
             var zip = Path.Combine(StoragePaths.DownloadsDir,
                 $"direct-{modId}-{file.FileId}.zip");
+            zipPath = zip;
             Directory.CreateDirectory(Path.GetDirectoryName(zip)!);
 
             var progress = new Progress<NexusDownloadProgress>(p =>
                 Step(p.Message, p.Percent, p.SpeedMBps));
             Step($"正在下载 {file.Name}…", 8, 0);
-            await _nexus.DownloadFileAsync(dl.Url, zip, progress);
+            await _nexus.DownloadFileAsync(dl.Url, zip, progress, task.Cts.Token);
+            if (task.Cts.IsCancellationRequested)   // 下完才发现被移除 → 别装了，清掉半截包
+            { try { File.Delete(zip); } catch { } return "已取消"; }
 
             Step("正在安装到 Mods…", 95);
             var err = _mods.InstallNew(cfg.GamePath, zip, out var modName);
@@ -100,6 +104,12 @@ public sealed class InstallService
             _center.Finish(task, true, done);
             Notify("✅ " + done);
             return null;
+        }
+        catch (OperationCanceledException)
+        {
+            // v1.1.3：用户移除了任务 → 清半截包，静默退出（任务条目已不在列表）
+            try { if (zipPath is not null && File.Exists(zipPath)) File.Delete(zipPath); } catch { }
+            return "已取消";
         }
         catch (Exception ex)
         {
@@ -121,6 +131,7 @@ public sealed class InstallService
             return;
         }
         var task = _center.Start("网页一键安装（Nexus）", "install");
+        string? zipPath = null;   // v1.1.3：取消清理用
 
         void Step(string msg, double? pct = null, double? speed = null) =>
             _center.Report(task, msg, pct, speed);
@@ -166,12 +177,15 @@ public sealed class InstallService
             }
 
             var zip = Path.Combine(StoragePaths.DownloadsDir, $"nxm-{modId}-{fileId}.zip");
+            zipPath = zip;
             Directory.CreateDirectory(Path.GetDirectoryName(zip)!);
 
             var progress = new Progress<NexusDownloadProgress>(p =>
                 Step(p.Message, p.Percent, p.SpeedMBps));
             Step("正在下载…", 12, 0);
-            await _nexus.DownloadFileAsync(dl.Url, zip, progress);
+            await _nexus.DownloadFileAsync(dl.Url, zip, progress, task.Cts.Token);
+            if (task.Cts.IsCancellationRequested)   // 下完才发现被移除 → 别装了，清掉半截包
+            { try { File.Delete(zip); } catch { } return; }
 
             Step("正在安装到 Mods…", 95);
             var err = _mods.InstallNew(cfg.GamePath, zip, out var modName);
@@ -187,6 +201,10 @@ public sealed class InstallService
                 Notify("❌ 安装失败：" + err);
                 _queue.NotifyFailed(modId);   // 装不进去也推进队列
             }
+        }
+        catch (OperationCanceledException)
+        {
+            try { if (zipPath is not null && File.Exists(zipPath)) File.Delete(zipPath); } catch { }
         }
         catch (Exception ex)
         {

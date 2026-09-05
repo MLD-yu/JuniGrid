@@ -1,0 +1,423 @@
+/* ============================================================
+   detail：Mod 详情页 —— 多图画廊 / 文件页签 / Requirements / 手风琴 / tooltip
+   ============================================================ */
+/* ============ v0.56.0：Edge 翻译器 + 详情图 + 封面放大 ============ */
+
+/* Edge 风格翻译器 */
+.jg-detail-topbar { display: flex; align-items: center; gap: 6px; }
+/* 详细介绍里的图片 */
+.jg-moddetail-desc img.jg-desc-img {
+    max-width: 100%;
+    border-radius: 10px;
+    margin: 8px 0;
+    cursor: zoom-in;
+    transition: transform 0.2s, box-shadow 0.2s;
+}
+.jg-moddetail-desc img.jg-desc-img:hover {
+    transform: scale(1.01);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
+}
+
+/* 封面可点击放大 */
+.jg-flip-cover {
+    cursor: zoom-in;
+    transition: transform 0.2s;
+}
+.jg-flip-cover:hover {
+    transform: scale(1.01);
+}
+
+/* Flip modal 里的图片完整显示 */
+
+/* ============ v0.59.0：mod 列表 shimmer 骨架 + 图片放大占位符 + 页面切换轻量化 ============ */
+
+/* Mod 行 shimmer */
+.jg-modrows-skeleton {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding-top: 8px;
+}
+.jg-modrow-shimmer {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 12px;
+    background: var(--jg-card);
+    border: 1px solid var(--jg-line);
+    border-radius: 10px;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.03);
+}
+.jg-shimmer-avatar {
+    width: 46px;
+    height: 46px;
+    border-radius: 8px;
+    flex: none;
+}
+.jg-shimmer-lines {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+.jg-shimmer-line {
+    height: 12px;
+    border-radius: 6px;
+}
+.jg-shimmer-pill {
+    width: 60px;
+    height: 26px;
+    border-radius: 999px;
+    flex: none;
+}
+
+/* 图片放大占位符 */
+.jg-zoom-placeholder {
+    background: var(--jg-well);
+    border-radius: 10px;
+    border: 1px dashed var(--jg-line);
+    box-sizing: border-box;
+}
+
+/* 页面切换过渡轻量化：把 v0.31.0 的每子项动画简化成整块淡入，减少重排卡顿 */
+.jg-page-enter {
+    animation: jg-page-fadein 0.22s ease-out;
+}
+.jg-page-enter > * { animation: none !important; }
+@keyframes jg-page-fadein {
+    from { opacity: 0; transform: translateY(6px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+/* v0.68.2：官方 Nexus 风格 Premium 橙色胶囊徽章 */
+.jg-premium-badge {
+    display: inline-flex; align-items: center;
+    padding: 1px 9px; border-radius: 999px;
+    background: linear-gradient(180deg, #f7b04a, #ee9b28);
+    color: #2b1c05;
+    font-size: 11px; font-weight: 700; letter-spacing: .02em;
+    line-height: 1.55; white-space: nowrap;
+}
+
+/* ===== v0.69.0：详情页新增模块 ===== */
+/* 标题旁的「关于」问号（仿 GSAP easeReverse demo 的粉色渐变圆） */
+.jg-about-q {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 26px; height: 26px; margin-left: 10px; border: none; cursor: pointer;
+    border-radius: 50%; vertical-align: 4px;
+    background: linear-gradient(317deg, #ffe9fe 10%, #ff96f9 83%);
+    color: var(--jg-text); font-weight: 700; font-size: 14px;
+    transition: transform .25s cubic-bezier(.34,1.56,.64,1);
+}
+.jg-about-q:hover { transform: scale(1.18); }
+/* v0.69.1：mod 名称后的最后安装时间（深灰、无对号） */
+.jg-dl4-lastdl { font-size: 12px; color: var(--jg-text-2); font-weight: 400; margin-left: 12px; }
+
+/* 视差图片轮播 */
+.jg-carousel {
+    display: flex; gap: 12px; overflow-x: auto; margin-top: 14px;
+    padding: 4px 2px 10px; scroll-behavior: smooth;
+    scrollbar-width: thin; cursor: grab; user-select: none;
+}
+.jg-carousel:active { cursor: grabbing; }
+.jg-carousel-img {
+    height: 200px; border-radius: 12px; flex: none;
+    box-shadow: 0 6px 20px rgba(0,0,0,.12);
+    transition: transform .3s ease;
+}
+.jg-carousel-img:hover { transform: translateY(-4px) scale(1.02); }
+
+/* 关于区块（仿图七：左白卡 + 右编号手风琴） */
+.jg-about-panel {
+    display: flex; gap: 16px; margin-top: 14px;
+    background: var(--jg-well); border-radius: 16px; padding: 16px;
+}
+.jg-about-left {
+    flex: 0 0 300px; background: var(--jg-card); border-radius: 14px; padding: 18px;
+    box-shadow: 0 8px 28px rgba(0,0,0,.08); align-self: flex-start;
+}
+.jg-about-left img { width: 100%; border-radius: 10px; margin-bottom: 12px; }
+.jg-about-left-title { font-size: 17px; font-weight: 700; color: var(--jg-text); }
+.jg-about-left-sub { font-size: 13px; color: var(--jg-text-2); line-height: 1.6; margin-top: 8px; }
+.jg-about-right { flex: 1; display: flex; flex-direction: column; }
+.jg-acc { border-bottom: 1px solid var(--jg-line); }
+.jg-acc:last-child { border-bottom: none; }
+.jg-acc-head {
+    width: 100%; display: flex; align-items: center; gap: 12px;
+    padding: 13px 6px; background: none; border: none; cursor: pointer;
+    font-size: 14px; color: var(--jg-text); text-align: left;
+}
+.jg-acc-head:hover { background: var(--jg-well); border-radius: 8px; }
+.jg-acc-no { font-size: 12px; color: var(--jg-text-3); font-variant-numeric: tabular-nums; width: 20px; }
+.jg-acc-name { flex: 1; font-weight: 600; }
+.jg-acc-arrow { transition: transform .3s ease; color: var(--jg-text-3); }
+.jg-acc-arrow.open { transform: rotate(180deg); }
+.jg-acc-body { padding: 4px 6px 14px 38px; font-size: 13px; color: var(--jg-text-2); line-height: 1.7; }
+.jg-acc-row { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
+.jg-cl-ver { font-weight: 700; margin-top: 8px; color: var(--jg-text); }
+.jg-cl-line { padding-left: 8px; opacity: .85; }
+.jg-linklike {
+    background: none; border: none; padding: 0; cursor: pointer;
+    color: #0f7fff; font-size: inherit; text-decoration: underline;
+}
+.jg-tag { padding: 1px 8px; border-radius: 999px; font-size: 11px; background: var(--jg-track); color: var(--jg-text-2); }
+.jg-tag-ok { background: rgba(34,139,34,.12); color: #2e7d32; }
+.jg-tag-warn { background: rgba(232,17,35,.10); color: #c50f1f; }
+@media (max-width: 900px) {
+    .jg-about-panel { flex-direction: column; }
+    .jg-about-left { flex: none; width: 100%; }
+}
+
+/* 文件页签（仿官网主/旧文件结构，浅色主题） */
+.jg-file-card {
+    border: 1px solid var(--jg-line); border-radius: 12px;
+    padding: 12px 14px; margin-bottom: 8px; background: var(--jg-card);
+}
+.jg-file-head { display: flex; align-items: center; gap: 8px; }
+.jg-file-dlcheck {
+    width: 18px; height: 18px; border-radius: 50%; flex: none;
+    background: #2e9e4f; color: #fff; font-size: 11px; font-weight: 700;
+    display: inline-flex; align-items: center; justify-content: center;
+}
+.jg-file-name { font-weight: 600; font-size: 13.5px; color: var(--jg-text); }
+.jg-file-ver {
+    padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 700;
+    background: rgba(238,155,40,.15); color: #b06d0a;
+}
+.jg-file-meta {
+    display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 6px;
+    font-size: 12px; color: var(--jg-text-3);
+}
+.jg-file-desc { font-size: 12.5px; color: var(--jg-text-2); line-height: 1.6; margin-top: 8px; }
+.jg-file-btns { display: flex; gap: 8px; margin-top: 10px; }
+
+/* ===== v0.69.1：文件页签行式列表（官网式）===== */
+.jg-frow { border: 1px solid var(--jg-line); border-radius: 10px; margin-bottom: 6px; background: var(--jg-card); overflow: hidden; }
+.jg-frow-head {
+    width: 100%; display: flex; align-items: center; gap: 14px;
+    padding: 10px 14px; background: none; border: none; cursor: pointer;
+    font-size: 12.5px; color: var(--jg-text-3); text-align: left;
+}
+.jg-frow-head:hover { background: var(--jg-well); }
+.jg-frow-name { flex: 1; min-width: 0; font-weight: 600; font-size: 13px; color: var(--jg-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.jg-frow-cell { white-space: nowrap; flex: none; }
+.jg-frow-arrow { transition: transform .25s ease; color: #ee9b28; flex: none; }
+.jg-frow-arrow.open { transform: rotate(180deg); }
+.jg-frow-body { padding: 10px 16px 14px; font-size: 12.5px; color: var(--jg-text-2); line-height: 1.7; border-top: 1px solid var(--jg-line); white-space: pre-wrap; }
+.jg-frow-note { margin-top: 10px; font-size: 12px; color: var(--jg-text-3); }
+
+/* ===== v0.69.2 ===== */
+.jg-about-h2 { font-size: 18px; font-weight: 700; color: var(--jg-text); margin: 18px 0 2px; }
+.jg-about-acc { background: var(--jg-card); border: 1px solid var(--jg-line); border-radius: 14px; padding: 2px 14px; }
+.jg-dl4-meta-under { margin-top: 10px; flex-wrap: wrap; justify-content: flex-start; }
+
+/* ═══ v0.69.3：Requirements（官网同款深色表格）═══ */
+.jg-req { margin-top: 18px; border: 1px solid var(--jg-line-strong); border-radius: 12px; overflow: hidden; background: var(--jg-card); }
+.jg-req-head { display: flex; align-items: baseline; gap: 12px; padding: 13px 16px; cursor: pointer; user-select: none; background: var(--jg-well); }
+.jg-req-head:hover { background: var(--jg-well); }
+.jg-req-title { font-size: 14.5px; font-weight: 700; color: var(--jg-text); }
+.jg-req-sub { font-size: 12px; color: var(--jg-text-3); flex: 1; }
+.jg-req-arrow { transition: transform .2s; color: var(--jg-text-3); align-self: center; }
+.jg-req-arrow.open { transform: rotate(180deg); }
+.jg-req-body { padding: 6px 16px 14px; }
+.jg-req-empty { padding: 12px 0; font-size: 13px; color: var(--jg-text-3); }
+.jg-req-table { border: 1px solid var(--jg-line); border-radius: 8px; overflow: hidden; }
+.jg-req-th { display: grid; grid-template-columns: 1fr 1fr; padding: 8px 14px; font-size: 11.5px; font-weight: 600; color: var(--jg-text-3); letter-spacing: .04em; background: var(--jg-well); border-bottom: 1px solid var(--jg-line); }
+.jg-req-row { display: grid; grid-template-columns: 1fr 1fr; padding: 9px 14px; font-size: 13px; align-items: center; }
+.jg-req-row + .jg-req-row { border-top: 1px solid var(--jg-line); }
+.jg-req-name .jg-linklike, .jg-req-name { color: #b8860b; font-weight: 600; }
+.jg-req-name .jg-linklike { background: none; border: none; padding: 0; cursor: pointer; font-size: 13px; text-align: left; }
+.jg-req-name .jg-linklike:hover { text-decoration: underline; }
+.jg-req-notes { color: var(--jg-text-2); font-size: 12.5px; }
+
+/* ═══ v0.69.5：左栏手风琴填充 + 右侧封面吸顶 + 手风琴多开/内部滚动/标题吸顶 ═══ */
+.jg-dl4-hero { align-items: flex-start; }
+.jg-dl4-left { min-width: 0; }
+.jg-dl4-right { position: sticky; top: 12px; align-self: flex-start; }
+.jg-about-acc { margin-top: 18px; border-top: 1px solid var(--jg-line); }
+.jg-acc-inner { height: 52px; overflow: hidden; }
+.jg-acc.open .jg-acc-inner { height: auto; max-height: 360px; overflow: hidden; }
+.jg-acc.open.jg-acc-scroll .jg-acc-inner { overflow-y: auto; scrollbar-width: thin; }
+.jg-acc-head { position: sticky; top: 0; z-index: 2; background: var(--jg-card); }
+.jg-acc-arrow { transition: transform .25s; }
+.jg-acc.open .jg-acc-arrow { transform: rotate(180deg); }
+.jg-acc-body { padding: 4px 0 12px; }
+
+/* ═══ v0.69.6：手风琴滚动条按需出现（展开完成前隐藏，内容超高才出）═══ */
+.jg-acc-inner { scrollbar-width: none; }
+.jg-acc-inner::-webkit-scrollbar { width: 0; height: 0; }
+.jg-acc.open.jg-acc-scroll .jg-acc-inner::-webkit-scrollbar { width: 6px; }
+.jg-acc.open.jg-acc-scroll .jg-acc-inner::-webkit-scrollbar-thumb { background: rgba(0,0,0,.18); border-radius: 3px; }
+.jg-req-row { display: grid; grid-template-columns: 1fr 1fr; padding: 9px 14px; font-size: 13px; align-items: center; }
+.jg-req-row + .jg-req-row { border-top: 1px solid var(--jg-line); }
+
+/* ═══ v0.69.7：Requirements 链接去下划线 + 封面缩略图 ═══ */
+.jg-req-link { background: none; border: none; padding: 0; cursor: pointer; font-size: 13px;
+    color: #b8860b; font-weight: 600; text-align: left; text-decoration: none; }
+.jg-req-link:hover { color: #9a7109; text-decoration: none; }
+.jg-req-cover { width: 30px; height: 30px; object-fit: cover; border-radius: 6px; flex: none; }
+.jg-req-name { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.jg-req-table { margin-top: 4px; }
+.jg-detail-section { margin-top: 18px; }
+.jg-detail-section-title { font-size: 14.5px; font-weight: 700; color: var(--jg-text); margin-bottom: 8px; }
+
+/* ═══ v0.69.9：手风琴头部悬浮时不压内容 + 头部实心背景 + Body 顶部空出 ═══ */
+.jg-acc-head { background: var(--jg-card); }
+.jg-acc.open .jg-acc-body { padding-top: 8px; }
+.jg-acc-inner { position: relative; }
+
+/* ═══ v0.70.0：hover 实色背景（旧 rgba 半透明 + sticky 导致下层文字透过来叠字）═══ */
+.jg-acc-head:hover { background: var(--jg-well) !important; }
+
+/* ═══ v0.70.1：用户头像 tooltip（easeReverse 风格）═══ */
+.jg-user-tip { position: relative; display: inline-block; }
+.jg-user-tip-avatar { width: 34px; height: 34px; border-radius: 50%; object-fit: cover;
+    border: 1px solid var(--jg-line); cursor: pointer; display: block; }
+.jg-user-tip-fallback { background: #60a5fa; color: #fff; display: flex; align-items: center;
+    justify-content: center; font-weight: 600; font-size: 15px; }
+.jg-user-tip-bubble { position: absolute; top: calc(100% + 12px); right: 0; z-index: 60;
+    background: var(--jg-card); color: var(--jg-text); border: 1px solid var(--jg-line-strong); border-radius: 12px;
+    padding: 14px 16px; min-width: 220px; max-width: 280px;
+    box-shadow: 0 10px 32px rgba(0,0,0,.14); pointer-events: none; visibility: hidden; opacity: 0;
+    transform-origin: top right; }
+.jg-user-tip-bubble::before { content: ""; position: absolute; bottom: 100%; right: 14px;
+    border: 6px solid transparent; border-bottom-color: var(--jg-card); }
+.jg-user-tip-name { font-weight: 700; font-size: 14px; display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.jg-user-tip-stats { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 7px;
+    font-size: 11.5px; color: var(--jg-text-3); }
+.jg-user-tip-about { margin-top: 7px; font-size: 12px; color: var(--jg-text-2); line-height: 1.55; }
+.jg-user-tip-link { margin-top: 9px; background: none; border: none; padding: 0; cursor: pointer;
+    color: #b8860b; font-size: 12px; font-weight: 600; }
+.jg-user-tip-link:hover { text-decoration: underline; }
+/* 无 GSAP 时的退化方案 */
+.jg-user-tip-nogsap .jg-user-tip-bubble { transition: opacity .2s, transform .2s; transform: scale(.9); }
+.jg-user-tip-nogsap:hover .jg-user-tip-bubble { visibility: visible; opacity: 1; pointer-events: auto; transform: scale(1); }
+/* GSAP 控制 visible 时 bubble 需要可交互（点链接） */
+.jg-user-tip:hover .jg-user-tip-bubble { pointer-events: auto; }
+/* v1.08.0：卡片改点击开合（hover 自动开关已废除）—— .open 由 JS 在开/关时同步翻转，
+   开启态气泡必须可交互，否则「查看主页/退出登录」点不了、点击会穿透到下方 mod 卡 */
+.jg-user-tip.open .jg-user-tip-bubble { pointer-events: auto; }
+
+/* ═══ v0.70.2：Tooltip 桥接（消除头像与 bubble 之间 12px hover 死区）═══ */
+/* v1.05.1：桥接 14→22px，配合 400ms 关闭延迟 —— 从头像拖到卡片不再中途关闭 */
+.jg-user-tip { padding-bottom: 22px; margin-bottom: -22px; }   /* 承接鼠标穿过 */
+.jg-user-tip-bubble { top: calc(100% + 2px); }                  /* 缩短垂直缝 */
+
+/* ═══ v0.70.2：官网风 mod 卡片 + 无限滚动网格（v0.75.0：改白色系，与整站浅色主题一致）═══ */
+/* v1.04.0：官网紧凑排列 —— 网格更密（minmax 230）、封面 16/9、卡体只留 标题/分类chip/两行简介 */
+.jg-browse2 { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+    gap: 16px; margin-top: 12px; }
+.jg-modcard2 { background: var(--jg-card); border: 1px solid var(--jg-line); border-radius: 10px;
+    overflow: hidden; cursor: pointer; transition: transform .18s, box-shadow .18s, border-color .18s;
+    display: flex; flex-direction: column; color: var(--jg-text-2);
+    box-shadow: 0 1px 3px rgba(0,0,0,.05); }
+.jg-modcard2:hover { transform: translateY(-3px); box-shadow: 0 10px 26px rgba(0,0,0,.12);
+    border-color: var(--jg-line-strong); }
+.jg-modcard2-cover-wrap { position: relative; aspect-ratio: 16/9; overflow: hidden;
+    background: var(--jg-well); }
+.jg-modcard2-cover { width: 100%; height: 100%; object-fit: cover; display: block;
+    transition: transform .3s; }
+.jg-modcard2:hover .jg-modcard2-cover { transform: scale(1.04); }
+.jg-modcard2-fb { display: flex; align-items: center; justify-content: center;
+    font-size: 40px; font-weight: 700; color: var(--jg-text-4); }
+.jg-modcard2-badge { position: absolute; top: 8px; right: 8px; background: rgba(255,140,0,.92);
+    color: #fff; font-size: 10.5px; font-weight: 600; padding: 3px 8px; border-radius: 3px;
+    letter-spacing: .02em; }
+.jg-modcard2-body { padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 6px; flex: 1; }
+.jg-modcard2-title { font-size: 13.5px; font-weight: 600; color: var(--jg-text); line-height: 1.35;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+    text-decoration: none; }
+/* v1.04.0：分类 chip（官网同款描边小圆角块，替代原紫色文字行） */
+.jg-modcard2-cat-chip { align-self: flex-start; font-size: 10.5px; font-weight: 600; color: #6b6b70;
+    border: 1px solid var(--jg-line-strong); background: var(--jg-well);
+    border-radius: 5px; padding: 2px 8px; letter-spacing: .01em; white-space: nowrap;
+    max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.jg-modcard2-meta { display: flex; flex-direction: column; gap: 3px; margin-top: 3px; flex: 1; }
+.jg-modcard2-time { font-size: 11px; color: var(--jg-text-3); display: flex; align-items: center; gap: 3px; }
+.jg-modcard2-summary { font-size: 11.5px; color: var(--jg-text-3); line-height: 1.5;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.jg-modcard2-stats { display: flex; gap: 12px; padding-top: 8px; margin-top: auto;
+    border-top: 1px solid var(--jg-line); font-size: 11.5px; color: var(--jg-text-2); }
+.jg-modcard2-stats span { display: inline-flex; align-items: center; gap: 4px; }
+.jg-modcard2-sentinel { grid-column: 1 / -1; height: 1px; }
+.jg-modcard2-skel { pointer-events: none; }
+.jg-modcard2-skel .jg-modcard2-cover { aspect-ratio: 16/9; }
+/* v0.75.0：深色模式才用深色卡片（整站默认白色系）*/
+
+/* ═══ v0.71.0：Showcase 4 风分类 pills ═══ */
+.jg-pill-row { display: flex; gap: 7px; flex-wrap: wrap; margin-top: 12px; padding-top: 12px;
+    border-top: 1px solid var(--jg-line); }
+/* v0.71.6：此规则只作用于分类筛选的 .jg-pill-row，不再误伤启动模式的 .jg-mode-pills */
+/* width:auto —— 覆盖启动模式 .jg-pill 基类的 width:100%，否则分类胶囊每个占满一整行 */
+.jg-pill-row .jg-pill { width: auto; flex: 0 0 auto; border: 1px solid var(--jg-line-strong); background: var(--jg-card); border-radius: 999px;
+    padding: 5px 13px; font-size: 12px; color: var(--jg-text-2); cursor: pointer;
+    transition: background .18s, color .18s, border-color .18s, transform .15s; }
+.jg-pill-row .jg-pill:hover { background: var(--jg-well); transform: translateY(-1px); }
+.jg-pill-row .jg-pill.active { background: var(--jg-ink); color: var(--jg-on-ink); border-color: var(--jg-outline); }
+/* 启动模式分段按钮：未选中项强制透明无框（只留外层浅灰轨道 + 黑色滑块），选中项文字反白 */
+.jg-mode-pills .jg-pill { background: transparent !important; border: none !important;
+    box-shadow: none !important; color: var(--jg-text-2); }
+.jg-mode-pills .jg-pill:hover { background: transparent !important; transform: none; }
+.jg-mode-pills .jg-pill.active { background: transparent !important; color: var(--jg-on-ink); font-weight: 600; }
+.jg-pill-n { opacity: .55; font-size: 11px; margin-left: 3px; }
+
+/* ═══ v0.71.1：存档重命名 input 占满剩余宽度 ═══ */
+.jg-profile-item .jg-profile-input { flex: 1; min-width: 0; }
+
+/* ═══ v0.71.2：存档遮罩点穿（防 z-index 意外覆盖时仍不拦点击）═══ */
+/* v0.71.7：删除旧的 pointer-events:none 禁用 —— 它把 v0.71.6 的可点遮罩整体废了，
+   导致排序/存档下拉点外部收不回。遮罩恢复可点，菜单靠 z-index:9500 高于遮罩 9000。 */
+
+/* ═══ v0.71.3：存档重命名铅笔按钮 ═══ */
+.jg-profile-rename { background: transparent; border: none; cursor: pointer; padding: 4px;
+    border-radius: 5px; display: inline-flex; align-items: center; opacity: .55;
+    transition: opacity .15s, background .15s; }
+.jg-profile-rename:hover { opacity: 1; background: var(--jg-track); }
+
+/* v0.71.4：存档重命名挪到下拉按钮右侧（按钮 ↔ 输入框互换） */
+.jg-profile-headinput { width: 150px; flex: none; }
+.jg-profile-headrename { margin-left: 2px; }
+
+/* v0.71.5：存档重命名态 —— 输入框保持与下拉按钮一致的胶囊形状，确定按钮黑底白字 */
+.jg-profile-headinput {
+    flex: none;
+    width: 132px;
+    border-radius: 999px;
+    padding: 8px 14px;
+    border: 1px solid var(--jg-line-strong);
+    background: var(--jg-glass-85);
+    font-size: 13px;
+}
+.jg-profile-headconfirm {
+    flex: none;
+    width: 26px; height: 26px;
+    border: none; border-radius: 50%;
+    background: var(--jg-ink); color: var(--jg-on-ink);
+    display: inline-flex; align-items: center; justify-content: center;
+    cursor: pointer; margin-left: 2px;
+    transition: transform .15s ease, background .15s ease;
+}
+.jg-profile-headconfirm:hover { background: var(--jg-ink-hover); transform: scale(1.08); }
+
+/* v0.71.6：排序下拉与遮罩层叠 —— 排序 dd 提到遮罩(9000)之上，点菜单不触发收回 */
+.jg-sort-dd { z-index: 9500; }
+
+/* v0.72.4：滚动恢复待落位期间隐藏行列表（visibility 保留占位，limit 可算），
+   落位后同帧摘除 —— 浏览器永远画不出「列表在顶部」的那一帧，消除闪屏 */
+.jg-restore-pending .jg-modrows { visibility: hidden; }
+/* vNext：Nexus 页返回恢复同款 —— .jg-nexus-scope 是 Nexus 页根节点，待落位期间
+   整页隐藏（visibility 保留占位与高度，restoreFor 仍可测 limit），落位/放弃的
+   同一帧摘除；「先画顶部、再闪回中间」的那几帧浏览器永远画不出来 */
+.jg-restore-pending .jg-nexus-scope { visibility: hidden; }
+
+/* v0.73.0：Nexus 浏览页官网对齐 —— 作者头像 / 绝对日期 / 时间范围下拉 */
+.jg-modcard2-avatar { width: 16px; height: 16px; border-radius: 50%; object-fit: cover; flex: none; }
+.jg-modcard2-avatar-fb { display: inline-flex; align-items: center; justify-content: center;
+    background: var(--jg-well); color: var(--jg-text-3); font-size: 9px; font-weight: 600; }
+.jg-modcard2-author { display: flex; align-items: center; gap: 5px; }
+.jg-modcard2-timeabs { opacity: .55; margin-left: 6px; }
+/* v0.75.0：时间范围下拉改白色系 */
+.jg-timerange { background: var(--jg-card); color: var(--jg-text-2); border: 1px solid var(--jg-line-strong);
+    border-radius: 999px; padding: 5px 12px; font-size: 12px; cursor: pointer; outline: none; }
+.jg-timerange:hover { border-color: var(--jg-line-heavy); }
+

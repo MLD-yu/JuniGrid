@@ -69,7 +69,7 @@
                 <div class="jg-user-tip" id="jgUserTip">
                     @if (!string.IsNullOrEmpty(_userAvatar))
                     {
-                        <img class="jg-user-tip-avatar" src="@Covers.Get(_userAvatar)" alt="avatar" />
+                        <img class="jg-user-tip-avatar" src="@Covers.GetFull(_userAvatar)" alt="avatar" />
                     }
                     else
                     {
@@ -142,7 +142,7 @@
                         <div class="jg-trend-big" @onclick="() => OpenDetail(mod.Id)">
                             @if (!string.IsNullOrEmpty(mod.PictureUrl ?? mod.ThumbnailUrl))
                             {
-                                <img class="jg-trend-big-cover" src="@Covers.Get(mod.PictureUrl ?? mod.ThumbnailUrl)" loading="lazy" alt="" />
+                                <img class="jg-trend-big-cover" src="@Covers.GetFull(mod.PictureUrl ?? mod.ThumbnailUrl)" loading="lazy" alt="" />
                             }
                             <div class="jg-trend-big-info">
                                 <div class="jg-trend-big-name">@mod.Name</div>
@@ -163,7 +163,7 @@
                             <div class="jg-trend-sm" @onclick="() => OpenDetail(mod.Id)">
                                 @if (!string.IsNullOrEmpty(mod.ThumbnailUrl ?? mod.PictureUrl))
                                 {
-                                    <img class="jg-trend-sm-cover" src="@Covers.Get(mod.ThumbnailUrl ?? mod.PictureUrl)" loading="lazy" alt="" />
+                                    <img class="jg-trend-sm-cover" src="@Covers.GetFull(mod.ThumbnailUrl ?? mod.PictureUrl)" loading="lazy" alt="" />
                                 }
                                 else
                                 {
@@ -224,7 +224,7 @@
                             <div class="jg-modcard2-cover-wrap">
                                 @if (!string.IsNullOrEmpty(mod.ThumbnailUrl) || !string.IsNullOrEmpty(mod.PictureUrl))
                                 {
-                                    <img class="jg-modcard2-cover" src="@Covers.Get(mod.ThumbnailUrl ?? mod.PictureUrl)" loading="lazy" alt="" />
+                                    <img class="jg-modcard2-cover" src="@Covers.GetFull(mod.ThumbnailUrl ?? mod.PictureUrl)" loading="lazy" alt="" />
                                 }
                                 else
                                 {
@@ -278,7 +278,7 @@
                 <div class="jg-search-exact" @onclick="() => OpenDetail(_exactMod.Id)">
                     @if (!string.IsNullOrEmpty(exPic))
                     {
-                        <img class="jg-search-exact-cover" src="@Covers.Get(exPic)" alt="" />
+                        <img class="jg-search-exact-cover" src="@Covers.GetFull(exPic)" alt="" />
                     }
                     else
                     {
@@ -309,7 +309,7 @@
                             <div class="jg-modcard2-cover-wrap">
                                 @if (!string.IsNullOrEmpty(mod.ThumbnailUrl) || !string.IsNullOrEmpty(mod.PictureUrl))
                                 {
-                                    <img class="jg-modcard2-cover" src="@Covers.Get(mod.ThumbnailUrl ?? mod.PictureUrl)" loading="lazy" alt="" />
+                                    <img class="jg-modcard2-cover" src="@Covers.GetFull(mod.ThumbnailUrl ?? mod.PictureUrl)" loading="lazy" alt="" />
                                 }
                                 else
                                 {
@@ -387,9 +387,7 @@
                     </button>
                 </div>
                 <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-                    @* ─── v1.04.0：筛选（原 New/Updated/Downloads/Popular/Surprise 按钮条）、时间、正序/倒序
-                       三个 GSAP easeReverse 下拉框（弹性展开 + 箭头旋转 + 菜单项 stagger + 加速反向退场）─── *@
-                    <div class="jg-sort-dd @(_kindOpen ? "open" : "")" id="jgKindDd">
+                    <div class="jg-sort-dd @(_kindOpen ? "open" : "")" id="jgKindDd" data-dd="browse">
                         <button type="button" class="jg-sort-trigger" disabled="@_browseLoading" @onclick="ToggleKindDd">
                             @((MarkupString)TabIcon(_browseKind))@KindLabel
                             <svg class="jg-sort-arrow" width="12" height="12" viewBox="0 0 12 12" fill="none">
@@ -397,8 +395,6 @@
                             </svg>
                         </button>
                         <div class="jg-sort-menu">
-                            @* v1.07.0：视觉内层 —— 弹性动画只作用在这一层，外层盒子保持最终矩形不动
-                               （命中区域从打开第一帧起 = 最终位置，动画期间不再穿透到下方 mod 卡）*@
                             <div class="jg-sort-menu-in">
                                 @foreach (var tab in _browseTabs)
                                 {
@@ -410,7 +406,7 @@
                             </div>
                         </div>
                     </div>
-                    <div class="jg-sort-dd jg-dd-right @(_timeOpen ? "open" : "")" id="jgTimeDd">
+                    <div class="jg-sort-dd jg-dd-right @(_timeOpen ? "open" : "")" id="jgTimeDd" data-dd="browse">
                         <button type="button" class="jg-sort-trigger" disabled="@_browseLoading" @onclick="ToggleTimeDd">
                             @TimeLabel
                             <svg class="jg-sort-arrow" width="12" height="12" viewBox="0 0 12 12" fill="none">
@@ -418,9 +414,7 @@
                             </svg>
                         </button>
                         <div class="jg-sort-menu">
-                            @* v1.07.0：视觉内层（同上）—— 外层盒子保持最终矩形，命中区域不随动画缩放 *@
                             <div class="jg-sort-menu-in">
-                                @* v1.04.0：「自定义」时间区间及相关代码已删除 *@
                                 @foreach (var o in _timeOptions)
                                 {
                                     <button type="button" class="jg-sort-item @(_timeRange == o.Key ? "active" : "")"
@@ -429,7 +423,7 @@
                             </div>
                         </div>
                     </div>
-                    <div class="jg-sort-dd jg-dd-right @(_dirOpen ? "open" : "")" id="jgDirDd">
+                    <div class="jg-sort-dd jg-dd-right @(_dirOpen ? "open" : "")" id="jgDirDd" data-dd="browse">
                         <button type="button" class="jg-sort-trigger" disabled="@_browseLoading" @onclick="ToggleDirDd">
                             @(_direction == "DESC" ? "正序" : "倒序")
                             <svg class="jg-sort-arrow" width="12" height="12" viewBox="0 0 12 12" fill="none">
@@ -437,7 +431,6 @@
                             </svg>
                         </button>
                         <div class="jg-sort-menu">
-                            @* v1.07.0：视觉内层（同上）—— 外层盒子保持最终矩形，命中区域不随动画缩放 *@
                             <div class="jg-sort-menu-in">
                                 <button type="button" class="jg-sort-item @(_direction == "DESC" ? "active" : "")"
                                         @onclick='() => SetDirection("DESC")'>正序（多 → 少）</button>
@@ -451,7 +444,7 @@
             @* v1.07.0：遮罩常驻 DOM —— 原先 @if 渲染比 JS 开菜单慢一拍（Blazor 重渲染排在 interop 之后），
                「菜单已弹出、遮罩还没铺上」的窗口期鼠标会穿透到下方 mod 卡（打开动画期间最明显）。
                开合 class 由 dropdownToggle JS 与菜单同帧同步翻转，这里仅在重渲染时兜底对齐状态。 *@
-            <div class="jg-dd-overlay @((_kindOpen || _timeOpen || _dirOpen) ? "open" : "")" @onclick="CloseAllDd"></div>
+            <div class="jg-dd-overlay @((_kindOpen || _timeOpen || _dirOpen) ? "open" : "")" data-dd="browse" @onclick="CloseAllDd"></div>
             @if (string.IsNullOrEmpty(_key))
             {
                 <div style="font-size:12px;opacity:.6;margin-top:8px">登录后展示 Nexus 官方榜单。</div>
@@ -484,7 +477,7 @@
                             <div class="jg-modcard2-cover-wrap">
                                 @if (!string.IsNullOrEmpty(mod.ThumbnailUrl) || !string.IsNullOrEmpty(mod.PictureUrl))
                                 {
-                                    <img class="jg-modcard2-cover" src="@Covers.Get(mod.ThumbnailUrl ?? mod.PictureUrl)" loading="lazy" alt="" />
+                                    <img class="jg-modcard2-cover" src="@Covers.GetFull(mod.ThumbnailUrl ?? mod.PictureUrl)" loading="lazy" alt="" />
                                 }
                                 else
                                 {
@@ -634,7 +627,7 @@
                 <div class="jg-login-success-inner">
                     @if (!string.IsNullOrEmpty(_userAvatar))
                     {
-                        <img class="jg-login-avatar" src="@Covers.Get(_userAvatar)" alt="avatar" />
+                        <img class="jg-login-avatar" src="@Covers.GetFull(_userAvatar)" alt="avatar" />
                     }
                     else
                     {
@@ -848,6 +841,7 @@
     private static int _svPage = 1;
     private static string? _svRange; private static string? _svSearch;
     private static List<NexusModListEntry>? _svBrowse;   // v1.03.0：列表数据快照 —— 返回时直接恢复，不再请求服务器
+    private static int _svFilterVer;   // v1.1.3：快照对应的成人过滤条件版本（NexusService.AdultFilterVersion）
     private static List<NexusModListEntry>? _svTrending;
     private static List<NexusModListEntry>? _svHomeMods;
     private static string? _svHomeTab;
@@ -1220,6 +1214,8 @@ protected override async Task OnInitializedAsync()
             OpenLoginDialog();
             StateHasChanged();
         }
+        // v1.1.3：设置页改过成人过滤 → 快照还是旧过滤条件拉的数据，弃用快照走全量重拉
+        if (_svMode is not null && _svFilterVer != NexusService.AdultFilterVersion) _svMode = null;
         // v0.93.0：从详情页返回 → 恢复快照（首次进入快照为空，走默认 home）
         if (_svMode is not null)
         {
@@ -1504,6 +1500,7 @@ protected override async Task OnInitializedAsync()
         _svMode = _viewMode; _svKind = _browseKind; _svPage = _page;
         _svRange = _timeRange; _svSearch = _searchText; _svExact = _exactMod;
         _svBrowse = _browse; _svTrending = _trendingHome; _svHomeMods = _homeMods; _svHomeTab = _homeTab;
+        _svFilterVer = NexusService.AdultFilterVersion;   // v1.1.3：记录快照是哪个过滤版本拉的
     }
 
     // ---- 安装新 mod：一键直装（后台静默），失败才回落内置浏览器 ----

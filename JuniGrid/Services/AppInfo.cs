@@ -7,7 +7,7 @@ namespace JuniGrid.Services;
 public static class AppInfo
 {
     /// <summary>当前应用版本（不带 v 前缀）。</summary>
-    public const string Version = "1.1.0";
+    public const string Version = "1.1.1";
 
     public const string RepoOwner = "MLD-yu";
     public const string RepoName  = "JuniGrid";

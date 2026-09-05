@@ -1,0 +1,639 @@
+/* ============================================================
+   misc：SMAPI 日志页改版 / 危险操作红胶囊 / 关于卡片 / 帮助 tooltip / 返回顶部
+   ============================================================ */
+/* ═══ v1.07.0：SMAPI 日志页改版 ═══
+   筛选改为下拉（GSAP easeReverse demo「Dropdown」同款弹性开合，样式走全站 .jg-sort-*）；
+   清空/复制为黑底白字胶囊；诊断明细开关与右侧分类图例已删除。
+   （v1.07.1：GhostFibers 动画背景已整体移除，页头/卡片/下拉恢复主题默认外观） */
+
+.jg-logs-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 12px; flex-wrap: wrap; }
+.jg-logs-actions { display: flex; gap: 8px; align-items: center; }
+
+/* 黑底白字胶囊（清空 / 复制全部 / 确认框主按钮） */
+.jg-pill-dark {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 18px;
+    border-radius: 999px;
+    border: 0;
+    background: var(--jg-ink);
+    color: var(--jg-on-ink);
+    font-size: 13px;
+    font-weight: 600;
+    font-family: inherit;
+    cursor: pointer;
+    transition: background 120ms ease, transform 100ms ease;
+}
+.jg-pill-dark:hover { background: var(--jg-ink-hover); transform: translateY(-1px); }
+.jg-pill-dark:active { transform: translateY(0); }
+/* 确认框取消键：透明胶囊描边（浅色主题深描边 / 深色主题浅描边） */
+.jg-pill-ghost {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 18px;
+    border-radius: 999px;
+    border: 1px solid var(--jg-line-heavy);
+    background: transparent;
+    color: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    font-family: inherit;
+    cursor: pointer;
+    transition: background 120ms ease;
+}
+.jg-pill-ghost:hover { background: var(--jg-track); }
+
+/* -------- v1.06.9：危险操作红胶囊（删除 mod / 关闭游戏确认键）-------- */
+.jg-pill-danger {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 18px;
+    border-radius: 999px;
+    border: 0;
+    background: #e5484d;
+    color: #fff;
+    font-size: 13px;
+    font-weight: 600;
+    font-family: inherit;
+    cursor: pointer;
+    transition: background 120ms ease, transform 100ms ease, box-shadow 120ms ease;
+}
+.jg-pill-danger:hover { background: #d93b40; transform: translateY(-1px); box-shadow: 0 6px 18px rgba(229,72,77,0.4); }
+.jg-pill-danger:active { transform: translateY(0); }
+
+/* v1.07.3：Mod 管理页头部的普通文件夹按钮（提示用全局 data-tip 胶囊） */
+.jg-mods-folder-btn {
+    border: none; background: transparent; padding: 2px; cursor: pointer;
+    line-height: 0; border-radius: 8px; flex: none;
+    transition: transform 120ms ease, background 120ms ease;
+}
+.jg-mods-folder-btn:hover { background: var(--jg-track); transform: translateY(-1px); }
+.jg-mods-folder-btn:active { transform: translateY(0); }
+
+/* 设置页 · Nexus 未登录时的胶囊登录按钮 */
+.jg-nexus-login-btn {
+    border: none;
+    border-radius: 999px;
+    background: var(--jg-ink);
+    color: var(--jg-on-ink);
+    font-size: 13px;
+    padding: 7px 18px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background .15s ease, transform .15s ease;
+}
+.jg-nexus-login-btn:hover { background: #333; transform: translateY(-1px); }
+.jg-nexus-login-btn:active { transform: translateY(0); }
+
+/* 设置页 · Nexus 已登录时的胶囊退出按钮 */
+.jg-nexus-logout-btn {
+    border: none;
+    border-radius: 999px;
+    background: var(--jg-ink);
+    color: var(--jg-on-ink);
+    font-size: 13px;
+    padding: 7px 18px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background .15s ease, transform .15s ease;
+}
+.jg-nexus-logout-btn:hover { background: #333; transform: translateY(-1px); }
+.jg-nexus-logout-btn:active { transform: translateY(0); }
+
+/* v0.2.1：设置页游戏目录胶囊按钮 —— 保存为黑底白字 */
+.jg-path-btn {
+    padding: 6px 18px;
+    border-radius: 999px;
+    border: 1px solid var(--jg-line-strong);
+    background: transparent;
+    color: inherit;
+    font-size: 13px;
+    font-family: inherit;
+    cursor: pointer;
+    transition: background 120ms ease, color 120ms ease;
+}
+.jg-path-btn:hover { background: var(--jg-track); }
+.jg-path-btn.primary {
+    background: var(--jg-ink);
+    border-color: var(--jg-outline);
+    color: var(--jg-on-ink);
+    font-weight: 600;
+}
+.jg-path-btn.primary:hover { background: var(--jg-ink-hover); }
+
+/* v0.2.2：设置页开关行 —— 整行可点、黑色滑块、开启态行底黑色标记线 */
+.jg-switch-col {
+    display: flex;
+    flex-direction: column;
+    margin-top: 4px;
+}
+.jg-switch-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 4px;
+    cursor: pointer;
+    user-select: none;
+}
+/* hover 标记线：从中间向两边蔓延 */
+.jg-switch-row::after {
+    content: "";
+    position: absolute;
+    left: 50%;
+    bottom: 0;
+    width: 0;
+    height: 2px;
+    background: var(--jg-ink);
+    transform: translateX(-50%);
+    transition: width 220ms cubic-bezier(0.5, 1, 0.89, 1);
+    z-index: 2;
+    pointer-events: none;
+}
+.jg-switch-row:hover::after { width: 100%; }
+.jg-switch-row:hover { background: var(--jg-well); }
+.jg-switch-row.disabled:hover::after { width: 0; }
+.jg-switch-row.disabled { cursor: not-allowed; }
+/* 用颜色/局部透明变淡，而不是整行 opacity —— 否则父级透明度会把「?」的气泡提示一起压淡 */
+.jg-switch-row.disabled { color: rgba(32, 32, 32, 0.45); }
+.jg-switch-row.disabled .jg-switch { opacity: .45; }
+
+.jg-switch {
+    position: relative;
+    flex: none;
+    width: 40px;
+    height: 22px;
+    border-radius: 999px;
+    background: var(--jg-line-heavy);
+    transition: background 140ms ease;
+}
+.jg-switch-row.on .jg-switch { background: var(--jg-ink); }
+.jg-switch-knob {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: var(--jg-on-ink);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+    transition: left 140ms ease;
+}
+.jg-switch-row.on .jg-switch-knob { left: 20px; }
+
+/* v0.2.2：设置页年龄验证弹窗（不设 z-index —— 同名规则 v1.1.x 已定为 99998，
+   此处再写低值会把删除确认遮罩一起拉低，被排序/存档下拉 9500 压住） */
+.jg-modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.4);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.jg-modal {
+    width: min(420px, 92vw);
+    background: var(--jg-card);
+    color: var(--jg-text);
+    border-radius: 14px;
+    padding: 18px 20px;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
+}
+
+/* v0.2.1：内存管理 —— 摘要条 + 占用小卡 + 滑杆行 */
+.jg-mem-line {
+    padding: 9px 12px;
+    border-radius: 10px;
+    background: var(--jg-well);
+    font-size: 12.5px;
+    font-variant-numeric: tabular-nums;
+}
+.jg-kv-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 8px;
+}
+.jg-kv {
+    background: var(--jg-well);
+    border-radius: 10px;
+    padding: 8px 10px;
+}
+.jg-kv .k { font-size: 11.5px; opacity: .6; }
+.jg-kv .v { font-weight: 600; font-size: 14px; font-variant-numeric: tabular-nums; margin-top: 2px; }
+.jg-kv-sub { font-size: 10.5px; font-weight: 500; opacity: .55; margin-left: 6px; }
+.jg-slider-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 4px;
+}
+.jg-slider-label { flex: none; font-size: 12.5px; opacity: .75; min-width: 52px; }
+.jg-slider { flex: 1; accent-color: var(--jg-outline); cursor: pointer; }
+.jg-slider-val { flex: none; font-size: 12.5px; font-weight: 600; font-variant-numeric: tabular-nums; min-width: 44px; text-align: right; }
+/* v0.2.2：滑杆随开关弹性开合的面板（height 动画需 overflow:hidden 裁剪） */
+.jg-slider-panel { overflow: hidden; }
+.jg-slider-panel .jg-slider-row { padding-left: 16px; }
+
+/* v0.2.2：弹性滑杆（React Bits ElasticSlider 风格）—— 胶囊轨道 hover 增高、
+   拖到两端橡皮筋拉伸回弹，数值固定显示在右侧 */
+.e-slider {
+    position: relative;
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+    cursor: grab;
+    padding: 10px 0 12px;
+}
+.e-slider:active { cursor: grabbing; }
+.es-track-wrap { flex: 1; display: flex; }
+.es-track {
+    position: relative;
+    flex: 1;
+    height: 6px;
+    border-radius: 999px;
+    background: var(--jg-hover-strong);
+    transition: height .2s ease;
+    will-change: transform;
+}
+.e-slider:hover .es-track,
+.e-slider:active .es-track { height: 12px; }
+.es-fill {
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 0;
+    border-radius: 999px;
+    background: var(--jg-ink);
+}
+.es-value {
+    flex: none;
+    min-width: 44px;
+    text-align: right;
+    font-size: 12.5px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    color: var(--jg-text-2);
+}
+
+/* v0.2.1：缓存与存储 —— 分类行 */
+.jg-store-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 2px;
+    border-bottom: 1px solid var(--jg-line);
+}
+.jg-store-row:last-child { border-bottom: none; }
+.jg-store-main { flex: 1; min-width: 0; }
+.jg-store-name { font-weight: 600; font-size: 13px; display: flex; align-items: center; gap: 6px; }
+.jg-store-path { font-size: 11px; opacity: .55; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
+.jg-store-size { flex: none; font-weight: 600; font-size: 13px; font-variant-numeric: tabular-nums; min-width: 64px; text-align: right; }
+.jg-store-tag {
+    flex: none;
+    font-size: 10px;
+    font-weight: 500;
+    opacity: .65;
+    border: 1px solid var(--jg-line-heavy);
+    border-radius: 999px;
+    padding: 0 6px;
+    line-height: 15px;
+}
+
+/* v0.2.2：禁用开关行的像素特效画布（React Bits PixelCard 移植） */
+.jg-switch-row { position: relative; }
+.jg-pixel-canvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    z-index: 0;
+    clip-path: inset(0);   /* 只裁剪像素画布自身，不能裁剪行 —— 否则会把上方弹出的气泡剪没 */
+}
+.jg-switch-row > *:not(.jg-pixel-canvas) { position: relative; z-index: 1; }
+
+/* ───────── 关于卡片：像素风标题 + 流光版本号 + 作者行 ───────── */
+@font-face {
+    font-family: 'Press Start 2P';
+    src: url('../fonts/PressStart2P.woff2') format('woff2');
+    font-weight: 400;
+    font-style: normal;
+    font-display: swap;
+}
+
+.jg-about {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-top: 10px;
+}
+
+/* 关于卡片：左信息 / 右赞助 */
+.jg-about-main {
+    display: flex;
+    align-items: flex-start;
+    gap: 24px;
+}
+.jg-about-leftcol {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+/* 赞助支持区 */
+.jg-sponsor {
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    padding-left: 24px;
+    border-left: 1px solid var(--jg-line);
+}
+.jg-sponsor-title {
+    font-size: 20px;
+    font-weight: 800;
+    color: var(--jg-text);
+    line-height: 1.2;
+}
+.jg-sponsor-sub {
+    font-size: 12px;
+    opacity: .65;
+}
+.jg-sponsor-tabs {
+    display: flex;
+    gap: 8px;
+    margin-top: 2px;
+}
+.jg-sponsor-tab {
+    appearance: none;
+    border: 1px solid var(--jg-line-strong);
+    background: var(--jg-card);
+    color: var(--jg-text-2);
+    font-size: 13px;
+    font-weight: 600;
+    padding: 7px 18px;
+    border-radius: 999px;
+    cursor: pointer;
+    transition: background .18s ease, color .18s ease, border-color .18s ease;
+}
+.jg-sponsor-tab:hover { border-color: var(--jg-line-heavy); }
+.jg-sponsor-tab.active {
+    background: var(--jg-ink);
+    border-color: var(--jg-outline);
+    color: var(--jg-on-ink);
+}
+.jg-sponsor-qr {
+    width: 180px;
+    height: 180px;
+    object-fit: contain;
+    border-radius: 10px;
+    background: var(--jg-card);
+    border: 1px solid var(--jg-line);
+    padding: 6px;
+}
+@media (max-width: 720px) {
+    .jg-about-main { flex-direction: column; }
+    .jg-sponsor {
+        padding-left: 0;
+        border-left: none;
+        align-self: center;
+    }
+}
+.jg-about-title-row { display: flex; align-items: center; gap: 10px; }
+
+/* 像素风标题：纯黑文字，无背景 */
+.jg-pixel-title {
+    font-family: 'Press Start 2P', monospace;
+    font-size: 22px;
+    line-height: 1;
+    color: var(--jg-text);
+    letter-spacing: 0;
+    image-rendering: pixelated;
+}
+.jg-about-title-side {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+.jg-about-desc { font-size: 12px; opacity: .65; }
+
+/* 作者行 */
+.jg-author-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    opacity: .9;
+}
+.jg-author-avatar {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    object-fit: cover;
+    border: 1px solid var(--jg-line-strong);
+}
+.jg-pixel-name {
+    font-family: 'Press Start 2P', monospace;
+    font-size: 12px;
+    line-height: 1;
+    color: var(--jg-text);
+    background: var(--jg-well);
+    padding: 6px 8px;
+    border-radius: 4px;
+}
+
+/* Shiny Text：渐变裁切 + 背景位移动画 */
+.jg-shiny {
+    display: inline-block;
+    font-size: 13px;
+    font-weight: 600;
+    background-image: linear-gradient(120deg, #9a9a9a 0%, #9a9a9a 40%, var(--jg-card) 50%, #9a9a9a 60%, #9a9a9a 100%);
+    background-size: 200% auto;
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    animation: jgShiny 3s linear infinite;
+}
+@keyframes jgShiny {
+    from { background-position: 150% center; }
+    to   { background-position: -50% center; }
+}
+
+/* CursorGrid：关于卡片底层光标网格 */
+.jg-cursor-grid { position: relative; overflow: hidden; }
+.jg-cursor-grid > .jg-cgrid-canvas {
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+}
+.jg-cursor-grid > :not(.jg-cgrid-canvas) {
+    position: relative;
+    z-index: 1;
+}
+
+/* LogoLoop：联系图标跑马灯 */
+.jg-logoloop {
+    position: relative;
+    overflow: hidden;
+    margin-top: 2px;
+    padding: 6px 0;
+    width: 300px;
+    max-width: 100%;
+    -webkit-mask-image: linear-gradient(to right, transparent 0, #000 40px, #000 calc(100% - 40px), transparent 100%);
+    mask-image: linear-gradient(to right, transparent 0, #000 40px, #000 calc(100% - 40px), transparent 100%);
+}
+.jg-ll-track {
+    display: flex;
+    width: max-content;
+    will-change: transform;
+    user-select: none;
+}
+.jg-ll-seq {
+    display: flex;
+    align-items: center;
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+.jg-ll-item {
+    flex: 0 0 auto;
+    margin-right: 32px;
+    display: inline-flex;
+    align-items: center;
+}
+.jg-ll-item img {
+    height: 24px;
+    width: auto;
+    display: block;
+    object-fit: contain;
+    pointer-events: none;
+    -webkit-user-drag: none;
+    transition: transform .3s cubic-bezier(.4, 0, .2, 1);
+}
+.jg-ll-item:hover img { transform: scale(1.25); }
+
+/* 复制邮箱 toast */
+.jg-copy-toast {
+    position: fixed;
+    left: 50%;
+    bottom: 36px;
+    transform: translateX(-50%) translateY(8px);
+    background: var(--jg-ink);
+    color: var(--jg-on-ink);
+    font-size: 13px;
+    padding: 8px 16px;
+    border-radius: 8px;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, .2);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity .25s ease, transform .25s ease;
+    z-index: 9999;
+}
+.jg-copy-toast.show {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+}
+
+/* ─── v1.x：设置页「?」帮助问号 + GSAP 弹性 tooltip（gsap demo easeReverse 同款）─── */
+.jg-help-tip {
+    position: relative;
+    display: inline-flex;
+    flex: none;
+}
+.jg-help-tip-btn {
+    width: 16px; height: 16px;
+    border-radius: 50%;
+    background: #0e100f;            /* 黑底白问号 */
+    color: #fff;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 11px; font-weight: 600; line-height: 1;
+    cursor: help;
+    user-select: none;
+    transform-origin: center;
+}
+.jg-help-tip-bubble {
+    position: absolute;
+    bottom: calc(100% + 12px);
+    left: 50%;
+    transform: translateX(-50%);
+    width: max-content;
+    max-width: 260px;
+    background: #fffce1;
+    color: var(--jg-text);
+    padding: 8px 14px;
+    border-radius: 8px;
+    font-size: 12px;
+    line-height: 1.6;
+    white-space: normal;
+    text-align: left;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.12);
+    pointer-events: none;
+    visibility: hidden;
+    opacity: 0;
+    transform-origin: bottom center;
+    z-index: 30;
+}
+.jg-help-tip-bubble::after {
+    content: "";
+    position: absolute;
+    top: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    border: 6px solid transparent;
+    border-top-color: #fffce1;
+}
+
+/* ── 返回顶部（左下角；右边留给任务中心悬浮球）── */
+.jg-content { position: relative; }
+.jg-backtop {
+    position: absolute;
+    left: 18px;
+    bottom: 22px;
+    width: 52px;
+    height: 52px;
+    border-radius: 50%;
+    border: none;
+    background: var(--jg-ink);
+    box-shadow: 0 8px 26px rgba(0, 0, 0, 0.28);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    cursor: pointer;
+    touch-action: none;   /* v1.1.3：指针事件拖动改位，别让触摸/长按当成滚动 */
+    opacity: 0;
+    visibility: hidden;
+    transform: translateY(16px) scale(0.82);
+    transition: opacity 220ms ease, transform 260ms cubic-bezier(.34, 1.56, .64, 1), visibility 0s linear 220ms;
+    z-index: 9998;
+}
+.jg-backtop img { width: 34px; height: 34px; pointer-events: none; }
+.jg-backtop.show {
+    opacity: 1;
+    visibility: visible;
+    transform: translateY(0) scale(1);
+    transition: opacity 220ms ease, transform 260ms cubic-bezier(.34, 1.56, .64, 1), visibility 0s;
+}
+.jg-backtop.show:hover { transform: translateY(-2px) scale(1.08); }
+.jg-backtop.show:active { transform: translateY(0) scale(0.94); }
+/* v1.1.3：上下拖动中 —— 关过渡（bottom 每帧在变）、锁形状（:active 缩放会抽搐） */
+.jg-backtop.dragging,
+.jg-backtop.dragging.show,
+.jg-backtop.dragging.show:hover,
+.jg-backtop.dragging.show:active {
+    transition: none;
+    transform: scale(1.06);
+    cursor: grabbing;
+}

@@ -1,12 +1,15 @@
 @namespace JuniGrid.Components.Pages
 @page "/mod/{ModId:int}/{UniqueID?}"
 @using System.Text.RegularExpressions
+@using System.Globalization
 @inject ConfigService Cfg
 @inject NexusService NexusApi
 @inject ModService ModSvc
 @inject InstallService Installer
 @inject IJSRuntime JS
 @inject NavigationManager Nav
+@inject CoverCacheService Covers
+@implements IDisposable
 
 <div class="jg-page">
     <div class="jg-detail-topbar">
@@ -125,7 +128,7 @@
                                                 <span class="jg-req-name">
                                                     @if (!string.IsNullOrEmpty(r.PictureUrl))
                                                     {
-                                                        <img class="jg-req-cover" src="@r.PictureUrl" alt="" loading="lazy" />
+                                                        <img class="jg-req-cover" src="@Covers.GetFull(r.PictureUrl)" alt="" loading="lazy" />
                                                     }
                                                     @if (r.ModId > 0)
                                                     {
@@ -178,7 +181,7 @@
                                     <div class="jg-acc-row" style="align-items:center;gap:10px">
                                         @if (!string.IsNullOrEmpty(t.PictureUrl))
                                         {
-                                            <img class="jg-req-cover" src="@t.PictureUrl" alt="" loading="lazy" />
+                                            <img class="jg-req-cover" src="@Covers.GetFull(t.PictureUrl)" alt="" loading="lazy" />
                                         }
                                         <button class="jg-req-link" style="flex:1;text-align:left" @onclick="() => GoDep(t.ModId, t.Name)">@t.Name</button>
                                     </div>
@@ -215,7 +218,16 @@
             <div class="jg-dl4-right">
                 @if (!string.IsNullOrEmpty(_mod.PictureUrl))
                 {
-                    <img class="jg-dl4-cover jg-flip-cover" src="@_mod.PictureUrl" alt="@_mod.Name" data-flip-src="@_mod.PictureUrl" />
+                    var fullCover = Covers.GetFull(_mod.PictureUrl);
+                    if (fullCover is null)
+                    {
+                        @* v1.1.1：原图还在后台下载时给骨架占位 —— 之前 src=null 渲染成破图+alt 文本 *@
+                        <div class="jg-dl4-cover jg-shimmer"></div>
+                    }
+                    else
+                    {
+                        <img class="jg-dl4-cover jg-flip-cover" src="@fullCover" alt="@_mod.Name" data-flip-src="@fullCover" />
+                    }
                 }
                 else
                 {
@@ -235,7 +247,7 @@
                             <span class="jg-author-bubble" id="jgAuthorBubble">
                                 @if (!string.IsNullOrEmpty(_authorAvatar))
                                 {
-                                    <img class="jg-author-ava" src="@_authorAvatar" alt="" />
+                                    <img class="jg-author-ava" src="@Covers.GetFull(_authorAvatar)" alt="" />
                                 }
                                 else
                                 {
@@ -311,6 +323,14 @@
     [Parameter] public int ModId { get; set; }
     /// <summary>同一 Nexus Mod 可能含多个子包（共享 UpdateKey），靠 UniqueID 二次定位到具体那条。</summary>
     [Parameter] public string? UniqueID { get; set; }
+
+    // v1.1.1：订阅封面缓存事件 —— 详情页此前不订阅，首次进入时原图还在后台下载，
+    // src 为空显示破图，要等其它后台请求碰巧触发重渲染封面才出来。
+    protected override void OnInitialized() => Covers.Changed += OnCoversChanged;
+
+    private void OnCoversChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose() => Covers.Changed -= OnCoversChanged;
 
     private string _key = "";
     private NexusModDetail? _mod;
@@ -715,12 +735,112 @@
     private static void OpenExt(string url) => UpdateService.OpenUrl(url);
 
     /// <summary>把详情富文本里写死的灰色文字颜色改成继承色，避免暗色模式下看不清。</summary>
+    /// <summary>
+    /// v1.1.1：描述 HTML 可读性规整（白底详情页）——
+    /// ① 中性灰阶文字一律 color:inherit（≈黑）。作者用浅灰做弱化强调，白底看不清；
+    ///    近白(#f7+)视为深色底块上的白字，保留。
+    /// ② 彩色文字保留原色，追加 0.5px 黑描边（-webkit-text-stroke）提升白底可读性。
+    /// 旧版正则只认 #77~#aa 前缀灰值，#efefef/#d8d8d8 全部漏网（如 Weather Wonders 天气名）。
+    /// </summary>
     private static string NormalizeGrayColors(string html)
     {
         if (string.IsNullOrEmpty(html)) return html ?? "";
+        // (?<![a-z-]) 避免误伤 background-color / border-color 等属性
         return Regex.Replace(html,
-            @"(?i)color\s*:\s*(#(77|88|99|aa){2,3}\b|gray|grey|dimgray|darkgray|darkgrey|lightgray|lightgrey)",
-            "color: inherit");
+            @"(?i)(?<![a-z-])(color\s*:\s*)(#[0-9a-f]{3,8}\b|rgba?\(\s*[\d.]+\s*,\s*[\d.]+\s*,\s*[\d.]+[^)]*\)|hsla?\(\s*[\d.]+\s*,\s*[\d.]+%\s*,\s*[\d.]+%[^)]*\)|[a-z]+)",
+            m => NormalizeDescColor(m.Groups[1].Value, m.Groups[2].Value));
+    }
+
+    private static string NormalizeDescColor(string prefix, string value)
+    {
+        if (!TryParseDescColor(value, out var r, out var g, out var b))
+            return prefix + value;   // 未知写法（var(--x)、罕见色名）原样保留
+        int max = Math.Max(r, Math.Max(g, b)), min = Math.Min(r, Math.Min(g, b));
+        if (max - min <= 16)   // 中性灰阶
+        {
+            double lum = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255.0;
+            if (lum >= 0.97) return prefix + value;   // 近白：多半是深色底上的白字
+            return prefix + "inherit";
+        }
+        // 彩色：保留原色 + 细黑描边
+        return $"{prefix}{value}; -webkit-text-stroke: 0.5px #000";
+    }
+
+    private static bool TryParseDescColor(string s, out int r, out int g, out int b)
+    {
+        r = g = b = 0;
+        s = s.Trim();
+        try
+        {
+            if (s.StartsWith("#"))
+            {
+                var hex = s[1..];
+                if (hex.Length is 3 or 4) hex = string.Concat(hex.Select(c => $"{c}{c}"))[..6];
+                if (hex.Length != 6 && hex.Length != 8) return false;
+                r = Convert.ToInt32(hex[..2], 16);
+                g = Convert.ToInt32(hex.Substring(2, 2), 16);
+                b = Convert.ToInt32(hex.Substring(4, 2), 16);
+                return true;
+            }
+            if (s.StartsWith("rgb") || s.StartsWith("hsl"))
+            {
+                var nums = Regex.Matches(s, @"[\d.]+");
+                if (s.StartsWith("rgb"))
+                {
+                    if (nums.Count < 3) return false;
+                    r = (int)double.Parse(nums[0].Value, CultureInfo.InvariantCulture);
+                    g = (int)double.Parse(nums[1].Value, CultureInfo.InvariantCulture);
+                    b = (int)double.Parse(nums[2].Value, CultureInfo.InvariantCulture);
+                    return true;
+                }
+                if (nums.Count < 3) return false;
+                double h = double.Parse(nums[0].Value, CultureInfo.InvariantCulture) % 360;
+                double sat = double.Parse(nums[1].Value, CultureInfo.InvariantCulture);
+                double l = double.Parse(nums[2].Value, CultureInfo.InvariantCulture);
+                if (sat <= 10) { r = g = b = (int)(l * 2.55); return true; }   // 低饱和≈灰
+                double c = (1 - Math.Abs(2 * l / 100 - 1)) * sat / 100;
+                double x = c * (1 - Math.Abs(h / 60 % 2 - 1));
+                double m2 = l / 100 - c / 2;
+                // 注意：不能用 `h switch { < 60 => ... }` —— Razor 把行首的关系模式 `< 60` 当 HTML 标签解析
+                double rr, gg, bb;
+                if (h < 60) { rr = c; gg = x; bb = 0.0; }
+                else if (h < 120) { rr = x; gg = c; bb = 0.0; }
+                else if (h < 180) { rr = 0.0; gg = c; bb = x; }
+                else if (h < 240) { rr = 0.0; gg = x; bb = c; }
+                else if (h < 300) { rr = x; gg = 0.0; bb = c; }
+                else { rr = c; gg = 0.0; bb = x; }
+                r = (int)((rr + m2) * 255); g = (int)((gg + m2) * 255); b = (int)((bb + m2) * 255);
+                return true;
+            }
+            (int, int, int)? named = s.ToLowerInvariant() switch
+            {
+                "gray" or "grey" => (128, 128, 128),
+                "dimgray" or "dimgrey" => (105, 105, 105),
+                "darkgray" or "darkgrey" => (169, 169, 169),
+                "lightgray" or "lightgrey" => (211, 211, 211),
+                "gainsboro" => (220, 220, 220),
+                "silver" => (192, 192, 192),
+                "whitesmoke" => (245, 245, 245),
+                "black" => (0, 0, 0),
+                "white" => (255, 255, 255),
+                "red" => (255, 0, 0),
+                "green" => (0, 128, 0),
+                "lime" => (0, 255, 0),
+                "blue" => (0, 0, 255),
+                "yellow" => (255, 255, 0),
+                "orange" => (255, 165, 0),
+                "purple" => (128, 0, 128),
+                "pink" => (255, 192, 203),
+                "brown" => (165, 42, 42),
+                "cyan" or "aqua" => (0, 255, 255),
+                "magenta" or "fuchsia" => (255, 0, 255),
+                _ => null
+            };
+            if (named is null) return false;
+            (r, g, b) = named.Value;
+            return true;
+        }
+        catch { return false; }
     }
 
     private static string FormatDownloads(long n) =>

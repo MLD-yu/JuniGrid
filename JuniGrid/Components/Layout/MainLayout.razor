@@ -15,6 +15,11 @@
             <main class="jg-main">
                 @Body
             </main>
+            @* ── v1.1.2：返回顶部（Mod 管理 / Mod 详情 / Nexus 显示；滚过一屏才出现）──
+               点击 GSAP 补间 scrollTop 丝滑滚回；放左边避开右下角任务中心悬浮球 ── *@
+            <button id="jgBackTop" class="jg-backtop" data-tip="回到顶部" aria-label="回到顶部">
+                <img src="assets/back-top.svg" alt="" draggable="false" />
+            </button>
         </div>
     </div>
 </div>
@@ -55,6 +60,8 @@
             catch { }
             // v0.31.0：首次进入首页也播一次入场动画
             try { await JS.InvokeVoidAsync("junigridJs.playPageEnter"); } catch { }
+            // v1.1.2：返回顶部按钮（滚动监听 + 路由显隐 + 点击丝滑回顶）
+            try { await JS.InvokeVoidAsync("junigridJs.backTopInit"); } catch { }
         }
     }
 }

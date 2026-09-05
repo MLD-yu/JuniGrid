@@ -1,0 +1,25 @@
+/* ============================================================
+   theme：深色主题（html[data-theme="dark"]）组件微调
+   变量翻不动的场景在这里补：白色 SVG 反色、高光、热力图蓝色阶。
+   浅色主题不加载任何规则 —— 本文件只写 dark 分支。
+   ============================================================ */
+
+/* ── 返回顶部：圆钮反转为浅色后，白色箭头同步压深 ── */
+html[data-theme="dark"] .jg-backtop img { filter: brightness(0.3); }
+
+/* ── 任务中心胶囊：ink 反转成浅底后，白色对勾压深 ── */
+html[data-theme="dark"] .jg-taskdock-check { filter: brightness(0.3); }
+
+/* ── 详情页作者名 blur 高光：浅色模式白高光在深色下改为微光 ── */
+html[data-theme="dark"] .jg-author-hl {
+    background: rgba(255, 255, 255, 0.10);
+    box-shadow: 0 0 10px rgba(255, 255, 255, 0.14), 0 0 0 1px rgba(255, 255, 255, 0.12);
+}
+
+/* ── 游玩时长热力图：深色下用 GitHub 深色风「蓝色阶」──
+   颜色越深 = 玩得越久；空格子用深灰，四档蓝由暗到亮（对应图二的 GitHub 深色蓝） */
+html[data-theme="dark"] .jg-heat-cell { background: #2b2f37; outline-color: rgba(255, 255, 255, 0.06); }
+html[data-theme="dark"] .jg-heat-cell.l1 { background: #1e3a6d; }
+html[data-theme="dark"] .jg-heat-cell.l2 { background: #2b5cb8; }
+html[data-theme="dark"] .jg-heat-cell.l3 { background: #4d8df5; }
+html[data-theme="dark"] .jg-heat-cell.l4 { background: #8fc1ff; }

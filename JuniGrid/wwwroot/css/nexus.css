@@ -1,0 +1,493 @@
+/* ============================================================
+   nexus：Nexus 浏览页 —— 搜索岛 / 榜单 / 分页 / Trending / 搜索历史
+   ============================================================ */
+/* ─── v0.74.0：Nexus 搜索岛 + 官网风首页 ───
+   v1.06.2：恢复「放大镜按钮 + 点击向右展开」形态 —— CSS 默认收起 40px（无 JS 时的初始态），
+   .open 展开 300px（无 GSAP 降级用）；有 GSAP 时宽度由 searchIslandInit 的时间线内联驱动。 */
+.jg-nexus-island {
+    display: flex;
+    align-items: center;
+    height: 40px;
+    width: 40px;
+    border-radius: 999px;
+    border: 1px solid var(--jg-line-strong);
+    background: var(--jg-glass-70);
+    overflow: hidden;
+    flex-shrink: 0;
+    white-space: nowrap;
+}
+.jg-nexus-island.open { width: 300px; }
+.jg-island-btn {
+    width: 40px; height: 40px; flex: none;
+    display: flex; align-items: center; justify-content: center;
+    border: none; background: transparent; cursor: pointer;
+    color: var(--jg-text-2); padding: 0;
+}
+.jg-island-btn:hover { background: var(--jg-well); }
+.jg-island-btn svg { display: block; }
+
+.jg-island-field { display: flex; align-items: center; overflow: hidden; flex: 1; padding: 0 14px; }
+.jg-island-input {
+    border: none;
+    outline: none;
+    background: transparent;
+    font-size: 13px;
+    width: 100%;
+    font-family: inherit;
+    color: inherit;
+}
+.jg-island-clear {
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    opacity: .5;
+    padding: 0 10px 0 4px;
+    font-size: 13px;
+}
+.jg-island-clear:hover { opacity: .9; }
+
+.jg-home-sec { margin-top: 20px; }
+.jg-home-sec-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+}
+.jg-home-sec-title { font-size: 17px; font-weight: 600; }
+.jg-viewall {
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    font-size: 13px;
+    font-family: inherit;
+    color: inherit;
+    opacity: .6;
+    transition: opacity 120ms ease;
+    display: inline-flex;
+    align-items: center;
+}
+/* v1.04.0：删掉下划线 —— 悬停只提亮，箭头颜色随字色（fill=currentColor）、背景透明 */
+.jg-viewall:hover { opacity: 1; text-decoration: none; }
+
+/* v1.04.0：Mods 板块底部「查看全部」胶囊按钮 */
+.jg-viewall-cap {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    border: 1px solid var(--jg-line-strong);
+    background: var(--jg-card);
+    color: var(--jg-text-2);
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 500;
+    padding: 8px 20px;
+    border-radius: 999px;
+    cursor: pointer;
+    box-shadow: 0 1px 3px rgba(0,0,0,.05);
+    transition: background .15s, border-color .15s, transform .15s;
+}
+.jg-viewall-cap:hover { background: var(--jg-well); border-color: var(--jg-line-heavy); transform: translateY(-1px); }
+
+.jg-trend-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.jg-trend-big {
+    position: relative;
+    border-radius: 14px;
+    overflow: hidden;
+    cursor: pointer;
+    min-height: 230px;
+    background: var(--jg-track);
+}
+.jg-trend-big-cover {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+}
+.jg-trend-big::after {
+    /* 阴影遮罩挂在卡片本身、铺满底部，高度不随文字行数变化 */
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 62%;
+    background: linear-gradient(transparent, rgba(0,0,0,0.62) 55%);
+    pointer-events: none;
+}
+.jg-trend-big-info {
+    position: relative;
+    z-index: 1;
+    margin-top: 128px;
+    padding: 34px 14px 12px;
+    color: #fff;
+}
+.jg-trend-big-name { font-size: 15px; font-weight: 600; }
+.jg-trend-big-sub { font-size: 12px; opacity: .85; margin-top: 2px; }
+.jg-trend-big-sum {
+    font-size: 12px;
+    opacity: .8;
+    margin-top: 6px;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+.jg-trend-smalls {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 14px;
+    margin-top: 14px;
+}
+.jg-trend-sm { cursor: pointer; }
+.jg-trend-sm-cover {
+    width: 100%;
+    aspect-ratio: 16/10;
+    object-fit: cover;
+    border-radius: 10px;
+    display: block;
+    background: var(--jg-track);
+}
+.jg-trend-sm-fb {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 26px;
+    font-weight: 600;
+    opacity: .35;
+}
+.jg-trend-sm-name { font-size: 13px; font-weight: 600; margin-top: 6px; }
+.jg-trend-sm-sub { font-size: 11px; opacity: .6; margin-top: 1px; }
+@media (max-width: 900px) {
+    .jg-trend-grid { grid-template-columns: 1fr; }
+    .jg-trend-smalls { grid-template-columns: repeat(2, 1fr); }
+}
+
+/* ─── v0.75.0：浏览页顶栏（返回按钮 + 榜单标题）─── */
+.jg-browse-topbar { display: flex; align-items: center; gap: 10px; margin-top: 14px; }
+.jg-browse-topbar-title { font-size: 15px; font-weight: 600; }
+.jg-browse-back { width: 34px; height: 34px; border-radius: 50%; border: 1px solid var(--jg-line-strong);
+    background: var(--jg-card); cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
+    transition: background .15s, transform .15s; flex: none; padding: 0; }
+.jg-browse-back:hover { background: var(--jg-well); transform: translateX(-1px); }
+.jg-browse-back svg { width: 18px; height: 18px; }
+
+/* ─── v0.90.0：分页器（对照官网）─── */
+.jg-pager { display: flex; justify-content: space-between; align-items: center; gap: 12px;
+    margin-top: 16px; padding: 10px 4px; flex-wrap: wrap; }
+.jg-pager-side { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.jg-pager-info { font-size: 12px; opacity: .55; }
+.jg-pager-btn { padding: 5px 12px; border-radius: 999px; border: 1px solid var(--jg-line-strong);
+    background: var(--jg-card); font-size: 12px; color: var(--jg-text-2); cursor: pointer; transition: background .15s; }
+.jg-pager-btn:hover:not(:disabled) { background: var(--jg-well); }
+.jg-pager-btn:disabled { opacity: .35; cursor: default; }
+.jg-pager-btn.cur { background: var(--jg-ink); color: var(--jg-on-ink); border-color: var(--jg-outline); }
+.jg-pager-dots { font-size: 12px; opacity: .45; padding: 0 2px; }
+.jg-pager-jump { width: 58px; padding: 5px 8px; border: 1px solid var(--jg-line-strong);
+    border-radius: 999px; font-size: 12px; text-align: center; outline: none; }
+.jg-pager-jump:focus { border-color: var(--jg-line-heavy); }
+
+/* ─── v0.93.0：DepthText 3D 挤出文字（React Bits 移植）─── */
+.depth-text { display: inline-block; perspective: var(--dt-persp); isolation: isolate; vertical-align: middle; }
+.depth-text__stage { position: relative; display: inline-grid; place-items: center;
+    transform-style: preserve-3d; will-change: transform; }
+.depth-text__layer, .depth-text__face { grid-area: 1 / 1; display: inline-block;
+    font-size: var(--dt-size); font-weight: var(--dt-weight); line-height: 1; letter-spacing: -.01em;
+    white-space: nowrap; user-select: none; backface-visibility: hidden; }
+.depth-text__layer { position: absolute; inset: 0; z-index: 0;
+    filter: saturate(.95) brightness(.94); pointer-events: none; }
+.depth-text__face { position: relative; z-index: 1; color: var(--dt-face);
+    text-shadow: var(--dt-shadow); transform: translateZ(.6px); }
+@media (prefers-reduced-motion: reduce) { .depth-text__stage { will-change: auto; } }
+
+/* ─── v0.94.0：Nexus 页面专属 —— 图标阴影 + 字体图标放大（仅 .jg-nexus-scope 生效，不影响其它页面）─── */
+/* Nexus Mods 顶部 Logo：柔和落影 + 放大 */
+.jg-nexus-scope .jg-nexus-logo {
+    filter: drop-shadow(0 4px 10px rgba(0,0,0,.28)) drop-shadow(0 1px 2px rgba(0,0,0,.18));
+    transition: filter .2s ease, transform .2s ease;
+}
+.jg-nexus-scope .jg-nexus-logo:hover {
+    filter: drop-shadow(0 6px 14px rgba(0,0,0,.35)) drop-shadow(0 2px 3px rgba(0,0,0,.22));
+    transform: translateY(-1px);
+}
+
+/* Nexus 页所有 SVG 图标：统一投影，卡片 hover 时更深 */
+.jg-nexus-scope svg {
+    filter: drop-shadow(0 1px 2px rgba(0,0,0,.22));
+}
+.jg-nexus-scope .jg-modcard2:hover svg,
+.jg-nexus-scope .jg-trend-big:hover svg,
+.jg-nexus-scope .jg-trend-sm:hover svg {
+    filter: drop-shadow(0 2px 4px rgba(0,0,0,.32));
+}
+
+/* 板块标题（Trending Mods / Mods）行内 SVG 火焰、宝石图标：更明显的立体阴影 */
+.jg-nexus-scope .jg-home-sec-title svg {
+    filter: drop-shadow(0 2px 4px rgba(0,0,0,.30)) drop-shadow(0 1px 1px rgba(0,0,0,.18));
+}
+
+/* 登录按钮内的图标阴影 */
+.jg-nexus-scope .jg-login-btn svg {
+    filter: drop-shadow(0 1px 2px rgba(0,0,0,.35));
+}
+
+/* 用户头像也加一点阴影，做视觉一致 */
+.jg-nexus-scope .jg-user-tip-avatar {
+    box-shadow: 0 2px 6px rgba(0,0,0,.28), 0 1px 2px rgba(0,0,0,.18);
+}
+
+/* ── 字体 & 图标整体放大（仅 Nexus 页） ── */
+.jg-nexus-scope { font-size: 15px; }
+
+/* 板块标题「Trending Mods / Mods」及其图标 */
+.jg-nexus-scope .jg-home-sec-title svg { width: 22px !important; height: 22px !important; }
+.jg-nexus-scope .jg-home-sec-title .depth-text { --dt-size: 18px !important; }
+
+/* 查看全部 */
+.jg-nexus-scope .jg-viewall { font-size: 14px; }
+
+/* Tab 胶囊按钮 */
+.jg-nexus-scope .jg-chip { font-size: 14px; padding: 7px 16px; }
+
+/* Trending 大卡片文本 */
+.jg-nexus-scope .jg-trend-big-name { font-size: 17px; font-weight: 700; }
+.jg-nexus-scope .jg-trend-big-sub  { font-size: 13.5px; }
+.jg-nexus-scope .jg-trend-big-sum  { font-size: 13.5px; line-height: 1.55; }
+.jg-nexus-scope .jg-trend-big-sub svg { width: 13px !important; height: 13px !important; }
+
+/* Trending 小卡片 */
+.jg-nexus-scope .jg-trend-sm-name { font-size: 14px; font-weight: 600; }
+.jg-nexus-scope .jg-trend-sm-sub  { font-size: 12.5px; }
+.jg-nexus-scope .jg-trend-sm-sub svg { width: 13px !important; height: 13px !important; }
+
+/* Mods 卡片 */
+.jg-nexus-scope .jg-modcard2-title    { font-size: 15.5px; }
+.jg-nexus-scope .jg-modcard2-author   { font-size: 13px; }
+.jg-nexus-scope .jg-modcard2-category { font-size: 12.5px; }
+.jg-nexus-scope .jg-modcard2-stats    { font-size: 13px; }
+.jg-nexus-scope .jg-modcard2-stats svg { width: 15px !important; height: 15px !important; }
+.jg-nexus-scope .jg-modcard2-avatar    { width: 20px; height: 20px; }
+
+/* 搜索框 & 登录按钮 */
+.jg-nexus-scope .jg-island-input { font-size: 14px; }
+.jg-nexus-scope .jg-login-btn { font-size: 14px; }
+.jg-nexus-scope .jg-login-btn svg { width: 17px !important; height: 17px !important; }
+
+/* 用户头像放大一号 */
+.jg-nexus-scope .jg-user-tip-avatar { width: 40px; height: 40px; }
+
+/* 分页器 */
+.jg-nexus-scope .jg-pager-btn  { font-size: 13.5px; padding: 6px 14px; }
+.jg-nexus-scope .jg-pager-info { font-size: 13.5px; }
+
+/* 空数据 / 提示文案 */
+.jg-nexus-scope .jg-note { font-size: 14px; }
+
+/* 深色模式下阴影加强一点，更立体 */
+
+/* ─── v1.00.0：Trending 板块 Grainient 背景 + 退出登录按钮 + Logo 可点（仅 Nexus 页）─── */
+.jg-nexus-scope .jg-home-sec-hero {
+    position: relative; overflow: hidden;
+    border-radius: 14px; padding: 14px 16px 18px;
+    background: #17181d;
+    box-shadow: 0 6px 22px rgba(0,0,0,.14), inset 0 0 0 1px rgba(255,255,255,.06);
+}
+.jg-nexus-scope .jg-trend-grain { position: absolute; inset: 0; z-index: 0; opacity: .92; }
+.jg-nexus-scope .jg-home-sec-hero > *:not(.jg-trend-grain) { position: relative; z-index: 1; }
+.jg-nexus-scope .jg-user-tip-logout { color: #c0453a !important; margin-left: 12px; }
+.jg-nexus-scope .jg-user-tip-logout:hover { color: #e05347 !important; }
+.jg-nexus-scope .jg-nexus-logo { cursor: pointer; }
+
+/* ─── v1.01.0：Nexus 页美化（退出登录按钮 / 米色板块 / 搜索历史 / 返回箭头 / 查看全部）─── */
+/* 板块背景改米色 #F5F5DC，Grainient canvas 透明度调低免得盖过底色 */
+.jg-nexus-scope .jg-hero-cream { background: var(--jg-well); }
+.jg-nexus-scope .jg-hero-cream .jg-trend-grain { opacity: .45; }
+
+/* 退出登录：红底白字按钮，放在「查看主页」下方 */
+.jg-nexus-scope .jg-user-tip-logoutbtn {
+    background: #d63c30; color: #fff; border: none; border-radius: 8px;
+    padding: 6px 18px; font-size: 13px; font-weight: 600; cursor: pointer;
+    box-shadow: 0 2px 6px rgba(214,60,48,.35);
+    transition: background .15s, transform .15s;
+}
+.jg-nexus-scope .jg-user-tip-logoutbtn:hover { background: #bf2f24; transform: translateY(-1px); }
+.jg-nexus-scope .jg-user-tip-logoutbtn:active { transform: translateY(0); }
+
+/* 搜索历史下拉（对照官网 Recent Searches 深色面板） */
+.jg-nexus-scope .jg-search-history {
+    position: absolute; top: calc(100% + 8px); left: 0; right: 0; z-index: 9600;
+    visibility: hidden; opacity: 0; transform: translateY(-4px);
+    transition: opacity .15s ease, transform .15s ease, visibility .15s;
+}
+/* v1.05.1：显隐由 JS toggle .history-open（Blazor 收不到 JS focus() 的 focus 事件） */
+.jg-nexus-scope .jg-island-wrap.history-open .jg-search-history {
+    visibility: visible; opacity: 1; transform: translateY(0);
+    background: var(--jg-card); border-radius: 12px; padding: 10px 6px;
+    box-shadow: 0 18px 48px rgba(0,0,0,.28), 0 4px 12px rgba(0,0,0,.12), inset 0 0 0 1px rgba(0,0,0,.06);
+    color: var(--jg-text-2);
+}
+/* v1.05.2：清空历史按钮移到「搜索历史」字样后面 */
+.jg-nexus-scope .jg-search-history-head {
+    display: flex; align-items: center; justify-content: flex-start; gap: 10px;
+    padding: 2px 12px 8px; font-size: 12px; color: #8a8a90;
+}
+.jg-nexus-scope .jg-search-history-clearall {
+    display: inline-flex; align-items: center; gap: 4px;
+    background: var(--jg-well); border: 1px solid var(--jg-line-strong);
+    color: var(--jg-text-2); font-size: 11.5px; cursor: pointer;
+    text-decoration: none; padding: 3px 10px; border-radius: 999px;
+    transition: background .15s, color .15s;
+}
+.jg-nexus-scope .jg-search-history-clearall:hover { color: var(--jg-text); background: var(--jg-hover-strong); }
+.jg-nexus-scope .jg-search-history-row {
+    display: flex; align-items: center; gap: 10px; padding: 8px 12px;
+    border-radius: 8px; cursor: pointer; font-size: 13.5px; color: var(--jg-text-2);
+}
+.jg-nexus-scope .jg-search-history-row:hover { background: var(--jg-track); }
+.jg-nexus-scope .jg-search-history-row svg { flex: none; opacity: .55; }
+.jg-nexus-scope .jg-search-history-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.jg-nexus-scope .jg-search-history-del {
+    background: none; border: none; color: var(--jg-text-3); font-size: 13px; cursor: pointer;
+    padding: 2px 6px; border-radius: 6px; flex: none;
+}
+.jg-nexus-scope .jg-search-history-del:hover { color: var(--jg-text); background: var(--jg-hover); }
+
+/* v1.05.1：历史面板挂在外层容器（island 自身 overflow:hidden 会把面板整块裁掉） */
+.jg-nexus-scope .jg-island-wrap { position: relative; display: flex; align-items: center; flex-shrink: 0; }
+.jg-nexus-scope .jg-island-field { position: relative; }
+
+/* 浏览页返回按钮：改成纯箭头（图十五样式） */
+.jg-nexus-scope .jg-back-btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 34px; height: 34px; border-radius: 999px;
+    border: 1px solid var(--jg-line-strong); background: var(--jg-card); color: var(--jg-text-2);
+    cursor: pointer; transition: background .15s, transform .15s;
+    padding: 0; flex: none;
+}
+.jg-nexus-scope .jg-back-btn:hover { background: var(--jg-well); transform: translateX(-1px); }
+
+/* 「查看全部」按钮：#3d3d3d 文字+图标，背景透明，带网格图标 */
+.jg-nexus-scope .jg-viewall {
+    background: transparent; border: none; color: var(--jg-text-2);
+    font-size: 13.5px; font-weight: 600; cursor: pointer;
+    display: inline-flex; align-items: center; padding: 4px 6px;
+    border-radius: 8px; transition: background .15s;
+}
+.jg-nexus-scope .jg-viewall:hover { background: var(--jg-track); }
+.jg-nexus-scope .jg-viewall svg { color: var(--jg-text-2); }
+
+/* Tab 图标与文字对齐 */
+.jg-nexus-scope .jg-chip { display: inline-flex; align-items: center; }
+.jg-nexus-scope .jg-chip svg { flex: none; }
+
+/* ─── v1.02.0：搜索页精确匹配卡（尾号直达，不直接跳详情）─── */
+.jg-nexus-scope .jg-search-exact {
+    display: flex; align-items: center; gap: 14px; margin-top: 12px;
+    background: var(--jg-card); border: 1px solid var(--jg-line-strong); border-radius: 12px;
+    padding: 10px 14px 10px 10px; cursor: pointer;
+    box-shadow: 0 2px 10px rgba(0,0,0,.07);
+    transition: transform .15s, box-shadow .15s;
+}
+.jg-nexus-scope .jg-search-exact:hover { transform: translateY(-2px); box-shadow: 0 8px 22px rgba(0,0,0,.12); }
+.jg-nexus-scope .jg-search-exact-cover {
+    width: 88px; height: 56px; object-fit: cover; border-radius: 8px; flex: none;
+    background: var(--jg-track);
+}
+.jg-nexus-scope .jg-search-exact-fb {
+    display: flex; align-items: center; justify-content: center;
+    font-size: 22px; font-weight: 700; color: #b8860b;
+}
+.jg-nexus-scope .jg-search-exact-body { flex: 1; min-width: 0; }
+.jg-nexus-scope .jg-search-exact-name {
+    font-size: 15px; font-weight: 700; color: var(--jg-text);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.jg-nexus-scope .jg-search-exact-sub { font-size: 12px; color: #b8860b; margin-top: 3px; font-weight: 600; }
+.jg-nexus-scope .jg-search-exact-go { font-size: 13px; color: var(--jg-text-2); opacity: .6; flex: none; }
+
+/* ─── v1.03.0：Trending 卡片 hover 动效（此前只有 Mods 卡片有）─── */
+.jg-nexus-scope .jg-trend-big { transition: transform .2s ease, box-shadow .2s ease; }
+.jg-nexus-scope .jg-trend-big-cover { transition: transform .35s ease; }
+.jg-nexus-scope .jg-trend-big:hover { transform: translateY(-3px); box-shadow: 0 12px 28px rgba(0,0,0,.20); }
+.jg-nexus-scope .jg-trend-big:hover .jg-trend-big-cover { transform: scale(1.04); }
+.jg-nexus-scope .jg-trend-sm { transition: transform .2s ease; }
+.jg-nexus-scope .jg-trend-sm:hover { transform: translateY(-2px); }
+.jg-nexus-scope .jg-trend-sm-cover { transition: transform .3s ease, box-shadow .2s ease; }
+.jg-nexus-scope .jg-trend-sm:hover .jg-trend-sm-cover { transform: scale(1.05); box-shadow: 0 8px 18px rgba(0,0,0,.18); }
+.jg-nexus-scope .jg-trend-sm:hover .jg-trend-sm-name { text-decoration: underline; }
+
+/* ═══ v1.04.0：详情页 by 作者名 —— blur 高光 + hover 头像预览气泡（GSAP easeReverse）═══ */
+.jg-author-wrap { position: relative; display: inline-flex; margin-left: 2px; }
+.jg-author-name {
+    position: relative;
+    border: none; background: transparent; cursor: pointer;
+    font-family: inherit; font-size: inherit; line-height: inherit;
+    padding: 0; display: inline-flex; align-items: center;
+    isolation: isolate;
+}
+.jg-author-hl {
+    position: absolute; inset: -1px -4px; z-index: 0;
+    border-radius: 5px;
+    background: var(--jg-card);                 /* 浅色模式高光：#ffffff */
+    box-shadow: 0 0 10px rgba(61,61,61,.18), 0 0 0 1px rgba(61,61,61,.10);
+    filter: blur(4px);
+    transform: scaleX(0);
+    pointer-events: none;
+}
+.jg-author-name-txt {
+    position: relative; z-index: 1;
+    font-weight: 700; color: var(--jg-text-2);
+    text-decoration: none;
+    transition: color .15s;
+}
+.jg-author-wrap:hover .jg-author-name-txt { color: var(--jg-text); }
+/* v1.05.0：高光固定浅色 #ffffff + 深色字 —— 不再跟随系统深色模式。
+   深色系统的 #3d3d3d 高光落在浅色页面上看起来就是「黑色高光」，已移除该分支 */
+/* 无 GSAP 兜底：高光常显 */
+.jg-author-nogsap .jg-author-hl { transform: scaleX(1); }
+
+/* hover 头像预览气泡（elastic 弹入 / easeReverse 快速收场） */
+.jg-author-bubble {
+    position: absolute; bottom: calc(100% + 12px); left: 50%;
+    z-index: 9702;
+    display: flex; align-items: center; gap: 8px;
+    background: #26262b; color: #e8e8ec;
+    border-radius: 12px; padding: 8px 14px 8px 8px;
+    box-shadow: 0 12px 32px rgba(0,0,0,.35), inset 0 0 0 1px rgba(255,255,255,.08);
+    white-space: nowrap;
+    pointer-events: none;
+    visibility: hidden; opacity: 0;
+}
+.jg-author-bubble::after {
+    content: ""; position: absolute; top: 100%; left: 50%;
+    transform: translateX(-50%);
+    border: 6px solid transparent; border-top-color: #26262b;
+}
+.jg-author-ava { width: 34px; height: 34px; border-radius: 50%; object-fit: cover; flex: none;
+    background: rgba(255,255,255,.08); }
+.jg-author-ava-fb { display: inline-flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 14px; color: #fff; }
+.jg-author-bubble-txt { font-size: 12px; color: #c9c9d0; }
+
+/* v1.06.1：作者气泡 hover 期间整链提升 —— 出场 elastic 放大时边角会被右列之外的
+   相邻章节盖住。.jg-dl4-right 是 sticky（自带层叠上下文），必须提整列的 z-index
+   气泡才能浮到相邻内容之上；9700 系与顶栏用户气泡同级（低于 modal 99999 / toast 999999） */
+.jg-dl4-right:hover { z-index: 9700; }
+.jg-author-wrap:hover { z-index: 9701; }
+
+/* ═══ v1.04.0：设置页「过滤色情内容」关闭验证面板 ═══ */
+.jg-adult-verify {
+    margin-top: 12px; padding: 14px 16px;
+    border: 1px solid var(--jg-line-strong);
+    border-radius: 12px;
+    background: var(--jg-well);
+}
+
+/* ═══ v1.05.0：右侧下拉右对齐（倒序/时间下拉贴窗口右缘时菜单不再超出界面）═══ */
+.jg-sort-dd.jg-dd-right .jg-sort-menu { left: auto; right: 0; }
+
+/* ═══ v1.05.0：用户卡片 tooltip 压过浏览页下拉按钮（z-index 9500 之上）═══ */
+.jg-nexus-scope .jg-user-tip { position: relative; z-index: 9700; }
+.jg-nexus-scope .jg-user-tip-bubble { z-index: 9701; }
+

@@ -225,6 +225,34 @@ public sealed class LauncherService
     }
 
     /// <summary>
+    /// 取消启动的清场看门狗：Steam 的拉起管线可能在「取消」之后才把游戏进程拉出来
+    /// （家庭共享校验、预载都要几秒），一次性 KillGame 会扑空 → 游戏照样跑起来。
+    /// 持续监视 windowMs 毫秒，期间凡是出现 SMAPI/游戏进程一律关闭；
+    /// 连续 2.5s 无进程、或 stopWhen() 返回 true（用户重新点了启动）则提前结束。
+    /// </summary>
+    public async Task KillGameWatchdogAsync(int windowMs = 20000, Func<bool>? stopWhen = null)
+    {
+        KillGame();
+        var deadline = Environment.TickCount64 + windowMs;
+        var lastActive = Environment.TickCount64;
+        while (Environment.TickCount64 < deadline)
+        {
+            if (stopWhen?.Invoke() == true) return;
+            var found = false;
+            foreach (var name in new[] { "Stardew Valley", "StardewModdingAPI" })
+                foreach (var p in Process.GetProcessesByName(name))
+                {
+                    found = true;
+                    try { p.CloseMainWindow(); } catch (Exception __ex) { AppLog.Warn("LauncherService", __ex.Message); }
+                    try { p.Kill(true); } catch (Exception __ex) { AppLog.Warn("LauncherService", __ex.Message); }
+                }
+            if (found) lastActive = Environment.TickCount64;
+            else if (Environment.TickCount64 - lastActive > 2500) return;   // 连续 2.5s 无进程 → 清场完成
+            await Task.Delay(400);
+        }
+    }
+
+    /// <summary>
     /// 关闭游戏进程：与 Steam 自己关游戏一致——先通知正常退出让游戏写盘，
     /// 稍后再回收仍未退出的进程。覆盖 SMAPI 与 Steam 官方两种启动模式。
     /// </summary>
@@ -273,13 +301,16 @@ public sealed class LauncherService
 
     public PreFlightResult CheckSteam()
     {
-        var steamRunning = Process.GetProcessesByName("steam").Length > 0
-                        || Process.GetProcessesByName("steamwebhelper").Length > 0;
-        if (!steamRunning)
+        if (!IsSteamRunning)
             return PreFlightResult.Warn(
                 "Steam 客户端似乎没在运行，将通过 steam:// 协议拉起（可能稍慢）。");
         return PreFlightResult.Ok();
     }
+
+    /// <summary>Steam 客户端是否在运行（含 webhelper）。供启动等待期检测「Steam 被关闭」用。</summary>
+    public static bool IsSteamRunning =>
+        Process.GetProcessesByName("steam").Length > 0 ||
+        Process.GetProcessesByName("steamwebhelper").Length > 0;
 
     // ------------------------------------------------------------------
     // Launch

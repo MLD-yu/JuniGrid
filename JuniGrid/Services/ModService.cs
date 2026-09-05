@@ -20,10 +20,9 @@ public sealed class ModService
         var modsDir = Path.Combine(gamePath, "Mods");
         if (!Directory.Exists(modsDir)) return Array.Empty<ModEntry>();
 
-        // v0.52.0：清掉上次占用时残留的回收站（能删就删，删不掉就跳过——里面有被占用的文件）
-        var trashDir = Path.Combine(modsDir, ".junigrid_trash");
-        if (Directory.Exists(trashDir))
-            try { Directory.Delete(trashDir, recursive: true); } catch { }
+        // v1.09：.junigrid_trash 改为常驻回收站 —— 勾选"移入mod回收站"删除的 mod
+        // 会留在这里等用户手动还原/清理，扫描启动时不再自动清空（只跳过不扫描）。
+        // 清理入口收敛到 设置 → 存储 → 游戏卸载回收站。
 
         // v0.72.6：先物化目录列表 —— 批量启禁时目录在惰性枚举途中被改名（X ↔ .X），
         // 枚举器会直接抛 DirectoryNotFoundException 炸穿整个 Rescan（2026-08-29 错误墙根因之一）
@@ -179,17 +178,31 @@ public sealed class ModService
         }
     }
 
-    public string? Uninstall(string gamePath, string folderName)
+    /// <param name="toTrash">true = 移入 Mods/.junigrid_trash 常驻回收站（可手动还原）；
+    /// false = 沿用旧"原子化"流程：先进回收站验证可删，再彻底删除。</param>
+    public string? Uninstall(string gamePath, string folderName, bool toTrash = false)
     {
         try
         {
             var dir = Path.Combine(gamePath, "Mods", folderName);
             if (!Directory.Exists(dir)) return "找不到 Mod 文件夹";
-            // v0.51.0：原子化删除——先整个移到回收站验证"能不能删"，
-            // 能移成功才从回收站彻底删；移不动（占用）就还原，绝不留半个文件夹
             var trash = Path.Combine(gamePath, "Mods", ".junigrid_trash");
             Directory.CreateDirectory(trash);
-            var staging = Path.Combine(trash, folderName.Replace('/', '_') + "_" + Guid.NewGuid().ToString("N")[..8]);
+            var baseName = folderName.Replace('/', '_');
+            string staging;
+            if (toTrash)
+            {
+                // v1.09：回收站条目带时间戳 —— 删了"1"再装"1"再删，两份都保留互不覆盖；
+                // 同一秒重名（批量删除同名 mod 理论上可能）再追加序号兜底
+                var stamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+                staging = Path.Combine(trash, baseName + "_" + stamp);
+                for (var n = 2; Directory.Exists(staging); n++)
+                    staging = Path.Combine(trash, $"{baseName}_{stamp}_{n}");
+            }
+            else
+            {
+                staging = Path.Combine(trash, baseName + "_" + Guid.NewGuid().ToString("N")[..8]);
+            }
             try
             {
                 Directory.Move(dir, staging);   // 同盘瞬时改名，占用时这里直接抛异常
@@ -203,12 +216,15 @@ public sealed class ModService
                     return $"「{folderName}」正被占用，请先退出相关程序再删除";
                 return ex.Message;
             }
-            // 移成功 → 从回收站彻底删
-            try { Directory.Delete(staging, recursive: true); }
-            catch (Exception ex) { AppLog.Warn("ModService", "回收站清理失败: " + ex.Message); }
-            // v0.52.0：删完立刻把回收站空目录也删掉，避免列表里多出 .junigrid_trash 空壳
-            try { if (Directory.Exists(trash) && !Directory.EnumerateFileSystemEntries(trash).Any()) Directory.Delete(trash); }
-            catch { }
+            if (!toTrash)
+            {
+                // 移成功 → 从回收站彻底删
+                try { Directory.Delete(staging, recursive: true); }
+                catch (Exception ex) { AppLog.Warn("ModService", "回收站清理失败: " + ex.Message); }
+                // v0.52.0：删完立刻把回收站空目录也删掉，避免列表里多出 .junigrid_trash 空壳
+                try { if (Directory.Exists(trash) && !Directory.EnumerateFileSystemEntries(trash).Any()) Directory.Delete(trash); }
+                catch { }
+            }
             return null;
         }
         catch (Exception ex)
@@ -262,10 +278,30 @@ public sealed class ModService
             catch (Exception __ex) { AppLog.Warn("ModService", __ex.Message); }
 
             var dest = Path.Combine(gamePath, "Mods", targetFolderName);
-            if (Directory.Exists(dest)) Directory.Delete(dest, recursive: true);
-            MoveDirectorySafe(modRoot, dest);   // 跨盘保护
+            // v1.1.1：旧版不再直接删除 —— 先整体改名移入 .junigrid_trash（同盘原子改名，
+            // 绝不出现"删一半"），再装新版；安装失败时原路移回 Mods。任何中断旧版都不丢。
+            string? stagedOld = null;
+            if (Directory.Exists(dest))
+            {
+                try { stagedOld = StageExistingToTrash(gamePath, dest); }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                { return $"「{targetFolderName}」正被占用，无法备份旧版，已放弃更新（旧版未动）"; }
+            }
+            try
+            {
+                MoveDirectorySafe(modRoot, dest);   // 跨盘保护
+            }
+            catch
+            {
+                // 清掉可能残缺的新版半成品，再把旧版原路移回；移不回去就留在回收站（可手动还原）
+                try { if (Directory.Exists(dest)) Directory.Delete(dest, recursive: true); } catch { }
+                if (stagedOld is not null) RestoreStaged(stagedOld, dest);
+                throw;
+            }
 
             TryDelete(temp);
+            if (stagedOld is not null)
+                AppLog.Warn("Mods", $"[更新] 旧版已移入回收站保留：{Path.GetFileName(stagedOld)}（可在设置中还原或清理）");
             return null;
         }
         catch (Exception ex)
@@ -310,12 +346,28 @@ public sealed class ModService
             if (string.IsNullOrEmpty(folderName) || modRoot == temp)
                 folderName = SanitizeFolderName(modName ?? "NewMod");
 
+            // v1.1.1：同名旧目录（启用/禁用两份）不再直接删除 —— 先移入回收站，安装失败回滚
             var dest = Path.Combine(gamePath, "Mods", folderName);
-            if (Directory.Exists(dest)) Directory.Delete(dest, recursive: true);
+            string? stagedDest = null, stagedDisabled = null;
+            if (Directory.Exists(dest))
+            {
+                try { stagedDest = StageExistingToTrash(gamePath, dest); }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                { TryDelete(temp); return $"「{folderName}」正被占用，无法备份旧版，已放弃安装（旧版未动）"; }
+            }
             // v0.71.9：同名【禁用】目录（.folderName）也要清掉 —— 旧逻辑只查不带点的 dest，
             // 禁用 mod（Mods/.X）+ 新下载（Mods/X）会同时存在，扫描出来就是同一个 mod 两行。
             var destDisabled = Path.Combine(gamePath, "Mods", "." + folderName);
-            if (Directory.Exists(destDisabled)) Directory.Delete(destDisabled, recursive: true);
+            if (Directory.Exists(destDisabled))
+            {
+                try { stagedDisabled = StageExistingToTrash(gamePath, destDisabled); }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    if (stagedDest is not null) RestoreStaged(stagedDest, dest);
+                    TryDelete(temp);
+                    return $"「.{folderName}」正被占用，无法备份旧版，已放弃安装（旧版未动）";
+                }
+            }
             // v0.71.9：再按 manifest UniqueID 兜底判重 —— 文件夹名不同但 UniqueID 相同
             // （如 ABC / ABC-1.2 / .ABC）也属于同一个 mod，一并清理，防任何形式的重复项。
             try
@@ -339,7 +391,20 @@ public sealed class ModService
                                 using var d2 = JsonDocument.Parse(File.ReadAllText(mf));
                                 if (d2.RootElement.TryGetProperty("UniqueID", out var u2)
                                     && string.Equals(u2.GetString(), newUid, StringComparison.OrdinalIgnoreCase))
-                                { Directory.Delete(dir2, recursive: true); break; }
+                                {
+                                    // v1.1.1：不再永久删除 —— 旧副本整体移入回收站（可还原）；
+                                    // 移不动（被占用）就保留原样并记日志，不阻断安装
+                                    try
+                                    {
+                                        var stagedDup = StageExistingToTrash(gamePath, dir2);
+                                        AppLog.Warn("Mods", $"[判重清理] 同 UniqueID 旧副本 {name2} 已移入回收站：{Path.GetFileName(stagedDup)}");
+                                    }
+                                    catch (Exception stageEx)
+                                    {
+                                        AppLog.Warn("Mods", $"[判重清理] {name2} 移入回收站失败（可能被占用），保留原样: {stageEx.Message}");
+                                    }
+                                    break;
+                                }
                             }
                             catch { }
                         }
@@ -348,10 +413,21 @@ public sealed class ModService
             }
             catch (Exception __ex) { AppLog.Warn("ModService", "UniqueID 判重清理失败: " + __ex.Message); }
 
-            if (modRoot == temp)
-                CopyDirectoryContents(temp, dest);   // files at zip root — copy into named folder
-            else
-                MoveDirectorySafe(modRoot, dest);   // 跨盘保护
+            try
+            {
+                if (modRoot == temp)
+                    CopyDirectoryContents(temp, dest);   // files at zip root — copy into named folder
+                else
+                    MoveDirectorySafe(modRoot, dest);   // 跨盘保护
+            }
+            catch
+            {
+                // v1.1.1：安装失败 → 清掉残缺半成品，把回收站里的旧版原路移回
+                try { if (Directory.Exists(dest)) Directory.Delete(dest, recursive: true); } catch { }
+                if (stagedDest is not null) RestoreStaged(stagedDest, dest);
+                if (stagedDisabled is not null) RestoreStaged(stagedDisabled, destDisabled);
+                throw;
+            }
 
             TryDelete(temp);
             return null;
@@ -405,6 +481,33 @@ public sealed class ModService
             File.Copy(f, Path.Combine(dest, Path.GetFileName(f)), overwrite: true);
         foreach (var d in Directory.GetDirectories(src))
             CopyDirectoryContents(d, Path.Combine(dest, Path.GetFileName(d)));
+    }
+
+    /// <summary>
+    /// v1.1.1：把 Mods 下已存在的旧版目录整体改名移入 .junigrid_trash（同盘瞬时原子改名，
+    /// 失败即整体失败，绝不出现"删一半"）。命名沿用 Uninstall 的时间戳+序号兜底规则。
+    /// 返回 staging 路径；被占用等改名失败直接抛异常，由调用方决定放弃或回滚。
+    /// </summary>
+    private static string StageExistingToTrash(string gamePath, string existingDir)
+    {
+        var trash = Path.Combine(gamePath, "Mods", ".junigrid_trash");
+        Directory.CreateDirectory(trash);
+        var baseName = Path.GetFileName(existingDir).TrimStart('.');
+        var stamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+        var staging = Path.Combine(trash, baseName + "_" + stamp);
+        for (var n = 2; Directory.Exists(staging); n++)
+            staging = Path.Combine(trash, $"{baseName}_{stamp}_{n}");
+        Directory.Move(existingDir, staging);
+        return staging;
+    }
+
+    /// <summary>安装失败回滚：把回收站里的旧版原路移回 Mods；移不回去就留在回收站并记日志，
+    /// 用户可在设置 → 游戏卸载回收站 里手动还原。</summary>
+    private static void RestoreStaged(string staging, string dest)
+    {
+        try { Directory.Move(staging, dest); }
+        catch (Exception __ex)
+        { AppLog.Warn("Mods", $"[回滚] 旧版未能移回，已保留在回收站：{Path.GetFileName(staging)} - {__ex.Message}"); }
     }
 
     private static string SanitizeFolderName(string name)

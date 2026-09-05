@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Threading;
 
 namespace JuniGrid.Services;
@@ -19,11 +20,13 @@ public sealed class TaskCenterService
     private readonly object _lock = new();
     private static readonly string PersistPath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "JuniGrid", "tasks.json");
-    private Timer? _saveTimer;
+    // v1.1.2：构造时创建、只在 RequestSave 里触发 —— 之前懒初始化无锁，并发首调可能建出两个 Timer 泄漏一个
+    private readonly Timer _saveTimer;
 
     public TaskCenterService()
     {
         Load();
+        _saveTimer = new Timer(_ => SaveNow(), null, Timeout.Infinite, Timeout.Infinite);
     }
 
     private void Load()
@@ -43,24 +46,20 @@ public sealed class TaskCenterService
     }
 
     /// <summary>进度回报非常频繁，落盘用 800ms 防抖：静默 800ms 后才真正写盘。</summary>
-    private void RequestSave()
-    {
-        if (_saveTimer is null)
-        {
-            _saveTimer = new Timer(_ => SaveNow(), null, 800, Timeout.Infinite);
-            return;
-        }
-        _saveTimer.Change(800, Timeout.Infinite);
-    }
+    private void RequestSave() => _saveTimer.Change(800, Timeout.Infinite);
 
     private void SaveNow()
     {
         try
         {
-            List<TaskItem> snap;
-            lock (_lock) snap = Items.ToList();
-            Directory.CreateDirectory(Path.GetDirectoryName(PersistPath)!);
-            File.WriteAllText(PersistPath, JsonSerializer.Serialize(snap));
+            // v1.1.2：锁内序列化 —— 之前浅拷贝快照后锁外序列化，下载线程同时追加 t.Log
+            // 会撞出「集合已修改」把该次落盘整个丢掉；tasks.json 很小（≤几百 KB）且 800ms
+            // 防抖才写一次，锁内完成拷贝+写盘的代价可忽略
+            lock (_lock)
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(PersistPath)!);
+                File.WriteAllText(PersistPath, JsonSerializer.Serialize(Items.ToList()));
+            }
         }
         catch (Exception ex) { AppLog.Warn("TaskCenter", "任务落盘失败: " + ex.Message); }
     }
@@ -78,13 +77,32 @@ public sealed class TaskCenterService
 
     public void Report(TaskItem t, string line, double? percent = null, double? speedMBps = null)
     {
-        t.Log.Add($"[{DateTime.Now:HH:mm:ss}] {line}");
-        if (t.Log.Count > 200) t.Log.RemoveAt(0);
+        // v1.08.2：下载进度行（"正在下载… x MB / y MB"）属于高频重复心跳，
+        // 只覆盖日志里上一条同类行，不追加 —— 否则长下载轻松超 200 条上限，
+        // 把备份/解压等真正的过程日志从头挤掉。事件行（切镜像/续传/阶段切换）照常追加。
+        if (IsDownloadHeartbeat(line)
+            && t.Log.Count > 0 && IsDownloadHeartbeat(t.Log[t.Log.Count - 1]))
+        {
+            t.Log[t.Log.Count - 1] = $"[{DateTime.Now:HH:mm:ss}] {line}";
+        }
+        else
+        {
+            t.Log.Add($"[{DateTime.Now:HH:mm:ss}] {line}");
+            if (t.Log.Count > 200) t.Log.RemoveAt(0);
+        }
         if (percent is not null) t.Percent = percent.Value;
         if (speedMBps is not null) t.SpeedMBps = speedMBps.Value;
         t.LastLine = line;
         OnChanged?.Invoke();
         RequestSave();
+    }
+
+    /// <summary>带时间戳的日志行是否是下载心跳行（Report 写入时已加 "[HH:mm:ss] " 前缀）。</summary>
+    private static bool IsDownloadHeartbeat(string logLine)
+    {
+        var i = logLine.IndexOf("] ", StringComparison.Ordinal);
+        var body = i >= 0 && logLine.StartsWith("[") ? logLine[(i + 2)..] : logLine;
+        return body.StartsWith("正在下载…", StringComparison.Ordinal);
     }
 
     public void Finish(TaskItem t, bool success, string? finalMsg = null)
@@ -100,6 +118,9 @@ public sealed class TaskCenterService
     public void Remove(TaskItem t)
     {
         lock (_lock) Items.Remove(t);
+        // v1.1.3：移除 = 同步取消后台下载/安装 —— 之前只删条目，管线继续跑完，
+        // mod 照样出现在 Mod 管理页（下载一半移除还会"复活"）。
+        try { t.Cts.Cancel(); } catch { }
         OnChanged?.Invoke();
         RequestSave();
     }
@@ -118,11 +139,19 @@ public sealed class TaskCenterService
     /// <summary>v1.06.6：按条件清理（下载页「清理全部」= 清掉当前筛选下的所有任务）。</summary>
     public void ClearMatching(Func<TaskItem, bool> match)
     {
+        List<TaskItem>? killed = null;
         lock (_lock)
         {
             for (int i = Items.Count - 1; i >= 0; i--)
-                if (match(Items[i])) Items.RemoveAt(i);
+                if (match(Items[i]))
+                {
+                    if (Items[i].Status == "running") (killed ??= new()).Add(Items[i]);
+                    Items.RemoveAt(i);
+                }
         }
+        // v1.1.3：批量清理也取消还在跑的，避免"清了任务还继续装"
+        if (killed is not null)
+            foreach (var k in killed) { try { k.Cts.Cancel(); } catch { } }
         OnChanged?.Invoke();
         RequestSave();
     }
@@ -162,4 +191,8 @@ public sealed class TaskItem
         // v1.06.7：必须有 setter —— 只读集合属性反序列化时不被填充，重启恢复的任务会丢光日志
         public List<string> Log { get; set; } = new();
     public DateTime StartedAt { get; set; }
+
+    /// <summary>v1.1.3：任务取消源 —— 「移除/清理」时取消后台下载安装；不落盘。</summary>
+    [JsonIgnore]
+    public CancellationTokenSource Cts { get; } = new();
 }

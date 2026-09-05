@@ -7,7 +7,16 @@
     <base href="/" />
 
     <link rel="stylesheet" href="_content/Microsoft.FluentUI.AspNetCore.Components/css/reboot.css" />
-    <link rel="stylesheet" href="css/app.css?v=1.08.0" />
+    <!-- app.css 已按区块拆分，link 顺序即原文件层叠顺序（后面的文件可覆盖前面），不可调换 -->
+    <link rel="stylesheet" href="css/base.css?v=1.1.2" />
+    <link rel="stylesheet" href="css/shell.css?v=1.1.2" />
+    <link rel="stylesheet" href="css/home.css?v=1.1.2" />
+    <link rel="stylesheet" href="css/mods.css?v=1.1.2" />
+    <link rel="stylesheet" href="css/effects.css?v=1.1.2" />
+    <link rel="stylesheet" href="css/detail.css?v=1.1.2" />
+    <link rel="stylesheet" href="css/nexus.css?v=1.1.2" />
+    <link rel="stylesheet" href="css/misc.css?v=1.1.2" />
+    <link rel="stylesheet" href="css/theme.css?v=1.1.2" />
 
     <style>
         /* 高度用 100%（而非 100vh）：WebView2 下窗口最大化 / 高 DPI 缩放时，
@@ -44,6 +53,14 @@
 <body>
     <!-- 最先执行：立即打上 jg-booting，让 .jg-shell 从第一帧就被藏起，避免露出浅色底 -->
     <script>document.body.classList.add('jg-booting');</script>
+    <!-- v1.1.1：主题预置 —— Blazor 挂载前同步读 localStorage 打上 data-theme，
+         深色用户启动不再闪一帧浅色（写入方见 junigridJs.toggleTheme/applyTheme） -->
+    <script>
+        try {
+            var jgTheme = localStorage.getItem('jg-theme');
+            document.documentElement.dataset.theme = (jgTheme === 'dark') ? 'dark' : 'light';
+        } catch (e) { document.documentElement.dataset.theme = 'light'; }
+    </script>
     <!-- Blazor 挂载点：保持为空，Blazor 启动后会把整个应用渲染进这里 -->
     <div id="app"></div>
 
@@ -95,11 +112,19 @@
             }
         });
     </script>
-    <!-- v0.2.2：interop.js 必须排在 blazor.webview.js 之前 —— Blazor 引擎一加载就可能立刻
+    <!-- v0.2.2：junigrid.*.js 必须排在 blazor.webview.js 之前 —— Blazor 引擎一加载就可能立刻
          渲染并回调 OnAfterRenderAsync 里的 junigridJs.*。此前引擎在前、两个 gsap CDN 插件
          夹在中间，CDN 一慢/一挂 junigridJs 就未定义（TitleBar/MainLayout 报
-         "junigridJs was undefined" 未观察异常）。gsap 插件已本地化 + 引擎最后加载，竞态归零。 -->
-    <script src="js/interop.js?v=1.07.3"></script>
+         "junigridJs was undefined" 未观察异常）。gsap 插件已本地化 + 引擎最后加载，竞态归零。
+         （原 interop.js 已按功能拆分；core 必须最先 —— 它定义 window.junigridJs 基础对象） -->
+    <script src="js/junigrid.core.js?v=1.1.9"></script>
+    <script src="js/junigrid.splash.js?v=1.1.9"></script>
+    <script src="js/junigrid.ui.js?v=1.1.9"></script>
+    <script src="js/junigrid.detail.js?v=1.1.9"></script>
+    <script src="js/junigrid.scroll.js?v=1.1.9"></script>
+    <script src="js/junigrid.nexus.js?v=1.1.9"></script>
+    <script src="js/junigrid.taskdock.js?v=1.1.9"></script>
+    <script src="js/junigrid.widgets.js?v=1.1.9"></script>
     <script>junigridJs.splashInit();</script>
     <script src="_framework/blazor.webview.js"></script>
 </body>

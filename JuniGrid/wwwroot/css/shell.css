@@ -1,0 +1,520 @@
+/* ============================================================
+   shell：左侧账户面板 / 弹窗 / 顶栏导航 / 更新按钮 / tooltip
+   ============================================================ */
+/* -------- Account panel (left, PCL-style) -------- */
+.jg-account {
+    width: 20%;                            /* 启动模块占整个程序界面 1/5 */
+    flex: 0 0 20%;                        /* flex 锁定，不被压缩/拉伸 */
+    min-width: 220px;                    /* 容限：窗口极窄时保持可用，不挤爆 */
+    padding: clamp(12px, 1.2vw, 22px) clamp(10px, 1vw, 18px);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    border-right: 1px solid var(--jg-line);
+    background: var(--jg-account-bg);
+    backdrop-filter: saturate(180%) blur(20px);
+    border-bottom-left-radius: 10px;
+    overflow-y: auto;
+    scrollbar-width: none;                       /* 隐藏侧栏滚动条（仍可滚动） */
+}
+.jg-account::-webkit-scrollbar { display: none; }
+
+/* Steam 用户信息垂直居中，启动按钮+版本贴底 */
+.jg-account-mid {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    flex: 1;
+    justify-content: center;
+    margin: auto 0;
+}
+
+/* v1.0.7：侧边栏官方/SMAPI 切换行 —— pills 占满剩余宽度，右侧留给自更新按钮 */
+.jg-mode-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+}
+.jg-mode-row .jg-mode-pills { flex: 1 1 auto; width: auto; }
+.jg-mode-row .jg-upd-btn {
+    flex: 0 0 auto;
+    margin-left: 0;
+    padding: 6px;
+    border-radius: 50%;
+}
+.jg-mode-pills {
+    position: relative;              /* 滑块定位锚点 */
+    display: flex;
+    flex-direction: row;
+    gap: 8px;
+    width: 100%;
+    padding: 4px;
+    border-radius: 999px;
+    background: var(--jg-well);   /* 浅色轨道 */}
+.jg-mode-pills .jg-pill {
+    position: relative;
+    z-index: 1;
+    flex: 1 1 0;
+    padding: 8px 6px;
+    font-size: 12.5px;
+    text-align: center;
+}
+/* 选中滑块：黑色，在两个选项间左右滑动 */
+.jg-pill-thumb {
+    position: absolute;
+    top: 4px;
+    bottom: 4px;
+    left: 4px;
+    width: calc(50% - 8px);
+    border-radius: 999px;
+    background: var(--jg-ink-strong);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+    transition: left 260ms cubic-bezier(.45, 0, .25, 1);
+    pointer-events: none;
+    z-index: 0;
+}
+.jg-mode-pills.smapi .jg-pill-thumb { left: calc(50% + 4px); }
+
+.jg-pill {
+    position: relative;
+    z-index: 1;
+    width: 100%;
+    padding: 8px 6px;
+    border-radius: 999px;
+    border: 0;                        /* 选中由滑块承担 */
+    background: transparent;
+    color: inherit;
+    font-size: 13px;
+    font-family: inherit;
+    cursor: pointer;
+    transition: color 180ms ease;
+}
+.jg-pill:hover { color: rgba(10, 10, 10, 0.85); }
+.jg-pill.active { color: var(--jg-on-ink); font-weight: 600; }
+.jg-pill[disabled] { opacity: .5; cursor: not-allowed; }
+
+.jg-avatar-wrap { position: relative; margin-top: 8px; }
+.jg-avatar {
+    width: 88px; height: 88px;
+    border-radius: 50%;
+    object-fit: cover;
+    display: block;
+    border: 3px solid var(--jg-line-heavy);
+    box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+}
+.jg-avatar-fallback {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: radial-gradient(circle at 30% 30%, #ffe58a, #f5a623 60%, #b46a00);
+    color: #fff;
+    font-size: 36px;
+    font-weight: 700;
+}
+.jg-avatar-dot {
+    position: absolute;
+    right: 4px; bottom: 4px;
+    width: 16px; height: 16px;
+    border-radius: 50%;
+    background: #16c60c;
+    border: 2px solid #fff;
+    box-shadow: 0 0 6px rgba(22,198,12,0.6);
+}
+
+.jg-account-name {
+    font-size: 16px;
+    font-weight: 700;
+    text-align: center;
+    word-break: break-all;
+}
+.jg-account-sub { font-size: 12px; opacity: 0.6; margin-top: -6px; }
+
+.jg-launch-big {
+    width: 100%;
+    margin-top: 6px;
+    padding: 13px 16px;
+    min-height: 60px;
+    border: 0;
+    border-radius: 12px;
+    background: var(--jg-ink-strong);
+    color: var(--jg-on-ink);
+    font-size: 15px;
+    font-weight: 700;
+    font-family: inherit;
+    cursor: pointer;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+    transition: background 240ms ease, transform 120ms ease, box-shadow 120ms ease, width 320ms cubic-bezier(.45,0,.25,1);
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    gap: 2px;
+}
+.jg-launch-ver {
+    font-size: 11.5px;
+    font-weight: 500;
+    opacity: 0.85;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+.jg-launch-ver .jg-upd-arrow { color: #ffd54d; font-weight: 700; }
+
+/* 失败 toast：屏幕上方居中，红色浮条 */
+.jg-toast {
+    position: fixed;
+    top: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: #e5484d;
+    color: #fff;
+    padding: 12px 20px;
+    border-radius: 10px;
+    font-size: 14px;
+    font-weight: 600;
+    z-index: 999999;
+    box-shadow: 0 8px 28px rgba(229, 72, 77, 0.4);
+    pointer-events: none;
+    white-space: nowrap;
+}
+.jg-launch-big:hover { transform: translateY(-1px); box-shadow: 0 8px 24px rgba(0,0,0,0.5); }
+.jg-launch-big:active { transform: translateY(0); }
+.jg-launch-big[disabled] { opacity: 0.55; cursor: not-allowed; transform: none; }
+.jg-launch-big.update {
+    background: linear-gradient(135deg, #c239b3, #8b008b);
+    box-shadow: 0 6px 18px rgba(194,57,179,0.35);
+}
+.jg-launch-big.update:hover { box-shadow: 0 8px 24px rgba(194,57,179,0.45); }
+
+/* 启动区：主按钮默认占满整行；运行时主按钮宽度丝滑收窄，右侧叉号浮现 */
+.jg-launch-row {
+    position: relative;
+    margin-top: 6px;
+    width: 100%;
+    overflow: visible;
+}
+.jg-launch-row .jg-launch-big {
+    margin-top: 0;
+    width: 100%;
+    min-width: 0;
+    /* width 是两个 calc() 之间过渡，可被浏览器平滑插值 → 真正的丝滑收窄 */
+    transition: width 320ms cubic-bezier(.45,0,.25,1), filter 240ms ease, transform 120ms ease, box-shadow 120ms ease;
+}
+/* 运行中：主按钮收窄让出（50px = 42 叉号 + 8 间距），仍在左侧 100% 基线上 */
+.jg-launch-row.running .jg-launch-big {
+    width: calc(100% - 50px);
+    /* 保留绿色渐变，用 filter 蒙灰 —— 用户要"变灰蒙蒙"而不是"换成灰色" */
+    filter: saturate(0.2) brightness(0.82);
+    cursor: not-allowed;
+    transform: none;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+}
+/* v1.1.2c：启动等待中同样收窄让出 ✕（点击可取消），复用同一条 320ms 宽度过渡
+   —— 进入「启动中」由长变短，取消/超时/成功恢复时由短变长，丝滑动画自动发生 */
+.jg-launch-row.launching .jg-launch-big {
+    width: calc(100% - 50px);
+    cursor: not-allowed;
+    transform: none;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+}
+.jg-launch-row.launching .jg-launch-big:hover {
+    transform: none;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+}
+.jg-launch-row.running .jg-launch-big:hover {
+    transform: none;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+    filter: saturate(0.2) brightness(0.82);
+}
+.jg-launch-row.running .jg-launch-main {
+    letter-spacing: 0.5px;
+}
+
+/* 关闭游戏 ✕ 按钮：绝对定位占最右，不参与布局；默认隐没，运行时丝滑浮现（opacity/transform 皆可插值） */
+.jg-close-btn {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 42px;
+    border: 0;
+    border-radius: 12px;
+    background: linear-gradient(135deg, #e5484d, #c8232a);
+    color: #fff;
+    font-size: 18px;
+    font-weight: 700;
+    font-family: inherit;
+    cursor: pointer;
+    opacity: 0;
+    transform: translateX(12px);
+    pointer-events: none;
+    box-shadow: 0 4px 14px rgba(229,72,77,0.28);
+    transition: opacity 260ms cubic-bezier(.45,0,.25,1), transform 260ms cubic-bezier(.45,0,.25,1), background 120ms ease, box-shadow 120ms ease;
+}
+.jg-launch-row.running .jg-close-btn,
+.jg-launch-row.launching .jg-close-btn {
+    opacity: 1;
+    transform: translateX(0);
+    pointer-events: auto;
+}
+.jg-close-btn:hover {
+    background: linear-gradient(135deg, #d5323a, #a81d24);
+    box-shadow: 0 6px 18px rgba(229,72,77,0.5);
+    transform: translateY(-1px);
+}
+/* 关闭游戏 ✕ 的 Cursor-Following Tooltip（鼠标跟随胶囊）：
+   position:fixed 挂 body 上，屏幕坐标系，脱离容器裁剪；spring 平滑跟随由 JS 驱动 */
+/* 关闭游戏确认对话框 */
+.jg-dlg-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(8, 10, 16, 0.55);
+    backdrop-filter: blur(6px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 999998;
+}
+.jg-dialog {
+    background: var(--jg-card);                        /* 白底 */
+    border: 1px solid var(--jg-line);
+    border-radius: 16px;
+    padding: 22px 24px 20px;
+    max-width: 340px;
+    width: calc(100% - 48px);
+    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.32);
+    text-align: center;
+    animation: jg-dlg-in 160ms ease-out;
+}
+@keyframes jg-dlg-in {
+    from { transform: translateY(8px) scale(0.97); opacity: 0; }
+    to { transform: translateY(0) scale(1); opacity: 1; }
+}
+.jg-dialog-body {
+    font-size: 13.5px;
+    line-height: 1.7;
+    color: var(--jg-text-2);
+    margin-bottom: 18px;
+}
+.jg-dialog-actions {
+    display: flex;
+    gap: 10px;
+    justify-content: center;
+}
+.jg-dialog-actions .jg-btn {
+    padding: 8px 20px;
+    border: 0;
+    border-radius: 9px;
+    font-size: 13.5px;
+    font-weight: 600;
+    font-family: inherit;
+    cursor: pointer;
+    transition: transform 100ms ease, box-shadow 100ms ease;
+    background: var(--jg-well);                     /* 取消：浅灰底 */
+    color: var(--jg-text-2);
+}
+.jg-dialog-actions .jg-btn:hover { background: var(--jg-hover-strong); transform: translateY(-1px); }
+.jg-dialog-actions .jg-btn.danger {
+    background: linear-gradient(135deg, #e5484d, #c8232a);
+    color: #fff;
+    box-shadow: 0 4px 14px rgba(229, 72, 77, 0.35);
+}
+.jg-dialog-actions .jg-btn.danger:hover { box-shadow: 0 6px 18px rgba(229, 72, 77, 0.45); }
+
+/* ── 备注/重命名弹窗 ── */
+.jg-dialog-actions .jg-btn.primary {
+    background: linear-gradient(135deg, #4465c4, #2f4bb0);
+    color: #fff;
+    box-shadow: 0 4px 14px rgba(52, 88, 190, 0.35);
+}
+.jg-dialog-actions .jg-btn.primary:hover { background: linear-gradient(135deg, #5170d4, #3355b8); }
+.jg-remark-dialog { text-align: left; }
+.jg-remark-title { font-size: 15px; font-weight: 700; color: var(--jg-text); margin-bottom: 4px; }
+.jg-remark-mod { font-size: 12.5px; color: var(--jg-text-3); margin-bottom: 12px; word-break: break-all; }
+.jg-remark-input {
+    width: 100%; box-sizing: border-box;
+    padding: 9px 12px; border-radius: 9px;
+    border: 1px solid var(--jg-line-strong); background: var(--jg-well); color: var(--jg-text);
+    font-size: 13.5px; font-family: inherit; outline: none;
+}
+.jg-remark-input:focus { border-color: #4c6fce; box-shadow: 0 0 0 3px rgba(76, 111, 206, 0.18); }
+.jg-remark-count { font-size: 11.5px; color: var(--jg-text-3); text-align: right; margin: 6px 0 14px; }
+
+.jg-version { font-size: 11.5px; opacity: 0.65; text-align: center; }
+.jg-uptodate { color: #107c10; opacity: 1; }
+.jg-updatehint { color: #b4009e; font-weight: 600; opacity: 1; }
+
+.jg-linkbtn {
+    background: none;
+    border: 0;
+    color: var(--jg-text);
+    font-size: 11.5px;
+    font-family: inherit;
+    cursor: pointer;
+    padding: 2px 6px;
+    opacity: 0.8;
+}
+.jg-linkbtn:hover { opacity: 1; text-decoration: underline; }
+
+.jg-panel-msg {
+    font-size: 11.5px;
+    line-height: 1.45;
+    border-radius: 8px;
+    padding: 8px 10px;
+    word-break: break-all;
+    width: 100%;
+}
+.jg-panel-msg.ok { background: rgba(16,124,16,0.10); color: #107c10; }
+.jg-panel-msg.err { background: rgba(232,17,35,0.10); color: #c50f1f; }
+.jg-panel-msg.upd { background: rgba(180,0,158,0.10); color: #b4009e; }
+
+/* -------- Top nav (horizontal) -------- */
+.jg-topnav {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: space-around;   /* v0.25.0：5 个图标均分整条顶栏 */
+    gap: 6px;
+    padding: 8px 16px 0;               /* 底部 0，让选中滑块能延伸到底沿并入内容区 */
+    background: var(--jg-topnav-bg);
+    backdrop-filter: saturate(180%) blur(20px);
+    /* 不裁剪：让选中块（.jg-topnav-thumb）向下漏进内容区，与内容同色无缝接通，
+       否则会被裁在顶栏底边，勾出一道分界线，看着不像“从内容区自己突出来” */
+}
+
+/* 选中高亮滑块：纯色素，向下延伸到内容区（同色无缝打通）；点其他项时左移/宽度由 JS 平移过去 */
+.jg-topnav-thumb {
+    position: absolute;
+    top: 4px;
+    bottom: 0;
+    left: 0;
+    width: 0;
+    border-radius: 12px 12px 0 0;
+    background: var(--jg-nav-thumb);
+    box-shadow: 0 -2px 10px rgba(0,0,0,0.06);
+    pointer-events: none;
+    /* v0.35.0：滑块位移/宽度走硬件合成 transform/width，实时跟随 */
+    transition: left 260ms cubic-bezier(.45,0,.25,1), width 260ms cubic-bezier(.45,0,.25,1);
+    will-change: left, width;
+}
+
+/* v0.25.0：纯图标顶栏项 —— flex:1 均分 + 悬浮胶囊 tooltip */
+.jg-topnav-item {
+    position: relative;
+    z-index: 1;
+    flex: 1 1 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    max-width: 96px;
+    height: 42px;
+    padding: 6px 10px;
+    border-radius: 12px;
+    color: inherit;
+    text-decoration: none;
+    cursor: pointer;
+    transition: background 120ms ease, transform 120ms ease;
+}
+.jg-topnav-icon {
+    width: 28px; height: 28px;
+    object-fit: contain;
+    display: block;
+    pointer-events: none;
+    user-select: none;
+}
+.jg-topnav-item:hover { background: var(--jg-track); transform: translateY(-1px); }
+/* 选中项：背景由 jg-topnav-thumb 滑块承担；图标保留原色，NEXUS/SMAPI 等彩色/浅色图标正常显示 */
+.jg-topnav-item.active {
+    background: transparent;
+}
+
+/* v1.0.2：标题栏自更新按钮 —— 无更新时完全不渲染 */
+.jg-upd-btn {
+    display: inline-flex; align-items: center; gap: 4px;
+    background: transparent; border: 0; cursor: pointer;
+    color: #19943C;  /* logo 绿 */
+    margin-left: 8px; padding: 3px; border-radius: 6px; line-height: 0;
+}
+.jg-upd-btn:hover { color: #21B04A; background: rgba(25, 148, 60, 0.12); }
+.jg-upd-btn:disabled { cursor: default; }
+.jg-upd-btn svg { fill: currentColor; }
+.jg-upd-pct { font-size: 11px; font-weight: 600; line-height: 1; color: inherit; }
+
+/* 圆环更新按钮：环、绿盘、箭头在同一个 SVG 里（无 CSS 对齐问题）。
+   26x26 单体图标；环轨道淡绿，填充弧从 12 点方向顺时针闭合 = 下载完成。 */
+.jg-upd-btn { display: inline-flex; align-items: center; line-height: 0; }
+.jg-upd-btn svg { fill: none; }
+.jg-upd-ring-track { fill: none; stroke: currentColor; opacity: 0.2; stroke-width: 2.2; }
+.jg-upd-ring-fill {
+    fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round;
+    transform: rotate(-90deg); transform-origin: 50% 50%;
+    transition: stroke-dashoffset 0.3s ease;
+}
+.jg-upd-icon circle { fill: currentColor; }
+.jg-upd-icon path { fill: #fff; }
+.jg-upd-running .jg-upd-ring-track { opacity: 0.12; }
+
+/* v1.0.17：更新按钮悬浮提示气泡 —— 奶油底 rgb(253,251,219)，GSAP elastic 弹入、
+   移开瞬间消失（动画与显隐由 interop.js updTipInit 接管，默认 hidden） */
+.jg-upd-wrap {
+    position: relative;
+    display: inline-flex;
+    margin-left: 8px;
+}
+.jg-upd-wrap .jg-upd-btn { margin-left: 0; }   /* 外边距挪到 wrap，气泡以按钮为锚居中 */
+.jg-upd-tip {
+    position: absolute;
+    top: calc(100% + 10px);
+    left: 50%;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: rgb(253, 251, 219);
+    color: #0e100f;   /* 奶油气泡两种主题都成立，文字恒为深色 */
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1;
+    padding: 8px 12px;
+    border-radius: 6px;
+    white-space: nowrap;
+    pointer-events: none;
+    visibility: hidden;
+    opacity: 0;
+    z-index: 9999;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.16);
+    will-change: transform;
+}
+.jg-upd-tip::after {   /* 指向按钮的向上小箭头 */
+    content: "";
+    position: absolute;
+    bottom: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    border: 6px solid transparent;
+    border-bottom-color: rgb(253, 251, 219);
+}
+/* gsap 未就绪时的兜底：纯 CSS 悬停直显（无动画） */
+.jg-upd-tip-nogsap .jg-upd-tip {
+    visibility: visible;
+    opacity: 1;
+    transform: translateX(-50%);
+}
+.jg-upd-tip-nogsap:hover .jg-upd-tip { visibility: visible; opacity: 1; }
+/* 下载中：转圈圆 */
+.jg-upd-tip-spin {
+    width: 12px;
+    height: 12px;
+    flex: none;
+    border: 2px solid rgba(14, 16, 15, 0.2);
+    border-top-color: #19943C;
+    border-radius: 50%;
+    animation: jg-upd-spin 0.8s linear infinite;
+}
+@keyframes jg-upd-spin { to { transform: rotate(360deg); } }
+
+
+
+
