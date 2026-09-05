@@ -439,6 +439,159 @@ public partial class MainWindow : Window
         catch (Exception ex) { Log("ExitLowMemoryMode 跳过: " + ex.Message); }
     }
 
+    // ══════════════════════════════════════════════════════════════
+    // v1.1.2：主题切换圆形揭示（CapturePreview 快照 + WPF 挖洞动画）
+    // View Transitions 的快照层在 WebView2 合成渲染路径下偶发「整层空白/
+    // 渲染器停摆」，无法根治 —— 改用完全普通的绘制路径：
+    //   1) CoreWebView2.CapturePreviewAsync 截当前（旧主题）页面；
+    //   2) 截图铺在 WebView 上方的覆盖层 Image 里（盖住页面）；
+    //   3) 通知 JS 立即（无动画）切到新主题；
+    //   4) 覆盖层 OpacityMask 从开关位置挖一个不断变大的圆洞露出新主题；
+    //   5) 动画结束摘除覆盖层。两个方向同一段代码，对称且不会白屏。
+    // ══════════════════════════════════════════════════════════════
+    private static bool _themeRevealing;
+
+    /// <summary>圆形揭示动画时长。</summary>
+    public static int ThemeRevealMs = 400;
+
+    /// <summary>由 TitleBar 调用：从 (cssX, cssY)（CSS 像素 = WPF DIP）开始圆形揭示到新主题。</summary>
+    public static async Task RevealThemeSwitchAsync(
+        double cssX, double cssY, string nextTheme, Func<string, Task> applyThemeJs)
+    {
+        var app = System.Windows.Application.Current;
+        var w = app?.MainWindow as MainWindow;
+        if (w is null || MainWindow._themeRevealing)
+        {
+            await applyThemeJs(nextTheme);   // 正在揭示/无窗口：直接瞬时切换
+            return;
+        }
+        MainWindow._themeRevealing = true;
+        try
+        {
+            var core = w._wv2?.CoreWebView2;
+            var overlay = w.ThemeRevealOverlay;
+            if (core is null || overlay is null)
+            {
+                await applyThemeJs(nextTheme);   // 兜底：无法截图时瞬时切换
+                return;
+            }
+
+            // 1. 截当前（旧主题）页面
+            using var ms = new System.IO.MemoryStream();
+            await core.CapturePreviewAsync(
+                Microsoft.Web.WebView2.Core.CoreWebView2CapturePreviewImageFormat.Png, ms);
+            ms.Position = 0;
+            var bmp = new System.Windows.Media.Imaging.BitmapImage();
+            bmp.BeginInit();
+            bmp.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad;
+            bmp.StreamSource = ms;
+            bmp.EndInit();
+            bmp.Freeze();   // 跨线程可用
+
+            // 2. 覆盖层铺旧画面（盖住页面）
+            overlay.Source = bmp;
+            overlay.Visibility = Visibility.Visible;
+
+            // 3. 页面立即（无动画）切到新主题，并让宿主底色跟随
+            await applyThemeJs(nextTheme);
+            ApplyShellTheme(nextTheme == "dark");
+            await Task.Delay(60);   // 给新主题至少一帧绘制时间
+
+            // 4. OpacityMask 从开关位置挖圆洞（洞内透明露出新主题，洞外不透明旧画面）
+            double wd = overlay.ActualWidth, ht = overlay.ActualHeight;
+            if (wd < 1 || ht < 1)
+            {
+                await applyThemeJs(nextTheme);
+                return;
+            }
+            double endR = Math.Sqrt(
+                Math.Pow(Math.Max(cssX, wd - cssX), 2) +
+                Math.Pow(Math.Max(cssY, ht - cssY), 2));
+            var brush = new System.Windows.Media.RadialGradientBrush
+            {
+                MappingMode = System.Windows.Media.BrushMappingMode.Absolute,
+                Center = new System.Windows.Point(cssX, cssY),
+                GradientOrigin = new System.Windows.Point(cssX, cssY)
+            };
+            System.Windows.Media.Animation.DoubleAnimation anim;
+            if (nextTheme == "dark")
+            {
+                // 明变暗：旧浅色截图【只显示在以开关为圆心的收缩圆内】（圆外透明，
+                // 露出已翻转的真实暗色页面）—— 圆半径从全屏收缩到 0，
+                // 白色随圆缩回开关，四周先入夜，与官网「浅色向按钮收回」一致
+                brush.GradientStops.Add(new System.Windows.Media.GradientStop(
+                    System.Windows.Media.Colors.Black, 0.0));
+                brush.GradientStops.Add(new System.Windows.Media.GradientStop(
+                    System.Windows.Media.Colors.Black, 0.985));
+                brush.GradientStops.Add(new System.Windows.Media.GradientStop(
+                    System.Windows.Media.Colors.Transparent, 1.0));
+                brush.RadiusX = endR;
+                brush.RadiusY = endR;
+                overlay.OpacityMask = brush;
+                anim = new System.Windows.Media.Animation.DoubleAnimation(
+                    endR, 0.001, TimeSpan.FromMilliseconds(ThemeRevealMs))
+                {
+                    EasingFunction = new System.Windows.Media.Animation.CubicEase
+                    {
+                        EasingMode = System.Windows.Media.Animation.EasingMode.EaseIn
+                    }
+                };
+            }
+            else
+            {
+                // 变亮：旧暗色截图铺满，圆洞从开关扩大露出新浅色页面
+                //（浅色从按钮处向四周发散）
+                brush.GradientStops.Add(new System.Windows.Media.GradientStop(
+                    System.Windows.Media.Colors.Transparent, 0.0));
+                brush.GradientStops.Add(new System.Windows.Media.GradientStop(
+                    System.Windows.Media.Colors.Transparent, 0.985));
+                brush.GradientStops.Add(new System.Windows.Media.GradientStop(
+                    System.Windows.Media.Colors.Black, 1.0));
+                brush.RadiusX = 0.001;
+                brush.RadiusY = 0.001;
+                overlay.OpacityMask = brush;
+                anim = new System.Windows.Media.Animation.DoubleAnimation(
+                    0.001, endR, TimeSpan.FromMilliseconds(ThemeRevealMs))
+                {
+                    EasingFunction = new System.Windows.Media.Animation.CubicEase
+                    {
+                        EasingMode = System.Windows.Media.Animation.EasingMode.EaseIn
+                    }
+                };
+            }
+            var tcs = new TaskCompletionSource();
+            anim.Completed += (_, _) => tcs.TrySetResult();
+            brush.BeginAnimation(System.Windows.Media.RadialGradientBrush.RadiusXProperty, anim);
+            brush.BeginAnimation(System.Windows.Media.RadialGradientBrush.RadiusYProperty, anim);
+            await tcs.Task;
+
+            // 5. 清理
+            overlay.OpacityMask = null;
+            overlay.Source = null;
+            overlay.Visibility = Visibility.Collapsed;
+        }
+        catch (Exception ex)
+        {
+            Log("主题圆形揭示失败，回退为瞬时切换: " + ex.Message);
+            try { await applyThemeJs(nextTheme); } catch { }
+        }
+        finally
+        {
+            var w2 = app?.MainWindow as MainWindow;
+            if (w2 is not null)
+            {
+                MainWindow._themeRevealing = false;
+                var o = w2.ThemeRevealOverlay;
+                if (o is not null)
+                {
+                    o.OpacityMask = null;
+                    o.Source = null;
+                    o.Visibility = Visibility.Collapsed;
+                }
+            }
+        }
+    }
+
     /// <summary>Blazor 页面调这里：在主窗口内打开 Nexus 浏览覆盖层。</summary>
     public static void OpenNexusOverlay(string url, bool queueMode = false)
     {

@@ -263,8 +263,9 @@ public sealed class JuniGridConfig
     public bool   NexusIsPremium { get; set; }
 
     /// <summary>v1.1.1：界面主题（"light" | "dark"）。标题栏开关切换并落盘；
-    /// 启动时 TitleBar 用它对齐前端（localStorage 为防闪白的同步快路径）。</summary>
-    public string Theme { get; set; } = "light";
+    /// 启动时 TitleBar 用它对齐前端（localStorage 为防闪白的同步快路径）。
+    /// v1.1.2：默认改为 dark（用户主用暗色观察界面）。</summary>
+    public string Theme { get; set; } = "dark";
     /// <summary>v0.69.0：modId → 最后一次从该 mod 下载文件的日期（yyyy-MM-dd）。本地安装/更新时记录，并与 N 网下载历史合并。</summary>
     public Dictionary<string, string> ModLastDownload { get; set; } = new();
     /// <summary>v0.69.0：fileId → 该文件的下载日期（仅本机经系统内下载过的）。</summary>

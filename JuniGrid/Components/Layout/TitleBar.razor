@@ -20,8 +20,7 @@
              深色=月亮居右）。视觉完全由 html[data-theme] 驱动，Blazor 不需要持有状态；
              点击走 junigridJs.toggleTheme 的 View Transitions 圆形揭示动画。 ── *@
         <div class="jg-theme-wrap">
-            <button class="jg-theme-toggle" @onclick="ToggleThemeAsync" title="切换深色 / 浅色主题" aria-label="切换深色 / 浅色主题">
-                <span class="jg-tt-knob">
+            <button class="jg-theme-toggle" @onclick="ToggleThemeAsync" title="切换深色 / 浅色主题" aria-label="切换深色 / 浅色主题">                <span class="jg-tt-knob">
                     <svg class="jg-tt-sun" viewBox="0 0 1024 1024" aria-hidden="true">
                         <path fill="currentColor" d="M512 298.666667a170.666667 170.666667 0 1 0 0 341.333333 170.666667 170.666667 0 0 0 0-341.333333z m0 284.444444a113.777778 113.777778 0 1 1 0-227.555555 113.777778 113.777778 0 0 1 0 227.555555zM512 85.333333a28.444444 28.444444 0 0 1 28.444444 28.444445v56.888889a28.444444 28.444444 0 1 1-56.888888 0V113.777778a28.444444 28.444444 0 0 1 28.444444-28.444445z m0 739.555556a28.444444 28.444444 0 0 1 28.444444 28.444444v56.888889a28.444444 28.444444 0 1 1-56.888888 0v-56.888889a28.444444 28.444444 0 0 1 28.444444-28.444444zM85.333333 512a28.444444 28.444444 0 0 1 28.444445-28.444444h56.888889a28.444444 28.444444 0 1 1 0 56.888888H113.777778a28.444444 28.444444 0 0 1-28.444445-28.444444z m739.555556 0a28.444444 28.444444 0 0 1 28.444444-28.444444h56.888889a28.444444 28.444444 0 1 1 0 56.888888h-56.888889a28.444444 28.444444 0 0 1-28.444444-28.444444zM231.762946 231.762946a28.444444 28.444444 0 0 1 40.220445 0l40.220444 40.220445a28.444444 28.444444 0 1 1-40.220444 40.220444l-40.220445-40.220444a28.444444 28.444444 0 0 1 0-40.220445z m480.033219 480.033219a28.444444 28.444444 0 0 1 40.220444 0l40.220445 40.220444a28.444444 28.444444 0 1 1-40.220445 40.220445l-40.220444-40.220445a28.444444 28.444444 0 0 1 0-40.220444z m40.220444-480.033219a28.444444 28.444444 0 0 1 0 40.220445l-40.220444 40.220444a28.444444 28.444444 0 1 1-40.220444-40.220444l40.220444-40.220445a28.444444 28.444444 0 0 1 40.220444 0zM271.983391 711.796165a28.444444 28.444444 0 0 1 0 40.220444l-40.220445 40.220445a28.444444 28.444444 0 1 1-40.220444-40.220445l40.220444-40.220444a28.444444 28.444444 0 0 1 40.220445 0z"/>
                     </svg>
@@ -139,18 +138,33 @@
 
     private void Close() => GetWindow()?.Close();
 
-    // ---- v1.1.1：深浅主题切换（动画在 JS 侧，这里负责持久化 + WPF 窗口底色）----
-    private async Task ToggleThemeAsync()
+    // ---- v1.1.2：深浅主题切换（WPF 覆盖层圆形揭示，坐标取自点击位置）----
+    private bool _switchingTheme;
+
+    private async Task ToggleThemeAsync(Microsoft.AspNetCore.Components.Web.MouseEventArgs e)
     {
-        string next;
-        try { next = await JS.InvokeAsync<string>("junigridJs.toggleTheme") ?? "light"; }
-        catch { return; }   // JS 未就绪：不动主题，避免配置与界面脱节
-        if (!string.Equals(Cfg.Current.Theme, next, StringComparison.OrdinalIgnoreCase))
+        if (_switchingTheme) return;   // 揭示动画进行中忽略连点
+        _switchingTheme = true;
+        try
         {
-            Cfg.Current.Theme = next;
-            Cfg.Save(Cfg.Current);
+            var next = string.Equals(Cfg.Current.Theme, "dark", StringComparison.OrdinalIgnoreCase)
+                ? "light"
+                : "dark";
+            // 揭示动画在宿主侧：截旧主题页面 → 覆盖层挖圆洞 → JS 瞬时切主题
+            await MainWindow.RevealThemeSwitchAsync(
+                e.ClientX, e.ClientY, next,
+                async t => await JS.InvokeVoidAsync("junigridJs.applyTheme", t));
+            if (!string.Equals(Cfg.Current.Theme, next, StringComparison.OrdinalIgnoreCase))
+            {
+                Cfg.Current.Theme = next;
+                Cfg.Save(Cfg.Current);
+            }
+            MainWindow.ApplyShellTheme(next == "dark");
         }
-        MainWindow.ApplyShellTheme(next == "dark");
+        finally
+        {
+            _switchingTheme = false;
+        }
     }
 
     private static System.Windows.Window? GetWindow()

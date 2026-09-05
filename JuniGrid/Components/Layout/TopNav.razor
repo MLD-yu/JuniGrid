@@ -16,21 +16,24 @@
         <NavLink class="jg-topnav-item" ActiveClass="active" Match="@item.Match" href="@item.Href"
                  data-tip="@item.Label" aria-label="@item.Label"
                  @onclick="() => OnIconClick(item)">
-            <img class="jg-topnav-icon" src="@item.Icon" alt="" draggable="false" />
+            @* v1.1.2：深浅双图标 —— 深色主题换 -on-dark 亮色变体（home/mods/settings 的
+               深灰填充在深色下看不见；nexus/smapi 本身彩色，两态共用同一张） *@
+            <img class="jg-topnav-icon jg-topnav-icon-light" src="@item.Icon" alt="" draggable="false" />
+            <img class="jg-topnav-icon jg-topnav-icon-dark" src="@(item.DarkIcon ?? item.Icon)" alt="" draggable="false" />
         </NavLink>
     }
 </nav>
 
 @code {
-    private record NavItem(string Href, string Label, string Icon, NavLinkMatch Match);
+    private record NavItem(string Href, string Label, string Icon, NavLinkMatch Match, string? DarkIcon = null);
 
     private readonly NavItem[] Items =
     {
-        new("",         "首页",       "assets/nav/home.svg",     NavLinkMatch.All),
-        new("mods",     "Mod 管理",   "assets/nav/mods.svg",     NavLinkMatch.Prefix),
+        new("",         "首页",       "assets/nav/home.svg",     NavLinkMatch.All,   "assets/nav/home-on-dark.svg"),
+        new("mods",     "Mod 管理",   "assets/nav/mods.svg",     NavLinkMatch.Prefix, "assets/nav/mods-on-dark.svg"),
         new("nexus",    "NEXUS MODS", "assets/nav/nexus.svg",    NavLinkMatch.Prefix),
         new("logs",     "SMAPI 日志", "assets/nav/smapi.svg",    NavLinkMatch.Prefix),
-        new("settings", "设置",       "assets/nav/settings.svg", NavLinkMatch.Prefix),
+        new("settings", "设置",       "assets/nav/settings.svg", NavLinkMatch.Prefix, "assets/nav/settings-on-dark.svg"),
     };
 
     protected override void OnInitialized()

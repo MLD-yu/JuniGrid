@@ -44,6 +44,15 @@
             </blazor:BlazorWebView.RootComponents>
         </blazor:BlazorWebView>
 
+        <!-- ===== v1.1.2：主题切换圆形揭示覆盖层 =====
+             切换主题时把旧主题页面截图铺在这里（盖在 WebView 上面），
+             再用 OpacityMask 从开关位置挖一个不断变大的圆洞露出新主题。
+             纯 WPF 绘制路径，完全绕开 WebView2 的 View Transitions 合成器缺陷。 -->
+        <Image x:Name="ThemeRevealOverlay"
+               Stretch="Fill"
+               IsHitTestVisible="False"
+               Visibility="Collapsed"/>
+
         <!-- ===== 内置 Nexus 浏览器：主窗口内的覆盖层 =====
              免费用户在这里点 Mod Manager Download，nxm:// 被拦截后自动安装。
              用独立的 WebView2 环境（自己的用户数据目录），避免和

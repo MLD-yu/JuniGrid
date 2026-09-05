@@ -1,8 +1,42 @@
 /* ============================================================
    theme：深色主题（html[data-theme="dark"]）组件微调
-   变量翻不动的场景在这里补：白色 SVG 反色、高光、热力图蓝色阶。
+   变量翻不动的场景在这里补：白色 SVG 反色、高光、热力图蓝色阶、
+   <img> 深灰图标亮色化、FluentUI 输入框深色化。
    浅色主题不加载任何规则 —— 本文件只写 dark 分支。
    ============================================================ */
+
+/* ── 顶栏导航：深色主题换 -on-dark 亮色变体（base.css 默认隐藏 dark 图）── */
+html[data-theme="dark"] .jg-topnav-icon-light { display: none; }
+html[data-theme="dark"] .jg-topnav-icon-dark { display: block; }
+
+/* ── 深灰 <img> 图标亮色化：<img> 不继承 CSS 颜色，用滤镜统一翻白 ──
+   Mod 管理批量栏 / 行内按钮 / 搜索按钮的动作图标（assets/actions、search.svg） */
+html[data-theme="dark"] .jg-ico img,
+html[data-theme="dark"] .jg-rowbtn-icon,
+html[data-theme="dark"] .jg-search-btn img {
+    filter: brightness(0) invert(1);
+}
+
+/* ── 关于页 LogoLoop 联系图标：深色下改为白色剪影 ── */
+html[data-theme="dark"] .jg-ll-item img {
+    filter: brightness(0) invert(1);
+}
+
+/* ── 设置页开关行的禁用文字：浅色用深灰、深色下改浅灰（原 rgba(32,32,32,.45) 在深色下不可读）── */
+html[data-theme="dark"] .jg-switch-row.disabled { color: rgba(231, 233, 238, 0.5); }
+
+/* ── FluentUI 输入框（游戏目录路径等 FluentTextField）深色化 ──
+   FluentUI Web Components 读这些继承变量，白底灰字在深色下刺眼且路径看不清 */
+html[data-theme="dark"] fluent-text-field {
+    --neutral-fill-input-rest: #26282e;
+    --neutral-fill-input-hover: #2b2d34;
+    --neutral-fill-input-focus: #26282e;
+    --neutral-foreground-rest: #e7e9ee;
+    --neutral-foreground-hover: #e7e9ee;
+    --neutral-outline-rest-color: #43464c;
+    --neutral-outline-hover-color: #5a5e66;
+    --neutral-outline-focus-color: #6b7078;
+}
 
 /* ── 返回顶部：圆钮反转为浅色后，白色箭头同步压深 ── */
 html[data-theme="dark"] .jg-backtop img { filter: brightness(0.3); }
@@ -16,10 +50,10 @@ html[data-theme="dark"] .jg-author-hl {
     box-shadow: 0 0 10px rgba(255, 255, 255, 0.14), 0 0 0 1px rgba(255, 255, 255, 0.12);
 }
 
-/* ── 游玩时长热力图：深色下用 GitHub 深色风「蓝色阶」──
-   颜色越深 = 玩得越久；空格子用深灰，四档蓝由暗到亮（对应图二的 GitHub 深色蓝） */
-html[data-theme="dark"] .jg-heat-cell { background: #2b2f37; outline-color: rgba(255, 255, 255, 0.06); }
-html[data-theme="dark"] .jg-heat-cell.l1 { background: #1e3a6d; }
-html[data-theme="dark"] .jg-heat-cell.l2 { background: #2b5cb8; }
-html[data-theme="dark"] .jg-heat-cell.l3 { background: #4d8df5; }
-html[data-theme="dark"] .jg-heat-cell.l4 { background: #8fc1ff; }
+/* ── 游玩时长热力图：深色下用蓝色阶 ──
+   没玩过 = 黑色；玩得越少蓝越浅、越多蓝越深（l1 → l4 由浅到深） */
+html[data-theme="dark"] .jg-heat-cell { background: #0d0e11; outline-color: rgba(255, 255, 255, 0.05); }
+html[data-theme="dark"] .jg-heat-cell.l1 { background: #9cc3fb; }
+html[data-theme="dark"] .jg-heat-cell.l2 { background: #5f96f4; }
+html[data-theme="dark"] .jg-heat-cell.l3 { background: #2f6ae0; }
+html[data-theme="dark"] .jg-heat-cell.l4 { background: #17408f; }

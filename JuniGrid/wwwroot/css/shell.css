@@ -425,6 +425,15 @@
     pointer-events: none;
     user-select: none;
 }
+/* v1.1.2：深浅双图标 —— 浅色显示原版，深色显示 -on-dark 亮色变体（见 theme.css）。
+   dark 图绝对定位叠在 light 图中心（.jg-topnav-item 是 relative），布局零抖动 */
+.jg-topnav-icon-dark {
+    display: none;
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+}
 .jg-topnav-item:hover { background: var(--jg-track); transform: translateY(-1px); }
 /* 选中项：背景由 jg-topnav-thumb 滑块承担；图标保留原色，NEXUS/SMAPI 等彩色/浅色图标正常显示 */
 .jg-topnav-item.active {

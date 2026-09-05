@@ -332,103 +332,18 @@ window.junigridJs.animateMinimize = function () {
 };
 
 // ============================================================
-// v1.1.1：深浅主题切换 —— 与 element-plus.org 官网完全一致的
-// View Transitions 圆形揭示（clip-path circle 从主题开关圆心起算）：
-//   切到浅色：新(浅色)快照 circle 0 → 全屏，浅色从按钮处往四周发散；
-//   切到深色：旧(浅色)快照 circle 全屏 → 0，浅色从四周往按钮处收回，
-//             四周先入夜，直到深色充满整个窗口。
-// 不支持 startViewTransition / 系统开了「减少动态效果」时直接换主题不播动画。
+// v1.1.2：深浅主题（WPF 覆盖层圆形揭示方案的 JS 侧接口）
+// 切换动画本体在宿主侧（MainWindow.RevealThemeSwitchAsync：
+// CapturePreview 截旧主题 → 覆盖层挖圆洞），这里只提供状态读写与
+// 无动画瞬时切换（由 C# 在覆盖层就位后调用）。
 // ============================================================
 window.junigridJs.getTheme = function () {
     return document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light';
 };
-// 无动画应用主题（启动时配置与 localStorage 对齐用）
+// 无动画应用主题（瞬时生效，供宿主在覆盖层就位后调用）
 window.junigridJs.applyTheme = function (theme) {
     var t = theme === 'dark' ? 'dark' : 'light';
     document.documentElement.dataset.theme = t;
     try { localStorage.setItem('jg-theme', t); } catch (e) { }
     return t;
 };
-// 带圆形揭示动画的切换。返回 Promise<string> = 切换后的主题。
-window.junigridJs.toggleTheme = function () {
-    var root = document.documentElement;
-    var toDark = root.dataset.theme !== 'dark';
-    var next = toDark ? 'dark' : 'light';
-
-    // 圆心 = 标题栏主题开关的中心（找不到就退化为右上角）
-    var x = window.innerWidth - 60, y = 20;
-    var btn = document.querySelector('.jg-theme-toggle');
-    if (btn) {
-        var r = btn.getBoundingClientRect();
-        x = r.left + r.width / 2;
-        y = r.top + r.height / 2;
-    }
-
-    var apply = function () {
-        root.dataset.theme = next;
-        try { localStorage.setItem('jg-theme', next); } catch (e) { }
-    };
-
-    var reduce = window.matchMedia
-        && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    if (!document.startViewTransition || reduce) {
-        apply();
-        return Promise.resolve(next);
-    }
-
-    // 与 element-plus.org 一致：切深色时把旧(浅色)快照提到最上层 ——
-    // View Transition 默认新快照在上，不提升的话新深色视图会直接盖住
-    // 「浅色向按钮收回」的收缩动画。
-    root.dataset.themeTransition = toDark ? 'to-dark' : 'to-light';
-    var transition = document.startViewTransition(apply);
-    var endRadius = Math.hypot(
-        Math.max(x, window.innerWidth - x),
-        Math.max(y, window.innerHeight - y)
-    );
-    // ⚠️ WebView2（CompositionControl 渲染路径）里 ::view-transition 快照层的
-    // clip-path 坐标按【物理像素】解释，而 getBoundingClientRect / innerWidth
-    // 是 CSS 像素 —— 高 DPI 下圆心和半径会被除以 dpr，圆跑到窗口中部。
-    // 圆心与半径统一乘 devicePixelRatio 修正；dpr=1 的环境不受影响。
-    var dpr = window.devicePixelRatio || 1;
-    x *= dpr; y *= dpr; endRadius *= dpr;
-    var done = transition.ready.then(function () {
-        var clipPath = [
-            'circle(0px at ' + x + 'px ' + y + 'px)',
-            'circle(' + endRadius + 'px at ' + x + 'px ' + y + 'px)'
-        ];
-        // 深色：旧(浅色)快照从全屏圆收缩回按钮；浅色：新(浅色)快照从按钮扩散开
-        // fill:'both' 必须加 —— 动画结束到快照销毁之间若有间隔帧，无填充时 clip-path
-        // 会回弹成全屏，浅色旧快照整个闪回来（高 DPI WebView2 上能看见一帧白闪）；
-        // 保持终态（圆收缩到 0 / 扩散到全屏）直到快照被移除，与官网 CSS 的 both 一致
-        document.documentElement.animate(
-            { clipPath: toDark ? [clipPath[1], clipPath[0]] : clipPath },
-            {
-                duration: 400,
-                easing: 'ease-in',
-                fill: 'both',
-                pseudoElement: toDark ? '::view-transition-old(root)' : '::view-transition-new(root)'
-            }
-        );
-    });
-    var cleanup = function () { delete root.dataset.themeTransition; };
-    // ⚠️ 兜底：WebView2 合成路径下快照纹理偶发上传失败会让过渡「卡住」——
-    // 快照层一直盖在页面上，整窗只剩底色（内容像全部消失）。
-    // 超时强制 skipTransition 摘除快照让页面立即恢复（DOM 早已是新主题，无损）。
-    var settled = false;
-    var fin = function () {
-        if (settled) return;
-        settled = true;
-        clearTimeout(stuckTimer);
-        cleanup();
-        return next;
-    };
-    var stuckTimer = setTimeout(function () {
-        try { transition.skipTransition(); } catch (e) { }
-        setTimeout(fin, 50);
-    }, 900);
-    done.then(function () { }).catch(function () { });
-    return transition.finished
-        .catch(function () { })
-        .then(fin, fin);
-};
-

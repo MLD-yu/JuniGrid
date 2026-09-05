@@ -58,8 +58,8 @@
     <script>
         try {
             var jgTheme = localStorage.getItem('jg-theme');
-            document.documentElement.dataset.theme = (jgTheme === 'dark') ? 'dark' : 'light';
-        } catch (e) { document.documentElement.dataset.theme = 'light'; }
+            document.documentElement.dataset.theme = (jgTheme === 'light') ? 'light' : 'dark';
+        } catch (e) { document.documentElement.dataset.theme = 'dark'; }
     </script>
     <!-- Blazor 挂载点：保持为空，Blazor 启动后会把整个应用渲染进这里 -->
     <div id="app"></div>
@@ -117,7 +117,7 @@
          夹在中间，CDN 一慢/一挂 junigridJs 就未定义（TitleBar/MainLayout 报
          "junigridJs was undefined" 未观察异常）。gsap 插件已本地化 + 引擎最后加载，竞态归零。
          （原 interop.js 已按功能拆分；core 必须最先 —— 它定义 window.junigridJs 基础对象） -->
-    <script src="js/junigrid.core.js?v=1.1.10"></script>
+    <script src="js/junigrid.core.js?v=1.1.13"></script>
     <script src="js/junigrid.splash.js?v=1.1.9"></script>
     <script src="js/junigrid.ui.js?v=1.1.9"></script>
     <script src="js/junigrid.detail.js?v=1.1.9"></script>

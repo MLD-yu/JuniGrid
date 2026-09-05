@@ -75,7 +75,7 @@ html[data-theme="dark"] {
     --jg-glass-95: rgba(28,30,36,0.97);
     --jg-account-bg: rgba(28,30,36,0.45);
     --jg-topnav-bg: rgba(28,30,36,0.30);
-    --jg-nav-thumb: rgba(40,43,50,0.92);
+    --jg-nav-thumb: #15161a;   /* 选中滑块 = 内容区底色，保持「从内容模块里突出来」的无缝观感 */
     --jg-well: rgba(255,255,255,0.055);
     --jg-track: rgba(255,255,255,0.08);
     --jg-hover: rgba(255,255,255,0.07);
@@ -102,36 +102,6 @@ html[data-theme="dark"] {
     /* FluentUI 兜底变量（home/mods 里 var(--neutral-layer-1, #fff) 这类引用） */
     --neutral-layer-1: #1e2025;
     --neutral-foreground-rest: #e7e9ee;
-}
-
-/* ---- View Transitions 圆形揭示（与 element-plus.org 官网一致）----
-   切浅色：新(浅色)快照 circle 从按钮处 0 → 全屏发散；
-   切深色：旧(浅色)快照 circle 全屏 → 0 向按钮收回（四周先入夜，浅色缩回按钮）。
-   动画本体由 JS documentElement.animate 驱动（400ms ease-in），这里只关掉默认
-   交叉淡化，并在切深色时把旧快照提到新快照之上（不提升会被新视图盖住）。 */
-::view-transition-old(root),
-::view-transition-new(root) {
-    animation: none;
-    mix-blend-mode: normal;
-}
-html[data-theme-transition="to-dark"]::view-transition-old(root) {
-    z-index: 2147483646;
-}
-html[data-theme-transition="to-dark"]::view-transition-new(root) {
-    z-index: 1;
-}
-/* 快照期间关闭背景模糊：backdrop-filter 参与 View Transition 快照时，
-   WebView2 合成路径下会偶发「旧快照整层空白」（深→浅时整窗只剩底色、内容消失）。
-   过渡仅 ~400ms 且快照盖在页面上，模糊开关本身不可见。 */
-html[data-theme-transition] .jg-titlebar,
-html[data-theme-transition] .jg-account,
-html[data-theme-transition] .jg-topnav,
-html[data-theme-transition] .jg-sort-menu,
-html[data-theme-transition] .jg-sort-menu-in,
-html[data-theme-transition] .jg-taskdrop-menu,
-html[data-theme-transition] .jg-dlg-overlay,
-html[data-theme-transition] .jg-login-overlay {
-    backdrop-filter: none !important;
 }
 
 *, *::before, *::after { box-sizing: border-box; }

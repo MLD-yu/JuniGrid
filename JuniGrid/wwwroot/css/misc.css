@@ -571,7 +571,7 @@
     width: max-content;
     max-width: 260px;
     background: #fffce1;
-    color: var(--jg-text);
+    color: #0e100f;   /* 奶油底两种主题都不变，文字恒为深色（浅色变量在深色主题下会翻白看不清）*/
     padding: 8px 14px;
     border-radius: 8px;
     font-size: 12px;
