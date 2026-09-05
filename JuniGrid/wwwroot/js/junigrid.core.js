@@ -397,11 +397,15 @@ window.junigridJs.toggleTheme = function () {
             'circle(' + endRadius + 'px at ' + x + 'px ' + y + 'px)'
         ];
         // 深色：旧(浅色)快照从全屏圆收缩回按钮；浅色：新(浅色)快照从按钮扩散开
+        // fill:'both' 必须加 —— 动画结束到快照销毁之间若有间隔帧，无填充时 clip-path
+        // 会回弹成全屏，浅色旧快照整个闪回来（高 DPI WebView2 上能看见一帧白闪）；
+        // 保持终态（圆收缩到 0 / 扩散到全屏）直到快照被移除，与官网 CSS 的 both 一致
         document.documentElement.animate(
             { clipPath: toDark ? [clipPath[1], clipPath[0]] : clipPath },
             {
                 duration: 400,
                 easing: 'ease-in',
+                fill: 'both',
                 pseudoElement: toDark ? '::view-transition-old(root)' : '::view-transition-new(root)'
             }
         );
