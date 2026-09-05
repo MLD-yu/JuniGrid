@@ -385,6 +385,12 @@ window.junigridJs.toggleTheme = function () {
         Math.max(x, window.innerWidth - x),
         Math.max(y, window.innerHeight - y)
     );
+    // ⚠️ WebView2（CompositionControl 渲染路径）里 ::view-transition 快照层的
+    // clip-path 坐标按【物理像素】解释，而 getBoundingClientRect / innerWidth
+    // 是 CSS 像素 —— 高 DPI 下圆心和半径会被除以 dpr，圆跑到窗口中部。
+    // 圆心与半径统一乘 devicePixelRatio 修正；dpr=1 的环境不受影响。
+    var dpr = window.devicePixelRatio || 1;
+    x *= dpr; y *= dpr; endRadius *= dpr;
     var done = transition.ready.then(function () {
         var clipPath = [
             'circle(0px at ' + x + 'px ' + y + 'px)',
