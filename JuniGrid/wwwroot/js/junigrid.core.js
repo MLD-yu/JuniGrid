@@ -411,9 +411,24 @@ window.junigridJs.toggleTheme = function () {
         );
     });
     var cleanup = function () { delete root.dataset.themeTransition; };
-    return done
-        .then(function () { return transition.finished.catch(function () { }); })
-        .then(function () { cleanup(); return next; })
-        .catch(function () { cleanup(); return next; });
+    // ⚠️ 兜底：WebView2 合成路径下快照纹理偶发上传失败会让过渡「卡住」——
+    // 快照层一直盖在页面上，整窗只剩底色（内容像全部消失）。
+    // 超时强制 skipTransition 摘除快照让页面立即恢复（DOM 早已是新主题，无损）。
+    var settled = false;
+    var fin = function () {
+        if (settled) return;
+        settled = true;
+        clearTimeout(stuckTimer);
+        cleanup();
+        return next;
+    };
+    var stuckTimer = setTimeout(function () {
+        try { transition.skipTransition(); } catch (e) { }
+        setTimeout(fin, 50);
+    }, 900);
+    done.then(function () { }).catch(function () { });
+    return transition.finished
+        .catch(function () { })
+        .then(fin, fin);
 };
 

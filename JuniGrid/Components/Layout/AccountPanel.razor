@@ -152,9 +152,8 @@
         if (firstRender)
         {
             // 启动按钮：光标驱动的 3D 透视倾斜（GSAP quickTo）
+            // v1.1.2：hover 像素溶解「点击启动！」遮罩已按需求移除，仅保留随鼠标倾斜
             try { await JS.InvokeVoidAsync("junigridJs.tiltPerspective", "#launch-btn"); } catch { }
-            // 启动按钮：hover 像素溶解成「点击启动！」（PixelSwap）
-            try { await JS.InvokeVoidAsync("junigridJs.launchHover", "#launch-btn"); } catch { }
         }
     }
 

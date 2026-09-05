@@ -120,6 +120,19 @@ html[data-theme-transition="to-dark"]::view-transition-old(root) {
 html[data-theme-transition="to-dark"]::view-transition-new(root) {
     z-index: 1;
 }
+/* 快照期间关闭背景模糊：backdrop-filter 参与 View Transition 快照时，
+   WebView2 合成路径下会偶发「旧快照整层空白」（深→浅时整窗只剩底色、内容消失）。
+   过渡仅 ~400ms 且快照盖在页面上，模糊开关本身不可见。 */
+html[data-theme-transition] .jg-titlebar,
+html[data-theme-transition] .jg-account,
+html[data-theme-transition] .jg-topnav,
+html[data-theme-transition] .jg-sort-menu,
+html[data-theme-transition] .jg-sort-menu-in,
+html[data-theme-transition] .jg-taskdrop-menu,
+html[data-theme-transition] .jg-dlg-overlay,
+html[data-theme-transition] .jg-login-overlay {
+    backdrop-filter: none !important;
+}
 
 *, *::before, *::after { box-sizing: border-box; }
 html, body {

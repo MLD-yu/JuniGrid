@@ -559,29 +559,8 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
 }
 
 /* 有活跃任务时给右下角胶囊让出 96px */
-/* 启动按钮：hover 像素溶解的第二态“点击启动！”白底黑字蒙版 */
-.jg-launch-big { overflow: hidden; }
-.px-launch-mask {
-    position: absolute;
-    inset: 0;
-    z-index: 4;
-    background: #f0fceb;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: inherit;
-    color: var(--jg-text);
-}
-.px-launch-txt {
-    font-size: 16px;
-    font-weight: 700;
-    color: var(--jg-text);
-    letter-spacing: 0.5px;
-}
-/* 网格像素窗口：盖在 mask 之上，逐个 reveal */
-.px-grid {
-    border-radius: inherit;
-}
+/* v1.1.2：hover 像素溶解「点击启动！」蒙版已移除，仅保留 tiltPerspective 随鼠标倾斜；
+   .jg-launch-big 的 overflow:hidden 一并撤掉（无内层蒙版需要裁剪） */
 
 /* ── Mod 管理页：检查/刷新期间 GSAP 弹性加载动画（v0.31.0：加大画布 + 柔和色 + 独占空间） ── */
 .jg-mods-loading {
