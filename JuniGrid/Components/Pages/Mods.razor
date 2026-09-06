@@ -1075,7 +1075,6 @@
         // 只对新增/未绑定的行做初始测量，逐帧渲染调用没有可感知开销。
         if (!_initialLoading)
         {
-            _listStructureDirty = false;
             try { await JS.InvokeVoidAsync("junigridJs.animatedListInit", ".jg-main", ".jg-modrows"); } catch { }
         }
         if (firstRender)
@@ -1120,8 +1119,6 @@
 
     /// <summary>vNext：通用进入恢复只跑一次的闸门（骨架屏期不跑，列表显示后的第一次渲染跑）。</summary>
     private bool _entryRestoreRan;
-    // v1.08：列表结构脏标记 —— Rescan 换血后才需要重新绑定入场动画观察器
-    private bool _listStructureDirty = true;
 
     /// <summary>v1.1.5：点击分组标题 = 全选/取消全选该捆绑包的全部子包（已全选则清空）。
     /// 分组不再折叠，永远全展开。</summary>
@@ -1517,14 +1514,9 @@
     private void Rescan(IReadOnlyList<ModEntry>? preScanned = null)
     {
 
-        _listStructureDirty = true;   // v1.08：列表换血，入场动画观察器需重绑
         // v1.1.4：同 UniqueID 多副本物理清理 —— SMAPI 直接读磁盘，UI 隐藏不够
         //（多余副本会让整包 Skipped）。基于原始扫描结果，先清理再正式扫描。
-        try
-        {
-            if (ModSvc.CleanupDuplicateCopies(Cfg.Current.GamePath) > 0)
-                _listStructureDirty = true;
-        }
+        try { ModSvc.CleanupDuplicateCopies(Cfg.Current.GamePath); }
         catch (Exception __ex) { AppLog.Warn("Mods", "多副本清理失败: " + __ex.Message); }
         _mods = preScanned ?? ModSvc.Scan(Cfg.Current.GamePath);
         // v1.1.2：备注对账 —— mod 更新会重置 manifest Name，这里补写备注（游戏未运行时）

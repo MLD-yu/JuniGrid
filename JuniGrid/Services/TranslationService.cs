@@ -411,7 +411,7 @@ public sealed class TranslationService
     /// 响应按输入顺序 1:1 返回 detectedLanguage + translations[].text。
     /// 任何失败返回 null（回落免费链）。
     /// </summary>
-    private static async Task<string?[]> EdgeBatchAsync(List<string> items)
+    private static async Task<string?[]?> EdgeBatchAsync(List<string> items)
     {
         var result = new string?[items.Count];
         try
