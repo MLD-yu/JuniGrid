@@ -19,3 +19,6 @@ installer/publish/
 dist-tmp/
 publish/
 .workbuddy/
+
+# test docs (local only)
+TestDocs/

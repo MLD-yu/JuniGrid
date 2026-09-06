@@ -46,7 +46,7 @@
                            @onclick:stopPropagation />
                     <button class="jg-profile-headconfirm" data-tip="确定" aria-label="确定"
                             @onclick="() => ConfirmRename(_renamingProfile!)">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2"
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
                              stroke-linecap="round" stroke-linejoin="round" width="12" height="12">
                             <path d="M20 6 9 17l-5-5"/>
                         </svg>
@@ -64,7 +64,7 @@
                     {
                         <button class="jg-profile-rename jg-profile-headrename" data-tip="重命名" aria-label="重命名"
                                 @onclick="() => StartRenameProfile(ActiveProfileName)">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="#3d3d3d" stroke-width="1.8"
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
                                  stroke-linecap="round" stroke-linejoin="round" width="13" height="13">
                                 <path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/>
                                 <path d="m15 5 4 4"/>
@@ -251,27 +251,26 @@
         {
             @if (group.Key != "")
             {
-                var isCollapsed = _collapsed.Contains(group.Key);
-                <div class="jg-group-head" @onclick="() => ToggleGroup(group.Key)">
-                    <span>@(isCollapsed ? "▶" : "▼")</span>
+                // v1.1.5：分组不再折叠，永远全展开。点击分组标题 = 全选/取消全选该捆绑包；
+                // 计数随选择状态显示"（X 个）"或"（X 个/已选 Y 个）"。
+                var selInGroup = group.Items.Count(m => _selected.Contains(m.Folder));
+                <div class="jg-group-head" @onclick="() => ToggleGroupSelection(group.Items)">
                     <span style="font-weight:600">@group.Key</span>
-                    <span style="opacity:.55;font-size:11.5px">（@group.Items.Count 个）</span>
+                    <span style="opacity:.55;font-size:11.5px">@(selInGroup > 0 ? $"（{group.Items.Count} 个/已选 {selInGroup} 个）" : $"（{group.Items.Count} 个）")</span>
                     @if (group.Missing.Count > 0)
                     {
-                        <span style="color:#c50f1f;font-size:11.5px"> ⚠️ 缺失依赖 @group.Missing.Count</span>
+                        <span style="color:#c50f1f;font-size:11.5px"> 缺失依赖 @group.Missing.Count</span>
                     }
                 </div>
             }
 
-            @if (group.Key == "" || !_collapsed.Contains(group.Key))
+            @foreach (var (m, mi) in group.Items.Select((x, i) => (x, i)))
             {
-                @foreach (var m in group.Items)
-                {
                     var st = GetState(m.Folder);
                     var cover = GetCover(m);
                     var missing = MissingDeps(m);
                     <div class="jg-modrow @(_selected.Contains(m.Folder) ? "selected" : "")"
-                         @key="m.Folder"
+                         @key="@($"{m.Folder}#{mi}")"
                          data-al
                          @onclick="() => ToggleSelect(m.Folder)">
 
@@ -318,7 +317,7 @@
                             @if (missing.Count > 0)
                             {
                                 <div class="jg-mod-updmsg failed" style="white-space:normal">
-                                    ⚠️ 缺少依赖：@string.Join("、", missing)
+                                    缺少依赖：@string.Join("、", missing)
                                 </div>
                             }
                             @* v1.08：检查失败/超时不再在行内显示红字，统一收进筛选栏提示 *@
@@ -390,7 +389,6 @@
                     </div>
                 }
             }
-        }
 
         @if (FilteredMods.Count == 0)
         {
@@ -956,7 +954,7 @@
         _searchOpen = false;
         try { await JS.InvokeVoidAsync("junigridJs.searchToggle", ".jg-search-x", false); } catch { }
     }
-    private readonly HashSet<string> _collapsed = new();
+    // v1.1.5：分组折叠已移除（分组永远全展开），分组标题点击改为全选/取消全选。
 
     private readonly (string Key, string Label)[] _filterOptions =
     {
@@ -964,6 +962,7 @@
         ("enabled",   "已启用"),
         ("disabled",  "已禁用"),
         ("updatable", "可更新"),
+        ("missing",   "缺依赖"),
     };
 
     private HashSet<string> InstalledUids =>
@@ -986,16 +985,26 @@
                 case "updatable":
                     q = q.Where(m => IsUpdatable(m));
                     break;
+                case "missing":
+                    // v1.1.4：缺依赖筛选 —— 含 ContentPackFor 宿主缺失（SMAPI 同样会 Skipped）
+                    q = q.Where(m => MissingDeps(m).Count > 0);
+                    break;
             }
             if (!string.IsNullOrWhiteSpace(SearchText))
             {
                 var s = SearchText.Trim();
                 // 输入是纯数字时，当成 N 网尾号（NexusModId）模糊匹配，例如 4964794 或只输 9647 都能定位到。
                 bool numeric = int.TryParse(s, out _);
+                // v1.1.4：备注名/原名一并参与搜索 —— 列表标题显示"自动化(Automate)"，
+                // 搜"自动化"或"Automate"都得能找到（备注在配置里，不在 m.Name 上）
+                var remarks = Cfg.Current.ModRemarks;
+                var originals = Cfg.Current.ModOriginalNames;
                 q = q.Where(m =>
                     m.Name.Contains(s, StringComparison.OrdinalIgnoreCase)
                     || m.Author.Contains(s, StringComparison.OrdinalIgnoreCase)
                     || m.UniqueID.Contains(s, StringComparison.OrdinalIgnoreCase)
+                    || (remarks.TryGetValue(m.Folder, out var rk) && rk.Contains(s, StringComparison.OrdinalIgnoreCase))
+                    || (originals.TryGetValue(m.Folder, out var og) && og.Contains(s, StringComparison.OrdinalIgnoreCase))
                     || (numeric && m.NexusModId is not null
                         && m.NexusModId.Value.ToString().Contains(s, StringComparison.Ordinal)));
             }
@@ -1009,10 +1018,9 @@
         "enabled" => _mods.Count(m => !m.Disabled),
         "disabled" => _mods.Count(m => m.Disabled),
         "updatable" => _mods.Count(m => IsUpdatable(m)),
+        "missing" => _mods.Count(m => MissingDeps(m).Count > 0),
         _ => 0,
     };
-
-    private bool _skipListAnimOnce;
 
     // v1.08：检查失败（超时等）的 mod 数量 —— 驱动筛选栏提示与"可更新"红点
     private int FailedCheckCount => _states.Values.Count(s => s.Status == "failed");
@@ -1020,9 +1028,8 @@
     private void SetFilter(string key)
     {
         _filter = key;
-        // v1.08：切换过滤 = 换一批行。标记本帧跳过入场动画、改为直接清掉旧行内联
-        // 样式（opacity/transform），避免整表重新播 0.2s 动画造成的"不流畅/闪动"。
-        _skipListAnimOnce = true;
+        // v1.1.4：切换过滤后由 OnAfterRender 的 animatedListInit 重绑新行观察器。
+        // 视口内的行当场展开不闪动，视口外的行滚动进入时播特效 —— 与首屏一致。
     }
 
     private void ClearSearch() { SearchText = ""; }
@@ -1062,18 +1069,12 @@
             _entryRestoreRan = true;
             try { await JS.InvokeVoidAsync("junigridJs.cancelScrollRestore", ".jg-main"); } catch { }
         }
-        if (_skipListAnimOnce)
+        // v1.1.4：每次列表渲染后都重新绑定入场动画观察器。此前筛选/搜索切换走
+        // _skipListAnimOnce 分支只解绑不重绑，新结果的行全部失去滚动特效，且回到
+        // 「全部」后也不恢复。animatedListInit 对已绑定行是零开销跳过（__alBound），
+        // 只对新增/未绑定的行做初始测量，逐帧渲染调用没有可感知开销。
+        if (!_initialLoading)
         {
-            // v1.08：过滤切换 —— 清掉旧行的动画内联样式直接显示，不重播入场动画
-            _skipListAnimOnce = false;
-            _listStructureDirty = false;
-            try { await JS.InvokeVoidAsync("junigridJs.animatedListReset", ".jg-modrows"); } catch { }
-        }
-        else if (firstRender || _listStructureDirty)
-        {
-            // v1.08：入场动画只在列表结构变化时初始化 —— 此前每次渲染都对全部行
-            // 做强制布局（getBoundingClientRect × N），检查更新每完成一个 mod 触发
-            // 一次渲染，63 行 × 每秒数次 = 进页面卡顿的主因之一。
             _listStructureDirty = false;
             try { await JS.InvokeVoidAsync("junigridJs.animatedListInit", ".jg-main", ".jg-modrows"); } catch { }
         }
@@ -1122,17 +1123,26 @@
     // v1.08：列表结构脏标记 —— Rescan 换血后才需要重新绑定入场动画观察器
     private bool _listStructureDirty = true;
 
-    private void ToggleGroup(string key)
+    /// <summary>v1.1.5：点击分组标题 = 全选/取消全选该捆绑包的全部子包（已全选则清空）。
+    /// 分组不再折叠，永远全展开。</summary>
+    private void ToggleGroupSelection(IEnumerable<ModEntry> items)
     {
-        if (!_collapsed.Add(key)) _collapsed.Remove(key);
+        var allSelected = items.All(m => _selected.Contains(m.Folder));
+        if (allSelected)
+            foreach (var m in items) _selected.Remove(m.Folder);
+        else
+            foreach (var m in items) _selected.Add(m.Folder);
     }
 
-    /// <summary>缺失的依赖（声明在 Dependencies 里、但不在已装 UniqueID 集合中的项）。</summary>
+    /// <summary>缺失的依赖（声明在 Dependencies 里、但不在已装 UniqueID 集合中的项）。
+    /// v1.1.4：ContentPackFor 宿主框架也算 —— SMAPI 会直接 Skipped 宿主缺失的内容包
+    /// （如 [BL] Downtown Zuzu 缺 hootless.BusLocations），不提示用户根本不知道为啥跑不起来。</summary>
     private List<string> MissingDeps(ModEntry m)
     {
-        if (m.Dependencies == null || m.Dependencies.Count == 0) return new List<string>();
+        var deps = m.Dependencies.Concat(m.ContentPackIds).ToList();
+        if (deps.Count == 0) return new List<string>();
         var uids = InstalledUids;
-        return m.Dependencies
+        return deps
             .Where(d => !string.IsNullOrWhiteSpace(d) && !uids.Contains(d))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
@@ -1168,8 +1178,8 @@
                     Items = items,
                     Installed = installed,
                     Missing = items
-                        .Where(x => x.Dependencies is { Count: > 0 })
-                        .SelectMany(x => x.Dependencies)
+                        .Where(x => x.Dependencies is { Count: > 0 } || x.ContentPackIds is { Count: > 0 })
+                        .SelectMany(x => x.Dependencies.Concat(x.ContentPackIds))
                         .Where(d => !string.IsNullOrWhiteSpace(d) && !installed.Contains(d))
                         .Distinct(StringComparer.OrdinalIgnoreCase)
                         .ToList()
@@ -1508,7 +1518,18 @@
     {
 
         _listStructureDirty = true;   // v1.08：列表换血，入场动画观察器需重绑
+        // v1.1.4：同 UniqueID 多副本物理清理 —— SMAPI 直接读磁盘，UI 隐藏不够
+        //（多余副本会让整包 Skipped）。基于原始扫描结果，先清理再正式扫描。
+        try
+        {
+            if (ModSvc.CleanupDuplicateCopies(Cfg.Current.GamePath) > 0)
+                _listStructureDirty = true;
+        }
+        catch (Exception __ex) { AppLog.Warn("Mods", "多副本清理失败: " + __ex.Message); }
         _mods = preScanned ?? ModSvc.Scan(Cfg.Current.GamePath);
+        // v1.1.2：备注对账 —— mod 更新会重置 manifest Name，这里补写备注（游戏未运行时）
+        if (Cfg.Current.ModRemarks.Count > 0)
+            _ = Task.Run(() => ModSvc.SyncAllRemarks(Cfg.Current.GamePath, Cfg));
         // 清掉已经不在列表里的选中项
         _selected.RemoveWhere(f => !_mods.Any(m => m.Folder == f));
         // v0.72.7：Rescan 只负责扫描 —— 不再偷偷启动 BackfillCoversAsync。
@@ -1632,6 +1653,17 @@
             if (text.Length == 0) Cfg.Current.ModRemarks.Remove(folder);
             else Cfg.Current.ModRemarks[folder] = text;
             Cfg.Save(Cfg.Current);
+            // v1.1.2：备注同步进 manifest.json —— 游戏内 GMCM 标题用备注名（空备注 = 还原原名）
+            var f = folder;
+            var r = text;
+            _ = Task.Run(() =>
+            {
+                var err = ModSvc.ApplyRemarkToManifest(Cfg.Current.GamePath, f, r, Cfg.Current.ModOriginalNames);
+                if (err is not null)
+                    AppLog.Warn("Mods", $"[备注同步] {f}: {err}");
+                else if (r.Length > 0)
+                    AppLog.Warn("Mods", $"[备注同步] {f}: 已写入备注「{r}」，重启游戏后 GMCM 生效");
+            });
         }
         _remarkFolder = null;
     }
@@ -1642,14 +1674,21 @@
         else if (e.Key == "Escape") CancelRemark();
     }
 
-    /// <summary>列表显示的 mod 名：有备注则显示成 “备注(原名)”，否则走原名/翻译。</summary>
+    /// <summary>列表显示的 mod 名：有备注则显示成 “备注(原名)”，否则走原名/翻译。
+    /// v1.1.4：manifest 已被同步成备注名时（重扫后 m.Name == 备注），直接显示备注，
+    /// 原名取自 ModOriginalNames 存档，避免出现"自动化(自动化)"。</summary>
     private string RemarkName(ModEntry m)
     {
-        var name = m.Name;
         if (Cfg.Current.ModRemarks.TryGetValue(m.Folder, out var remark)
             && !string.IsNullOrWhiteSpace(remark))
-            return $"{remark}({name})";
-        return name;
+        {
+            var original = Cfg.Current.ModOriginalNames.TryGetValue(m.Folder, out var o)
+                ? o : m.Name;
+            if (!string.Equals(original, remark, StringComparison.Ordinal))
+                return $"{remark}({original})";
+            return remark;
+        }
+        return m.Name;
     }
 
     private void OpenUpdatePage(ModEntry m)
@@ -1717,9 +1756,13 @@
     {
         try
         {
-            var dir = Path.Combine(Cfg.Current.GamePath, "Mods", m.Folder);
+            // Folder 可能是多级相对路径且用 / 分隔（嵌套子包），explorer.exe 不认正斜杠，
+            // 会当无效参数打开默认「文档」文件夹 —— 统一换成 \ 再打开
+            var dir = Path.Combine(Cfg.Current.GamePath, "Mods", m.Folder).Replace('/', '\\');
             if (Directory.Exists(dir))
                 System.Diagnostics.Process.Start("explorer.exe", $"\"{dir}\"");
+            else
+                _ = JS.InvokeVoidAsync("junigridJs.toast", "文件夹不存在，可能已被移动或删除", "err");
         }
         catch { }
     }

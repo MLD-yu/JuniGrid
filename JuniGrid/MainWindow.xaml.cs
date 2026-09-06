@@ -138,6 +138,8 @@ public partial class MainWindow : Window
             services.AddSingleton<CoverCacheService>();
             // v1.1.5：每日游玩时长统计（首页 GitHub 式热力图数据源）
             services.AddSingleton<PlayTimeService>();
+            // v1.1.2：内置翻译器（谷歌引擎 + 磁盘缓存 + 微批），详情页/日志页共用
+            services.AddSingleton<TranslationService>();
             var provider = services.BuildServiceProvider();
             Resources.Add("services", provider);
             App.Services = provider;
@@ -156,11 +158,11 @@ public partial class MainWindow : Window
             provider.GetRequiredService<SelfUpdateService>().StartBackgroundCheck();
 
             InitializeComponent();
-            // v1.1.2b：最小尺寸完全由 WM_GETMINMAXINFO hook 按【物理像素】1536×864 强制
-            //（用户设计规定值；hook 内坐标即物理像素，直接生效）。
-            // 必须放在 InitializeComponent 之后 —— XAML 里的 MinWidth/MinHeight(1536/864 DIP)
+            // v1.1.2b：拖拽最小尺寸完全由 WM_GETMINMAXINFO hook 强制（v1.1.8 起按所在
+            // 显示器工作区比例计算，见 WndProcClampMaximized）。
+            // 必须放在 InitializeComponent 之后 —— XAML 里的 MinWidth/MinHeight(1100/650 DIP)
             // 会在高 DPI 下换算成更大的物理值把窗口二次拉大，覆盖这里清零前的设置。
-            // WPF 属性清零让位给 hook，拖拽下限 = 1536×864PX 精确不放大。
+            // WPF 属性清零让位给 hook。
             MinWidth = 0;
             MinHeight = 0;
         // v0.35.0：吞掉 "no browser renderer with ID" 未观察异常（页面切换时残留的 JS 调用打到已销毁 renderer）
@@ -331,13 +333,71 @@ public partial class MainWindow : Window
         DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, ref preference, sizeof(int));
         Log("DWM rounded corners applied");
 
+        // v1.1.5：启动默认尺寸 = 所在显示器的 77.1% × 72.7%（响应式）。
+        // 在 2560×1600 的屏上即 1974×1163 物理像素；DIP 值按 DPI 缩放换算，
+        // 其他用户千奇百怪的显示器/缩放比例自动适配。XAML 里的 1600×1000 只是兜底。
+        // v1.1.8：尺寸算好后同屏同源算出居中坐标【存起来】——此时窗口还挂在屏外
+        // (-32000)，不能直接挪回，否则 Splash 播完前主窗就露出来了；现身时由
+        // RevealAtStartupPosition 应用。旧流程在 App.RevealMain 里按创建时的
+        // XAML 尺寸(1600×1000)预算位置，尺寸后来变了位置没跟着算 → 打开偏离中心。
+        try
+        {
+            var monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+            var mi = new MONITORINFO { cbSize = Marshal.SizeOf<MONITORINFO>() };
+            if (GetMonitorInfo(monitor, ref mi))
+            {
+                var dpiT = HwndSource.FromHwnd(hwnd).CompositionTarget.TransformToDevice;
+                var monW = (double)(mi.rcMonitor.Right - mi.rcMonitor.Left);
+                var monH = (double)(mi.rcMonitor.Bottom - mi.rcMonitor.Top);
+                Width = Math.Max(MinWidth, monW * 0.7711 / dpiT.M11);
+                Height = Math.Max(MinHeight, monH * 0.7269 / dpiT.M22);
+                // 工作区物理像素 → DIP：WPF 应用 Left/Top 时按窗口当前 DPI 换算回物理，
+                // 这里取其逆变换，单屏与同缩放多屏下精确居中
+                _startupLeft = mi.rcWork.Left / dpiT.M11
+                               + ((mi.rcWork.Right - mi.rcWork.Left) / dpiT.M11 - Width) / 2;
+                _startupTop = mi.rcWork.Top / dpiT.M22
+                              + ((mi.rcWork.Bottom - mi.rcWork.Top) / dpiT.M22 - Height) / 2;
+                _startupCentered = true;
+                Log($"startup size = {Width:0}x{Height:0} DIP (monitor {monW:0}x{monH:0} px @ {dpiT.M11:0.00}), centered target ({_startupLeft:0},{_startupTop:0})");
+            }
+        }
+        catch { }
+
         // 无边框窗口最大化时会超出工作区（约 8px，被系统裁掉），
         // 导致 WebView 底部内容（滚动到底的那几行）被切、滚不完全。
         // 拦截 WM_GETMINMAXINFO，把最大尺寸/位置限制在系统工作区（避开任务栏）。
         var src = HwndSource.FromHwnd(hwnd);
         src?.AddHook(WndProcClampMaximized);
+        // v1.1.8：已最大化时跨屏拖动 → DPI 变更，最大化几何需要按新屏重算
+        DpiChanged += (_, _) =>
+        {
+            if (WindowState == System.Windows.WindowState.Maximized)
+                VerifyMaximizedPlacement();
+        };
         // v1.1.2b：窗口尺寸检查点 —— 到达 1974×1383PX / 1536×864PX 时记录窗口状态
         SizeChanged += OnWindowSizeChanged;
+    }
+
+    // ─── v1.1.8：启动现身位置 ───
+    // OnSourceInitialized 在窗口还挂在屏外时按【所在显示器】算好的居中坐标（DIP）。
+    // 旧流程在 App.RevealMain 里用创建时的 XAML 尺寸（1600×1000）预算位置，而窗口
+    // 随后被改成显示器 77.1%×72.7%，尺寸变了位置没跟着算 → 打开整体偏离中心。
+    private double _startupLeft, _startupTop;
+    private bool _startupCentered;
+
+    /// <summary>App 启动流程现身主窗时调用：挪到所在显示器工作区的正中。</summary>
+    public void RevealAtStartupPosition()
+    {
+        if (_startupCentered)
+        {
+            Left = _startupLeft;
+            Top = _startupTop;
+            return;
+        }
+        // 兜底：按屏居中没算成（GetMonitorInfo 失败等异常路径）—— 用主屏工作区 + 当前实际尺寸
+        var wa = SystemParameters.WorkArea;
+        Left = wa.Left + (wa.Width - ActualWidth) / 2;
+        Top = wa.Top + (wa.Height - ActualHeight) / 2;
     }
 
     // 把最大化的范围锁定到工作区，消除无边框最大化的底部越界裁切。
@@ -352,17 +412,34 @@ public partial class MainWindow : Window
         if (!GetMonitorInfo(monitor, ref mi)) return IntPtr.Zero;
         var wa = mi.rcWork;
         var mm = Marshal.PtrToStructure<MINMAXINFO>(lParam);
-        mm.ptMaxPosition = new POINT32(wa.Left, wa.Top);
+        // v1.1.8b：ptMaxPosition 的语义是【相对显示器原点的偏移】，不是绝对坐标！
+        // （DefWindowProc 会把它再加到显示器原点上。）此前写绝对值 wa.Left/Top：
+        // 主屏原点 (0,0) 时绝对==相对碰巧正确；任何副屏上最大化都落在
+        // 「原点×2」（平板@(2560,0) 实测 (5120,0)，正好屏外一个屏宽 →「最大化后消失」）。
+        // 兜底随后 SetWindowPos 摆正，又会让 Windows 把最大化当手动调整、WPF 同步回
+        // Normal → 触发还原逻辑，「点了最大化又缩回去」。改为相对偏移后一次落位正确。
+        mm.ptMaxPosition = new POINT32(wa.Left - mi.rcMonitor.Left, wa.Top - mi.rcMonitor.Top);
         mm.ptMaxSize = new POINT32(wa.Right - wa.Left, wa.Bottom - wa.Top);
         mm.ptMaxTrackSize = new POINT32(wa.Right - wa.Left, wa.Bottom - wa.Top);
-        // v1.1.2：拖拽最小尺寸强制 —— 设计值 1536×864 指的是【物理像素】，直接按设备像素写入
-        // （hook 里的一切坐标都是物理像素，不要再乘 DPI）。此前误乘 DPI 导致最小值被放大、
-        // 用户永远拖不到规定的 1536×864；更早版本则根本没设此项，窗口能拖到几百像素宽。
-        // 小屏兜底：最小值不超过本屏工作区，否则小屏上窗口永远缩不小。
+        // v1.1.5：任务栏【自动隐藏】时 rcWork == 整个显示器，最大化窗口恰好盖满全屏，
+        // Windows 会抑制自动隐藏任务栏的边缘唤出（鼠标压底边无效）。此处把最大化
+        // 高度减 1 物理像素 —— 窗口不再"恰好盖满全屏"，边缘唤出立即恢复，而这 1px
+        // 在视觉上不可见。可见任务栏时 rcWork 本就挖掉了任务栏，不受影响。
+        if (AutoHideBottomBarHeight(mi.rcMonitor) is int barH && barH > 0)
+        {
+            var maxH = Math.Max(0, wa.Bottom - wa.Top - 1);
+            mm.ptMaxSize = new POINT32(wa.Right - wa.Left, maxH);
+            mm.ptMaxTrackSize = new POINT32(wa.Right - wa.Left, maxH);
+        }
+        // v1.1.2：拖拽最小尺寸强制 —— hook 里的一切坐标都是物理像素，不要再乘 DPI。
+        // 更早版本则根本没设此项，窗口能拖到几百像素宽。
+        // v1.1.8b：最小尺寸随显示器 —— 所在显示器分辨率的 60% × 54%。
+        // 校准基准（用户确认的设计规定值）：2560×1600 的屏上 = 1536×864PX。
+        // 大屏最小值等比放大、小屏等比缩小；每条 WM_GETMINMAXINFO 都按窗口当前
+        // 所在屏重算，跨屏拖动自动跟随，无需 DPI 换算。
         try
         {
-            var minW = (int)Math.Min(1536, wa.Right - wa.Left);
-            var minH = (int)Math.Min(864, wa.Bottom - wa.Top);
+            var (minW, minH) = MonitorMinTrackSize(mi.rcMonitor);
             mm.ptMinTrackSize = new POINT32(minW, minH);
         }
         catch { }
@@ -370,6 +447,16 @@ public partial class MainWindow : Window
         handled = true;
         return IntPtr.Zero;
     }
+
+    // v1.1.8b：本屏拖拽最小尺寸（物理像素）—— 所在显示器分辨率的 60% × 54%。
+    // 校准基准（用户确认）：2560×1600 屏 = 1536×864PX。注意基数是【整块显示器】
+    // 而非工作区，否则有任务栏的屏上高会比无任务栏的屏小一截。
+    // WndProcClampMaximized 与尺寸检查点日志共用，保证两处口径永远一致。
+    private static (int W, int H) MonitorMinTrackSize(RECT32 monitorRect) =>
+        ((int)((monitorRect.Right - monitorRect.Left) * 60 / 100),
+         (int)((monitorRect.Bottom - monitorRect.Top) * 54 / 100));
+
+
 
     [DllImport("user32.dll")]
     private static extern uint GetDpiForWindow(IntPtr hwnd);
@@ -385,6 +472,48 @@ public partial class MainWindow : Window
         public RECT32 rcMonitor;
         public RECT32 rcWork;
         public uint dwFlags;
+    }
+
+    // ─── v1.1.5：自动隐藏任务栏检测（最大化 WebView2 底部避让用）───
+    private const int ABM_GETAUTOHIDEBAR = 0x0007;
+    private const int ABE_BOTTOM = 3;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct APPBARDATA
+    {
+        public int cbSize;
+        public IntPtr hWnd;
+        public uint uCallbackMessage;
+        public uint uEdge;
+        public RECT32 rc;
+        public IntPtr lParam;
+    }
+
+    [DllImport("shell32.dll")]
+    private static extern IntPtr SHAppBarMessage(uint dwMessage, ref APPBARDATA pData);
+
+    [DllImport("user32.dll")]
+    private static extern bool GetWindowRect(IntPtr hWnd, out RECT32 lpRect);
+
+    /// <summary>查询指定显示器底部是否有【自动隐藏】任务栏，返回它的厚度（像素）；
+    /// 没有返回 0；查询异常返回 null（调用方按无自动隐藏处理）。</summary>
+    private static int? AutoHideBottomBarHeight(RECT32 monitorRect)
+    {
+        try
+        {
+            var abd = new APPBARDATA
+            {
+                cbSize = Marshal.SizeOf<APPBARDATA>(),
+                uEdge = (uint)ABE_BOTTOM,
+                rc = monitorRect,
+            };
+            var hBar = SHAppBarMessage(ABM_GETAUTOHIDEBAR, ref abd);
+            if (hBar == IntPtr.Zero) return 0;   // 本屏底部没有自动隐藏任务栏
+            if (GetWindowRect(hBar, out var r))
+                return Math.Max(0, r.Bottom - r.Top);
+            return null;
+        }
+        catch { return null; }
     }
     [StructLayout(LayoutKind.Sequential)]
     private struct MINMAXINFO
@@ -627,15 +756,22 @@ public partial class MainWindow : Window
         }
     }
 
-    // ─── v1.1.7：窗口尺寸策略：启动即最大化（XAML WindowState）+ 最小 1536×864 ───
-    // 从最大化点「还原」时固定恢复到 1974×1383，不用系统 RestoreBounds 里记的旧尺寸
-    // （那可能是很久之前随手拖出来的小窗，还原出来突兀）。
+    // ─── v1.1.5/v1.1.8：窗口尺寸策略 ───
+    // 启动即窗口化、按所在屏 77.1%×72.7% 居中现身（见 OnSourceInitialized/RevealAtStartupPosition）；
+    // 拖拽最小尺寸按所在显示器 60%×54%（2560×1600 屏 = 1536×864PX，见 WndProcClampMaximized）。
+    // 从最大化点「还原」时恢复到所在屏工作区的 77.1%×72.6%，不用系统 RestoreBounds
+    // 里记的旧尺寸（那可能是很久之前随手拖出来的小窗，还原出来突兀）。
     private bool _wasMaximized;
 
     protected override void OnStateChanged(EventArgs e)
     {
         base.OnStateChanged(e);
-        if (WindowState == System.Windows.WindowState.Maximized) { _wasMaximized = true; return; }
+        if (WindowState == System.Windows.WindowState.Maximized)
+        {
+            _wasMaximized = true;
+            VerifyMaximizedPlacement();
+            return;
+        }
         if (WindowState == System.Windows.WindowState.Normal && _wasMaximized)
         {
             _wasMaximized = false;
@@ -646,13 +782,31 @@ public partial class MainWindow : Window
                 // 校准基准：2560×1528 工作区上为 1974×1110PX（16:9），即宽 77.1%、高 72.6%。
                 // 任何分辨率/缩放下都占工作区相同比例：作者屏上精确 1974×1110PX；
                 // 1080p 小屏自动等比缩小不裁剪；4K 大屏等比放大保持观感一致（主流软件行为）。
+                // v1.1.8：工作区取自【窗口实际所在屏】（MonitorFromWindow + GetMonitorInfo，
+                // 物理像素，无需 DPI 换算）—— 原用 SystemParameters.WorkArea 只描述主屏，
+                // 副屏上最大化后还原会按主屏算尺寸（偏小）、越界判断还会把窗口拽回主屏。
                 var hwnd = new WindowInteropHelper(this).Handle;
                 var dpi = hwnd != IntPtr.Zero ? (int)GetDpiForWindow(hwnd) : 96;
                 if (dpi <= 0) dpi = 96;
                 var scale = dpi / 96.0;
-                var wa = SystemParameters.WorkArea;
-                var waPhysW = wa.Width * scale;     // 工作区物理像素
-                var waPhysH = wa.Height * scale;
+                double waPhysW, waPhysH, waLeft, waTop;
+                var mi = new MONITORINFO { cbSize = Marshal.SizeOf<MONITORINFO>() };
+                if (hwnd != IntPtr.Zero && GetMonitorInfo(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), ref mi))
+                {
+                    waPhysW = mi.rcWork.Right - mi.rcWork.Left;
+                    waPhysH = mi.rcWork.Bottom - mi.rcWork.Top;
+                    waLeft = mi.rcWork.Left;
+                    waTop = mi.rcWork.Top;
+                }
+                else
+                {
+                    // 兜底：取不到所在屏（理论不发生）—— 退回主屏工作区
+                    var wa = SystemParameters.WorkArea;
+                    waPhysW = wa.Width * scale;
+                    waPhysH = wa.Height * scale;
+                    waLeft = wa.Left * scale;
+                    waTop = wa.Top * scale;
+                }
 
                 var physW = Math.Min(waPhysW - 16, Math.Max(400.0, waPhysW * (1974.0 / 2560.0)));
                 var physH = Math.Min(waPhysH - 16, Math.Max(300.0, waPhysH * (1110.0 / 1528.0)));
@@ -662,15 +816,18 @@ public partial class MainWindow : Window
                 _restoreTargetPhysW = physW;   // 供尺寸检查点比对（本屏的还原期望尺寸）
                 _restoreTargetPhysH = physH;
 
-                // 还原位置越界兜底 —— Normal 位置若还停在屏外挂载的 -32000 附近
-                //（旧版本启动时留下的），还原后窗口整个在屏幕外，表现为"窗口消失"。
-                if (Left < wa.Left - 100 || Left + Width > wa.Right + 100
-                    || Top < wa.Top - 100 || Top + Height > wa.Bottom + 100)
+                // 还原位置越界兜底（同一块屏的工作区，物理像素）—— Normal 位置若还停在
+                // 屏外挂载的 -32000 附近（旧版本启动时留下的），还原后窗口整个在屏幕外，
+                // 表现为"窗口消失"。
+                var leftPhys = Left * scale;
+                var topPhys = Top * scale;
+                if (leftPhys < waLeft - 100 || leftPhys + Width * scale > waLeft + waPhysW + 100
+                    || topPhys < waTop - 100 || topPhys + Height * scale > waTop + waPhysH + 100)
                 {
-                    Left = Math.Max(wa.Left, (wa.Width - Width) / 2 + wa.Left);
-                    Top = Math.Max(wa.Top, (wa.Height - Height) / 2 + wa.Top);
+                    Left = Math.Round((waLeft + (waPhysW - Width * scale) / 2) / scale);
+                    Top = Math.Round((waTop + (waPhysH - Height * scale) / 2) / scale);
                 }
-                Log($"[还原] 目标工作区 77.1%×72.6%（=本屏 {physW:F0}×{physH:F0}PX）→ 实际 " +
+                Log($"[还原] 所在屏工作区 {waPhysW:F0}×{waPhysH:F0}PX 的 77.1%×72.6%（={physW:F0}×{physH:F0}PX）→ 实际 " +
                     $"Width={Width:F0} Height={Height:F0} DIP = {Width * scale:F0}×{Height * scale:F0}PX (dpi={dpi}, scale={scale:0.##})");
                 // v1.1.2c：检查点必然记录（SizeChanged 版本可能因布局时序漏触发）
                 Log($"[尺寸检查点] ★ 到达还原标准尺寸（本屏期望 {physW:F0}×{physH:F0}PX，" +
@@ -683,9 +840,59 @@ public partial class MainWindow : Window
     // 本屏还原期望尺寸（物理像素），由还原逻辑写入，供尺寸检查点比对
     private double _restoreTargetPhysW, _restoreTargetPhysH;
 
+    // ─── v1.1.8：最大化落位保险丝 ───
+    // 两层问题、一道兜底：
+    // ① 无 manifest 时进程是 System DPI 感知，副屏坐标被系统虚拟化，最大化直接
+    //    落到屏外整整一个屏宽（实测 (5120,0)）→ app.manifest 切 PerMonitorV2 根治；
+    // ② PMv2 下跨屏（拖到 DPI 不同的副屏立刻最大化）存在 WM_DPICHANGED 与
+    //    SC_MAXIMIZE 的竞态：最大化消息按旧 DPI 环境处理，几何被按新旧 DPI 比例
+    //    缩放（实测落 (1707,0) 尺寸÷1.5，卡在主屏右缘）。
+    // 兜底：最大化落定后若几何 ≠ 本屏工作区，强制摆正。双段检查覆盖竞态：
+    // 布局拍后一次 + 120ms 后（DPI 变更落定）复查一次。
+    private void VerifyMaximizedPlacement()
+    {
+        Dispatcher.BeginInvoke(() => CheckMaximizedGeometry());
+        var t = new System.Windows.Threading.DispatcherTimer
+        { Interval = TimeSpan.FromMilliseconds(120) };
+        t.Tick += (_, _) => { t.Stop(); CheckMaximizedGeometry(); };
+        t.Start();
+    }
+
+    private void CheckMaximizedGeometry()
+    {
+        try
+        {
+            if (WindowState != System.Windows.WindowState.Maximized) return;
+            var hwnd = new WindowInteropHelper(this).Handle;
+            if (hwnd == IntPtr.Zero || !GetWindowRect(hwnd, out var r)) return;
+            var mi = new MONITORINFO { cbSize = Marshal.SizeOf<MONITORINFO>() };
+            if (!GetMonitorInfo(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), ref mi)) return;
+            // 目标几何与 WM_GETMINMAXINFO hook 完全同口径：工作区 + 自动隐藏任务栏 1px 让位
+            var barH = AutoHideBottomBarHeight(mi.rcMonitor);
+            var targetW = mi.rcWork.Right - mi.rcWork.Left;
+            var targetH = mi.rcWork.Bottom - mi.rcWork.Top - (barH > 0 ? 1 : 0);
+            var off = Math.Abs(r.Left - mi.rcWork.Left) > 2 || Math.Abs(r.Top - mi.rcWork.Top) > 2
+                   || Math.Abs(r.Right - r.Left - targetW) > 2 || Math.Abs(r.Bottom - r.Top - targetH) > 2;
+            if (!off) return;
+            Log($"[最大化兜底] 窗口 ({r.Left},{r.Top})-({r.Right},{r.Bottom}) ≠ 所在屏工作区 " +
+                $"({mi.rcWork.Left},{mi.rcWork.Top}) {targetW}×{targetH} → 强制摆正");
+            SetWindowPos(hwnd, IntPtr.Zero,
+                mi.rcWork.Left, mi.rcWork.Top, targetW, targetH,
+                SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+        catch (Exception ex) { Log("最大化落位检查失败: " + ex.Message); }
+    }
+
+    private const uint SWP_NOZORDER = 0x0004;
+    private const uint SWP_NOACTIVATE = 0x0010;
+
+    [DllImport("user32.dll")]
+    private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter,
+        int X, int Y, int cx, int cy, uint uFlags);
+
     // v1.1.2b：用户要求 —— 窗口到达规定尺寸时记录状态。
     // 还原尺寸检查点 = 本屏还原期望值（2560×1528 参考屏上即 1974×1110PX）；
-    // 最小尺寸检查点 = 固定 1536×864PX。
+    // 最小尺寸检查点 = 本屏最小尺寸（工作区 43%×42.5%，与拖拽下限同口径）。
     private void OnWindowSizeChanged(object sender, SizeChangedEventArgs e)
     {
         try
@@ -701,9 +908,19 @@ public partial class MainWindow : Window
                 Log($"[尺寸检查点] ★ 到达还原标准尺寸（本屏期望 {_restoreTargetPhysW:F0}×{_restoreTargetPhysH:F0}PX，" +
                     $"实际 {pw:F0}×{ph:F0}PX，Width={ActualWidth:F0} Height={ActualHeight:F0} DIP，dpi={dpi}，WindowState={WindowState}，Left={Left:F0} Top={Top:F0}）" +
                     (_restoreTargetPhysW < 1970 ? " ≈ 1974×1110PX 基准" : ""));
-            else if (Math.Abs(pw - 1536) < 4 && Math.Abs(ph - 864) < 4)
-                Log($"[尺寸检查点] ★ 到达最小标准尺寸 1536×864PX（实际 {pw:F0}×{ph:F0}PX，" +
-                    $"Width={ActualWidth:F0} Height={ActualHeight:F0} DIP，dpi={dpi}，WindowState={WindowState}，Left={Left:F0} Top={Top:F0}）");
+            else
+            {
+                // v1.1.8b：最小尺寸检查点 —— 与 WndProcClampMaximized 同口径，按窗口所在
+                // 显示器 60%×54% 计算。
+                var mi = new MONITORINFO { cbSize = Marshal.SizeOf<MONITORINFO>() };
+                if (GetMonitorInfo(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), ref mi))
+                {
+                    var (minW, minH) = MonitorMinTrackSize(mi.rcMonitor);
+                    if (Math.Abs(pw - minW) < 4 && Math.Abs(ph - minH) < 4)
+                        Log($"[尺寸检查点] ★ 到达本屏最小尺寸 {minW}×{minH}PX（实际 {pw:F0}×{ph:F0}PX，" +
+                            $"Width={ActualWidth:F0} Height={ActualHeight:F0} DIP，dpi={dpi}，WindowState={WindowState}，Left={Left:F0} Top={Top:F0}）");
+                }
+            }
         }
         catch { }
     }

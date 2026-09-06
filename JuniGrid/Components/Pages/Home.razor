@@ -36,8 +36,9 @@
             <div class="jg-stat-num" style="font-size:18px;line-height:1.3;">
                 @(_cfg.LastLaunchTime is null ? "还没启动过" : FormatTime(_cfg.LastLaunchTime))
             </div>
+            @* v1.1.2：总时长改用热力图口径（PlayTimeService 全部年份的秒数总和） *@
             <div class="jg-stat-sub">
-                @_cfg.TotalLaunchCount 次启动 · 共 @FormatPlay(_cfg.TotalPlayMinutes)
+                @_cfg.TotalLaunchCount 次启动 · 共 @FormatHours(PlayTime.TotalSeconds)
             </div>
         </div>
     </div>
@@ -86,29 +87,32 @@
                         {
                             var cell = _weeks[c][row];
                             <td>
-                                @if (cell.InYear && !cell.Future)
-                                {
-                                    <span class="jg-heat-cell l@(cell.Level)" data-tip="@Tip(cell)"></span>
-                                }
-                                else
-                                {
-                                    <span class="jg-heat-cell @(cell.Future ? "future" : "empty")"></span>
-                                }
+                            @if (cell.InYear && !cell.Future)
+                            {
+                                <span class="jg-heat-cell l@(cell.Level)" data-tip="@Tip(cell)"></span>
+                            }
+                            else if (cell.InYear && cell.Future)
+                            {
+                                <span class="jg-heat-cell future"></span>
+                            }
+                            @* 非本年的溢出格子（首列上年/末列下年）不渲染任何元素 —— GitHub 同款留白 *@
                             </td>
                         }
                     </tr>
                 }
             </table>
         </div>
+        @* v1.1.6：左下说明文字已删（颜色含义由图例 data-tip 承载） *@
         <div class="jg-heat-foot">
-            <span>颜色越深 = 当天玩得越久 · 游戏运行时自动累计</span>
+            @* v1.1.6：图例色块 hover 放大 + data-tip 胶囊提示显示该色对应时长档位
+               （data-tip 全局委托自动生效，文案与 HeatCell.Level 阈值一一对应）*@
             <div class="jg-heat-legend">
                 少
-                <span class="jg-heat-cell l0"></span>
-                <span class="jg-heat-cell l1"></span>
-                <span class="jg-heat-cell l2"></span>
-                <span class="jg-heat-cell l3"></span>
-                <span class="jg-heat-cell l4"></span>
+                <span class="jg-heat-cell l0" data-tip="没有游玩"></span>
+                <span class="jg-heat-cell l1" data-tip="少于 1 小时"></span>
+                <span class="jg-heat-cell l2" data-tip="1–2 小时"></span>
+                <span class="jg-heat-cell l3" data-tip="2–4 小时"></span>
+                <span class="jg-heat-cell l4" data-tip="4 小时以上"></span>
                 多
             </div>
         </div>
@@ -263,10 +267,4 @@
 
     private static string FormatTime(string iso) =>
         DateTime.TryParse(iso, out var t) ? t.ToString("MM-dd HH:mm") : iso;
-
-    private static string FormatPlay(long minutes)
-    {
-        if (minutes <= 0) return "0 小时";
-        return (minutes / 60.0).ToString("0.0") + " 小时";
-    }
 }

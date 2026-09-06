@@ -218,6 +218,8 @@
 .jg-heat-cell.l4 { background: #000; }
 .jg-heat-cell.empty { background: transparent; outline: none; }
 .jg-heat-cell.future { opacity: .45; }
-.jg-heat-foot { display: flex; justify-content: space-between; align-items: center; font-size: 11.5px; color: var(--jg-text-3); margin-top: 8px; flex-wrap: wrap; gap: 6px; }
+.jg-heat-foot { display: flex; justify-content: flex-end; align-items: center; font-size: 11.5px; color: var(--jg-text-3); margin-top: 8px; flex-wrap: wrap; gap: 6px; }
 .jg-heat-legend { display: flex; align-items: center; gap: 3px; }
-.jg-heat-legend .jg-heat-cell { cursor: default; transform: none; width: 11px; height: 11px; aspect-ratio: auto; }
+/* v1.1.6：图例色块 hover 放大（带回弹的缓动），data-tip 胶囊提示由全局委托处理 */
+.jg-heat-legend .jg-heat-cell { cursor: default; transform: none; width: 11px; height: 11px; aspect-ratio: auto; transition: transform 160ms cubic-bezier(.34,1.56,.64,1); }
+.jg-heat-legend .jg-heat-cell:hover { transform: scale(1.4); }

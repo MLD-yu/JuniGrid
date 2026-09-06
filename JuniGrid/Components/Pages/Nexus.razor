@@ -119,7 +119,7 @@
         <section class="jg-home-sec jg-home-sec-hero jg-hero-cream">
             <div class="jg-trend-grain" id="jgTrendGrain"></div>
             <div class="jg-home-sec-head">
-                <span class="jg-home-sec-title" style="display:inline-flex;align-items:center;gap:6px"><svg width="18" height="18" viewBox="0 0 24 24" style="vertical-align:-3px"><defs><linearGradient id="jgFlameG" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#bcd2ff"/></linearGradient></defs><path d="M12 14.5 21 9.2 12 4 3 9.2Z" fill="#f2994a"/><path d="M12 16.8 21 11.5 21 9.2 12 14.5 3 9.2 3 11.5Z" fill="#d17a26"/><path d="M12 0.8c1.7 2.2 3.6 3.6 3.6 5.9 0 2-1.6 3.4-3.6 3.4s-3.6-1.4-3.6-3.4c0-1.1.5-1.9 1.1-2.6.2.9.7 1.5 1.4 1.7-.5-1.8 0-3.7 1.1-5Z" fill="url(#jgFlameG)"/></svg><DepthText Text="Trending Mods" FontSize="15px" /></span>
+                <span class="jg-home-sec-title" style="display:inline-flex;align-items:center;gap:6px"><svg width="18" height="18" viewBox="0 0 24 24" style="vertical-align:-3px"><defs><linearGradient id="jgFlameG" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#bcd2ff"/></linearGradient></defs><path d="M12 14.5 21 9.2 12 4 3 9.2Z" fill="#f2994a"/><path d="M12 16.8 21 11.5 21 9.2 12 14.5 3 9.2 3 11.5Z" fill="#d17a26"/><path d="M12 0.8c1.7 2.2 3.6 3.6 3.6 5.9 0 2-1.6 3.4-3.6 3.4s-3.6-1.4-3.6-3.4c0-1.1.5-1.9 1.1-2.6.2.9.7 1.5 1.4 1.7-.5-1.8 0-3.7 1.1-5Z" fill="url(#jgFlameG)"/></svg><DepthText Text="热门趋势" FontSize="15px" /></span>
                 <button type="button" class="jg-viewall" @onclick='@(() => EnterBrowse("trending"))'>查看全部@((MarkupString)ViewAllArrow)</button>
             </div>
             @* v0.75.0：先看登录态 —— 未登录显示引导文案；已登录全程 Shimmer 直到数据到位 *@
@@ -146,7 +146,7 @@
                             }
                             <div class="jg-trend-big-info">
                                 <div class="jg-trend-big-name">@mod.Name</div>
-                                <div class="jg-trend-big-sub">by @(string.IsNullOrEmpty(mod.Uploader) ? "unknown" : mod.Uploader) · <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 10v12"/><path d="M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 2a3.13 3.13 0 0 1 3 3.88Z"/></svg> @mod.Endorsements</div>
+                                <div class="jg-trend-big-sub">作者：@(string.IsNullOrEmpty(mod.Uploader) ? "未知" : mod.Uploader) · <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 10v12"/><path d="M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 2a3.13 3.13 0 0 1 3 3.88Z"/></svg> @mod.Endorsements</div>
                                 @if (!string.IsNullOrWhiteSpace(mod.Summary))
                                 {
                                     <div class="jg-trend-big-sum">@mod.Summary</div>
@@ -170,7 +170,7 @@
                                     <div class="jg-trend-sm-cover jg-trend-sm-fb">@(mod.Name.Length>0 ? mod.Name[..1].ToUpperInvariant() : "?")</div>
                                 }
                                 <div class="jg-trend-sm-name">@mod.Name</div>
-                                <div class="jg-trend-sm-sub">by @(string.IsNullOrEmpty(mod.Uploader) ? "unknown" : mod.Uploader) · <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 10v12"/><path d="M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 2a3.13 3.13 0 0 1 3 3.88Z"/></svg> @mod.Endorsements</div>
+                                <div class="jg-trend-sm-sub">作者：@(string.IsNullOrEmpty(mod.Uploader) ? "未知" : mod.Uploader) · <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 10v12"/><path d="M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 2a3.13 3.13 0 0 1 3 3.88Z"/></svg> @mod.Endorsements</div>
                             </div>
                         }
                     </div>
@@ -184,7 +184,7 @@
 
         <section class="jg-home-sec jg-home-sec-hero jg-hero-cream">
             <div class="jg-home-sec-head">
-                <span class="jg-home-sec-title" style="display:inline-flex;align-items:center;gap:6px"><svg width="18" height="18" viewBox="0 0 24 24" style="vertical-align:-3px"><defs><linearGradient id="jgGemG" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#c9d2ff"/></linearGradient></defs><path d="M12 4.5 21 9.8 12 15.2 3 9.8Z" fill="url(#jgGemG)" stroke="#aab4e8" stroke-width=".5"/><path d="M12 15.2 21 9.8 21 12 12 17.4 3 12 3 9.8Z" fill="#8f9bd6" opacity=".55"/></svg><DepthText Text="Mods" FontSize="15px" /></span>
+                <span class="jg-home-sec-title" style="display:inline-flex;align-items:center;gap:6px"><svg width="18" height="18" viewBox="0 0 24 24" style="vertical-align:-3px"><defs><linearGradient id="jgGemG" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#c9d2ff"/></linearGradient></defs><path d="M12 4.5 21 9.8 12 15.2 3 9.8Z" fill="url(#jgGemG)" stroke="#aab4e8" stroke-width=".5"/><path d="M12 15.2 21 9.8 21 12 12 17.4 3 12 3 9.8Z" fill="#8f9bd6" opacity=".55"/></svg><DepthText Text="模组" FontSize="15px" /></span>
                 <button type="button" class="jg-viewall" @onclick="() => EnterBrowse(_homeTab)">查看全部@((MarkupString)ViewAllArrow)</button>
             </div>
             <div class="jg-chips">
@@ -269,7 +269,49 @@
                     </button>
                     <span class="jg-home-sec-title" style="font-size:15px;font-weight:700">搜索：@_searchTitle</span>
                 </div>
+                @* ─── v1.1.6：搜索页排序（New/Downloads，复用查看更多页 tab 图标）+ 正序/倒序 ───
+                   语义与官网一致：New 正序=最新在前 / Downloads 正序=下载最多在前；DESC=正序（默认） *@
+                <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                    <div class="jg-sort-dd @(_searchSortOpen ? "open" : "")" id="jgSearchSortDd" data-dd="search">
+                        <button type="button" class="jg-sort-trigger" disabled="@_browseLoading" @onclick="ToggleSearchSortDd">
+                            @((MarkupString)TabIcon(_searchSort))@SearchSortLabel
+                            <svg class="jg-sort-arrow" width="12" height="12" viewBox="0 0 12 12" fill="none">
+                                <path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                            </svg>
+                        </button>
+                        <div class="jg-sort-menu">
+                            <div class="jg-sort-menu-in">
+                                <button type="button" class="jg-sort-item @(_searchSort == "new" ? "active" : "")"
+                                        disabled="@_browseLoading" @onclick='() => SetSearchSort("new")'>
+                                    @((MarkupString)TabIcon("new"))New
+                                </button>
+                                <button type="button" class="jg-sort-item @(_searchSort == "downloads" ? "active" : "")"
+                                        disabled="@_browseLoading" @onclick='() => SetSearchSort("downloads")'>
+                                    @((MarkupString)TabIcon("downloads"))Downloads
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="jg-sort-dd @(_searchDirOpen ? "open" : "")" id="jgSearchDirDd" data-dd="search">
+                        <button type="button" class="jg-sort-trigger" disabled="@_browseLoading" @onclick="ToggleSearchDirDd">
+                            @(_searchDirection == "DESC" ? "正序" : "倒序")
+                            <svg class="jg-sort-arrow" width="12" height="12" viewBox="0 0 12 12" fill="none">
+                                <path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                            </svg>
+                        </button>
+                        <div class="jg-sort-menu">
+                            <div class="jg-sort-menu-in">
+                                <button type="button" class="jg-sort-item @(_searchDirection == "DESC" ? "active" : "")"
+                                        disabled="@_browseLoading" @onclick='() => SetSearchDirection("DESC")'>正序</button>
+                                <button type="button" class="jg-sort-item @(_searchDirection == "ASC" ? "active" : "")"
+                                        disabled="@_browseLoading" @onclick='() => SetSearchDirection("ASC")'>倒序</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </div>
+            @* v1.1.6：搜索页下拉遮罩（data-dd=search 与上方两个下拉配对；常驻 DOM 同浏览页防穿透） *@
+            <div class="jg-dd-overlay @((_searchSortOpen || _searchDirOpen) ? "open" : "")" data-dd="search" @onclick="CloseSearchDds"></div>
             @if (_exactMod is not null)
             {
                 var exName = PropStr(_exactMod, "Name");
@@ -432,10 +474,11 @@
                         </button>
                         <div class="jg-sort-menu">
                             <div class="jg-sort-menu-in">
+                                @* v1.1.6：删掉「（多 → 少）」括号提示 —— 同款文案与搜索页统一，只留正序/倒序 *@
                                 <button type="button" class="jg-sort-item @(_direction == "DESC" ? "active" : "")"
-                                        @onclick='() => SetDirection("DESC")'>正序（多 → 少）</button>
+                                        @onclick='() => SetDirection("DESC")'>正序</button>
                                 <button type="button" class="jg-sort-item @(_direction == "ASC" ? "active" : "")"
-                                        @onclick='() => SetDirection("ASC")'>倒序（少 → 多）</button>
+                                        @onclick='() => SetDirection("ASC")'>倒序</button>
                             </div>
                         </div>
                     </div>
@@ -840,6 +883,7 @@
     private static string? _svMode; private static string? _svKind;
     private static int _svPage = 1;
     private static string? _svRange; private static string? _svSearch;
+    private static string? _svSort; private static string? _svSearchDir;   // v1.1.6：搜索页排序/方向快照
     private static List<NexusModListEntry>? _svBrowse;   // v1.03.0：列表数据快照 —— 返回时直接恢复，不再请求服务器
     private static int _svFilterVer;   // v1.1.3：快照对应的成人过滤条件版本（NexusService.AdultFilterVersion）
     private static List<NexusModListEntry>? _svTrending;
@@ -864,11 +908,11 @@
     // v1.04.0：Trending → Downloads（按下载数排序；图标为用户提供的下载图标，fill=currentColor 随字色）
     private readonly (string Key, string Label)[] _browseTabs =
     {
-        ("new",       "New"),
-        ("updated",   "Updated"),
-        ("downloads", "Downloads"),
-        ("popular",   "Popular"),
-        ("surprise",  "Surprise"),
+        ("new",       "最新"),
+        ("updated",   "最近更新"),
+        ("downloads", "下载最多"),
+        ("popular",   "最受欢迎"),
+        ("surprise",  "手气不错"),
     };
 
     /// <summary>v1.01.0：Tab 图标（stroke=currentColor 随字体色；太阳/星星填充）。背景透明。</summary>
@@ -906,9 +950,34 @@
     private bool _timeOpen;
     private bool _dirOpen;
 
+    // ─── v1.1.6：搜索页排序（New/Downloads）+ 正序/倒序，独立于浏览页状态 ───
+    // 语义与官网一致：New 的正序(DESC)=最新在前、倒序(ASC)=最旧在前；
+    // Downloads 的正序(DESC)=下载最多在前、倒序(ASC)=下载最少在前。
+    private string _searchSort = "new";
+    private string _searchDirection = "DESC";
+    private bool _searchSortOpen;
+    private bool _searchDirOpen;
+    private string SearchSortLabel => _searchSort == "downloads" ? "Downloads" : "New";
+
+    private async Task SetSearchSort(string kind)
+    {
+        var changed = _searchSort != kind;
+        _searchSort = kind;
+        CloseAllDdCore();
+        if (changed) await ExecuteSearchAsync(withExact: false);
+    }
+
+    private async Task SetSearchDirection(string dir)
+    {
+        var changed = _searchDirection != dir;
+        _searchDirection = dir;
+        CloseAllDdCore();
+        if (changed) await ExecuteSearchAsync(withExact: false);
+    }
+
     private string KindLabel =>
         _browseTabs.FirstOrDefault(t => t.Key == _browseKind).Label
-        ?? (_browseKind == "trending" ? "Trending" : "New");
+        ?? (_browseKind == "trending" ? "热门趋势" : "最新");
 
     private async Task ToggleDdCore(bool current, Action<bool> set, string ddId)
     {
@@ -924,7 +993,12 @@
 
     private void CloseAllDdCore(string? except = null)
     {
-        foreach (var (flag, id) in new[] { (_kindOpen, "jgKindDd"), (_timeOpen, "jgTimeDd"), (_dirOpen, "jgDirDd") })
+        // v1.1.6：搜索页两个下拉（jgSearchSortDd/jgSearchDirDd）纳入统一互斥收起
+        foreach (var (flag, id) in new[]
+        {
+            (_kindOpen, "jgKindDd"), (_timeOpen, "jgTimeDd"), (_dirOpen, "jgDirDd"),
+            (_searchSortOpen, "jgSearchSortDd"), (_searchDirOpen, "jgSearchDirDd"),
+        })
         {
             if (!flag || id == except) continue;
             _ = JS.InvokeVoidAsync("junigridJs.dropdownToggle", "#" + id, false);
@@ -932,9 +1006,16 @@
         if (except != "jgKindDd") _kindOpen = false;
         if (except != "jgTimeDd") _timeOpen = false;
         if (except != "jgDirDd") _dirOpen = false;
+        if (except != "jgSearchSortDd") _searchSortOpen = false;
+        if (except != "jgSearchDirDd") _searchDirOpen = false;
     }
 
     private Task CloseAllDd() { CloseAllDdCore(); return Task.CompletedTask; }
+
+    // v1.1.6：搜索页排序/方向下拉
+    private Task ToggleSearchSortDd() => ToggleDdCore(_searchSortOpen, v => _searchSortOpen = v, "jgSearchSortDd");
+    private Task ToggleSearchDirDd() => ToggleDdCore(_searchDirOpen, v => _searchDirOpen = v, "jgSearchDirDd");
+    private Task CloseSearchDds() { CloseAllDdCore(); return Task.CompletedTask; }
 
     private async Task SetTimeRange(string key)
     {
@@ -1117,7 +1198,8 @@
     }
 
     /// <summary>v1.02.0：统一搜索 —— 进独立搜索页；纯数字额外并行尾号直查，结果作为「精确匹配」卡显示，
-    /// 不再直接跳详情（避免 mod 名恰好是数字时与尾号冲突）。</summary>
+    /// 不再直接跳详情（避免 mod 名恰好是数字时与尾号冲突）。
+    /// v1.1.6：每次新搜索重置为 New + 正序；排序/方向切换经 ExecuteSearchAsync 只重查列表。</summary>
     private async Task RunSearchAsync()
     {
         var q = _searchText.Trim();
@@ -1125,18 +1207,27 @@
         PushSearchHistory(q);
         _searchTitle = q;   // v1.05.0：标题/提示只在回车提交后更新
         _viewMode = "search";
-        _browseKind = "new";
+        _searchSort = "new";
+        _searchDirection = "DESC";
         _page = 1;
         _timeRange = "all";
         _exactMod = null;
+        await ExecuteSearchAsync(withExact: true);
+    }
+
+    /// <summary>v1.1.6：按当前 _searchSort/_searchDirection 查搜索列表。
+    /// withExact=true 时对纯数字词并行尾号直查（仅新搜索，排序切换不重复请求）。</summary>
+    private async Task ExecuteSearchAsync(bool withExact)
+    {
+        var q = _searchTitle;
+        if (string.IsNullOrEmpty(q) || string.IsNullOrEmpty(_key)) return;
         _browseLoading = true;
         StateHasChanged();
-        // 纯数字 → 并行尾号直查（mods/{id}.json），与名称搜索结果同时呈现
-        var exactTask = q.All(char.IsDigit) ? NexusApi.GetModAsync(_key, int.Parse(q)) : null;
+        var exactTask = withExact && q.All(char.IsDigit) ? NexusApi.GetModAsync(_key, int.Parse(q)) : null;
         try
         {
-            _browse = await NexusApi.BrowseModsAsync("new", 0, _pageSize, searchText: q,
-                timeRange: "all") ?? new();
+            _browse = await NexusApi.BrowseModsAsync(_searchSort, 0, _pageSize, searchText: q,
+                timeRange: "all", direction: _searchDirection) ?? new();
         }
         catch { _browse = new(); }
         if (exactTask is not null) { try { _exactMod = await exactTask; } catch { } }
@@ -1222,6 +1313,7 @@ protected override async Task OnInitializedAsync()
             _viewMode = _svMode; _browseKind = _svKind ?? "new";
             _page = _svPage < 1 ? 1 : _svPage; _pageSize = 40;   // v1.04.0：固定 40 条
             _timeRange = _svRange ?? "all"; _searchText = _svSearch ?? ""; _searchTitle = _svSearch ?? "";
+            _searchSort = _svSort ?? "new"; _searchDirection = _svSearchDir ?? "DESC";   // v1.1.6：搜索页排序恢复
             _exactMod = _svExact;   // v1.02.0：搜索页快照恢复
             _browse = _svBrowse ?? new(); _trendingHome = _svTrending ?? new();
             _homeMods = _svHomeMods ?? new(); _homeTab = _svHomeTab ?? "new";
@@ -1499,6 +1591,7 @@ protected override async Task OnInitializedAsync()
         PageRefresh.OnRefresh -= OnPageRefresh;
         _svMode = _viewMode; _svKind = _browseKind; _svPage = _page;
         _svRange = _timeRange; _svSearch = _searchText; _svExact = _exactMod;
+        _svSort = _searchSort; _svSearchDir = _searchDirection;   // v1.1.6：搜索页排序快照
         _svBrowse = _browse; _svTrending = _trendingHome; _svHomeMods = _homeMods; _svHomeTab = _homeTab;
         _svFilterVer = NexusService.AdultFilterVersion;   // v1.1.3：记录快照是哪个过滤版本拉的
     }

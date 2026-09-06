@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
+  <assemblyIdentity version="1.0.0.0" name="JuniGrid.app"/>
+
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <!-- Windows 10 / 11 -->
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}" />
+    </application>
+  </compatibility>
+
+  <!-- v1.1.8：PerMonitorV2 —— 多显示器跨屏必须。
+       缺省的 System 感知下，系统会把副屏坐标虚拟化成进程视角的另一套数字
+      （例如 1280×720 的平板在进程眼里是缩放过的矩形），而 WM_GETMINMAXINFO
+       hook / MonitorFromWindow / GetMonitorInfo 一直按真物理像素写值（代码
+       注释即此假设），最大化摆放时两套坐标系错位 —— 实测窗口被摆到
+       (5120,0) 起步的屏外区域，表现为「在副屏最大化后窗口消失」。
+       PerMonitorV2 让所有 Win32 几何 API 返回真物理像素，与代码假设一致；
+       WPF(net10) 与 WebView2(Chromium) 均原生支持，跨屏时 UI 按 DPI 重排。 -->
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">PerMonitor</dpiAware>
+      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2, PerMonitor</dpiAwareness>
+    </windowsSettings>
+  </application>
+</assembly>

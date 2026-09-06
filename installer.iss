@@ -2,7 +2,7 @@
 ; Packages the self-contained build (publish/sc) into a Windows installer.
 
 #define MyAppName "JuniGrid"
-#define MyAppVersion "1.1.0"
+#define MyAppVersion "1.1.2"
 #define MyAppPublisher "JuniGrid"
 #define MyAppExeName "JuniGrid.exe"
 

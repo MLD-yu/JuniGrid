@@ -163,50 +163,28 @@ public partial class App : Application
         var splash = new SplashWindow();
         splash.Show();
 
-        // 2) 后台构造 MainWindow（Visibility=Hidden + 位置预设到屏幕下方）
+        // 2) 后台构造 MainWindow（屏外挂载；现身位置由 MainWindow 按所在显示器居中）
         MainWindow? main = null;
         bool uiReady = false;
         bool introDone = false;
         bool revealed = false;
-        double targetTop = 0;
-        double targetLeft = 0;
 
         void RevealMain()
         {
             if (revealed) return;
             revealed = true;
             LogInfo("RevealMain: 显示主窗口");
-            // v1.1.7：启动即最大化。不能在 XAML 里写 WindowState="Maximized" ——
-            // 主窗口以 ShowActivated=false 屏外挂载，WPF 禁止该状态与 Maximized 组合 Show
-            // （直接抛 InvalidOperationException，启动即崩）。
-            // v1.1.2：先移回屏内再最大化 —— 窗口还挂在 (-32000,-32000) 时 Windows
-            // 算不出最大化几何，Maximized 会被吞掉、窗口停留在屏外小窗（实测）。
-            // v1.1.2：非前台揭示时 Maximized 偶发被吞 → 300ms 后复查补一次，确保一定最大化。
-            main!.Left = targetLeft;
-            main!.Top = targetTop;
-            main.WindowState = WindowState.Maximized;
+            // v1.1.5：启动默认【窗口化】—— 现身即窗口化居中，不再强制最大化。
+            // 旧逻辑（v1.1.2/v1.1.7）启动即最大化 + 三次复查补投，会把 OnSourceInitialized
+            // 里按显示器比例算好的响应式窗口尺寸（77.1%×72.7%）整个覆盖掉；
+            // 最大化交给用户自己点标题栏按钮。
+            // v1.1.8：居中交给 MainWindow.RevealAtStartupPosition —— 它用与
+            // OnSourceInitialized 尺寸计算同一块显示器、同一套 DPI 换算得出的坐标现身，
+            // 尺寸与位置永远同屏匹配（SystemParameters.WorkArea 只描述主屏，而窗口
+            // 屏外挂载就近落在哪块屏并不确定，两屏不一致时会出现"按 A 屏算尺寸、
+            // 摆到 B 屏居中"的错位）。
+            main!.RevealAtStartupPosition();
             main.Activate();
-            _ = Task.Run(async () =>
-            {
-                // 非前台揭示时 Maximized 偶发被 Windows 前台锁吞掉 → 分三次复查补投
-                foreach (var delay in new[] { 300, 800, 1500 })
-                {
-                    await Task.Delay(delay);
-                    var ok = await main.Dispatcher.InvokeAsync(() =>
-                    {
-                        try
-                        {
-                            if (main.WindowState == WindowState.Maximized) return true;
-                            LogInfo($"RevealMain: 复查补最大化 (state={main.WindowState})");
-                            main.WindowState = WindowState.Maximized;
-                            main.Activate();
-                            return main.WindowState == WindowState.Maximized;
-                        }
-                        catch (Exception __ex) { LogInfo("RevealMain: 复查失败 " + __ex.Message); return true; }
-                    });
-                    if (ok) break;
-                }
-            });
         }
 
         void TryReveal()
@@ -248,12 +226,9 @@ public partial class App : Application
         {
             main = new MainWindow();
             MainWindow = main;
-            // 预算目标位置（居中）
-            var screenW = SystemParameters.WorkArea.Width;
-            var screenH2 = SystemParameters.WorkArea.Height;
-            main.Left = (screenW - main.Width) / 2 + SystemParameters.WorkArea.Left;
-            targetLeft = main.Left;
-            targetTop = (screenH2 - main.Height) / 2 + SystemParameters.WorkArea.Top;
+            // v1.1.8：不再提前预算居中位置 —— 此刻窗口还是 XAML 兜底尺寸(1600×1000)，
+            // 响应式尺寸要等 Show 触发 OnSourceInitialized 才确定，提前算的位置必然过期。
+            // 现身坐标由 OnSourceInitialized 按所在显示器算好、RevealAtStartupPosition 应用。
             main.WindowStartupLocation = WindowStartupLocation.Manual;
             // v0.23.0：屏外挂载 —— WebView2 是独立子 HWND，DirectComposition 直写屏幕，
             // 父窗口任何透明手段（Opacity/layered）都拦不住它的黑底。

@@ -72,7 +72,7 @@
                     }
                     <button class="jg-dl4-cta" @onclick="Install" disabled="@disableInstall">
                         @installLabel
-                        <span class="jg-dl4-cta-ico"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px"><path d="M12 3v12"/><polyline points="7 10 12 15 17 10"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg></span>
+                        <span class="jg-dl4-cta-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px"><path d="M12 3v12"/><polyline points="7 10 12 15 17 10"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg></span>
                     </button>
                     <button class="jg-dl4-ghost" @onclick="OpenPage" data-tip="在 Nexus 网站打开">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;vertical-align:-3px;margin-right:6px">
@@ -135,6 +135,10 @@
                                                         <button class="jg-req-link" @onclick="() => GoDep(r.ModId, r.ModName)">@r.ModName</button>
                                                     }
                                                     else { @r.ModName }
+                                                    @if (!IsReqInstalled(r))
+                                                    {
+                                                        <span class="jg-req-missing">未安装</span>
+                                                    }
                                                 </span>
                                                 <span class="jg-req-notes">@(string.IsNullOrWhiteSpace(r.Notes) ? "—" : r.Notes)</span>
                                             </div>
@@ -277,7 +281,7 @@
             </div>
         </div>
 
-        @* ─── v0.69.8：详细介绍（独立通栏模块，在整个 hero 模块下方，图片/链接原样渲染，支持翻译）─── *@
+        @* ─── v0.69.8：详细介绍（独立通栏模块，在整个 hero 模块下方，图片/链接原样渲染）─── *@
         @if (!string.IsNullOrWhiteSpace(_mod.DescriptionHtml))
         {
             <div class="jg-detail-section jg-detail-full">
@@ -645,6 +649,25 @@
         { "MuseumHeir.CJBCheatsMenu", "CJB 作弊菜单" },
         { "SMAPI", "SMAPI" },
     };
+
+    /// <summary>Requirements 里的某项是否已安装：先按 Nexus ModId 对本地已装列表匹配，
+    /// 匹配不到再按名字兜底（Nexus 名和本地 manifest Name 通常一致）。
+    /// v1.1.4：SMAPI 特判 —— 它装在游戏根目录（StardewModdingAPI.exe），不在 Mods/
+    /// 里，扫 Mods 永远判"未安装"；直接探测游戏目录的 SMAPI 主程序。</summary>
+    private bool IsReqInstalled(NexusRequirementEx r)
+    {
+        if (r.ModId > 0 && _localMods.Any(m => m.NexusModId == r.ModId)) return true;
+        var n = r.ModName?.Trim();
+        if (string.IsNullOrEmpty(n)) return true;   // 没名字可判 → 别误报
+        if (n.Equals("SMAPI", StringComparison.OrdinalIgnoreCase)
+            || n.Contains("Stardew Modding API", StringComparison.OrdinalIgnoreCase))
+        {
+            var gp = Cfg.Current.GamePath;
+            return !string.IsNullOrWhiteSpace(gp)
+                && File.Exists(Path.Combine(gp, "StardewModdingAPI.exe"));
+        }
+        return _localMods.Any(m => string.Equals(m.Name?.Trim(), n, StringComparison.OrdinalIgnoreCase));
+    }
 
     /// <summary>依赖项（含间接依赖展开后的一项）。</summary>
     private sealed class ResolvedDep

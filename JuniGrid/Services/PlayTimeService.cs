@@ -44,6 +44,9 @@ public sealed class PlayTimeService : IDisposable
 
     public long GetSeconds(string dateKey) { lock (_gate) return _seconds.TryGetValue(dateKey, out var s) ? s : 0; }
 
+    /// <summary>全部年份的游玩秒数总和（热力图口径，首页「最近游玩」卡片显示用）。</summary>
+    public long TotalSeconds { get { lock (_gate) { var t = 0L; foreach (var v in _seconds.Values) t += v; return t; } } }
+
     private void Tick()
     {
         try

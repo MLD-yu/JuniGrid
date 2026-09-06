@@ -271,10 +271,24 @@
 
     private static IEnumerable<string> UsefulLines(TaskItem t)
     {
+        // v1.1.2：下载心跳行（"正在下载… x MB / y MB"）此前被 ProgressNoise 全部隐藏，
+        // 导致下载阶段在步骤列表里不可见 —— 百分比独自爬升而标签一直卡在
+        // 「正在获取下载地址」，到 100% 直接跳"安装完成"。现在把连续心跳折叠成
+        // 一行不带数字的「正在下载…」，作为可见步骤展示。
+        var lastWasDl = false;
         foreach (var raw in t.Log)
         {
             var line = TsPrefix.Replace(raw, "").Trim();
-            if (line.Length == 0 || ProgressNoise.IsMatch(line)) continue;
+            if (line.Length == 0) continue;
+            if (line.StartsWith("正在下载"))
+            {
+                if (lastWasDl) continue;   // 连续心跳只留一行
+                yield return "正在下载…";
+                lastWasDl = true;
+                continue;
+            }
+            lastWasDl = false;
+            if (ProgressNoise.IsMatch(line)) continue;
             yield return line;
         }
     }

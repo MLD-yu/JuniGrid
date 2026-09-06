@@ -282,6 +282,28 @@ html[data-theme="dark"] .jg-tt-knob { left: 22px; }
 html[data-theme="dark"] .jg-tt-sun { opacity: 0; }
 html[data-theme="dark"] .jg-tt-moon { opacity: 1; }
 
+/* ── v1.1.2：标题栏全局翻译开关（与主题开关同款胶囊）──
+   关闭=普通轨道+旋钮居左，开启=品牌绿轨+旋钮居右；旋钮里是翻译图标。
+   旋钮复用 .jg-tt-knob，这里覆盖主题开关的 dark:left:22px 规则，位置只看自身开关态。 */
+.jg-trans-toggle {
+    position: relative;
+    width: 40px;
+    height: 20px;
+    padding: 0;
+    border: 1px solid var(--jg-toggle-track-border);
+    border-radius: 999px;
+    background: var(--jg-toggle-track);
+    cursor: pointer;
+    transition: background 200ms ease, border-color 200ms ease;
+}
+.jg-trans-toggle:hover { filter: brightness(0.97); }
+html[data-theme="dark"] .jg-trans-toggle:hover { filter: brightness(1.15); }
+.jg-trans-toggle.on { background: #19943C; border-color: #19943C; }
+.jg-trans-toggle .jg-tt-knob { left: 2px; }
+html[data-theme="dark"] .jg-trans-toggle .jg-tt-knob { left: 2px; }
+.jg-trans-toggle.on .jg-tt-knob,
+html[data-theme="dark"] .jg-trans-toggle.on .jg-tt-knob { left: 22px; }
+
 /* 最大化时窗口圆角被 DWM 去掉，所有 CSS 圆角同步归零 */
 body.jg-max .jg-shell,
 body.jg-max .jg-titlebar,

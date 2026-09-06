@@ -2,6 +2,8 @@
 @inherits LayoutComponentBase
 @inject IJSRuntime JS
 @inject NavigationManager Nav
+@inject ConfigService Cfg
+@inject TranslationService Trans
 @implements IDisposable
 
 <div class="jg-shell">
@@ -62,6 +64,15 @@
             try { await JS.InvokeVoidAsync("junigridJs.playPageEnter"); } catch { }
             // v1.1.2：返回顶部按钮（滚动监听 + 路由显隐 + 点击丝滑回顶）
             try { await JS.InvokeVoidAsync("junigridJs.backTopInit"); } catch { }
+            // v1.1.2：全局自动翻译观察器 —— 挂一次管所有页面，外文内容一出现就送翻
+            try
+            {
+                await JS.InvokeVoidAsync("junigridJs.transInit",
+                    Microsoft.JSInterop.DotNetObjectReference.Create(Trans));
+                if (!Cfg.Current.TranslationEnabled)
+                    await JS.InvokeVoidAsync("junigridJs.transSetEnabled", false);
+            }
+            catch { }
         }
     }
 }

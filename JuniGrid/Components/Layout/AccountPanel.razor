@@ -302,7 +302,7 @@
                 if (!hinted && _cfg.LaunchMode == "steam" && Environment.TickCount64 >= deadline - 20_000)
                 {
                     hinted = true;
-                    ShowToast("游戏尚未启动：请查看 Steam 是否弹出确认窗口（如家庭共享「借用游戏」）。若此 Steam 账号未拥有本游戏，请改用 SMAPI 启动。");
+                    ShowToast("游戏尚未启动：请查看 Steam 是否弹出确认窗口。");
                 }
                 // Steam 被关闭 → 没人能拉起游戏了，立即取消等待（之前要干等满超时，
                 // 用户"关了 Steam 按钮还是启动中"的观感即来源于此）。
@@ -328,7 +328,7 @@
                 }
                 if (Environment.TickCount64 >= deadline)
                 {
-                    ShowToast("等待超时仍未检测到游戏进程，已恢复启动按钮。请查看 Steam 窗口是否有待处理的弹窗。");
+                    ShowToast("等待超时：未检测到游戏进程");
                     return;
                 }
                 await Task.Delay(500, _cts.Token);

@@ -196,6 +196,8 @@
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .jg-toast-live.err { background: rgba(198,15,31,0.96); color: #fff; }
+/* v1.1.2：暗色主题下通用 toast 反色 —— 白底黑字（红色失败 toast 不变） */
+html[data-theme="dark"] .jg-toast-live:not(.err) { background: #f2f3f5; color: #17181c; box-shadow: 0 8px 28px rgba(0,0,0,0.5); }
 
 /* -- v0.45.0：mod 分类标签（仿 PCL2，简介前的小胶囊）-- */
 .jg-cat {

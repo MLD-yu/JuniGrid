@@ -238,7 +238,12 @@ public sealed class JuniGridConfig
     public Dictionary<string, string> ModCovers { get; set; } = new();
 
     /// <summary>用户给 mod 起的备注名：mod 文件夹名 → 备注（列表里显示成 “备注(原名)”）。</summary>
+    /// <summary>v1.1.2：mod 文件夹 → 备注名。列表显示成「备注(原名)」，并同步进 mod 的
+    /// manifest.json（游戏内 GMCM 标题读的就是它）。</summary>
     public Dictionary<string, string> ModRemarks { get; set; } = new();
+    /// <summary>v1.1.2：mod 文件夹 → 该 mod 清单里的原始 Name。备注同步进 manifest 前先存档，
+    /// 取消备注时用它还原，避免原名丢失。</summary>
+    public Dictionary<string, string> ModOriginalNames { get; set; } = new();
 
     /// <summary>v1.01.0：Nexus 页搜索历史（对照官网 Recent Searches，最多 10 条，新词排前）。</summary>
     public List<string> NexusSearchHistory { get; set; } = new();
@@ -315,6 +320,12 @@ public sealed class JuniGridConfig
     /// <summary>v0.2.1：内存管理 —— 系统内存占用达到阈值(%)时自动压缩。</summary>
     public bool MemThresholdEnabled { get; set; } = false;
     public int MemThresholdPercent { get; set; } = 80;
+
+    /// <summary>v1.1.2：全局自动翻译开关。开启后任何页面出现的外文内容实时翻成中文；
+    /// 日志行首 [时间 级别 来源] 前缀永远保留原文 —— 分类筛选/着色都靠它。
+    /// 默认关闭（国内网络到翻译引擎不稳定，避免默认体验时好时坏）。</summary>
+    public bool TranslationEnabled { get; set; } = false;
+
 
 }
 

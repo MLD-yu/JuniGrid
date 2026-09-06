@@ -824,3 +824,16 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
     background: linear-gradient(to top, var(--jg-content), transparent);
 }
 
+
+/* ── v1.1.2：暗色主题下任务时间线「黑」阶段色反白 —— 像素方块加载动画黑块贴暗底看不清 ── */
+html[data-theme="dark"] .jg-tl { --tl-black: #e8eaee; }
+
+
+/* ─── v1.1.5：分组标题 = 点击全选/取消全选该捆绑包 ───
+   指针光标 + 禁划词：没有这两条，鼠标按下微移就会触发文本选中，
+   click 事件被吞掉，用户看到的是文本光标而不是可点击的指针。 */
+.jg-group-head {
+    cursor: pointer;
+    user-select: none;
+    -webkit-user-select: none;
+}

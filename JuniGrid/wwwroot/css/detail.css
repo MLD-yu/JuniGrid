@@ -257,6 +257,8 @@
 .jg-req-link:hover { color: #9a7109; text-decoration: none; }
 .jg-req-cover { width: 30px; height: 30px; object-fit: cover; border-radius: 6px; flex: none; }
 .jg-req-name { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.jg-req-missing { flex: none; font-size: 10.5px; font-weight: 600; color: #c50f1f;
+  border: 1px solid rgba(197,15,31,.45); border-radius: 999px; padding: 1px 7px; }
 .jg-req-table { margin-top: 4px; }
 .jg-detail-section { margin-top: 18px; }
 .jg-detail-section-title { font-size: 14.5px; font-weight: 700; color: var(--jg-text); margin-bottom: 8px; }
