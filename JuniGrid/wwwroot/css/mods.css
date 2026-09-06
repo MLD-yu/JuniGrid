@@ -467,8 +467,12 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
 }
 @keyframes jg-tl-rowin { from { opacity: 0; transform: translateY(6px); } }
 .jg-tl-row[data-status="running"] { font-weight: 500; }
-.jg-tl-row[data-status="done"]    { color: var(--tl-green); }
-.jg-tl-row[data-status="final"]   { color: var(--tl-green); font-weight: 600; }
+/* v1.2.3：依赖确认弹窗里可点击的依赖行 —— hover 反馈 + 圆角高亮 */
+.jg-dep-row { border-radius: 8px; padding: 4px 6px; margin: -4px -6px; transition: background .12s ease; }
+.jg-dep-row[data-clickable="true"]:hover { background: var(--jg-well); }
+
+.jg-tl-row[data-status="done"]    { color: var(--tl-black); }
+.jg-tl-row[data-status="final"]   { color: var(--tl-black); font-weight: 600; }
 .jg-tl-row[data-status="error"]   { color: var(--tl-red); font-weight: 600; }
 .jg-tl-icon { width: 30px; height: 30px; display: grid; place-items: center; flex: none; position: relative; }
 .jg-tl-text { flex: 1; min-width: 0; }
@@ -481,7 +485,7 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
 .jg-tl-mark path   { fill: none; stroke: var(--c); stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
 .jg-tl-row[data-status="final"] .jg-tl-mark circle,
 .jg-tl-row[data-status="error"] .jg-tl-mark circle { fill: var(--c); }
-.jg-tl-row[data-status="final"] .jg-tl-mark path,
+.jg-tl-row[data-status="final"] .jg-tl-mark path   { stroke: var(--tl-onblack); }
 .jg-tl-row[data-status="error"] .jg-tl-mark path   { stroke: #fff; }
 /* 3x3 像素方块：小·快速 + 每格发光（drop-shadow 跟随阶段色） */
 .jg-pxgrid {
@@ -503,7 +507,7 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
     60%, 100% { opacity: .15; transform: scale(.5); }
 }
 @keyframes jg-px-breathe { 0%,100% { opacity: .25; transform: scale(.7); } 50% { opacity: .7; transform: scale(1); } }
-.jg-tl { --tl-green: #1a9c5b; --tl-red: #e5484d; --tl-blue: #3b82f6; --tl-black: #1a1a1a; }
+.jg-tl { --tl-green: #1a9c5b; --tl-red: #e5484d; --tl-blue: #3b82f6; --tl-black: #1a1a1a; --tl-onblack: #ffffff; }
 @media (prefers-reduced-motion: reduce) { .jg-pxgrid i { animation: none; opacity: .8; transform: none; } }
 
 /* ─── v1.06.6：下载页灰底改回白色；黑圆返回改透明底黑箭头；清理全部胶囊 ─── */
@@ -826,7 +830,7 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
 
 
 /* ── v1.1.2：暗色主题下任务时间线「黑」阶段色反白 —— 像素方块加载动画黑块贴暗底看不清 ── */
-html[data-theme="dark"] .jg-tl { --tl-black: #e8eaee; }
+html[data-theme="dark"] .jg-tl { --tl-black: #e8eaee; --tl-onblack: #1a1a1a; }
 
 
 /* ─── v1.1.5：分组标题 = 点击全选/取消全选该捆绑包 ───

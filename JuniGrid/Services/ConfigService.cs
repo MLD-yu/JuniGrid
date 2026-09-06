@@ -72,7 +72,7 @@ public sealed class ConfigService
         var only = Current.OnlyAdultContent;
         var include = !Current.OnlyAdultContent && !Current.FilterAdultContent;
         if (NexusService.OnlyAdultContent != only || NexusService.IncludeAdultContent != include)
-            System.Threading.Interlocked.Increment(ref NexusService.AdultFilterVersion);
+            NexusService.BumpAdultFilterVersion();
         NexusService.OnlyAdultContent = only;
         NexusService.IncludeAdultContent = include;
     }
@@ -107,8 +107,11 @@ public sealed class ConfigService
         System.Threading.Interlocked.Increment(ref _dirtyVersion);
         lock (_schedGate)
         {
-            _debounceCts?.Cancel();
+            // v1.1.6：旧 CTS 取消后立刻释放 —— 之前只 Cancel 不 Dispose，
+            // 批量操作一次 100+ 次保存请求就抛弃 100+ 个 CTS 给 finalizer
+            var old = _debounceCts;
             _debounceCts = new System.Threading.CancellationTokenSource();
+            try { old?.Cancel(); old?.Dispose(); } catch { }
             var token = _debounceCts.Token;
             _ = System.Threading.Tasks.Task.Run(async () =>
             {
@@ -154,23 +157,25 @@ public sealed class ConfigService
         finally { System.Threading.Volatile.Write(ref _saveRunning, 0); }
     }
 
-    /// <summary>tmp + 原子替换 + 异步重试（不占锁、不卡 UI 线程）。</summary>
+    /// <summary>tmp + 原子替换 + 异步重试（不占锁、不卡 UI 线程）。
+    /// v1.1.6：tmp 带随机后缀 —— 固定 ".tmp" 在后台写盘循环与退出 Flush 撞上同一窗口时
+    /// 会互撞（一个把 tmp Move 走，另一个 WriteAllText/Move 抛异常）。</summary>
     private static async System.Threading.Tasks.Task<bool> WriteAtomicAsync(string json)
     {
         for (var attempt = 1; ; attempt++)
         {
+            var tmp = $"{ConfigPath}.{Guid.NewGuid().ToString("N")[..8]}.tmp";
             try
             {
                 Directory.CreateDirectory(ConfigDir);
-                var tmp = ConfigPath + ".tmp";
                 await File.WriteAllTextAsync(tmp, json).ConfigureAwait(false);
                 File.Move(tmp, ConfigPath, true);   // 原子替换：写一半崩溃也不会截断旧配置
                 return true;
             }
-            catch (IOException) when (attempt < 4)
-            { await System.Threading.Tasks.Task.Delay(40 * attempt).ConfigureAwait(false); }
+            catch (Exception ex) when (attempt < 4 && ex is IOException or UnauthorizedAccessException)
+            { try { File.Delete(tmp); } catch { } await System.Threading.Tasks.Task.Delay(40 * attempt).ConfigureAwait(false); }
             catch (Exception ex)
-            { AppLog.Error("Config", $"配置保存失败(尝试 {attempt} 次): " + ex.Message); return false; }
+            { try { File.Delete(tmp); } catch { } AppLog.Error("Config", $"配置保存失败(尝试 {attempt} 次): " + ex.Message); return false; }
         }
     }
 
@@ -193,17 +198,17 @@ public sealed class ConfigService
             if (json is null) { AppLog.Error("Config", "退出 Flush 序列化失败"); return; }
             for (var attempt = 1; ; attempt++)
             {
+                var tmp = $"{ConfigPath}.{Guid.NewGuid().ToString("N")[..8]}.tmp";
                 try
                 {
                     Directory.CreateDirectory(ConfigDir);
-                    var tmp = ConfigPath + ".tmp";
                     File.WriteAllText(tmp, json);
                     File.Move(tmp, ConfigPath, true);
                     System.Threading.Volatile.Write(ref _savedVersion, v);
                     return;
                 }
-                catch (IOException) when (attempt < 4) { System.Threading.Thread.Sleep(40 * attempt); }
-                catch (Exception ex) { AppLog.Error("Config", "退出 Flush 写盘失败: " + ex.Message); return; }
+                catch (IOException) when (attempt < 4) { try { File.Delete(tmp); } catch { } System.Threading.Thread.Sleep(40 * attempt); }
+                catch (Exception ex) { try { File.Delete(tmp); } catch { } AppLog.Error("Config", "退出 Flush 写盘失败: " + ex.Message); return; }
             }
         }
         catch (Exception ex) { AppLog.Error("Config", "Flush 异常: " + ex.Message); }
@@ -297,13 +302,17 @@ public sealed class JuniGridConfig
     /// <summary>mod 文件夹 → 官网分类英文名（检查更新/补封面时顺手缓存，与 ModCovers 同生命周期）。</summary>
     public Dictionary<string, string> ModCategories { get; set; } = new();
 
-    /// <summary>
-    /// vNext：更新检查指纹缓存 —— Nexus modId → (updatedAt 指纹, 上次精查到的最新 MAIN 文件版本, 精查时间)。
+    /// <summary>vNext：更新检查指纹缓存 —— Nexus modId → (updatedAt 指纹, 上次精查到的最新 MAIN 文件版本, 精查时间)。
     /// 进 Mod 页先跑一次免 key 的 GraphQL 批量指纹比对：updatedAt 没变的 mod 直接复用缓存版本号
     /// （文件列表没变，结果不会过期），只有指纹变化/缓存缺失的才逐个 files.json 精查并回写本缓存。
     /// 持久化到配置里，重启应用后依然命中 —— 常规进页的检查从 N 个请求塌缩到 ~N/50 个。
     /// </summary>
     public Dictionary<int, ModUpdateFingerprintEntry> ModUpdateFingerprints { get; set; } = new();
+
+    /// <summary>v1.2.0：一键装依赖的解析缓存 —— SMAPI UniqueID → Nexus modId。
+    /// 搜索命中并经 manifest UniqueID 校验装成功后记录，下次一键装依赖直接命中，
+    /// 不再重复搜索。校验仍在每次下载后执行，缓存错了也装不进 Mods。</summary>
+    public Dictionary<string, int> DependencyNexusIds { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>v0.2.1：统一缓存目录（null = 各类缓存走历史默认位置）。
     /// 设置后下载/安装临时、SMAPI 安装包、WebView2 数据、Mods 备份都迁到该目录下的子目录。</summary>

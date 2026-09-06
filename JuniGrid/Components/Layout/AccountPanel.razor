@@ -130,6 +130,7 @@
         ProbeVersions();
         _ = CheckGameVersionAsync();
         Launcher.OnLogLine += HandleLogLine;
+        ConfigService.Saved += HandleCfgSaved;
     }
 
     protected override async Task OnInitializedAsync()
@@ -144,7 +145,9 @@
     public void Dispose()
     {
         _cts.Cancel();
+        try { _cts.Dispose(); } catch { }   // v1.1.6：Cancel 后释放，轮询循环抛 OCE 正常退出
         Launcher.OnLogLine -= HandleLogLine;
+        ConfigService.Saved -= HandleCfgSaved;
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -169,10 +172,41 @@
         }
     }
 
+    private string? _probedGamePath;   // 上次探测版本时用的目录（config 是共享可变对象，_cfg 会跟着变，不能拿它判断「目录有没有变」）
+
     private void ProbeVersions()
     {
         _smapiVersion = Game.ProbeSmapiVersion(_cfg.GamePath);
         _gameVersion = Updater.GetGameVersion(_cfg.GamePath);
+        _probedGamePath = _cfg.GamePath;
+    }
+
+    // v1.1.2：设置页保存游戏目录后即时重探版本 —— AccountPanel 常驻 MainLayout 不会重建，
+    // 之前保存后启动按钮一直「未定位」，要重启应用才消失。Saved 可能在后台线程触发 → InvokeAsync 回 UI（同 TaskDock.Refresh）。
+    private void HandleCfgSaved()
+    {
+        // 目录没变的保存（主题/备注/指纹等高频落盘）直接跳过，不做无谓的文件探测
+        if (string.Equals(Cfg.Current.GamePath, _probedGamePath, StringComparison.OrdinalIgnoreCase)) return;
+        InvokeAsync(() =>
+        {
+            _cfg = Cfg.Current;
+            ProbeVersions();
+            RecomputeGameHasUpdate();
+            StateHasChanged();
+        });
+    }
+
+    // 版本比较：本地 1.6.15 vs 远端 1.6.16；本地无法解析时当作未知、不误报
+    private void RecomputeGameHasUpdate()
+    {
+        _gameHasUpdate = false;
+        if (_gameLatest is not null
+            && !string.IsNullOrWhiteSpace(_gameVersion)
+            && Version.TryParse(_gameVersion, out var local)
+            && Version.TryParse(_gameLatest, out var remote))
+        {
+            _gameHasUpdate = remote > local;
+        }
     }
 
     // 每次启动 JuniGrid 都自动检测一次游戏本体最新版，有新版本就在启动按钮里显示
@@ -181,14 +215,7 @@
         var latest = await Updater.GetLatestGameVersionAsync();
         if (string.IsNullOrWhiteSpace(latest)) { _gameLatest = null; _gameHasUpdate = false; return; }
         _gameLatest = latest;
-        // 版本比较：本地 1.6.15 vs 远端 1.6.16；本地无法解析时当作未知、不误报
-        _gameHasUpdate = false;
-        if (!string.IsNullOrWhiteSpace(_gameVersion)
-            && Version.TryParse(_gameVersion, out var local)
-            && Version.TryParse(latest, out var remote))
-        {
-            _gameHasUpdate = remote > local;
-        }
+        RecomputeGameHasUpdate();
 
         StateHasChanged();
     }

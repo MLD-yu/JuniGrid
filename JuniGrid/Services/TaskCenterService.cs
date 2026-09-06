@@ -56,13 +56,17 @@ public sealed class TaskCenterService
             // 会撞出「集合已修改」把该次落盘整个丢掉；tasks.json 很小（≤几百 KB）且 800ms
             // 防抖才写一次，锁内完成拷贝+写盘的代价可忽略
             lock (_lock)
-            {
-                Directory.CreateDirectory(Path.GetDirectoryName(PersistPath)!);
-                File.WriteAllText(PersistPath, JsonSerializer.Serialize(Items.ToList()));
-            }
+                AtomicFile.WriteAllText(PersistPath, JsonSerializer.Serialize(Items.ToList()));
         }
         catch (Exception ex) { AppLog.Warn("TaskCenter", "任务落盘失败: " + ex.Message); }
     }
+
+    /// <summary>线程安全的任务列表快照 —— UI 渲染必须用它，绝不能直接枚举 Items
+    /// （下载线程随时 Insert/Remove，渲染线程枚举会撞「集合已修改」炸掉整页）。</summary>
+    public List<TaskItem> Snapshot() { lock (_lock) return Items.ToList(); }
+
+    /// <summary>单个任务日志的线程安全副本（渲染下拉面板用，避免与后台 Report 竞态）。</summary>
+    public List<string> CopyLog(TaskItem t) { lock (_lock) return t.Log.ToList(); }
 
     public TaskItem Start(string title, string? kind = null)
     {
@@ -80,15 +84,20 @@ public sealed class TaskCenterService
         // v1.08.2：下载进度行（"正在下载… x MB / y MB"）属于高频重复心跳，
         // 只覆盖日志里上一条同类行，不追加 —— 否则长下载轻松超 200 条上限，
         // 把备份/解压等真正的过程日志从头挤掉。事件行（切镜像/续传/阶段切换）照常追加。
-        if (IsDownloadHeartbeat(line)
-            && t.Log.Count > 0 && IsDownloadHeartbeat(t.Log[t.Log.Count - 1]))
+        // v1.1.6：t.Log 的读写纳入 _lock —— 落盘定时器线程在锁内序列化整个 Items
+        //（含每条 t.Log），这里锁外 Add 会撞「集合已修改」让该次落盘静默丢失。
+        lock (_lock)
         {
-            t.Log[t.Log.Count - 1] = $"[{DateTime.Now:HH:mm:ss}] {line}";
-        }
-        else
-        {
-            t.Log.Add($"[{DateTime.Now:HH:mm:ss}] {line}");
-            if (t.Log.Count > 200) t.Log.RemoveAt(0);
+            if (IsDownloadHeartbeat(line)
+                && t.Log.Count > 0 && IsDownloadHeartbeat(t.Log[t.Log.Count - 1]))
+            {
+                t.Log[t.Log.Count - 1] = $"[{DateTime.Now:HH:mm:ss}] {line}";
+            }
+            else
+            {
+                t.Log.Add($"[{DateTime.Now:HH:mm:ss}] {line}");
+                if (t.Log.Count > 200) t.Log.RemoveAt(0);
+            }
         }
         if (percent is not null) t.Percent = percent.Value;
         if (speedMBps is not null) t.SpeedMBps = speedMBps.Value;
@@ -110,7 +119,15 @@ public sealed class TaskCenterService
         t.Status = success ? "done" : "failed";
         t.Percent = success ? 100 : t.Percent;
         t.SpeedMBps = 0;
-        if (finalMsg is not null) { t.Log.Add($"[{DateTime.Now:HH:mm:ss}] {finalMsg}"); t.LastLine = finalMsg; }
+        if (finalMsg is not null)
+        {
+            lock (_lock)
+            {
+                t.Log.Add($"[{DateTime.Now:HH:mm:ss}] {finalMsg}");
+                if (t.Log.Count > 200) t.Log.RemoveAt(0);
+            }
+            t.LastLine = finalMsg;
+        }
         OnChanged?.Invoke();
         RequestSave();
     }

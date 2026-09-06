@@ -133,6 +133,17 @@
                     <div class="jg-trend-big jg-shimmer"></div>
                     <div class="jg-trend-big jg-shimmer"></div>
                 </div>
+                @* v1.2.3：骨架屏补上下排 4 张小卡 —— 与加载后的真实布局（2 大 + 4 小）同构，不再“加载完突然长高” *@
+                <div class="jg-trend-smalls">
+                    @for (var i = 0; i < 4; i++)
+                    {
+                        <div class="jg-trend-sm">
+                            <div class="jg-trend-sm-cover jg-shimmer"></div>
+                            <div class="jg-shimmer" style="height:13px;border-radius:4px;margin-top:6px;width:70%"></div>
+                            <div class="jg-shimmer" style="height:11px;border-radius:4px;margin-top:4px;width:45%"></div>
+                        </div>
+                    }
+                </div>
             }
             else if (_trendingHome.Count > 0)
             {

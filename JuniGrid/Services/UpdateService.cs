@@ -251,18 +251,19 @@ public sealed class UpdateService
         SmapiUpdateInfo info, string? gamePath,
         IProgress<InstallProgress>? progress = null)
     {
+        string? temp = null;
         try
         {
             if (info.InstallerZipUrl is null)
-                return "没找到 SMAPI 安装包下载地址";
+                throw new InvalidOperationException("没找到 SMAPI 安装包下载地址");
             if (string.IsNullOrWhiteSpace(gamePath) || !Directory.Exists(gamePath))
-                return "还没设置游戏目录 —— 先到「设置」页选择";
+                throw new InvalidOperationException("还没设置游戏目录 —— 先到「设置」页选择");
 
             // v0.2.1：走统一缓存目录（默认仍在 LocalAppData）。不直接放 %TEMP%：
             // Defender 对 %TEMP% 里的 .NET 运行时 DLL 扫描更激进，经常写入瞬间挂锁。
             // 目录名带时间戳避免撞旧缓存。
             var stamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
-            var temp = Path.Combine(
+            temp = Path.Combine(
                 StoragePaths.SmapiInstallerDir,
                 $"{info.LatestVersion ?? "latest"}-{stamp}");
             Directory.CreateDirectory(temp);
@@ -321,7 +322,8 @@ public sealed class UpdateService
             //   3. 复制 "Stardew Valley.deps.json" → "StardewModdingAPI.deps.json"
             var dat = Path.Combine(windowsFiles, "install.dat");
             if (!File.Exists(dat))
-                return "解压后没找到 SMAPI 安装包（internal/windows/install.dat 不存在，安装包结构变了？）";
+                throw new InvalidOperationException(
+                    "解压后没找到 SMAPI 安装包（internal/windows/install.dat 不存在，安装包结构变了？）");
 
             var extracted = Path.Combine(temp, "smapi-files");
             Directory.CreateDirectory(extracted);
@@ -329,7 +331,7 @@ public sealed class UpdateService
             await Task.Run(() => ExtractWithRetryAsync(dat, extracted, progress));   // v1.08
 
             if (!File.Exists(Path.Combine(extracted, "StardewModdingAPI.exe")))
-                return "SMAPI 安装包内没有 StardewModdingAPI.exe（安装包异常）";
+                throw new InvalidOperationException("SMAPI 安装包内没有 StardewModdingAPI.exe（安装包异常）");
 
             // 先清掉旧 SMAPI 文件再复制新文件（避免文件锁定/残留版本文件）。
             // v1.08：复制/清理都是上百 MB 的磁盘工作，不能冻 UI。
@@ -363,7 +365,10 @@ public sealed class UpdateService
         }
         catch (Exception ex)
         {
-            // 失败时保留备份，尽量不删，方便下次进来手动恢复。
+            // v1.1.6：失败时清掉这次下载+双层解压的临时目录 —— 旧版整个留在缓存目录
+            //（几百 MB）直到用户手动清缓存。modsBackup 仍保留，方便用户手动恢复。
+            if (temp is not null)
+            { try { Directory.Delete(temp, true); } catch { } }
             return "SMAPI 自动安装失败：" + ex.Message;
         }
     }
@@ -450,19 +455,7 @@ public sealed class UpdateService
             yield return p + url;
     }
 
-    /// <summary>把字节数显示成可读的 KB/MB/GB 文本。</summary>
-    private static string FormatBytes(long bytes)
-    {
-        double value = bytes;
-        string[] units = { "B", "KB", "MB", "GB" };
-        int i = 0;
-        while (value >= 1024 && i < units.Length - 1)
-        {
-            value /= 1024;
-            i++;
-        }
-        return value.ToString(i == 0 ? "F0" : "F1") + " " + units[i];
-    }
+    // v1.1.6：此处的 FormatBytes 私有副本已删（无任何调用者）—— 统一用 ResumableDownload.FormatBytes。
 
     /// <summary>
     /// Copy SMAPI's unzipped install.dat payload into the game folder.

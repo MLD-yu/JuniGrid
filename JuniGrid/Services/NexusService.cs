@@ -392,16 +392,36 @@ public sealed class NexusService
     // 在它上面永远返回空，api-router 上正常；其余字段/形状完全兼容（官网前端也走这条）。
     private const string GraphQlEndpoint = "https://api-router.nexusmods.com/graphql";
     /// <summary>v0.79.0：成人内容总开关 —— false=浏览/搜索 GraphQL 追加 adultContent:false 过滤条件。
-    /// 由 ConfigService 按「设置 → 过滤色情内容」开关同步（FilterAdultContent=true ⇒ 这里=false）。</summary>
-    public static bool IncludeAdultContent = true;
+    /// 由 ConfigService 按「设置 → 过滤色情内容」开关同步（FilterAdultContent=true ⇒ 这里=false）。
+    /// v1.1.6：UI 线程写 / GraphQL 后台线程读，改走 Volatile 属性避免撕裂读。</summary>
+    private static bool _includeAdultContent = true;
+    public static bool IncludeAdultContent
+    {
+        get => Volatile.Read(ref _includeAdultContent);
+        set => Volatile.Write(ref _includeAdultContent, value);
+    }
     /// <summary>「只显示成人内容」开关 —— true 时浏览/搜索 GraphQL 追加 adultContent:true 过滤条件
     /// （优先级高于 IncludeAdultContent，两者互斥由 ConfigService 保证）。默认关闭。</summary>
-    public static bool OnlyAdultContent = false;
+    private static bool _onlyAdultContent = false;
+    public static bool OnlyAdultContent
+    {
+        get => Volatile.Read(ref _onlyAdultContent);
+        set => Volatile.Write(ref _onlyAdultContent, value);
+    }
     /// <summary>成人过滤条件的版本号：开关每实际变化一次 +1（ConfigService.SyncAdultFilter 维护）。
     /// Nexus 页快照存下取数时的版本，返回时版本对不上说明快照是旧过滤条件拉的数据 → 弃用重拉。</summary>
-    public static int AdultFilterVersion = 0;
-    /// <summary>v0.81.0：最近一次榜单查询服务端报告的 totalCount（分页器「第 x / N 页 · 共 X 个」的数据源）。</summary>
-    public int? LastBrowseTotalCount;
+    private static int _adultFilterVersion;
+    public static int AdultFilterVersion => Volatile.Read(ref _adultFilterVersion);
+    /// <summary>开关实际变化时递增版本号（原子；属性只读，递增入口收敛在这里）。</summary>
+    public static void BumpAdultFilterVersion() => Interlocked.Increment(ref _adultFilterVersion);
+    /// <summary>v0.81.0：最近一次榜单查询服务端报告的 totalCount（分页器「第 x / N 页 · 共 X 个」的数据源）。
+    /// v1.1.6：改 Volatile 存储（-1 哨兵 = null），GraphQL 线程写 / UI 线程读。</summary>
+    private int _lastBrowseTotalCount = -1;
+    public int? LastBrowseTotalCount
+    {
+        get => Volatile.Read(ref _lastBrowseTotalCount) is int v && v >= 0 ? v : null;
+        set => Volatile.Write(ref _lastBrowseTotalCount, value is int v ? v : -1);
+    }
     /// <summary>v0.96.0：Surprise 榜服务端 random 排序种子 —— 翻页期间保持不变保证页序连续，「换一批」时换新种子。</summary>
     public int SurpriseSeed { get; private set; } = Random.Shared.Next();
     public void ReshuffleSurprise() => SurpriseSeed = Random.Shared.Next();
@@ -423,24 +443,35 @@ public sealed class NexusService
                 return null;
             return data.Clone();
         }
-        catch { return null; }
+        catch (Exception ex)
+        {
+            // v1.1.6：不再完全静默 —— GraphQL 是浏览/搜索/详情的唯一通道，留一行日志便于诊断
+            AppLog.Warn("Nexus", "GraphQL 请求失败: " + ex.Message);
+            return null;
+        }
+    }
+
+    /// <summary>gameDomain → 内部 gameId（带缓存）。v1.1.6：原先 4 个调用点各自复制了
+    /// 一份「GraphQL 查询 + 解析 + 回填缓存」块，统一收敛到这里。失败返回 null。</summary>
+    private async Task<int?> EnsureGameIdAsync(string gameDomain)
+    {
+        if (GameIdCache.TryGetValue(gameDomain, out var gameId)) return gameId;
+        var g = await GraphQlAsync("{ game(domainName:\"" + gameDomain + "\") { id } }");
+        if (g is null) return null;
+        var gv = g.Value;
+        if (!gv.TryGetProperty("game", out var gg) || gg.ValueKind != JsonValueKind.Object) return null;
+        var gidEl = gg.TryGetProperty("id", out var tmp) ? tmp : default;
+        gameId = gidEl.ValueKind == JsonValueKind.Number ? gidEl.GetInt32()
+               : int.TryParse(gidEl.ToString(), out var p) ? p : 0;
+        if (gameId <= 0) return null;
+        GameIdCache[gameDomain] = gameId;
+        return gameId;
     }
 
     /// <summary>拉取官网 Requirements（要求/依赖表格）。失败返回 null，由 UI 给"到官网查看"兜底。</summary>
     public async Task<List<NexusRequirement>?> GetModRequirementsAsync(int modId, string gameDomain = "stardewvalley")
     {
-        if (!GameIdCache.TryGetValue(gameDomain, out var gameId))
-        {
-            var g = await GraphQlAsync("{ game(domainName:\"" + gameDomain + "\") { id } }");
-            if (g is null) return null;
-            var gv = g.Value;
-            if (!gv.TryGetProperty("game", out var gg) || gg.ValueKind != JsonValueKind.Object) return null;
-            var gidEl = gg.TryGetProperty("id", out var tmp) ? tmp : default;
-            gameId = gidEl.ValueKind == JsonValueKind.Number ? gidEl.GetInt32()
-                   : int.TryParse(gidEl.ToString(), out var p) ? p : 0;
-            if (gameId <= 0) return null;
-            GameIdCache[gameDomain] = gameId;
-        }
+        if (await EnsureGameIdAsync(gameDomain) is not { } gameId) return null;
 
         var d = await GraphQlAsync(
             "{ mod(gameId:\"" + gameId + "\", modId:\"" + modId + "\") { modRequirements { nexusRequirements { nodes { modName notes url modId externalRequirement } } } } }");
@@ -497,18 +528,7 @@ public sealed class NexusService
     {
         try
         {
-            if (!GameIdCache.TryGetValue(gameDomain, out var gameId))
-            {
-                var g = await GraphQlAsync("{ game(domainName:\"" + gameDomain + "\") { id } }");
-                if (g is null) return null;
-                var gv = g.Value;
-                if (!gv.TryGetProperty("game", out var gg) || gg.ValueKind != JsonValueKind.Object) return null;
-                var gidEl = gg.TryGetProperty("id", out var tmp) ? tmp : default;
-                gameId = gidEl.ValueKind == JsonValueKind.Number ? gidEl.GetInt32()
-                       : int.TryParse(gidEl.ToString(), out var p) ? p : 0;
-                if (gameId <= 0) return null;
-                GameIdCache[gameDomain] = gameId;
-            }
+            if (await EnsureGameIdAsync(gameDomain) is not { } gameId) return null;
             // 主名做通配搜索；结果里排除本体，只留带翻译语义的
             var safeName = new string((modName ?? "")
                 .Where(c => char.IsLetterOrDigit(c) || c == ' ' || c == '-' || c == '_').ToArray()).Trim();
@@ -749,18 +769,7 @@ public sealed class NexusService
             ct: ct);
     }
 
-    private static string FormatBytes(long bytes)
-    {
-        double value = bytes;
-        string[] units = { "B", "KB", "MB", "GB" };
-        int i = 0;
-        while (value >= 1024 && i < units.Length - 1)
-        {
-            value /= 1024;
-            i++;
-        }
-        return value.ToString(i == 0 ? "F0" : "F1") + " " + units[i];
-    }
+    // v1.1.6：私有 FormatBytes 副本已删（无任何调用者）—— 统一用 ResumableDownload.FormatBytes。
 
     // ------------------------------------------------------------------
     // nxm:// one-time links (free accounts OK — the key+expires come from
@@ -898,18 +907,7 @@ public sealed class NexusService
     {
         try
         {
-            if (!GameIdCache.TryGetValue(gameDomain, out var gameId))
-            {
-                var g = await GraphQlAsync("{ game(domainName:\"" + gameDomain + "\") { id } }");
-                if (g is null) return null;
-                var gv = g.Value;
-                if (!gv.TryGetProperty("game", out var gg) || gg.ValueKind != JsonValueKind.Object) return null;
-                var gidEl = gg.TryGetProperty("id", out var tmp) ? tmp : default;
-                gameId = gidEl.ValueKind == JsonValueKind.Number ? gidEl.GetInt32()
-                       : int.TryParse(gidEl.ToString(), out var p) ? p : 0;
-                if (gameId <= 0) return null;
-                GameIdCache[gameDomain] = gameId;
-            }
+            if (await EnsureGameIdAsync(gameDomain) is not { } gameId) return null;
 
             // v0.96.0：排序对照官网前端映射表（new=createdAt / updated=updatedAt / trending=endorsements
             // / downloads=downloads / popular=downloads / surprise=random）。random 只认 seed 不认 direction。
@@ -1010,18 +1008,7 @@ public sealed class NexusService
     {
         try
         {
-            if (!GameIdCache.TryGetValue(gameDomain, out var gameId))
-            {
-                var g = await GraphQlAsync("{ game(domainName:\"" + gameDomain + "\") { id } }");
-                if (g is null) return null;
-                var gv = g.Value;
-                if (!gv.TryGetProperty("game", out var gg) || gg.ValueKind != JsonValueKind.Object) return null;
-                var gidEl = gg.TryGetProperty("id", out var tmp) ? tmp : default;
-                gameId = gidEl.ValueKind == JsonValueKind.Number ? gidEl.GetInt32()
-                       : int.TryParse(gidEl.ToString(), out var p) ? p : 0;
-                if (gameId <= 0) return null;
-                GameIdCache[gameDomain] = gameId;
-            }
+            if (await EnsureGameIdAsync(gameDomain) is not { } gameId) return null;
             var d = await GraphQlAsync("{ mods(filter:{gameId:{value:\"" + gameId
                 + "\"}}, count:1, facets:{categoryName:[]}) { facetsData } }");
             if (d is null) return null;

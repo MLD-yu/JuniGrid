@@ -582,20 +582,26 @@ public sealed class TranslationService
         catch { }
     }
 
+    private static readonly JsonSerializerOptions SaveJsonOpts = new()
+    { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
+
     private void SaveNow()
     {
-        try
+        // v1.1.6：SaveNow 有三个并发入口（ProcessExit 线程 / 过期清扫器 / 防抖定时器），
+        // 之前无互斥 —— 两个线程同时写 CachePath 会 IOException 被 catch 吞掉丢缓存。
+        lock (_saveLock)
         {
-            _dirty = false;
-            Directory.CreateDirectory(Path.GetDirectoryName(CachePath)!);
-            var items = new Dictionary<string, object>(_cache.Count);
-            foreach (var kv in _cache)
-                items[kv.Key] = new { z = kv.Value.Value, t = kv.Value.LastAccessUtcTicks };
-            var json = JsonSerializer.Serialize(new { v = 2, items },
-                new JsonSerializerOptions { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
-            File.WriteAllText(CachePath, json);
+            try
+            {
+                _dirty = false;
+                var items = new Dictionary<string, object>(_cache.Count);
+                foreach (var kv in _cache)
+                    items[kv.Key] = new { z = kv.Value.Value, t = kv.Value.LastAccessUtcTicks };
+                var json = JsonSerializer.Serialize(new { v = 2, items }, SaveJsonOpts);
+                AtomicFile.WriteAllText(CachePath, json);
+            }
+            catch { }
         }
-        catch { }
     }
 
     private static string Hash(string text)

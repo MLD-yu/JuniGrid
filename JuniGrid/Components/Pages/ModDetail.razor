@@ -286,7 +286,7 @@
         {
             <div class="jg-detail-section jg-detail-full">
                 <div class="jg-detail-section-title">详细介绍</div>
-                <div class="jg-moddetail-desc jg-desc-with-imgs">@((MarkupString)NormalizeGrayColors(_mod.DescriptionHtml))</div>
+                <div class="jg-moddetail-desc jg-desc-with-imgs">@((MarkupString)(_descHtml ?? ""))</div>
             </div>
         }
 
@@ -361,6 +361,8 @@
 
     // 本地已装的 mod 全集（用于依赖匹配）
     private IReadOnlyList<ModEntry> _localMods = Array.Empty<ModEntry>();
+    /// <summary>v1.1.6：规整后的描述 HTML（取数时算一次；模板直接用，渲染不再重跑正则）。</summary>
+    private string? _descHtml;
     /// <summary>当前详情页这个 mod 的本地条目（null = 未安装）。读它的 Dependencies 列依赖。</summary>
     private ModEntry? _thisEntry;
 
@@ -369,14 +371,33 @@
 
     // v1.06.8：详情数据内存缓存 —— 依赖跳转 A→B→返回 A 不再重新走网络，A 秒开。
     // 静态字段跨组件实例存活；TTL 10 分钟内重复进同一详情零请求。
+    // v1.1.6：条目上限 + FIFO 淘汰 —— 旧版无界（每条含完整 HTML 描述），连续浏览几十个
+    // 详情页内存持续增长。
+    private const int DetailCacheCap = 60;
     private static readonly Dictionary<int, (NexusModDetail Mod, NexusFileInfo? Latest, DateTime At)> _detailCache = new();
     private static readonly TimeSpan DetailCacheTtl = TimeSpan.FromMinutes(10);
+
+    private static void RememberDetail(int modId,
+        (NexusModDetail Mod, NexusFileInfo? Latest, DateTime At) hit)
+    {
+        _detailCache[modId] = hit;
+        while (_detailCache.Count > DetailCacheCap)
+        {
+            var oldestKey = (int?)null;
+            var oldest = DateTime.MaxValue;
+            foreach (var kv in _detailCache)
+                if (kv.Value.At < oldest) { oldest = kv.Value.At; oldestKey = kv.Key; }
+            if (oldestKey is null) break;
+            _detailCache.Remove(oldestKey.Value);
+        }
+    }
 
     protected override async Task OnParametersSetAsync()
     {
         _loading = true;
         _error = null;
         _mod = null;
+        _descHtml = null;
         _latestFile = null;
         _imgUrls = new();
         _lastDownloaded = null;
@@ -396,7 +417,8 @@
         }
 
         // 这个 mod 是不是已经装了？装了的话安装按钮变成"更新到原文件夹"
-        _localMods = ModSvc.Scan(Cfg.Current.GamePath);
+        // v1.1.6：全盘扫描移出 UI 线程 —— 进详情页不该为查一个本地条目卡住整页
+        _localMods = await Task.Run(() => ModSvc.Scan(Cfg.Current.GamePath));
         // 同 NexusModId 可能存在多个子包（如 [CC]/[CS]/[DLL]/[FTM] 共用 UpdateKey）。
         // 优先按路由带来的 UniqueID 精确定位；没带（旧路由/依赖跳转）才退化到按 ModId 取第一个。
         _thisEntry = !string.IsNullOrEmpty(UniqueID)
@@ -420,7 +442,7 @@
                     try { latest = await NexusApi.GetLatestMainFileAsync(_key, ModId, patient: true); }
                     catch { latest = null; }
                     hit = (mod, latest, DateTime.UtcNow);
-                    _detailCache[ModId] = hit;
+                    RememberDetail(ModId, hit);
                 }
             }
             if (_error is null && hit.Mod is not null)
@@ -428,6 +450,9 @@
                 _mod = hit.Mod;
                 _latestFile = hit.Latest;
                 _imgUrls = _mod.ImageUrls.Where(u => !string.IsNullOrWhiteSpace(u)).ToList();
+                // v1.1.6：灰阶颜色规整只算一次 —— 旧版写在模板里，任何 StateHasChanged
+                //（封面下载完成、后台任务回填）都会对整段 HTML 重跑正则
+                _descHtml = NormalizeGrayColors(_mod.DescriptionHtml ?? "");
             }
 
             // v0.69.0：最后下载时间 = 本地记录 ∪ N 网下载历史（取较新者；端点失效则静默）

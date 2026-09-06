@@ -27,8 +27,12 @@ public sealed class CoverCacheService
 
     private static string CacheDir => Path.Combine(StoragePaths.LocalAppDataDir, "covers");
 
-    /// <summary>url → data URI（null = 本次会话下载失败，不再重试）。</summary>
+    /// <summary>url → data URI（null = 本次会话下载失败，不再重试）。
+    /// v1.1.6：内存缓存设条目上限 —— 之前无界，浏览几十个详情页后 base64 大图
+    ///（比原图再大 33%）永久驻留可吃掉数百 MB；磁盘已有落盘副本，淘汰零成本。</summary>
+    private const int MemoryCap = 256;
     private readonly ConcurrentDictionary<string, string?> _memory = new();
+    private readonly ConcurrentQueue<string> _memoryOrder = new();
     private readonly ConcurrentDictionary<string, byte> _downloading = new();
     /// <summary>并发闸：Nexus CDN 国内链路脆弱，图片下载最多 8 路并发。</summary>
     private static readonly SemaphoreSlim DownloadGate = new(8, 8);
@@ -76,7 +80,19 @@ public sealed class CoverCacheService
 
     /// <summary>url → 原图 data URI。</summary>
     private readonly ConcurrentDictionary<string, string?> _fullMemory = new();
+    private readonly ConcurrentQueue<string> _fullMemoryOrder = new();
     private readonly ConcurrentDictionary<string, byte> _downloadingFull = new();
+
+    /// <summary>写入内存缓存并做 FIFO 淘汰（超上限时丢最早进入的条目）。</summary>
+    private static void Remember(
+        ConcurrentDictionary<string, string?> store, ConcurrentQueue<string> order,
+        string url, string? value)
+    {
+        store[url] = value;
+        order.Enqueue(url);
+        while (store.Count > MemoryCap && order.TryDequeue(out var oldest))
+            store.TryRemove(oldest, out _);
+    }
 
     private async Task DownloadFullAsync(string url)
     {
@@ -95,14 +111,14 @@ public sealed class CoverCacheService
                 if (bytes.Length == 0) throw new InvalidOperationException("空图片");
                 await File.WriteAllBytesAsync(file, bytes);
             }
-            _fullMemory[url] = ToDataUri(bytes);
+            Remember(_fullMemory, _fullMemoryOrder, url, ToDataUri(bytes));
             NotifyChanged();
         }
         catch
         {
             // 原图失败 → 用缩略图兜底（有总比糊掉/空白强）
             _ = await Task.Run(async () => { await DownloadAsync(url); return true; });
-            _fullMemory[url] = _memory.TryGetValue(url, out var t) ? t : null;
+            Remember(_fullMemory, _fullMemoryOrder, url, _memory.TryGetValue(url, out var t) ? t : null);
         }
         finally { _downloadingFull.TryRemove(url, out _); }
     }
@@ -153,12 +169,12 @@ public sealed class CoverCacheService
                 await File.WriteAllBytesAsync(file, bytes);
             }
 
-            _memory[url] = ToDataUri(bytes);
+            Remember(_memory, _memoryOrder, url, ToDataUri(bytes));
             NotifyChanged();
         }
         catch
         {
-            _memory[url] = null;   // 本会话放弃，占位块兜底
+            Remember(_memory, _memoryOrder, url, null);   // 本会话放弃，占位块兜底
         }
         finally
         {

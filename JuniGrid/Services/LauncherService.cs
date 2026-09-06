@@ -73,9 +73,10 @@ public sealed class LauncherService
 
     private void StartLogTail(bool readFromStart = false)
     {
-        _logTailCts?.Cancel();
+        var old = _logTailCts;
         var cts = new CancellationTokenSource();
         _logTailCts = cts;
+        try { old?.Cancel(); old?.Dispose(); } catch { }   // v1.1.6：旧 CTS 释放，不再每次启动泄漏一个
         var token = cts.Token;
         ++_logTailGen;
         var path = SmapiLogPath;
@@ -146,20 +147,40 @@ public sealed class LauncherService
 
     private void StopLogTail()
     {
-        _logTailCts?.Cancel();
+        var old = _logTailCts;
         _logTailCts = null;
+        try { old?.Cancel(); old?.Dispose(); } catch { }
     }
 
     /// <summary>
     /// 游戏在运行但不是本程序启动的（例如 JuniGrid 被重启过）→ 接上现有
     /// SMAPI 日志文件，从文件头把本会话内容补进日志视图。
     /// </summary>
+    /// <summary>是否存在任一指定名的进程。v1.1.6：GetProcessesByName 返回的每个 Process
+    /// 各持一个 OS 句柄，之前不 Dispose 全靠 finalizer —— IsGameRunning 被 1.5s 轮询 +
+    /// 30s 统计 + 看门狗共用，是常驻热路径，句柄/GC 压力持续积累。</summary>
+    private static bool AnyProcess(params string[] names)
+    {
+        foreach (var name in names)
+            foreach (var p in Process.GetProcessesByName(name))
+                using (p) return true;
+        return false;
+    }
+
+    /// <summary>对指定名的所有进程执行动作（结果 Dispose；单进程失败不影响其余）。</summary>
+    private static void ForEachProcess(string[] names, Action<Process> action)
+    {
+        foreach (var name in names)
+            foreach (var p in Process.GetProcessesByName(name))
+                using (p)
+                    try { action(p); }
+                    catch (Exception ex) { AppLog.Warn("LauncherService", ex.Message); }
+    }
+
     public void AttachIfGameRunning()
     {
         if (_smapiProcess is { HasExited: false }) return;   // 自己启动的，已在跟踪
-        var running = Process.GetProcessesByName("StardewModdingAPI").Length > 0
-                   || Process.GetProcessesByName("Stardew Valley").Length > 0;
-        if (running) StartLogTail(readFromStart: true);
+        if (AnyProcess("StardewModdingAPI", "Stardew Valley")) StartLogTail(readFromStart: true);
     }
 
     private static string? FirstLineOf(string path)
@@ -178,8 +199,7 @@ public sealed class LauncherService
 
     public bool IsGameRunning =>
         _smapiProcess is { HasExited: false } ||
-        Process.GetProcessesByName("StardewModdingAPI").Length > 0 ||
-        Process.GetProcessesByName("Stardew Valley").Length > 0;
+        AnyProcess("StardewModdingAPI", "Stardew Valley");
 
     /// <summary>能否向 SMAPI 控制台发命令：游戏须由本程序启动且未退出
     /// （接续的外部进程拿不到 stdin，输入框会置灰）。</summary>
@@ -240,12 +260,16 @@ public sealed class LauncherService
             if (stopWhen?.Invoke() == true) return;
             var found = false;
             foreach (var name in new[] { "Stardew Valley", "StardewModdingAPI" })
-                foreach (var p in Process.GetProcessesByName(name))
+            {
+                var procs = Process.GetProcessesByName(name);
+                if (procs.Length > 0) found = true;
+                foreach (var p in procs)
+                using (p)
                 {
-                    found = true;
                     try { p.CloseMainWindow(); } catch (Exception __ex) { AppLog.Warn("LauncherService", __ex.Message); }
                     try { p.Kill(true); } catch (Exception __ex) { AppLog.Warn("LauncherService", __ex.Message); }
                 }
+            }
             if (found) lastActive = Environment.TickCount64;
             else if (Environment.TickCount64 - lastActive > 2500) return;   // 连续 2.5s 无进程 → 清场完成
             await Task.Delay(400);
@@ -268,15 +292,13 @@ public sealed class LauncherService
 
         // 主游戏进程（StardewModdingAPI.exe / Stardew Valley.exe），先通知保存
         foreach (var name in new[] { "Stardew Valley", "StardewModdingAPI" })
-            foreach (var p in Process.GetProcessesByName(name))
-                try { p.CloseMainWindow(); } catch (Exception __ex) { AppLog.Warn("LauncherService", __ex.Message); }
+            ForEachProcess(new[] { name }, p => p.CloseMainWindow());
 
         // 给主界面进程一点写盘时间，再强制回收仍在的
         Task.Delay(300).ContinueWith(_ =>
         {
             foreach (var name in new[] { "Stardew Valley", "StardewModdingAPI" })
-                foreach (var p in Process.GetProcessesByName(name))
-                    try { p.Kill(true); } catch (Exception __ex) { AppLog.Warn("LauncherService", __ex.Message); }
+                ForEachProcess(new[] { name }, p => p.Kill(true));
         });
     }
 
@@ -308,9 +330,7 @@ public sealed class LauncherService
     }
 
     /// <summary>Steam 客户端是否在运行（含 webhelper）。供启动等待期检测「Steam 被关闭」用。</summary>
-    public static bool IsSteamRunning =>
-        Process.GetProcessesByName("steam").Length > 0 ||
-        Process.GetProcessesByName("steamwebhelper").Length > 0;
+    public static bool IsSteamRunning => AnyProcess("steam", "steamwebhelper");
 
     // ------------------------------------------------------------------
     // Launch
@@ -397,11 +417,10 @@ public sealed class LauncherService
         // 等游戏进程起来，再等它退出
         for (int i = 0; i < 60 && _sessionStart is not null; i++)
         {
-            if (System.Diagnostics.Process.GetProcessesByName("Stardew Valley").Length > 0) break;
+            if (AnyProcess("Stardew Valley")) break;
             await Task.Delay(1000);
         }
-        while (_sessionStart is not null &&
-               System.Diagnostics.Process.GetProcessesByName("Stardew Valley").Length > 0)
+        while (_sessionStart is not null && AnyProcess("Stardew Valley"))
         {
             await Task.Delay(3000);
         }

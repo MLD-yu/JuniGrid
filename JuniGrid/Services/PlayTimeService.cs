@@ -78,9 +78,8 @@ public sealed class PlayTimeService : IDisposable
     {
         try
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(FilePath)!);
             lock (_gate)
-                File.WriteAllText(FilePath, JsonSerializer.Serialize(_seconds, JsonOpts));
+                AtomicFile.WriteAllText(FilePath, JsonSerializer.Serialize(_seconds, JsonOpts));
         }
         catch (Exception ex) { AppLog.Warn("PlayTime", ex.Message); }
     }

@@ -22,7 +22,7 @@
             <div style="font-size:22px;font-weight:600;color:var(--jg-text)">@Center.RunningCount</div>
             <div style="margin-top:24px;">
                 <button class="jg-tasks-clear" @onclick="AskClear" data-tip="清理当前筛选下的所有任务"
-                        disabled="@(!VisibleItems().Any())">清理全部</button>
+                        disabled="@(_visible.Count == 0)">清理全部</button>
             </div>
         </aside>
         <section style="flex:1;min-width:0;">
@@ -51,13 +51,13 @@
                     <button class="jg-tfilter @(_filter == key ? "active" : "")" @onclick="() => SetFilter(key)">@f.Label</button>
                 }
             </div>
-            @if (VisibleItems().Count == 0)
+            @if (_visible.Count == 0)
             {
                 <div class="jg-note">当前筛选下没有任务。</div>
             }
             else
             {
-                @foreach (var t in VisibleItems())
+                @foreach (var (t, log) in _visible)
                 {
                     var dropId = "jgDrop-" + t.Id.ToString("N");
                     var arrowId = "jgArr-" + t.Id.ToString("N");
@@ -68,7 +68,7 @@
                         </div>
                         <div style="margin-top:6px;font-size:12px;display:flex;align-items:center;gap:6px;">
                             <span style="opacity:.7;">@(t.Status == "running" ? "运行中" : t.Status == "done" ? "已完成" : "失败") · @t.Percent.ToString("F0")% @(t.SpeedMBps > 0 ? $" · {t.SpeedMBps:F2} M/s" : "")</span>
-                            @if (t.Log.Count > 0)
+                            @if (log.Count > 0)
                             {
                                 @* ─── 数字进度后边的下拉按钮：展开该任务的下载信息 ─── *@
                                 <button class="jg-taskdrop-trigger" @onclick="() => ToggleDrop(t)" aria-label="展开下载信息">
@@ -89,12 +89,12 @@
                            UsefulLines 有内容时才渲染面板，日志全是进度噪声时点按钮会
                            因 #jgDrop-* 不存在而在 JS 里静默 return，表现为「点了没反应」；
                            现在按钮在面板必在，无有效日志时显示占位行 *@
-                        @if (t.Log.Count > 0)
+                        @if (log.Count > 0)
                         {
                             <div class="jg-taskdrop-menu @(_openDrops.Contains(t.Id) ? "open" : "")" id="@dropId">
                                 <div class="jg-tl">
                                 @{
-                                    var lines = UsefulLines(t).ToList();
+                                    var lines = UsefulLines(log).ToList();
                                     int[] ringOrder = { 0, 1, 2, 5, 8, 7, 6, 3 };   // 3x3 环绕顺时针（0 左上起）
                                 }
                                 @if (lines.Count == 0)
@@ -105,13 +105,14 @@
                                 {
                                     var line = lines[i];
                                     var isLast = i == lines.Count - 1;
-                                    // 运行中任务的最后一行 = 进行中（像素方块）；已完成任务的末行 = 实心绿勾；失败任务末行 = 红叉
+                                    // 运行中任务的最后一行 = 进行中（像素方块）；已完成任务的末行 = 实心勾；失败任务末行 = 红叉
+                                    // v1.2.2：成功行文字/图标改主题自适应（深色白/浅色黑），失败保持红
                                     var status = t.Status == "running" && isLast ? "running"
                                                : t.Status == "failed" && isLast ? "error"
                                                : t.Status == "done" && isLast ? "final"
                                                : "done";
                                     var phase = PhaseOf(line);   // backup=蓝 / connect=红 / 其它=黑
-                                    var iconColor = status == "done" || status == "final" ? "var(--tl-green)"
+                                    var iconColor = status == "done" || status == "final" ? "var(--tl-black)"
                                                   : status == "error" ? "var(--tl-red)"
                                                   : phase == "backup" ? "var(--tl-blue)"
                                                   : phase == "connect" ? "var(--tl-red)"
@@ -183,9 +184,34 @@
 </div>
 
 @code {
-    protected override void OnInitialized() => Center.OnChanged += Refresh;
+    // v1.1.6：渲染改用线程安全快照 —— 之前直接枚举 Center.Items（后台下载线程随时
+    // Insert/Remove），渲染途中撞「集合已修改」会炸掉整页；t.Log 的枚举同理改用副本。
+    private List<(TaskItem Item, List<string> Log)> _visible = new();
+
+    protected override void OnInitialized()
+    {
+        RebuildVisible();
+        Center.OnChanged += Refresh;
+    }
     public void Dispose() => Center.OnChanged -= Refresh;
-    private void Refresh() => InvokeAsync(StateHasChanged);
+    private void Refresh() => InvokeAsync(() => { RebuildVisible(); StateHasChanged(); });
+
+    private void RebuildVisible()
+    {
+        IEnumerable<TaskItem> q = Center.Snapshot();
+        // 类型维度：Mod 下载 = 下载/安装/更新；缓存清理 = cleanup
+        if (_kind == "mod") q = q.Where(t => t.Kind != "cleanup");
+        else if (_kind == "cleanup") q = q.Where(t => t.Kind == "cleanup");
+        // 状态维度
+        q = _filter switch
+        {
+            "running" => q.Where(t => t.Status == "running"),
+            "done"    => q.Where(t => t.Status == "done"),
+            "failed"  => q.Where(t => t.Status == "failed"),
+            _         => q
+        };
+        _visible = q.Select(t => (t, Center.CopyLog(t))).ToList();
+    }
 
     // ─── 筛选导航：状态胶囊 × 任务类型下拉 ───
     // 类型胶囊本体点击 = 一键回「全部」；只有小箭头才弹下拉 —— 保证任何时候一下就能回全部
@@ -206,6 +232,7 @@
     private void SetFilter(string key)
     {
         _filter = key;
+        RebuildVisible();
         StateHasChanged();
     }
 
@@ -214,6 +241,7 @@
     private void KindPillClick()
     {
         _filter = "all";
+        RebuildVisible();
         StateHasChanged();
     }
 
@@ -225,25 +253,9 @@
     private async Task SelectKind(string key)
     {
         _kind = key;
+        RebuildVisible();
         StateHasChanged();
         try { await JS.InvokeVoidAsync("junigridJs.logsFilterClose", "#jgKindFilter"); } catch { }
-    }
-
-    private List<TaskItem> VisibleItems()
-    {
-        IEnumerable<TaskItem> q = Center.Items;
-        // 类型维度：Mod 下载 = 下载/安装/更新；缓存清理 = cleanup
-        if (_kind == "mod") q = q.Where(t => t.Kind != "cleanup");
-        else if (_kind == "cleanup") q = q.Where(t => t.Kind == "cleanup");
-        // 状态维度
-        q = _filter switch
-        {
-            "running" => q.Where(t => t.Status == "running"),
-            "done"    => q.Where(t => t.Status == "done"),
-            "failed"  => q.Where(t => t.Status == "failed"),
-            _         => q
-        };
-        return q.ToList();
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -269,14 +281,15 @@
         new(@"(\d+\s*%|\d+(\.\d+)?\s*(KB|MB)/s|已下载\s*[\d.]+\s*(KB|MB)|[\d.]+\s*(KB|MB)\s*/\s*[\d.]+\s*(KB|MB))",
             System.Text.RegularExpressions.RegexOptions.Compiled);
 
-    private static IEnumerable<string> UsefulLines(TaskItem t)
+    private static IEnumerable<string> UsefulLines(List<string> log)
     {
         // v1.1.2：下载心跳行（"正在下载… x MB / y MB"）此前被 ProgressNoise 全部隐藏，
         // 导致下载阶段在步骤列表里不可见 —— 百分比独自爬升而标签一直卡在
         // 「正在获取下载地址」，到 100% 直接跳"安装完成"。现在把连续心跳折叠成
         // 一行不带数字的「正在下载…」，作为可见步骤展示。
+        // v1.1.6：参数改为日志副本（CopyLog），不再直接枚举 TaskItem.Log。
         var lastWasDl = false;
-        foreach (var raw in t.Log)
+        foreach (var raw in log)
         {
             var line = TsPrefix.Replace(raw, "").Trim();
             if (line.Length == 0) continue;

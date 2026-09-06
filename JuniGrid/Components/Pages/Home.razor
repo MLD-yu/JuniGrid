@@ -160,9 +160,15 @@
         _smapiVersion = Game.ProbeSmapiVersion(_cfg.GamePath);
         _gameVersion = Updater.GetGameVersion(_cfg.GamePath);
 
-        var mods = Mods.Scan(_cfg.GamePath);
-        _totalModCount = mods.Count;
-        _activeModCount = mods.Count(m => !m.Disabled);
+        // v1.1.6：全盘扫描移出 UI 线程 —— 首页只为取两个计数，旧版同步 Scan
+        // 几百个 mod 的 manifest 会让首页切换明显卡顿；计数就位后再刷新一帧。
+        _ = Task.Run(() =>
+        {
+            var mods = Mods.Scan(_cfg.GamePath);
+            _totalModCount = mods.Count;
+            _activeModCount = mods.Count(m => !m.Disabled);
+            return InvokeAsync(StateHasChanged);
+        });
 
         // v1.1.5：时长数据每 30s 可能被后台累计，订阅变化实时刷新热力图
         PlayTime.OnChanged += OnPlayChanged;

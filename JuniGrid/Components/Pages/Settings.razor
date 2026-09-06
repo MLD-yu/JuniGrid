@@ -674,13 +674,15 @@
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        // GSAP 弹性按钮 hover + 问号 tooltip + 禁用行像素特效绑定（内部有防重复绑定标记）
-        await JS.InvokeVoidAsync("junigridJs.initGsapFx");
-        await JS.InvokeVoidAsync("junigridJs.initPixelHover");
-        await JS.InvokeVoidAsync("junigridJs.initCursorGrid", ".jg-cursor-grid");
-        await JS.InvokeVoidAsync("junigridJs.initLogoLoop", ".jg-logoloop");
+        // v1.1.6：特效绑定包进 firstRender —— 内存快照每 5s 推一次触发重渲染，
+        // 旧版每次渲染都发 4 个 JS interop 初始化调用（靠 JS 侧防重复标记兜底，纯浪费往返）
         if (firstRender)
         {
+            // GSAP 弹性按钮 hover + 问号 tooltip + 禁用行像素特效绑定（内部有防重复绑定标记）
+            await JS.InvokeVoidAsync("junigridJs.initGsapFx");
+            await JS.InvokeVoidAsync("junigridJs.initPixelHover");
+            await JS.InvokeVoidAsync("junigridJs.initCursorGrid", ".jg-cursor-grid");
+            await JS.InvokeVoidAsync("junigridJs.initLogoLoop", ".jg-logoloop");
             // v0.2.2：弹性滑杆绑定（值变化经 OnElasticValue 回调落配置）
             try
             {

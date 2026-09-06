@@ -228,6 +228,27 @@
         </div>
     </div>
 
+    @* ── v1.2.0：缺失依赖横幅 + 一键安装 ── *@
+    @if (!_initialLoading && TotalMissingUids.Count > 0)
+    {
+        <div class="jg-card" style="margin-top:12px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;border-left:3px solid #f2b544">
+            <span style="font-size:13px">
+                检测到 <b>@TotalMissingUids.Count</b> 个缺失依赖，影响 @MissingAffectedMods 个 mod
+            </span>
+            <button class="jg-pill-dark" style="padding:7px 16px;font-size:12.5px"
+                    disabled="@(_depInstalling || Installer.Busy)"
+                    @onclick="() => AskInstallMissingDeps(null)">
+                @(_depInstalling ? "正在安装…（进度见右下角任务）" : "一键安装缺失依赖")
+            </button>
+            <button class="jg-pill-ghost" style="padding:7px 14px;font-size:12.5px"
+                    @onclick='() => SetFilter("missing")'>查看列表</button>
+            @if (_depError is not null)
+            {
+                <span style="color:#c50f1f;font-size:12.5px">@_depError</span>
+            }
+        </div>
+    }
+
     @* ── 单行 mod 列表 ── *@
     @* v1.06.9：首次加载 或 检查更新未完成 → 一律显示 shimmer 骨架屏，真实列表 display:none *@
     @if (_initialLoading)
@@ -325,6 +346,18 @@
 
                         @* ── hover 浮现的操作按钮 ── *@
                         <div class="jg-modrow-actions">
+                            @if (missing.Count > 0)
+                            {
+                                @* v1.2.0：行级一键装依赖 —— 只装这一行缺的（含传递依赖） *@
+                                <button class="jg-rowbtn" data-tip="安装缺失依赖"
+                                        @onclick:stopPropagation @onclick="() => AskInstallMissingDeps(missing)">
+                                    <svg class="jg-rowbtn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                        <path d="M12 3v11"/>
+                                        <path d="m7 10 5 5 5-5"/>
+                                        <path d="M4 19h16"/>
+                                    </svg>
+                                </button>
+                            }
                             @if (m.NexusModId is not null
                                  && st.RemoteVersion is not null
                                  && IsNewer(st.RemoteVersion, m.Version))
@@ -401,9 +434,9 @@
 @if (_selected.Count > 0)
 {
     @* v0.42.0：纯图标按钮（SVG 文件）+ 胶囊提示（data-tip，禁用按钮也有）+ 全选在最前 *@
-    var anyUpdatable = _selected.Any(f => _mods.FirstOrDefault(m => m.Folder == f) is { } mm && IsUpdatable(mm));
-    var anyDisabled  = _selected.Any(f => _mods.FirstOrDefault(m => m.Folder == f)?.Disabled == true);
-    var anyEnabled   = _selected.Any(f => _mods.FirstOrDefault(m => m.Folder == f)?.Disabled == false);
+    var anyUpdatable = _selected.Any(f => _modsByFolder.TryGetValue(f, out var mm) && IsUpdatable(mm));
+    var anyDisabled  = _selected.Any(f => _modsByFolder.TryGetValue(f, out var mm2) && mm2.Disabled);
+    var anyEnabled   = _selected.Any(f => _modsByFolder.TryGetValue(f, out var mm3) && !mm3.Disabled);
     <div class="jg-batchbar-anchor">
     <div class="jg-batchbar">
         <span class="jg-batchbar-count">已选择 @_selected.Count 个</span>
@@ -494,8 +527,108 @@
         </div>
     }
 
+    @* ── v1.2.0：一键安装缺失依赖 —— 确认弹窗（空列表 = 全部缺失依赖）── *@
+    @if (_pendingDepUids is not null)
+    {
+        var depList = _pendingDepUids.Count > 0 ? _pendingDepUids : TotalMissingUids;
+        <div class="jg-modal-overlay" @onclick="CancelInstallDeps">
+            <div class="jg-modal" @onclick:stopPropagation style="max-width:540px">
+                <div class="jg-modal-title">安装缺失依赖</div>
+                <div class="jg-modal-body">
+                    将从 Nexus 下载并安装以下 @depList.Count 个依赖（装上后新暴露的传递依赖会自动跟进）：
+                    <div style="margin-top:8px;display:flex;flex-direction:column;gap:7px;max-height:260px;overflow-y:auto;overflow-x:hidden">
+                        @foreach (var u in depList)
+                        {
+                            var di = _depDisplay.TryGetValue(u, out var dd) ? dd : null;
+                            var clickable = di?.ModId is not null;
+                            <div class="jg-dep-row" data-clickable="@clickable"
+                                 style="display:flex;align-items:center;gap:10px;min-width:0;@(clickable ? "cursor:pointer" : "")"
+                                 title="@(clickable ? "点击查看 mod 详情" : "")"
+                                 @onclick="() => OpenDepDetail(di)">
+                                @if (di?.CoverUrl is string cu)
+                                {
+                                    <img src="@cu" alt="" loading="lazy" referrerpolicy="no-referrer"
+                                         style="width:34px;height:34px;border-radius:6px;object-fit:cover;flex:none;pointer-events:none" />
+                                }
+                                else
+                                {
+                                    <div class="jg-modrow-icon jg-modrow-icon-fallback"
+                                         style="width:34px;height:34px;border-radius:6px;flex:none;font-size:14px">
+                                        @(u.Length > 0 ? u[..1].ToUpperInvariant() : "?")
+                                    </div>
+                                }
+                                <div style="flex:1;min-width:0;pointer-events:none">
+                                    <div style="font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">@(di?.Name ?? u)</div>
+                                    @if (di?.Name is not null)
+                                    {
+                                        <div style="font-size:11px;opacity:.5;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">@u</div>
+                                    }
+                                </div>
+                            </div>
+                        }
+                    </div>
+                    <div style="margin-top:8px;font-size:12px;opacity:.6">
+                        每个依赖都会在下载后校验 manifest UniqueID，防止装错 mod；SMAPI 本体需单独安装。
+                    </div>
+                </div>
+                <div class="jg-modal-actions">
+                    <button type="button" class="jg-pill-ghost" @onclick="CancelInstallDeps">取消</button>
+                    <button type="button" class="jg-pill-dark" disabled="@(_depInstalling || Installer.Busy)"
+                            @onclick="ConfirmInstallDeps">开始安装</button>
+                </div>
+            </div>
+        </div>
+    }
+
+    @* ── v1.2.0：依赖安装结果弹窗（手动项附 Nexus 链接）── *@
+    @if (_depResults is not null)
+    {
+        <div class="jg-modal-overlay" @onclick="CloseDepResults">
+            <div class="jg-modal" @onclick:stopPropagation style="max-width:600px">
+                <div class="jg-modal-title">依赖安装结果</div>
+                <div class="jg-modal-body" style="display:flex;flex-direction:column;gap:10px;max-height:420px;overflow:auto">
+                    @foreach (var r in _depResults)
+                    {
+                        <div style="display:flex;align-items:flex-start;gap:8px;font-size:12.5px">
+                            <span style="flex:none">@DepStatusIcon(r.Status)</span>
+                            <div style="flex:1;min-width:0">
+                                <div>
+                                    <b>@(r.Name ?? r.Uid)</b>
+                                    @if (r.Name is not null && r.Uid != r.Name)
+                                    {
+                                        <span style="opacity:.55">（@r.Uid）</span>
+                                    }
+                                </div>
+                                @if (r.Detail is not null)
+                                {
+                                    <div style="opacity:.7;margin-top:2px">@r.Detail</div>
+                                }
+                            </div>
+                            @if (r.Status != "installed" && r.ModId is int mid)
+                            {
+                                <button type="button" class="jg-mini-btn" style="flex:none"
+                                        @onclick="() => OpenDepLink(mid, null)">打开 Nexus 页</button>
+                            }
+                            else if (r.Status == "unresolved")
+                            {
+                                <button type="button" class="jg-mini-btn" style="flex:none"
+                                        @onclick="() => OpenDepLink(null, r.Uid)">去 Nexus 搜索</button>
+                            }
+                        </div>
+                    }
+                </div>
+                <div class="jg-modal-actions">
+                    <button type="button" class="jg-pill-ghost" @onclick="CloseDepResults">关闭</button>
+                </div>
+            </div>
+        </div>
+    }
+
 @code {
     private IReadOnlyList<ModEntry> _mods = Array.Empty<ModEntry>();
+    // v1.1.6：folder → 条目索引。批量操作条与选中清理原先用 FirstOrDefault/Any 全表扫
+    //（选中数 × mod 数），几百 mod + 多选时每次渲染做几万次字符串比较。
+    private Dictionary<string, ModEntry> _modsByFolder = new(StringComparer.OrdinalIgnoreCase);
     // v0.59.0：首次进入页面的 shimmer 加载态
     private bool _initialLoading = true;
     // v0.60.0：更新检查期间的 shimmer 加载态
@@ -965,10 +1098,8 @@
         ("missing",   "缺依赖"),
     };
 
-    private HashSet<string> InstalledUids =>
-        _mods.Where(m => !string.IsNullOrWhiteSpace(m.UniqueID))
-             .Select(m => m.UniqueID)
-             .ToHashSet(StringComparer.OrdinalIgnoreCase);
+    /// <summary>已装 UniqueID 集合（v1.2.3：指向 ReindexMods 维护的缓存，不再每次访问全表重建）。</summary>
+    private HashSet<string> InstalledUids => _installedUids;
 
     private IEnumerable<ModEntry> _filteredCache = Array.Empty<ModEntry>();
 
@@ -1143,6 +1274,117 @@
             .Where(d => !string.IsNullOrWhiteSpace(d) && !uids.Contains(d))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
+    }
+
+    // ------------------------------------------------------------------
+    // v1.2.0：一键安装缺失依赖（横幅 + 行级入口）
+    // ------------------------------------------------------------------
+    private List<string>? _pendingDepUids;   // 确认弹窗数据源；空列表 = 全部缺失依赖
+    private bool _depInstalling;
+    private string? _depError;
+    private IReadOnlyList<InstallService.DependencyRunItem>? _depResults;
+    // v1.2.1：确认弹窗的依赖展示信息（封面+mod 名），免 key 搜索异步填充，失败退回显示 UID
+    private readonly Dictionary<string, InstallService.DependencyDisplayInfo> _depDisplay
+        = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>全部缺失依赖的并集（横幅 + 一键安装入口）。</summary>
+    private List<string> TotalMissingUids
+    {
+        get
+        {
+            var set = new List<string>();
+            foreach (var m in _mods)
+                foreach (var d in MissingDeps(m))
+                    if (!set.Contains(d, StringComparer.OrdinalIgnoreCase)) set.Add(d);
+            return set;
+        }
+    }
+
+    private int MissingAffectedMods => _mods.Count(m => MissingDeps(m).Count > 0);
+
+    /// <summary>uids 为 null = 全部缺失依赖；否则只装这一批（传给确认弹窗与安装管线）。</summary>
+    private void AskInstallMissingDeps(List<string>? uids)
+    {
+        _depError = null;
+        _pendingDepUids = uids ?? new List<string>();
+        // v1.2.1：弹窗立即打开（先显示 UID），封面/mod 名后台异步解析、逐个补上
+        _ = ResolveDepDisplayAsync(_pendingDepUids.Count > 0 ? _pendingDepUids : TotalMissingUids);
+    }
+
+    /// <summary>并行解析确认弹窗各依赖的展示名与封面（免 key 搜索；失败保持 UID 显示）。</summary>
+    private async Task ResolveDepDisplayAsync(List<string> uids)
+    {
+        _depDisplay.Clear();
+        StateHasChanged();
+        await Task.WhenAll(uids.Select(async u =>
+        {
+            var info = await Installer.ResolveDependencyDisplayAsync(u);
+            if (info is not null)
+            {
+                _depDisplay[u] = info;
+                await InvokeAsync(StateHasChanged);
+            }
+        }));
+    }
+
+    private void CancelInstallDeps() => _pendingDepUids = null;
+
+    /// <summary>v1.2.3：确认弹窗点依赖行 → 应用内 mod 详情页（/mod/{nexusId}/{uid}）。
+    /// 未解析到 Nexus modId 的行（搜索失败）不可点，直接忽略。</summary>
+    private void OpenDepDetail(InstallService.DependencyDisplayInfo? di)
+    {
+        if (di?.ModId is not int id) return;
+        _pendingDepUids = null;   // 离开当前页前收起弹窗，返回列表时不残留
+        Nav.NavigateTo($"mod/{id}" + (string.IsNullOrWhiteSpace(di.Uid) ? "" : "/" + Uri.EscapeDataString(di.Uid)));
+    }
+
+    private void CloseDepResults() => _depResults = null;
+
+    private async Task ConfirmInstallDeps()
+    {
+        if (_depInstalling) return;
+        var uids = _pendingDepUids;
+        _pendingDepUids = null;
+        _depInstalling = true;
+        _depError = null;
+        _depResults = null;
+        try
+        {
+            // 空列表 = 全部缺失依赖；服务端每轮重扫磁盘，无需在此快照。
+            // v1.2.3：把弹窗已解析出的 UID → modId 一并传给安装管线（免二次搜索，
+            // 安装时照常做 UniqueID 校验）。等待期间 Installer.OnChanged 推动列表实时重扫。
+            var pre = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            foreach (var kv in _depDisplay)
+                if (kv.Value.ModId is int mid) pre[kv.Key] = mid;
+            var err = await Installer.InstallMissingDependenciesAsync(
+                uids is { Count: > 0 } ? uids : null, pre);
+            if (err is not null && err != "已取消") _depError = err;
+        }
+        finally
+        {
+            _depInstalling = false;
+        }
+        _depResults = Installer.LastDependencyRun;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private static string DepStatusIcon(string status) => status switch
+    {
+        "installed"  => "✅",
+        "manual"     => "🖐️",
+        "framework"  => "ℹ️",
+        "unresolved" => "🔍",
+        _            => "❌",
+    };
+
+    /// <summary>结果弹窗的外链：有 modId 开 mod 页；未解析的开 Nexus 站内搜索（搜 UID 末段）。</summary>
+    private void OpenDepLink(int? modId, string? uid)
+    {
+        if (modId is int id)
+            UpdateService.OpenUrl($"https://www.nexusmods.com/stardewvalley/mods/{id}");
+        else
+            UpdateService.OpenUrl("https://www.nexusmods.com/stardewvalley/search/?gsearch="
+                + Uri.EscapeDataString((uid ?? "").Split('.').Last()) + "&gsearchtype=mods");
     }
 
     /// <summary>是否「有可用更新」：状态里记录了远端版本、且比当前版本新（复用行内逻辑）。</summary>
@@ -1342,7 +1584,13 @@
         {
             _initialLoading = true;
             StateHasChanged();
-            var scanned = await Task.Run(() => ModSvc.Scan(Cfg.Current.GamePath));
+            // v1.1.6：手动刷新也要做多副本清理（preScanned 路径会跳过 Rescan 里的清理）
+            var scanned = await Task.Run(() =>
+            {
+                try { ModSvc.CleanupDuplicateCopies(Cfg.Current.GamePath); }
+                catch (Exception ex) { AppLog.Warn("Mods", "多副本清理失败: " + ex.Message); }
+                return ModSvc.Scan(Cfg.Current.GamePath);
+            });
             if (_disposed) return;
             Rescan(scanned);
             _initialLoading = false;
@@ -1382,11 +1630,7 @@
     }
 
     private void OnInstallerChanged() =>
-        InvokeAsync(() =>
-        {
-            Rescan();
-            StateHasChanged();
-        });
+        InvokeAsync(RescanAndRestate);   // v1.1.6：清理+扫描移到后台线程
 
     private FileSystemWatcher? _modsWatcher;
     private int _pendingRescan;   // v0.72.8：watcher 事件合并闸门
@@ -1402,13 +1646,20 @@
         if (_svMods is { Count: > 0 } snap)
         {
             _mods = snap;
+            ReindexMods();
             _initialLoading = false;
             StateHasChanged();
             _ = InvokeAsync(async () =>
             {
                 try
                 {
-                    var scanned = await Task.Run(() => ModSvc.Scan(Cfg.Current.GamePath));
+                    // v1.1.6：preScanned 路径跳过 Rescan 内的清理 → 这里补做
+                    var scanned = await Task.Run(() =>
+                    {
+                        try { ModSvc.CleanupDuplicateCopies(Cfg.Current.GamePath); }
+                        catch (Exception ex) { AppLog.Warn("Mods", "多副本清理失败: " + ex.Message); }
+                        return ModSvc.Scan(Cfg.Current.GamePath);
+                    });
                     if (_disposed) return;
                     Rescan(scanned);
                     StateHasChanged();
@@ -1423,7 +1674,13 @@
             StateHasChanged();
             await Task.Yield();  // 让骨架先渲染一帧
             // vNext：磁盘扫描移出 UI 线程 —— 几百个 mod 的 manifest 解析不再卡住渲染
-            var scanned = await Task.Run(() => ModSvc.Scan(Cfg.Current.GamePath));
+            // v1.1.6：preScanned 路径跳过 Rescan 内的清理 → 这里补做
+            var scanned = await Task.Run(() =>
+            {
+                try { ModSvc.CleanupDuplicateCopies(Cfg.Current.GamePath); }
+                catch (Exception ex) { AppLog.Warn("Mods", "多副本清理失败: " + ex.Message); }
+                return ModSvc.Scan(Cfg.Current.GamePath);
+            });
             if (_disposed) return;
             Rescan(scanned);
             _initialLoading = false;
@@ -1505,29 +1762,84 @@
 
     private void RescanAndRestate()
     {
-        Rescan();
-        StateHasChanged();
+        // v1.1.6：watcher / 安装完成回调等高频入口改走后台版重扫 ——
+        // 多副本清理 + 全盘扫描都不再占 UI 线程（旧版在 UI 线程连扫 1-2 遍全盘）。
+        _ = RescanInBackground();
+    }
+
+    private bool _bgRescanRunning;
+    private bool _bgRescanQueued;
+
+    /// <summary>v1.1.6：后台版重扫 —— CleanupDuplicateCopies（含全盘枚举+目录搬移）与
+    /// Scan 都放 Task.Run，回 UI 线程只套用结果。扫描期间再来的事件合并为一轮补扫，
+    /// 最后一个事件不丢。调用方必须已在 UI 线程（三处入口均为 InvokeAsync 回调）。</summary>
+    private async Task RescanInBackground()
+    {
+        if (_bgRescanRunning) { _bgRescanQueued = true; return; }
+        _bgRescanRunning = true;
+        try
+        {
+            while (true)
+            {
+                _bgRescanQueued = false;
+                var scanned = await Task.Run(() =>
+                {
+                    try { ModSvc.CleanupDuplicateCopies(Cfg.Current.GamePath); }
+                    catch (Exception ex) { AppLog.Warn("Mods", "多副本清理失败: " + ex.Message); }
+                    return ModSvc.Scan(Cfg.Current.GamePath);
+                });
+                if (_disposed) return;
+                Rescan(scanned);
+                StateHasChanged();
+                if (!_bgRescanQueued) return;
+            }
+        }
+        finally { _bgRescanRunning = false; }
     }
 
     /// <summary>vNext：preScanned 允许调用方先在后台线程扫盘、再回到 UI 线程套用结果
-    /// （扫描本身不碰 UI 状态，选中集合清理在 UI 线程做，避免与渲染并发）。</summary>
+    /// （扫描本身不碰 UI 状态，选中集合清理在 UI 线程做，避免与渲染并发）。
+    /// preScanned 为 null 时才在当前线程清理+扫描 —— RescanInBackground 传入的结果
+    /// 已包含清理，跳过避免 UI 线程重复全盘扫两遍。</summary>
     private void Rescan(IReadOnlyList<ModEntry>? preScanned = null)
     {
-
         // v1.1.4：同 UniqueID 多副本物理清理 —— SMAPI 直接读磁盘，UI 隐藏不够
         //（多余副本会让整包 Skipped）。基于原始扫描结果，先清理再正式扫描。
-        try { ModSvc.CleanupDuplicateCopies(Cfg.Current.GamePath); }
-        catch (Exception __ex) { AppLog.Warn("Mods", "多副本清理失败: " + __ex.Message); }
-        _mods = preScanned ?? ModSvc.Scan(Cfg.Current.GamePath);
+        if (preScanned is null)
+        {
+            try { ModSvc.CleanupDuplicateCopies(Cfg.Current.GamePath); }
+            catch (Exception __ex) { AppLog.Warn("Mods", "多副本清理失败: " + __ex.Message); }
+            _mods = ModSvc.Scan(Cfg.Current.GamePath);
+        }
+        else
+        {
+            _mods = preScanned;
+        }
+        ReindexMods();
         // v1.1.2：备注对账 —— mod 更新会重置 manifest Name，这里补写备注（游戏未运行时）
         if (Cfg.Current.ModRemarks.Count > 0)
             _ = Task.Run(() => ModSvc.SyncAllRemarks(Cfg.Current.GamePath, Cfg));
-        // 清掉已经不在列表里的选中项
-        _selected.RemoveWhere(f => !_mods.Any(m => m.Folder == f));
+        // 清掉已经不在列表里的选中项（v1.1.6：走索引字典，不再每个选中项全表扫）
+        _selected.RemoveWhere(f => !_modsByFolder.ContainsKey(f));
         // v0.72.7：Rescan 只负责扫描 —— 不再偷偷启动 BackfillCoversAsync。
         // 旧版每次 Rescan 都叠加一个网络回填任务（初始化/批量/watcher 回调任意触发），
         // 是"偶发卡死"的核心放大器。封面回填改由显式入口按需启动（带并发闸门）。
     }
+
+    private void ReindexMods()
+    {
+        _modsByFolder = new Dictionary<string, ModEntry>(_mods.Count, StringComparer.OrdinalIgnoreCase);
+        foreach (var m in _mods) _modsByFolder[m.Folder] = m;
+        // v1.2.3：已装 UID 集合随重扫一并重建 —— MissingDeps/筛选计数/分组在渲染期被高频
+        // 调用，旧写法每次访问 InstalledUids 都全表重建 HashSet（每页渲染 O(N²) 次分配）。
+        _installedUids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var m in _mods)
+            if (!string.IsNullOrWhiteSpace(m.UniqueID))
+                _installedUids.Add(m.UniqueID.Trim());
+    }
+
+    /// <summary>已装 UniqueID 集合（ReindexMods 时重建的缓存，勿在渲染期重算）。</summary>
+    private HashSet<string> _installedUids = new(StringComparer.OrdinalIgnoreCase);
 
     // ------------------------------------------------------------------
     // 行交互：左键多选 / hover 按钮

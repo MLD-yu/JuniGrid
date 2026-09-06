@@ -37,7 +37,6 @@
             {
                 <div style="padding:20px;opacity:.5;font-size:13px">
                     暂无日志。点左侧「▶ 启动游戏」（SMAPI 模式）后，输出会实时显示在这里。
-                    Steam 模式下 SMAPI 的日志在 %APPDATA%\StardewValley\ErrorLogs 目录。
                 </div>
             }
             else if (_visible.Count == 0)
@@ -118,14 +117,29 @@
 
     public void Dispose() => Launcher.OnLogLine -= HandleLog;
 
-    private void HandleLog(string _) =>
-        InvokeAsync(() =>
+    // v1.1.6：日志行 250ms 防抖合并 —— SMAPI 启动期每秒几十行，旧行为每行都
+    // 全量快照 + 全表重筛 + 整页重渲染（启动期 O(n²)），合并后每 250ms 最多刷一次。
+    private readonly object _flushGate = new();
+    private bool _flushPending;
+
+    private void HandleLog(string line)
+    {
+        lock (_flushGate)
         {
-            _lines = Launcher.GetLogSnapshot();
-            _visible = BuildVisible();
-            _pendingScroll = true;
-            StateHasChanged();
-        });
+            if (_flushPending) return;
+            _flushPending = true;
+        }
+        _ = Task.Delay(250).ContinueWith(_t => InvokeAsync(FlushNow));
+    }
+
+    private void FlushNow()
+    {
+        lock (_flushGate) _flushPending = false;
+        _lines = Launcher.GetLogSnapshot();
+        _visible = BuildVisible();
+        _pendingScroll = true;
+        StateHasChanged();
+    }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {

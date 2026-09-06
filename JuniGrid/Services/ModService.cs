@@ -453,10 +453,19 @@ public sealed class ModService
         }
     }
 
-    /// <summary>游戏进程（SMAPI/游戏本体）是否存活 —— 与 LauncherService.IsGameRunning 同判据的静态版。</summary>
-    private static bool IsGameProcessAlive =>
-        System.Diagnostics.Process.GetProcessesByName("StardewModdingAPI").Length > 0 ||
-        System.Diagnostics.Process.GetProcessesByName("Stardew Valley").Length > 0;
+    /// <summary>游戏进程（SMAPI/游戏本体）是否存活 —— 与 LauncherService.AnyProcess 同判据的静态版。
+    /// v1.1.6：GetProcessesByName 返回的 Process 各持一个句柄，用完即释放（本属性被备注同步
+    /// 等后台任务反复调用，不释放会积累 finalizer 压力）。</summary>
+    private static bool IsGameProcessAlive
+    {
+        get
+        {
+            foreach (var name in new[] { "StardewModdingAPI", "Stardew Valley" })
+                foreach (var p in System.Diagnostics.Process.GetProcessesByName(name))
+                    using (p) return true;
+            return false;
+        }
+    }
 
     // ------------------------------------------------------------------
     // v1.1.2：备注同步进 manifest.json —— 游戏内 GMCM 的 mod 标题读的就是
@@ -466,9 +475,10 @@ public sealed class ModService
     // ------------------------------------------------------------------
 
     /// <summary>把备注写入（或从）指定 mod 的 manifest.json。remark 为空 = 还原原名。
-    /// 返回 null 表示成功，否则为错误描述。</summary>
+    /// 返回 null 表示成功，否则为错误描述。skipAliveCheck：批量同步时由调用方在循环外
+    /// 统一判过一次存活（逐个判 = 每个 mod 两次全系统进程枚举）。</summary>
     public string? ApplyRemarkToManifest(string gamePath, string folder, string remark,
-        Dictionary<string, string> originalNames)
+        Dictionary<string, string> originalNames, bool skipAliveCheck = false)
     {
         try
         {
@@ -476,7 +486,7 @@ public sealed class ModService
                 return "路径无效";
             var manifestPath = Path.Combine(gamePath, "Mods", folder.Replace('/', '\\'), "manifest.json");
             if (!File.Exists(manifestPath)) return "找不到 manifest.json";
-            if (IsGameProcessAlive) return "游戏运行中，暂不能修改清单";
+            if (!skipAliveCheck && IsGameProcessAlive) return "游戏运行中，暂不能修改清单";
 
             // Newtonsoft 宽松解析（SMAPI manifest 允许尾随逗号/注释），再规整写回
             var text = ReadManifestText(manifestPath);
@@ -543,7 +553,8 @@ public sealed class ModService
                         }
                         continue;   // 已同步
                     }
-                    var err = ApplyRemarkToManifest(gamePath, folder, kv.Value, cfg.Current.ModOriginalNames);
+                    var err = ApplyRemarkToManifest(gamePath, folder, kv.Value, cfg.Current.ModOriginalNames,
+                        skipAliveCheck: true);   // v1.1.6：存活已在循环外判过，别每个 mod 都枚举一遍进程
                     if (err is not null) AppLog.Warn("Mods", $"[备注同步] {folder}: {err}");
                     else changed = true;   // ApplyRemarkToManifest 改了 ModOriginalNames（内存），一并落盘
                 }
@@ -723,8 +734,14 @@ public sealed class ModService
     /// Installs a BRAND-NEW mod zip into Mods/. Folder name comes from the
     /// zip's inner folder, or the manifest Name when files sit at zip root.
     /// A name collision replaces the old folder (acts as an update).
+    /// <para>v1.2.0：requireUniqueId 非空时，zip 内必须存在 UniqueID 与之（忽略大小写）
+    /// 一致的 manifest 才允许安装 —— 一键装依赖按名称搜到的候选包以此防"装错 mod"。
+    /// 不匹配返回 <see cref="UidMismatchError"/> 哨兵值，调用方换下一个候选。</para>
     /// </summary>
-    public string? InstallNew(string gamePath, string zipPath, out string? modName)
+    public const string UidMismatchError = "uniqueid-mismatch";
+
+    public string? InstallNew(string gamePath, string zipPath, out string? modName, int? nexusModId = null,
+        string? requireUniqueId = null)
     {
         modName = null;
         string? temp = null;
@@ -742,6 +759,15 @@ public sealed class ModService
             }
             var modRoot = ResolveModRoot(temp, out var allManifests);
             var isBundle = allManifests.Length > 1;
+
+            // v1.2.0：依赖直装防呆 —— 候选包必须真的提供期望的 UniqueID（捆绑包任一
+            // 子包命中即可，与 InstallUpdate 的 expectedUniqueId 语义一致）。
+            if (requireUniqueId is not null && !ManifestsContainUid(allManifests, requireUniqueId))
+            {
+                TryDelete(temp);
+                modName = null;
+                return UidMismatchError;
+            }
 
             // v1.1.5：与"没有 manifest 就拒绝"同一策略——manifest 是坏 JSON / 空文件 /
             // 根不是对象的也拒绝安装（否则会静默装上 SMAPI 无法加载的孤儿条目）。
@@ -888,6 +914,11 @@ public sealed class ModService
             }
 
             TryDelete(temp);
+            // v1.1.2：把安装来源（Nexus modId）写进安装根的边车文件。SVE 这类包的 manifest
+            // 会把 UpdateKeys 留成无效占位 "Nexus:???"，扫描侧凭 manifest 拿不到 ID，
+            // 「已安装」识别与更新检查就断了 —— 边车兜底；重装/更新时随目录被新版覆盖。
+            if (nexusModId is int nid)
+                WriteNexusIdSidecar(dest, nid);
             return null;
         }
         catch (Exception ex)
@@ -895,6 +926,67 @@ public sealed class ModService
             if (temp is not null) TryDelete(temp);
             return ex.Message;
         }
+    }
+
+    // ---------------- 安装来源边车（.junigrid.json） ----------------
+
+    private const string SidecarFileName = ".junigrid.json";
+
+    /// <summary>v1.1.2：通过本系统安装时明明知道 Nexus modId，落一份边车到安装根目录兜底
+    /// （manifest UpdateKeys 缺失/无效时扫描侧的唯一关联来源）。写失败只影响该包的
+    /// 更新识别，不当作安装失败。</summary>
+    private static void WriteNexusIdSidecar(string destDir, int nexusModId)
+    {
+        try
+        {
+            var json = JsonSerializer.Serialize(
+                new SidecarPayload { NexusModId = nexusModId },
+                new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+            File.WriteAllText(Path.Combine(destDir, SidecarFileName), json);
+        }
+        catch (Exception ex)
+        { AppLog.Warn("ModService", "写入安装来源边车失败: " + ex.Message); }
+    }
+
+    /// <summary>从 manifest 所在目录向上走到 Mods 根，取最近一层边车里的 nexusModId
+    /// （捆绑包的所有子包继承安装根上的边车）。没有/损坏 → null。</summary>
+    private static int? ReadNexusIdSidecar(string startDir, string modsDir)
+    {
+        try
+        {
+            var seps = new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar };
+            var root = Path.GetFullPath(modsDir).TrimEnd(seps);
+            var dir = Path.GetFullPath(startDir).TrimEnd(seps);
+            while (true)
+            {
+                var f = Path.Combine(dir, SidecarFileName);
+                if (File.Exists(f))
+                {
+                    using var doc = JsonDocument.Parse(File.ReadAllText(f));
+                    if (doc.RootElement.ValueKind == JsonValueKind.Object
+                        && doc.RootElement.TryGetProperty("nexusModId", out var v)
+                        && v.TryGetInt32(out var id))
+                        return id;
+                }
+                if (string.Equals(dir, root, StringComparison.OrdinalIgnoreCase)) return null;
+                var parent = Directory.GetParent(dir)?.FullName;
+                if (parent is null) return null;
+                dir = parent.TrimEnd(seps);
+                // 走出 Mods 根还没命中 → 没有（不读 Mods 之外的文件）
+                if (!dir.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(dir, root, StringComparison.OrdinalIgnoreCase))
+                    return null;
+            }
+        }
+        catch
+        {
+            return null;   // 边车损坏/不可读 → 当作没有
+        }
+    }
+
+    private sealed class SidecarPayload
+    {
+        public int NexusModId { get; set; }
     }
 
     // ------------------------------------------------------------------
@@ -941,6 +1033,24 @@ public sealed class ModService
             return doc.RootElement.TryGetProperty("Name", out var n) ? n.GetString() : null;
         }
         catch { return null; }
+    }
+
+    /// <summary>v1.2.0：一组 manifest 里是否存在 UniqueID 与期望值（忽略大小写）一致的子包。</summary>
+    private static bool ManifestsContainUid(string[] manifestPaths, string expectedUid)
+    {
+        foreach (var mf in manifestPaths)
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(CleanManifestJson(ReadManifestText(mf)));
+                if (doc.RootElement.ValueKind == JsonValueKind.Object
+                    && doc.RootElement.TryGetProperty("UniqueID", out var u)
+                    && string.Equals(u.GetString(), expectedUid, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+            catch { }
+        }
+        return false;
     }
 
     /// <summary>剥掉子包名开头的标记前缀，如 "[BL] Downtown Zuzu" → "Downtown Zuzu"。
@@ -1080,10 +1190,17 @@ public sealed class ModService
     private sealed class TrashGuard
     {
         private SafeFileHandle? _handle;
+        private string? _path;
 
         public void Acquire(string trashDir)
         {
-            if (_handle is { IsInvalid: false, IsClosed: false }) return;
+            // v1.1.6：旧句柄指向的目录若已被外部删除重建，句柄虽未关闭但已保护不了新目录
+            //（旧写法直接短路 return，重建后的回收站裸奔）—— 路径失效就释放重取
+            if (_handle is { IsInvalid: false, IsClosed: false }
+                && _path is not null && Directory.Exists(_path))
+                return;
+            Release();
+            _path = trashDir;
             try
             {
                 _handle = NativeMethods.CreateFile(trashDir,
@@ -1094,6 +1211,12 @@ public sealed class ModService
                 // 打不开（如目录刚被用户删了）就静默放弃——下次 EnsureTrashReady 再试
             }
             catch { /* 保护锁绝不影响主流程 */ }
+        }
+
+        private void Release()
+        {
+            try { _handle?.Dispose(); } catch { }
+            _handle = null;
         }
     }
 
@@ -1214,6 +1337,11 @@ public sealed class ModService
                     if (nexusId is not null && githubRepo is not null) break;
                 }
             }
+
+            // v1.1.2：UpdateKeys 没有/无效（如 SVE 1.15.11 写成 "Nexus:???"，数字位解析不出）
+            // → 回退读安装边车，恢复 Nexus 关联（「已安装」徽标 + 更新检查都靠它）
+            if (nexusId is null)
+                nexusId = ReadNexusIdSidecar(Path.GetDirectoryName(manifestPath) ?? modsDir, modsDir);
 
             // Dependencies：只收"必需"依赖。SMAPI 的 IsRequired(旧名 Required) 默认 true，
             // 显式标 IsRequired=false 的是可选依赖（可缺但不应报缺失）→ 排除，避免凭空多报。

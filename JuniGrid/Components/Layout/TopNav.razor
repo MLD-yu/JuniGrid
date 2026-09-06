@@ -3,6 +3,7 @@
 @inject PageRefreshService PageRefresh
 @inject IJSRuntime JS
 @inject ConfigService Cfg
+@implements IDisposable
 
 <nav class="jg-topnav">
     @* 选中高亮块：淡绿底、向下延伸到内容区，像“从内容区露出的一块”；left/width 由 JS 平移到当前激活项 *@
@@ -39,11 +40,16 @@
     protected override void OnInitialized()
     {
         // v0.35.0：路由变化（.active 挪项）后立即重定位滑块，杜绝"元素先动、背景后到"
-        Nav.LocationChanged += async (_, _) =>
-        {
-            try { await InvokeAsync(StateHasChanged); } catch { }
-            try { await JS.InvokeVoidAsync("junigridJs.placeNavThumb"); } catch { }
-        };
+        // v1.1.6：改命名方法并实现 IDisposable 退订 —— 匿名 lambda 永远摘不掉
+        Nav.LocationChanged += OnLocationChanged;
+    }
+
+    public void Dispose() => Nav.LocationChanged -= OnLocationChanged;
+
+    private async void OnLocationChanged(object? sender, LocationChangedEventArgs e)
+    {
+        try { await InvokeAsync(StateHasChanged); } catch { }
+        try { await JS.InvokeVoidAsync("junigridJs.placeNavThumb"); } catch { }
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
