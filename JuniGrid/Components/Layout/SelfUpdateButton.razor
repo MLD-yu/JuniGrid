@@ -35,7 +35,7 @@
             @if (_downloading)
             {
                 <span class="jg-upd-tip-spin" aria-hidden="true"></span>
-                <span>下载中</span>
+                <span>下载中@(_progressPercent is > 0 ? $" {_progressPercent:0}%" : "")</span>
             }
             else if (_ready)
             {
