@@ -1653,8 +1653,16 @@
                 var err = ModSvc.ApplyRemarkToManifest(Cfg.Current.GamePath, f, r, Cfg.Current.ModOriginalNames);
                 if (err is not null)
                     AppLog.Warn("Mods", $"[备注同步] {f}: {err}");
-                else if (r.Length > 0)
-                    AppLog.Warn("Mods", $"[备注同步] {f}: 已写入备注「{r}」，重启游戏后 GMCM 生效");
+                else
+                {
+                    if (r.Length > 0)
+                        AppLog.Warn("Mods", $"[备注同步] {f}: 已写入备注「{r}」，重启游戏后 GMCM 生效");
+                    // 修复：ApplyRemarkToManifest 会把原名记进 ModOriginalNames（还原时移除），
+                    // 但那是本 Task 里的内存改动 —— 上面的 Cfg.Save 早已跑完，之后若没有任何
+                    // 别的保存，退出程序原名记录就丢了 → 列表括号里的原名消失（自动化/Automate 的根因）。
+                    // 同步成功后立刻补一次落盘，把备注/原名/manifest 三者一起钉住。
+                    try { Cfg.Save(Cfg.Current); } catch { }
+                }
             });
         }
         _remarkFolder = null;

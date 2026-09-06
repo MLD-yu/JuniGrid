@@ -518,6 +518,7 @@ public sealed class ModService
         try
         {
             if (string.IsNullOrWhiteSpace(gamePath) || IsGameProcessAlive) return;
+            var changed = false;
             foreach (var kv in cfg.Current.ModRemarks)
             {
                 var folder = kv.Key;
@@ -530,12 +531,25 @@ public sealed class ModService
                         CleanManifestJson(ReadManifestText(manifestPath)));
                     var name = root["Name"]?.Type == Newtonsoft.Json.Linq.JTokenType.String
                         ? (string?)root["Name"] : null;
-                    if (name == kv.Value) continue;   // 已同步
+                    if (name == kv.Value)
+                    {
+                        // 自愈：manifest 已是备注名、但原名记录丢了（旧版本只在内存记原名、
+                        // 退出前没回写配置），列表括号里的原名因此消失、取消备注也无从还原。
+                        // 真名已不可考，用文件夹名兜底补记（Automate 这类文件夹=原名的能完全复原）。
+                        if (!cfg.Current.ModOriginalNames.ContainsKey(folder))
+                        {
+                            cfg.Current.ModOriginalNames[folder] = folder.Split('/').Last();
+                            changed = true;
+                        }
+                        continue;   // 已同步
+                    }
                     var err = ApplyRemarkToManifest(gamePath, folder, kv.Value, cfg.Current.ModOriginalNames);
                     if (err is not null) AppLog.Warn("Mods", $"[备注同步] {folder}: {err}");
+                    else changed = true;   // ApplyRemarkToManifest 改了 ModOriginalNames（内存），一并落盘
                 }
                 catch (Exception ex) { AppLog.Warn("Mods", $"[备注同步] {folder}: {ex.Message}"); }
             }
+            if (changed) cfg.Save(cfg.Current);
         }
         catch { }
     }
