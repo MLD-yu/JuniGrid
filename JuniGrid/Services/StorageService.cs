@@ -65,6 +65,14 @@ public sealed class StorageService
             Cleanable: true, Movable: true,
             Tip: "安装或更新 SMAPI 时下载的官方安装包和解压文件 装完就没用了 可放心清理"));
 
+        // v1.1.4：应用自更新安装包缓存 —— 正常装完即自动删，但万一自动删除失效
+        //（安装被强杀/删文件抛异常等），一个包 100MB 会悄悄堆积，必须让用户看得见、清得掉
+        list.Add(new("selfupdate", "自更新安装包缓存", "应用自身更新的安装包（最新版安装成功后自动删除）",
+            StoragePaths.SelfUpdateDir,
+            new[] { StoragePaths.SelfUpdateDir }, new[] { StoragePaths.SelfUpdateDir },
+            Cleanable: true, Movable: true,
+            Tip: "应用自动更新时下载的安装包 安装成功后会自动删除 但如果更新中断可能残留 这里可以手动清掉 一个安装包约 100MB 清理后下次更新会重新下载"));
+
         // 只统计/清理 HTTP 与着色器缓存子目录（目录名对照本机 EBWebView 实测结构）——
         // Cookie/LocalStorage 在其它子目录，登录态不受影响
         var wv2Root = StoragePaths.WebView2Dir;
@@ -189,6 +197,8 @@ public sealed class StorageService
         if (c is null || !c.Cleanable) return Task.FromResult("这一项不可清理");
         if ((c.Id == "downloads" || c.Id == "smapi") && _center.RunningCount > 0)
             return Task.FromResult("有下载/安装任务进行中，结束后再清理");
+        if (c.Id == "selfupdate" && SelfUpdateService.CacheBusy)
+            return Task.FromResult("自更新安装包正在下载，结束后再清理");
 
         var task = _center.Start("清理：" + c.Name, "cleanup");
         _center.Report(task, "开始清理…", 3);
@@ -300,6 +310,10 @@ public sealed class StorageService
         var oldSmapi = StoragePaths.SmapiInstallerDir;
         var oldBackup = StoragePaths.ModsBackupDir;
         var oldWv2 = StoragePaths.WebView2Dir;
+        var oldSelfUpdate = StoragePaths.SelfUpdateDir;
+
+        if (SelfUpdateService.CacheBusy)
+            return "自更新安装包正在下载，稍后再更改缓存目录";
 
         var cfg = _cfg.Current;
         cfg.CacheRoot = newRoot;
@@ -315,6 +329,7 @@ public sealed class StorageService
                 (oldDownloads, StoragePaths.DownloadsDir),
                 (oldSmapi, StoragePaths.SmapiInstallerDir),
                 (oldBackup, StoragePaths.ModsBackupDir),
+                (oldSelfUpdate, StoragePaths.SelfUpdateDir),
             };
             var movedNotes = new List<string>();
             foreach (var (oldDir, target) in pairs)

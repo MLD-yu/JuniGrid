@@ -30,6 +30,10 @@ public sealed class SelfUpdateService
     /// <summary>检查完成后通知（UI 订阅刷新角标/按钮）。</summary>
     public event Action? Changed;
 
+    /// <summary>v1.1.4：安装包正在下载（缓存目录即将有百 MB 级文件写入）。
+    /// 缓存与存储页的「自更新安装包缓存」清理/迁移据此避让，防止删掉正在下的包。</summary>
+    public static volatile bool CacheBusy;
+
     private static HttpClient CreateClient(double minutes = 0.2)
     {
         var h = new HttpClient();
@@ -84,13 +88,21 @@ public sealed class SelfUpdateService
 
         Directory.CreateDirectory(StoragePaths.SelfUpdateDir);
         var dest = InstallerPath(info.LatestVersion);
-        await ResumableDownload.RunAsync(DownloadHttp, info.SetupUrl, dest,
-            (msg, pct, _) => progress?.Invoke(msg, pct), ct: ct);
+        SelfUpdateService.CacheBusy = true;
+        try
+        {
+            await ResumableDownload.RunAsync(DownloadHttp, info.SetupUrl, dest,
+                (msg, pct, _) => progress?.Invoke(msg, pct), ct: ct);
 
-        // 下载完整结束才写 .done 标记；取消/中断留下的半截文件靠续传接着写
-        File.WriteAllText(dest + ".done", info.LatestVersion);
-        progress?.Invoke("下载完成", 100);
-        return dest;
+            // 下载完整结束才写 .done 标记；取消/中断留下的半截文件靠续传接着写
+            File.WriteAllText(dest + ".done", info.LatestVersion);
+            progress?.Invoke("下载完成", 100);
+            return dest;
+        }
+        finally
+        {
+            SelfUpdateService.CacheBusy = false;
+        }
     }
 
     /// <summary>弹出安装向导（可见向导，非静默）。旧版应用由调用方自行退出，
