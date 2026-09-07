@@ -265,8 +265,9 @@
             }
             else
             {
-                // 启动失败 → toast「启动失败」并恢复按钮为可点
-                ShowToast("启动失败");
+                // 启动失败 → toast 带上具体原因（此前只显示「启动失败」，
+                // 没装 SMAPI 的用户完全不知道失败原因，也不知道该切官方模式）
+                ShowToast("启动失败：" + SummarizeLaunchError(result.Error));
                 _launching = false;
                 StateHasChanged();
             }
@@ -445,5 +446,19 @@
         // v0.43.1：报错 → 红底白字 toast，同时落日志
         AppLog.Error("AccountPanel", text);
         _ = JS.InvokeVoidAsync("junigridJs.toast", text, "err");
+    }
+
+    /// <summary>
+    /// v1.1.4：把启动失败的详细原因压成一行 toast 文案。
+    /// SMAPI 缺失是最常见情形（官方模式用户刚填完目录就点 SMAPI 启动），
+    /// 固定提示「装 SMAPI 或切官方模式」；其余取首行、超长截断。
+    /// </summary>
+    private static string SummarizeLaunchError(string? err)
+    {
+        if (string.IsNullOrWhiteSpace(err)) return "未知原因";
+        if (err.Contains("SMAPI", StringComparison.OrdinalIgnoreCase))
+            return "未检测到 SMAPI，请先安装 SMAPI，或在左上角切换「官方」模式启动";
+        var line = err.Split('\n')[0].Trim().TrimEnd('。', '.');
+        return line.Length > 60 ? line[..60] + "…" : line;
     }
 }
