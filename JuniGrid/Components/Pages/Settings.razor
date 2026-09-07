@@ -735,11 +735,25 @@
         Cfg.Save(cfg);
     }
 
+    // 目录有效 = 游戏本体在即可。SMAPI 不是必需品（用户可以选择游玩官方模式），
+    // 没装 SMAPI 只影响提示文案，不再拦截保存
     private static bool IsValidGamePath(string? p)
         => !string.IsNullOrWhiteSpace(p)
            && Directory.Exists(p)
-           && File.Exists(Path.Combine(p, "StardewModdingAPI.exe"))
-           && Directory.Exists(Path.Combine(p, "Mods"));
+           && File.Exists(Path.Combine(p, "Stardew Valley.exe"));
+
+    private static bool HasSmapi(string? p)
+        => !string.IsNullOrWhiteSpace(p) && File.Exists(Path.Combine(p, "StardewModdingAPI.exe"));
+
+    private void SaveGamePath()
+    {
+        var cfg = Cfg.Current;
+        cfg.GamePath = _gamePath;
+        Cfg.Save(cfg);
+        _ = JS.InvokeVoidAsync("junigridJs.toast", HasSmapi(_gamePath)
+            ? "已保存游戏目录"
+            : "已保存游戏目录（未检测到 SMAPI，可通过首页「Steam 官方」启动游玩）");
+    }
 
     private void AutoDetect()
     {
@@ -749,14 +763,11 @@
             _gamePath = detected;
             if (IsValidGamePath(detected))
             {
-                var cfg = Cfg.Current;
-                cfg.GamePath = _gamePath;
-                Cfg.Save(cfg);
-                _ = JS.InvokeVoidAsync("junigridJs.toast", "已自动检测到游戏目录并保存");
+                SaveGamePath();
             }
             else
             {
-                _ = JS.InvokeVoidAsync("junigridJs.toast", "检测到目录，但缺少 StardewModdingAPI.exe 或 Mods 文件夹", "err");
+                _ = JS.InvokeVoidAsync("junigridJs.toast", "检测到目录，但里面没有 Stardew Valley.exe，请手动选择游戏目录", "err");
             }
         }
         else
@@ -776,14 +787,11 @@
             _gamePath = dlg.FolderName;
             if (IsValidGamePath(_gamePath))
             {
-                var cfg = Cfg.Current;
-                cfg.GamePath = _gamePath;
-                Cfg.Save(cfg);
-                _ = JS.InvokeVoidAsync("junigridJs.toast", "已选择游戏目录并保存");
+                SaveGamePath();
             }
             else
             {
-                _ = JS.InvokeVoidAsync("junigridJs.toast", "请选择正确的游戏目录", "err");
+                _ = JS.InvokeVoidAsync("junigridJs.toast", "请选择包含 Stardew Valley.exe 的游戏目录", "err");
             }
         }
     }
@@ -792,12 +800,9 @@
     {
         if (!IsValidGamePath(_gamePath))
         {
-            _ = JS.InvokeVoidAsync("junigridJs.toast", "请选择正确的游戏目录", "err");
+            _ = JS.InvokeVoidAsync("junigridJs.toast", "目录无效：请填写包含 Stardew Valley.exe 的游戏目录", "err");
             return;
         }
-        var cfg = Cfg.Current;
-        cfg.GamePath = _gamePath;
-        Cfg.Save(cfg);
-        _ = JS.InvokeVoidAsync("junigridJs.toast", "游戏目录已保存");
+        SaveGamePath();
     }
 }

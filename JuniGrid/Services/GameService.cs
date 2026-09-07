@@ -26,7 +26,12 @@ public sealed class GameService
         };
 
         foreach (var p in candidates)
-            if (Directory.Exists(p)) return p;
+        {
+            // 只认真正装了游戏的目录（有本体 exe）；
+            // 残留的空目录直接跳过，继续找其他盘符下的安装
+            if (Directory.Exists(p) && File.Exists(Path.Combine(p, "Stardew Valley.exe")))
+                return p;
+        }
         return "";
     }
 
