@@ -1,11 +1,14 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Text;
 
 namespace JuniGrid.Services;
 
 /// <summary>
 /// v0.2.1：内存管理 —— 系统/自身/WebView2/游戏进程内存快照、工作集压缩（自身+游戏）、
-/// 定时与阈值自动压缩、系统级待机内存页释放（需管理员，经提权子实例执行）。
+/// 定时与阈值自动压缩（定时：自身+WebView2 常规保养；阈值：系统告急，再连同游戏进程
+/// 一并换出 —— 换出后页面进 standby 计入「可用」，系统占用才能真正降下来）、
+/// 系统级待机内存页释放（需管理员，经提权子实例执行）。
 /// 后台循环常驻（随 DI 解析启动）：每 5s 推一次快照并检查自动压缩条件，
 /// 不依赖设置页是否打开。OnSnapshot 可能在后台线程触发，UI 订阅方自行调度。
 /// </summary>
@@ -64,11 +67,22 @@ public sealed class MemoryService
                         // 双检：拿锁后时间已满足才压，杜绝并发双触发
                         if (now - _lastTrimUtc >= (thresholdHit ? TimeSpan.FromMinutes(2) : cooldown))
                         {
-                            _lastTrimUtc = now;
-                            var (b, a) = CompressSelf();
-                            AppLog.Warn("Memory",
-                                $"自动压缩：{ResumableDownload.FormatBytes(b)} → {ResumableDownload.FormatBytes(a)}" +
-                                $"（{(thresholdHit ? "阈值" : "定时")}触发，系统 {snap.SysPercent:F0}%）");
+                    _lastTrimUtc = now;
+                    // 自身+WebView2 每次都压；游戏只在阈值触发时换出 —— 固定周期换出 GB 级游戏
+                    // 会造成游玩中周期性顿卡，只有系统真告急才值得这个代价。
+                    var (b, a) = CompressSelf();
+                    var msg = new StringBuilder(
+                        $"自动压缩：自身 {ResumableDownload.FormatBytes(b)} → {ResumableDownload.FormatBytes(a)}");
+                    var wv = TrimWebView2();
+                    if (wv.count > 0)
+                        msg.Append($"；WebView2×{wv.count} {ResumableDownload.FormatBytes(wv.before)} → {ResumableDownload.FormatBytes(wv.after)}");
+                    if (thresholdHit)
+                    {
+                        var g = TrimGameWorkingSet();
+                        if (g > 0) msg.Append($"；游戏×{g} 换出");
+                    }
+                    AppLog.Warn("Memory",
+                        $"{msg}（{(thresholdHit ? "阈值" : "定时")}触发，系统 {snap.SysPercent:F0}%）");
                         }
                     }
                 }
