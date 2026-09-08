@@ -312,6 +312,11 @@ public sealed class JuniGridConfig
     /// 不再重复搜索。校验仍在每次下载后执行，缓存错了也装不进 Mods。</summary>
     public Dictionary<string, int> DependencyNexusIds { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>v1.2.4：缺失依赖弹窗的展示缓存 —— UniqueID → (modId, 名称, 封面 URL)。
+    /// 弹窗打开时先查此缓存同步出结果（封面本体由 CoverCacheService 落盘），
+    /// 未命中才做免 key 搜索并回写。只用于展示 —— 安装仍以下载后的 UniqueID 校验为准。</summary>
+    public Dictionary<string, DependencyDisplayEntry> DependencyDisplays { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
     /// <summary>v0.2.1：统一缓存目录（null = 各类缓存走历史默认位置）。
     /// 设置后下载/安装临时、SMAPI 安装包、WebView2 数据、Mods 备份都迁到该目录下的子目录。</summary>
     public string? CacheRoot { get; set; }
@@ -344,4 +349,12 @@ public sealed class ModUpdateFingerprintEntry
     public string UpdatedAt { get; set; } = "";
     public string LatestFileVersion { get; set; } = "";
     public DateTime CheckedAtUtc { get; set; } = DateTime.UtcNow;
+}
+
+/// <summary>v1.2.4：缺失依赖弹窗的单条展示信息（免 key 搜索的首个命中，仅展示用）。</summary>
+public sealed class DependencyDisplayEntry
+{
+    public string Name { get; set; } = "";
+    public int ModId { get; set; }
+    public string CoverUrl { get; set; } = "";
 }

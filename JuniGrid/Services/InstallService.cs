@@ -483,10 +483,22 @@ public sealed class InstallService
     private static readonly ConcurrentDictionary<string, DependencyDisplayInfo> DisplayCache =
         new(StringComparer.OrdinalIgnoreCase);
 
-    /// <summary>解析单个依赖 UID 的展示信息。搜索失败/无命中返回 null（调用方退回显示 UID）。</summary>
+    /// <summary>解析单个依赖 UID 的展示信息：进程内缓存 → 配置持久缓存 → 免 key 搜索（命中后两处都回写）。
+    /// 搜索失败/无命中返回 null（调用方退回显示 UID）。</summary>
     public async Task<DependencyDisplayInfo?> ResolveDependencyDisplayAsync(string uid)
     {
         if (DisplayCache.TryGetValue(uid, out var cached)) return cached;
+        // v1.2.4：配置持久缓存 —— 跨会话同步出结果，重启后弹窗首开不再等搜索
+        var cfg = _cfg.Current;
+        if (cfg.DependencyDisplays.TryGetValue(uid, out var saved))
+        {
+            var fromSaved = new DependencyDisplayInfo(uid,
+                saved.Name.Length > 0 ? saved.Name : null,
+                saved.ModId > 0 ? saved.ModId : null,
+                saved.CoverUrl.Length > 0 ? saved.CoverUrl : null);
+            DisplayCache[uid] = fromSaved;
+            return fromSaved;
+        }
         try
         {
             var term = UidSearchTerms(uid).FirstOrDefault();
@@ -497,6 +509,18 @@ public sealed class InstallService
             var info = new DependencyDisplayInfo(uid, top.Name, top.Id,
                 string.IsNullOrWhiteSpace(top.ThumbnailUrl) ? top.PictureUrl : top.ThumbnailUrl);
             DisplayCache[uid] = info;
+            // 回写持久缓存，下次会话秒开；写失败不影响本次展示（大不了下次重搜）
+            try
+            {
+                cfg.DependencyDisplays[uid] = new DependencyDisplayEntry
+                {
+                    Name = top.Name ?? "",
+                    ModId = top.Id,
+                    CoverUrl = info.CoverUrl ?? "",
+                };
+                _cfg.Save(cfg);
+            }
+            catch { }
             return info;
         }
         catch { return null; }
