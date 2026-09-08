@@ -78,7 +78,7 @@
                         <div class="jg-profile-item @(p.Name == ActiveProfileName ? "active" : "")">
                             @* v0.71.4：菜单项只负责切换/删除；重命名统一由下拉按钮右侧的铅笔入口发起 *@
                             <button class="jg-profile-name"
-                                    @onclick="() => ApplyProfileKeepOpen(p.Name)">@p.Name</button>
+                                    @onclick="() => ApplyProfileAndClose(p.Name)">@p.Name</button>
                             @if (p.Name != "默认")
                             {
                                 <button class="jg-profile-del" @onclick="() => AskDeleteProfile(p.Name)">×</button>
@@ -476,10 +476,14 @@
         <div class="jg-dialog jg-remark-dialog">
             <div class="jg-remark-title">给这个 mod 起备注</div>
             <div class="jg-remark-mod">@(_remarkOriginal)</div>
-            <input class="jg-remark-input" maxlength="20" placeholder="输入备注（最多 20 字，留空则清除）"
-                   @bind=" _remarkInput" @bind:event="oninput" @onkeydown="OnRemarkKeydown"
-                   autofocus />
-            <div class="jg-remark-count">@_remarkInput.Length / 20</div>
+            @* Motion characters-remaining 同款：输入框内右侧显示「剩余可输入数」（空=20，逐键递减到 0），
+               每次输入由 GSAP 弹一下；空格不计数不显示（OnRemarkInput 过滤），满格后尝试输入 0 放大提醒 *@
+            <div class="jg-remark-field">
+                <input class="jg-remark-input @(_remarkInput.Length >= 16 ? "near-limit" : "")" maxlength="20" placeholder="输入备注"
+                       value="@_remarkInput" @oninput="OnRemarkInput" @onkeydown="OnRemarkKeydown"
+                       autofocus />
+                <span class="jg-remark-count @(_remarkInput.Length >= 20 ? "full" : _remarkInput.Length >= 16 ? "warn" : "")">@(20 - _remarkInput.Length)</span>
+            </div>
             <div class="jg-dialog-actions">
                 <button class="jg-btn" @onclick="CancelRemark">取消</button>
                 <button class="jg-btn primary" @onclick="SaveRemark">保存</button>
@@ -541,13 +545,16 @@
                         {
                             var di = _depDisplay.TryGetValue(u, out var dd) ? dd : null;
                             var clickable = di?.ModId is not null;
+                            @* 封面走 Covers 本地缓存：裸 CDN URL 国内直连极慢，每次开弹窗都空白
+                               等半天；Get 未命中时后台下载并触发 Changed 刷新，落盘后二次秒开 *@
+                            var coverData = di?.CoverUrl is string cu ? Covers.Get(cu) : null;
                             <div class="jg-dep-row" data-clickable="@clickable"
                                  style="display:flex;align-items:center;gap:10px;min-width:0;@(clickable ? "cursor:pointer" : "")"
                                  title="@(clickable ? "点击查看 mod 详情" : "")"
                                  @onclick="() => OpenDepDetail(di)">
-                                @if (di?.CoverUrl is string cu)
+                                @if (coverData is not null)
                                 {
-                                    <img src="@cu" alt="" loading="lazy" referrerpolicy="no-referrer"
+                                    <img src="@coverData" alt="" loading="lazy"
                                          style="width:34px;height:34px;border-radius:6px;object-fit:cover;flex:none;pointer-events:none" />
                                 }
                                 else
@@ -707,11 +714,17 @@
         catch (Exception ex) { ShowNotice("err", "重命名失败：" + ex.Message); }
     }
 
-    /// <summary>v0.71.1：点存档切换后保持下拉框打开（方便连续切换对比）。</summary>
-    private async Task ApplyProfileKeepOpen(string name)
+    /// <summary>点存档项切换：应用后收起下拉 —— 切换完成即收，与常规下拉交互一致
+    /// （旧版故意保持打开想方便连续切换，实测反而像「没切上、关不掉」）。</summary>
+    private async Task ApplyProfileAndClose(string name)
     {
         await ApplyProfile(name);
-        // 不关 _profileOpen —— 用户可能想连续切几个存档
+        if (_profileOpen)
+        {
+            _profileOpen = false;
+            _addingProfile = false; _newProfileName = "";
+            try { await JS.InvokeVoidAsync("junigridJs.profileDropdown", ".jg-profile-dd", false); } catch { }
+        }
     }
 
     private bool _addingProfile;
@@ -1947,6 +1960,19 @@
 
     private void CancelRemark() => _remarkFolder = null;
 
+    /// <summary>Motion characters-remaining 同款：计数显示「剩余可输入数」（20→0），每次输入弹一下。
+    /// 空格不计数也不显示（含全角空格/Tab，输入即被滤掉）；满 20 后 maxlength 挡输入，
+    /// 此时再尝试打字（keydown）让 0 放大提醒 —— 见 OnRemarkKeydown。</summary>
+    private async Task OnRemarkInput(ChangeEventArgs e)
+    {
+        var v = e.Value?.ToString() ?? "";
+        var filtered = v.Replace(" ", "").Replace("\u3000", "").Replace("\t", "");
+        _remarkInput = filtered;
+        if (filtered != v)
+            try { await JS.InvokeVoidAsync("junigridJs.setRemarkValue", filtered); } catch { }
+        try { await JS.InvokeVoidAsync("junigridJs.remarkCountBump", filtered.Length >= 20); } catch { }
+    }
+
     private void SaveRemark()
     {
         var folder = _remarkFolder;
@@ -1984,6 +2010,9 @@
     {
         if (e.Key == "Enter") SaveRemark();
         else if (e.Key == "Escape") CancelRemark();
+        // 满 20 后 maxlength 已挡住输入；此时再尝试打字（单字符键）让剩余数「0」放大提醒
+        else if (_remarkInput.Length >= 20 && e.Key.Length == 1)
+            _ = JS.InvokeVoidAsync("junigridJs.remarkCountBump", true);
     }
 
     /// <summary>列表显示的 mod 名：有备注则显示成 “备注(原名)”，否则走原名/翻译。
