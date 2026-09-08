@@ -302,26 +302,40 @@ window.junigridJs.animatedListReset = function (listSel) {
 };
 
 // v0.35.0：导航滑块实时同步 —— 路由变化/窗口缩放/刷新都立即重定位（双重 rAF 等布局稳定）
-window.junigridJs.placeNavThumb = function () {
+window.junigridJs.placeNavThumb = function (opts) {
     const nav = document.querySelector('.jg-topnav');
     const thumb = document.querySelector('.jg-topnav-thumb');
     if (!nav || !thumb) return;
+    // Motion tab-select 同款：滑块带轻微过冲地滑到目标项。窗口缩放/首帧定位传 {instant:true} 直接落位。
+    const instant = !!(opts && opts.instant);
     const place = () => {
         const active = nav.querySelector('.jg-topnav-item.active');
         if (!active) { thumb.style.width = '0px'; return; }
         const nr = nav.getBoundingClientRect();
         const r = active.getBoundingClientRect();
-        thumb.style.left = (r.left - nr.left) + 'px';
-        thumb.style.width = r.width + 'px';
+        const left = r.left - nr.left, width = r.width;
+        if (!window.gsap || instant || !thumb.__placed) {
+            if (thumb.__tl) { thumb.__tl.kill(); thumb.__tl = null; }
+            thumb.style.left = left + 'px';
+            thumb.style.width = width + 'px';
+        } else {
+            if (thumb.__tl) thumb.__tl.kill();
+            thumb.__tl = gsap.to(thumb, {
+                left: left, width: width, duration: 0.5,
+                ease: 'back.out(1.6)', overwrite: 'auto',
+                onComplete: function () { thumb.__tl = null; }
+            });
+        }
+        thumb.__placed = true;
     };
     // 双 rAF：等 Blazor 把 .active 挪到目标项 + 布局回流完成后再量
     requestAnimationFrame(() => requestAnimationFrame(place));
 };
-// 缩放/字体加载等导致宽度变化时，滑块实时跟随（不带动画错位：transition 会平滑过渡）
+// 缩放/字体加载等导致宽度变化时，滑块实时跟随（缩放走即时落位，不弹）
 (function () {
     if (window.__navThumbBound) return; window.__navThumbBound = true;
     let raf = 0;
-    const re = () => { cancelAnimationFrame(raf); raf = requestAnimationFrame(() => window.junigridJs.placeNavThumb()); };
+    const re = () => { cancelAnimationFrame(raf); raf = requestAnimationFrame(() => window.junigridJs.placeNavThumb({ instant: true })); };
     window.addEventListener('resize', re);
     if (document.fonts && document.fonts.ready) document.fonts.ready.then(re);
 })();

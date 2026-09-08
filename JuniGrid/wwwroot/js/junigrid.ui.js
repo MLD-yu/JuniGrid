@@ -417,7 +417,9 @@ window.junigridJs.tiltPerspective = function (selector, opts) {
         for (var i = 0; i < cells.length; i++) {
             var el = cells[i], x = 0, y = 0, node = el;
             while (node && node !== scroll) { x += node.offsetLeft; y += node.offsetTop; node = node.offsetParent; }
-            rects.push({ l: x, t: y, r: x + el.offsetWidth, b: y + el.offsetHeight });
+            var rc = { el: el, l: x, t: y, r: x + el.offsetWidth, b: y + el.offsetHeight };
+            el.__hr = rc;   // 聚焦缩放时反查格子自己的布局矩形
+            rects.push(rc);
         }
         rects.sort(function (a, b) { return a.l - b.l; });
         // 按 left 聚类成周列区段，半格容差防分裂
@@ -447,8 +449,59 @@ window.junigridJs.tiltPerspective = function (selector, opts) {
         ensure(scroll);
         path.setAttribute('d', d);
         svg.classList.add('on');
+        // 月份聚焦：整月作为刚体放大 —— 变换原点取「包围盒顶边中点」：顶边和月份标签纹丝不动，
+        // 月块只向下长（不会上侵盖住标签）；描边 SVG 以同一原点同步缩放，圈跟着一起大。
+        var ZOOM = 1.15;
+        var bt = Infinity, bb = -Infinity;
+        for (var k = 0; k < cols.length; k++) {
+            if (cols[k].t < bt) bt = cols[k].t;
+            if (cols[k].b > bb) bb = cols[k].b;
+        }
+        var cx = (cols[0].l + cl.r) / 2, cy = bt;
+        focusMonth(grid, label.getAttribute('data-month'), cx, cy);
+        svg.style.transformOrigin = cx + 'px ' + cy + 'px';
+        svg.style.transform = 'scale(' + ZOOM + ')';
     }
-    function hide() { if (svg) svg.classList.remove('on'); }
+    function focusMonth(grid, m, cx, cy) {
+        grid.classList.add('heat-focus');
+        // 放大溢出不顶出滚动条：聚焦期间锁掉滚动（聚焦的月块必在可视区内）
+        var scroll = grid.closest('.jg-heat-scroll');
+        if (scroll) scroll.classList.add('heat-zooming');
+        var hit = grid.querySelectorAll('.jg-heat-cell[data-m="' + m + '"]');
+        for (var i = 0; i < hit.length; i++) {
+            var c = hit[i];
+            var rc = c.__hr;
+            if (rc) c.style.transformOrigin = (cx - rc.l) + 'px ' + (cy - rc.t) + 'px';
+            c.classList.add('hl');
+            c.classList.remove('dim');
+        }
+        var rest = grid.querySelectorAll('.jg-heat-cell:not([data-m="' + m + '"])');
+        for (var j = 0; j < rest.length; j++) {
+            rest[j].classList.add('dim');
+            rest[j].classList.remove('hl');
+        }
+        var labels = grid.querySelectorAll('.jg-heat-month span[data-month]');
+        for (var n = 0; n < labels.length; n++) {
+            var l = labels[n];
+            l.classList.toggle('hl', l.getAttribute('data-month') === m);
+            l.classList.toggle('dim', l.getAttribute('data-month') !== m);
+        }
+    }
+    function unfocusMonth() {
+        var zs = document.querySelector('.jg-heat-scroll.heat-zooming');
+        if (zs) zs.classList.remove('heat-zooming');
+        var grid = document.querySelector('.jg-heat-grid.heat-focus');
+        if (grid) {
+            grid.classList.remove('heat-focus');
+            var els = grid.querySelectorAll('.hl, .dim');
+            for (var i = 0; i < els.length; i++) {
+                els[i].classList.remove('hl', 'dim');
+                els[i].style.transformOrigin = '';
+            }
+        }
+        if (svg) svg.style.transform = '';
+    }
+    function hide() { unfocusMonth(); if (svg) svg.classList.remove('on'); }
     document.addEventListener('mouseover', function (e) {
         var label = e.target.closest ? e.target.closest('.jg-heat-month span[data-month]') : null;
         if (label) show(label); else hide();
@@ -631,3 +684,20 @@ window.junigridJs.authorTipInit = function (wrapId, bubbleId) {
 };
 window.junigridJs.setScroll = function (sel, y) { var el = document.querySelector(sel); if (el) el.scrollTop = y; };
 
+
+// ── Motion characters-remaining 同款：备注弹窗剩余数字弹簧 ──
+// 每次输入数字 back.out 弹一下；满格（剩余 0）后尝试输入时弹得更明显（atLimit=true）。
+// 颜色分级（剩 ≤4 黄 / 剩 0 红）由 Blazor 按 class 驱动，这里只负责弹。
+window.junigridJs.remarkCountBump = function (atLimit) {
+    var el = document.querySelector('.jg-remark-count');
+    if (!el || !window.gsap) return;
+    if (el.__bumpTl) el.__bumpTl.kill();
+    el.__bumpTl = gsap.timeline()
+        .fromTo(el, { scale: atLimit ? 1.5 : 1.22 },
+            { scale: 1, duration: 0.45, ease: 'back.out(2.5)', clearProps: 'transform' });
+};
+// 空格过滤后把输入框 DOM 值同步回去（Blazor 重渲染前先纠正，避免空格闪现）
+window.junigridJs.setRemarkValue = function (v) {
+    var i = document.querySelector('.jg-remark-input');
+    if (i) i.value = v;
+};

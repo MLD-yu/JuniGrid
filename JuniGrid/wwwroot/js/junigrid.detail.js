@@ -136,6 +136,7 @@ window.junigridJs.accAnimate = function (id, opening) {
     }
     if (acc.__tl) { acc.__tl.kill(); acc.__tl = null; }
     var rows = acc.querySelectorAll(".jg-acc-body .jg-acc-row, .jg-acc-body .jg-req-table, .jg-acc-body > span, .jg-acc-body > div");
+    // Motion accordion 同款手感：干脆的弹簧高度展开 + 箭头小回弹旋转，行只做轻淡入（不横移不大幅弹跳）
     if (opening) {
         var target = Math.min(inner.scrollHeight, 360);
         acc.__tl = gsap.timeline({
@@ -144,9 +145,9 @@ window.junigridJs.accAnimate = function (id, opening) {
                 if (window.junigridJs.accMeasureScroll) window.junigridJs.accMeasureScroll();
             }
         })
-        .to(arrow, { rotation: 180, duration: 0.9, ease: "elastic.out(1.2,0.3)" }, 0)
-        .fromTo(inner, { height: 52 }, { height: target, duration: 1.0, ease: "elastic.out(1.2,0.45)" }, 0)
-        .from(rows, { opacity: 0, x: -18, duration: 0.45, ease: "back.out(2.5)", stagger: 0.05, clearProps: "opacity,transform" }, 0.12);
+        .to(arrow, { rotation: 180, duration: 0.45, ease: "back.out(1.6)" }, 0)
+        .fromTo(inner, { height: 52 }, { height: target, duration: 0.5, ease: "back.out(1.2)" }, 0)
+        .from(rows, { opacity: 0, duration: 0.25, stagger: 0.03, clearProps: "opacity" }, 0.1);
     } else {
         acc.__tl = gsap.timeline({
             onComplete: function () {
@@ -154,8 +155,8 @@ window.junigridJs.accAnimate = function (id, opening) {
                 if (window.junigridJs.accMeasureScroll) window.junigridJs.accMeasureScroll();
             }
         })
-        .to(arrow, { rotation: 0, duration: 0.4, ease: "power2.inOut" }, 0)
-        .to(inner, { height: 52, duration: 0.45, ease: "power3.out" }, 0);
+        .to(arrow, { rotation: 0, duration: 0.3, ease: "power2.inOut" }, 0)
+        .to(inner, { height: 52, duration: 0.32, ease: "power2.in" }, 0);
     }
 };
 // ============ v1.1.3：任务时间线 —— 像素方块 → 对勾 变形（smooth-morph 风格）============

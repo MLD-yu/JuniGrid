@@ -380,7 +380,6 @@ body.jg-minimizing #app { transform: scale(0.96); opacity: 0; }
     position: absolute; left: 0; top: 0; bottom: 0; z-index: 0;
     width: 0%;
     background: var(--jg-ink);                /* 与常态黑色一致 = 灰底被进度「填回」黑色 */
-    transition: width .35s ease;
     pointer-events: none;
 }
 .jg-taskdock-body { position: relative; z-index: 1; text-align: center; min-width: 0; }

@@ -214,7 +214,7 @@
 .jg-heat-month span[data-month]:hover { color: var(--jg-text); }
 .jg-heat-grid td { padding: 0; }
 /* v1.1.6：格子只读展示（手动改时长的入口已删，只信系统统计），不再有手型/放大反馈 */
-.jg-heat-cell { display: block; width: max(5px, calc((100cqw - 194px) / 53)); height: auto; aspect-ratio: 1; border-radius: 2.5px; background: var(--jg-track); outline: 1px solid var(--jg-line); outline-offset: -1px; transition: transform 120ms ease; }
+.jg-heat-cell { display: block; width: max(5px, calc((100cqw - 194px) / 53)); height: auto; aspect-ratio: 1; border-radius: 2.5px; background: var(--jg-track); outline: 1px solid var(--jg-line); outline-offset: -1px; transition: transform 120ms ease, opacity 260ms ease; }
 /* v1.1.7：hover 轻微放大 —— 纯静态格子配悬停提示太「死」，给个缩放反馈 */
 .jg-heat-cell:hover { transform: scale(1.35); }
 .jg-heat-cell.l1 { background: #c4c4c4; }
@@ -229,6 +229,14 @@
 .jg-heat-month-outline { position: absolute; left: 0; top: 0; width: 100%; height: 100%; z-index: 3; pointer-events: none; overflow: visible; }
 .jg-heat-month-outline path { fill: none; stroke: #000; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; opacity: 0; transition: opacity 120ms ease; }
 .jg-heat-month-outline.on path { opacity: 1; }
+/* 月份聚焦 —— 悬停月份标签时：整月作为刚体放大（hl，共享变换原点 = 包围盒顶边中点，由 JS 逐格设置：
+   顶边与月份标签不动，月块只向下长），其余格子与月份标签虚化（dim）。类由 junigrid.ui.js 钩子切换 */
+.jg-heat-scroll.heat-zooming { overflow: hidden; padding-bottom: 22px; }   /* 向下放大溢出不顶出滚动条，底部预留放大空间防裁边 */
+/* 虚化只走透明度 —— 三百多个格子同时跑 blur() 滤镜动画是卡顿根源， opacity 是纯合成层操作 */
+.jg-heat-grid.heat-focus .jg-heat-cell.dim { opacity: .15; }
+.jg-heat-grid.heat-focus .jg-heat-cell.hl { transform: scale(1.15); }
+.jg-heat-month span { transition: opacity 260ms ease; z-index: 4; }
+.jg-heat-grid.heat-focus .jg-heat-month span.dim { opacity: .3; }
 .jg-heat-foot { display: flex; justify-content: flex-end; align-items: center; font-size: 11.5px; color: var(--jg-text-3); margin-top: 8px; flex-wrap: wrap; gap: 6px; }
 .jg-heat-legend { display: flex; align-items: center; gap: 3px; }
 /* v1.1.6：图例色块 hover 放大（带回弹的缓动），data-tip 胶囊提示由全局委托处理 */

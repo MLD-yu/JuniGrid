@@ -117,7 +117,8 @@ junigridJs.taskDrop = function (panelSel, arrowSel, open) {
     }
     if (open) {
         panel.classList.add('open');
-        // v1.07：动画结束后清掉内联样式，稳态显示交给 CSS .open（Blazor 重渲染不丢状态）
+        // v1.2.x：Motion accordion 同款手感 —— 干脆的弹簧高度展开，行只轻淡入（原 elastic 大幅弹跳与横移已去）
+        // 动画结束后清掉内联样式，稳态显示交给 CSS .open（Blazor 重渲染不丢状态）
         panel.__tl = gsap.timeline({
             onComplete: function () {
                 panel.style.height = '';
@@ -126,14 +127,14 @@ junigridJs.taskDrop = function (panelSel, arrowSel, open) {
                 panel.__tl = null;
             }
         })
-            .to(arrow, { rotation: 180, duration: 0.9, ease: 'elastic.out(1.2, 0.3)', easeReverse: 'power2.inOut' }, 0)
+            .to(arrow, { rotation: 180, duration: 0.45, ease: 'back.out(1.6)', easeReverse: 'power2.inOut' }, 0)
             .fromTo(panel,
                 { height: 0, autoAlpha: 0 },
-                { height: 'auto', autoAlpha: 1, duration: 1, ease: 'elastic.out(1.2, 0.3)', easeReverse: 'power3.out' }, 0)
+                { height: 'auto', autoAlpha: 1, duration: 0.5, ease: 'back.out(1.2)', easeReverse: 'power3.out' }, 0)
             .from(panel.querySelectorAll('.jg-taskdrop-item'), {
-                opacity: 0, x: -20, duration: 0.5,
-                ease: 'back.out(3)', easeReverse: 'power2.out', stagger: 0.05
-            }, 0.12);
+                opacity: 0, duration: 0.25,
+                ease: 'power1.out', easeReverse: 'power2.out', stagger: 0.04
+            }, 0.1);
     } else {
         panel.__tl = gsap.timeline({
             onComplete: function () {
@@ -143,8 +144,8 @@ junigridJs.taskDrop = function (panelSel, arrowSel, open) {
                 panel.style.opacity = '';
             }
         })
-            .to(arrow, { rotation: 0, duration: 0.4, ease: 'power2.inOut' }, 0)
-            .to(panel, { height: 0, autoAlpha: 0, duration: 0.4, ease: 'power2.in' }, 0);
+            .to(arrow, { rotation: 0, duration: 0.3, ease: 'power2.inOut' }, 0)
+            .to(panel, { height: 0, autoAlpha: 0, duration: 0.32, ease: 'power2.in' }, 0);
     }
 };
 
