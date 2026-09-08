@@ -303,7 +303,8 @@
                             </div>
                         </div>
                     </div>
-                    <div class="jg-sort-dd @(_searchDirOpen ? "open" : "")" id="jgSearchDirDd" data-dd="search">
+                    @* jg-dd-right：菜单右对齐 —— 该下拉贴近页面右缘，左对齐会被裁掉 *@
+                    <div class="jg-sort-dd jg-dd-right @(_searchDirOpen ? "open" : "")" id="jgSearchDirDd" data-dd="search">
                         <button type="button" class="jg-sort-trigger" disabled="@_browseLoading" @onclick="ToggleSearchDirDd">
                             @(_searchDirection == "DESC" ? "正序" : "倒序")
                             <svg class="jg-sort-arrow" width="12" height="12" viewBox="0 0 12 12" fill="none">
@@ -1504,6 +1505,7 @@ protected override async Task OnInitializedAsync()
     {
         _browseKind = kind;
         NormalizeTimeRangeForKind();  // v0.77.0：Surprise 强制回 all
+        CloseAllDdCore();             // 切完类型收起下拉 —— 与时间/正序倒序切换同款行为
         await ReloadBrowseAsync();
     }
 

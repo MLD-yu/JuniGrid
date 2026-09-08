@@ -11,6 +11,8 @@ junigridJs.searchIslandInit = function (islandId, btnId, inputId) {
     var field = island.querySelector('.jg-island-field');
     var input = document.getElementById(inputId);
     var btn = document.getElementById(btnId);
+    // 历史面板挂在 island 外层容器（.jg-island-wrap），与 island 是兄弟节点
+    var histWrap = island.closest('.jg-island-wrap');
     var isOpen = false;
     // 无按钮（常驻展开模式）：只绑搜索历史显隐（bindHistory 为函数声明，提升可用）。
     if (!btn) { bindHistory(); return; }
@@ -46,7 +48,12 @@ junigridJs.searchIslandInit = function (islandId, btnId, inputId) {
         }
     }
     btn.addEventListener('click', function (e) { e.stopPropagation(); toggle(); });
-    document.addEventListener('click', function (e) { if (isOpen && !island.contains(e.target)) toggle(false); });
+    // 历史面板在 island 外 —— 面板内点击（清空历史/历史行）不算「点外面」，
+    // 否则点「清空历史」会把整个搜索岛一起收起；面板自身显隐由 bindHistory 的点击逻辑负责。
+    document.addEventListener('click', function (e) {
+        if (isOpen && !island.contains(e.target)
+            && !(histWrap && histWrap.contains(e.target))) toggle(false);
+    });
     document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && isOpen) { toggle(false); btn.focus(); } });
     bindHistory();   // v1.06.2：按钮模式的展开逻辑恢复后，历史面板绑定也要接回（v1.05.4 起只在无按钮路径调用）
 
@@ -55,7 +62,6 @@ junigridJs.searchIslandInit = function (islandId, btnId, inputId) {
     // 所以面板显隐不再走 C# 状态，改为 toggle 外层容器的 .history-open class。
     // v1.05.4：抽出为 bindHistory()，无搜索按钮的常驻模式也要绑定。───
     function bindHistory() {
-    var histWrap = island.closest('.jg-island-wrap');
     if (histWrap && !island.dataset.histBound) {
         island.dataset.histBound = '1';
         var hideTimer = null;
