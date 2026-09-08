@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.IO;
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace JuniGrid.Services;
 
@@ -71,6 +72,12 @@ public sealed class LauncherService
     private CancellationTokenSource? _logTailCts;
     private int _logTailGen;
 
+    // SMAPI 文件日志行头形如 [02:14:16 INFO  SMAPI]。非此形态的行是上一条的
+    // 续行（多行消息/堆栈），跟随上一条所在组的可见性（SMAPI 控制台同款语义）。
+    // 用完整头格式而非 line.StartsWith("[")，避免消息本身以 [ 开头的普通行误判成组头。
+    private static readonly Regex LevelHeaderRegex =
+        new(@"^\[\d{2}:\d{2}:\d{2}\s+(TRACE|DEBUG|INFO|WARN|ERROR|ALERT)\b", RegexOptions.Compiled);
+
     private void StartLogTail(bool readFromStart = false)
     {
         var old = _logTailCts;
@@ -99,6 +106,9 @@ public sealed class LauncherService
         _ = Task.Run(async () =>
         {
             var buf = new byte[64 * 1024];
+            // TRACE 组跨读取轮次持续（半行留给下一轮，组状态同理）：
+            // 组头后跟着的续行（多行消息/堆栈）与组头同生共死。
+            var inTrace = false;
             while (!token.IsCancellationRequested)
             {
                 try
@@ -131,7 +141,13 @@ public sealed class LauncherService
                                 foreach (var raw in Encoding.UTF8.GetString(bytes, 0, lastNl + 1).Split('\n'))
                                 {
                                     var line = raw.TrimEnd('\r');
-                                    if (line.Length > 0) RaiseLog(line);
+                                    if (line.Length == 0) continue;
+                                    // SMAPI 文件日志默认 verbose，游戏期 96% 是 TRACE
+                                    // （Content Patcher / Event Lookup 刷屏），而视图永远不显示
+                                    // TRACE 组——进缓冲只会把 MaxLogLines 上限里的可见行挤掉，
+                                    // 启动日志就是这么「玩着玩着没了」的。在源头整组丢弃。
+                                    if (LevelHeaderRegex.IsMatch(line)) inTrace = line.Contains(" TRACE ");
+                                    if (!inTrace) RaiseLog(line);
                                 }
                                 pos += lastNl + 1;
                             }

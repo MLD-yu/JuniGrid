@@ -99,6 +99,7 @@
     private IReadOnlyList<string> _visible = Array.Empty<string>();  // 视图：分类筛选
     private string _filter = "all"; // all | err | upd | loaded
     private bool _pendingScroll;
+    private bool _pendingScrollForce;   // 首屏带历史 → 强制落底；日常新行只在用户位于底部附近时跟随（JS 侧判定）
 
     private static readonly (string Key, string Label)[] Filters =
     {
@@ -112,6 +113,7 @@
         _lines = Launcher.GetLogSnapshot();
         _visible = BuildVisible();
         _pendingScroll = _lines.Count > 0;
+        _pendingScrollForce = true;
         Launcher.OnLogLine += HandleLog;
     }
 
@@ -138,6 +140,7 @@
         _lines = Launcher.GetLogSnapshot();
         _visible = BuildVisible();
         _pendingScroll = true;
+        _pendingScrollForce = false;
         StateHasChanged();
     }
 
@@ -150,7 +153,9 @@
         if (_pendingScroll)
         {
             _pendingScroll = false;
-            try { await JS.InvokeVoidAsync("junigridJs.scrollToBottom", ".jg-logview"); } catch { }
+            var force = _pendingScrollForce;
+            _pendingScrollForce = false;
+            try { await JS.InvokeVoidAsync("junigridJs.scrollToBottom", ".jg-logview", force); } catch { }
         }
     }
 
@@ -164,23 +169,13 @@
         try { await JS.InvokeVoidAsync("junigridJs.logsFilterClose", "#jgLogFilter"); } catch { }
     }
 
-    // 视图 = 服务缓冲快照，先按 SMAPI 控制台行为隐藏 TRACE 组
-    // （verbose 关闭时整组隐藏），再按分类筛选。
+    // 视图 = 服务缓冲快照按分类筛选。TRACE 组已在 LauncherService 读取文件时整组丢弃
+    // （SMAPI 文件日志 verbose，TRACE 占九成以上，进缓冲只会挤掉可见行），此处不再重复过滤。
     // 分类判定复用 LogLineClassifier，和行着色永远同一套规则。
-    private IReadOnlyList<string> BuildVisible()
-    {
-        var traceFiltered = new List<string>(_lines.Count);
-        var hideGroup = false;
-        foreach (var line in _lines)
-        {
-            if (line.StartsWith("["))
-                hideGroup = line.Contains(" TRACE ");
-            if (!hideGroup) traceFiltered.Add(line);
-        }
-
-        if (_filter == "all") return traceFiltered;
-        return traceFiltered.Where(l => LogLineClassifier.MatchesFilter(l, _filter)).ToList();
-    }
+    private IReadOnlyList<string> BuildVisible() =>
+        _filter == "all"
+            ? _lines
+            : _lines.Where(l => LogLineClassifier.MatchesFilter(l, _filter)).ToList();
 
     // ─── 清空 / 复制：清空走确认弹窗，复制成功弹 toast ───
     private bool _confirmClear;

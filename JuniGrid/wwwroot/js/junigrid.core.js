@@ -146,9 +146,13 @@ window.junigridJs = {
         clearTimeout(el.__peTimer);
         el.__peTimer = setTimeout(() => el.classList.remove('jg-page-enter'), 900);
     },
-    scrollToBottom(selector) {
+    scrollToBottom(selector, force) {
         const el = document.querySelector(selector);
-        if (el) el.scrollTop = el.scrollHeight;
+        if (!el) return;
+        // 用户上翻读历史时不拽回底部；距底 48px 内视为"在底部"，滚回底部后恢复跟随。
+        // force 用于打开页面带历史等必须无条件落底的场景。
+        if (force || el.scrollHeight - el.scrollTop - el.clientHeight < 48)
+            el.scrollTop = el.scrollHeight;
     },
     // Custom titlebar drag: forward mousedown to .NET which calls Window.DragMove().
     // (CSS -webkit-app-region is unreliable inside WebView2, so we do it manually.)
