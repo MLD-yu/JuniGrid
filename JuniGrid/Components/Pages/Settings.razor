@@ -99,12 +99,10 @@
     <div class="jg-card" style="margin-top:12px">
         <div style="font-weight:600">内容过滤</div>
         <div class="jg-switch-col">
-            <div class="jg-switch-row @(_filterAdult ? "on" : "")" @onclick="ToggleFilterAdult">
-                <span>过滤成人内容</span>
-                <span class="jg-switch"><span class="jg-switch-knob"></span></span>
-            </div>
-            <div class="jg-switch-row @(_onlyAdult ? "on" : "")" @onclick="ToggleOnlyAdult">
-                <span>只显示成人内容</span>
+            @* 单一开关。默认关 = 一律排除成人内容；开 = 应用不加成人条件，
+               列表随登录用户 Nexus 账号的成人内容设置执行（服务端强制），应用永不覆盖账号偏好 *@
+            <div class="jg-switch-row @(_showAdult ? "on" : "")" @onclick="ToggleShowAdult">
+                <span>显示成人内容</span>
                 <span class="jg-switch"><span class="jg-switch-knob"></span></span>
             </div>
         </div>
@@ -394,9 +392,8 @@
     private bool _oneClickInstall;
     private bool _autoInstall;
 
-    // ─── 过滤成人内容 / 只显示成人内容：互斥开关（最多一个开，可同时关），默认过滤开启 ───
-    private bool _filterAdult = true;
-    private bool _onlyAdult;
+    // ─── 显示成人内容：单一开关，默认关（一律排除；开 = 跟随登录账号的账号设置）───
+    private bool _showAdult;
 
     private bool _showTaskDock;
 
@@ -634,11 +631,10 @@
     });
 
 
-    private void SaveFilterAdult()
+    private void SaveShowAdult()
     {
         var cfg = Cfg.Current;
-        cfg.FilterAdultContent = _filterAdult;
-        cfg.OnlyAdultContent = _onlyAdult;
+        cfg.ShowAdultContent = _showAdult;
         Cfg.Save(cfg);   // ConfigService.Save 内部同步 NexusService 的成人内容查询开关
     }
 
@@ -653,8 +649,7 @@
             Cfg.Current.EnableAutoInstall = false;
             Cfg.Save(Cfg.Current);
         }
-        _filterAdult = Cfg.Current.FilterAdultContent;
-        _onlyAdult = Cfg.Current.OnlyAdultContent;
+        _showAdult = Cfg.Current.ShowAdultContent;
         _showTaskDock = Cfg.Current.ShowTaskDock;
 
         // v0.2.1：内存管理 —— 订阅快照推送（5s 一次），离开页面时 Dispose 退订
@@ -706,18 +701,10 @@
         SaveAutoInstall();
     }
 
-    private void ToggleFilterAdult()
+    private void ToggleShowAdult()
     {
-        _filterAdult = !_filterAdult;
-        if (_filterAdult) _onlyAdult = false;   // 互斥：开过滤就关「只显示」
-        SaveFilterAdult();
-    }
-
-    private void ToggleOnlyAdult()
-    {
-        _onlyAdult = !_onlyAdult;
-        if (_onlyAdult) _filterAdult = false;   // 互斥：开「只显示」就关过滤
-        SaveFilterAdult();
+        _showAdult = !_showAdult;
+        SaveShowAdult();
     }
 
     private void SaveOneClickInstall()

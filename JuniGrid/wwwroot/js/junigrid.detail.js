@@ -65,9 +65,28 @@
         }
 
         document.querySelectorAll('.jg-desc-with-imgs img, .jg-flip-cover, .jg-carousel-img').forEach(bind);
-        if (!overlay.__zoomBound) {
-            overlay.__zoomBound = true;
-            overlay.addEventListener('click', close);
+
+        // v1.2.0：无状态关闭 —— ✕ 按钮与暗色遮罩不走闭包状态（Blazor 重渲染后 initZoom 重新执行，
+        // 新闭包的 openEl 是空的，旧监听只会空转），直接从 DOM 还原：找占位符把图插回去
+        function domClose() {
+            var m = document.getElementById('jgFlipModal');
+            if (!m) return;
+            m.classList.remove('open');
+            var img = m.querySelector('.jg-flip-content > .jg-zoom-open');
+            if (!img) return;
+            img.classList.remove('jg-zoom-open');
+            var ph = document.querySelector('.jg-zoom-placeholder');
+            if (ph && ph.parentNode) { ph.parentNode.insertBefore(img, ph); ph.remove(); }
+            if (typeof openEl !== 'undefined') { openEl = null; placeholder = null; }
+        }
+        // 事件委托绑在 modal 上：Blazor 重渲染即使替换了按钮节点，监听也不丢
+        if (!modal.__closeDelegated) {
+            modal.__closeDelegated = true;
+            modal.addEventListener('click', function (e) {
+                if (!e.target || !e.target.closest) return;
+                if (e.target.closest('.jg-flip-close')) { domClose(); return; }
+                if (e.target.classList && e.target.classList.contains('jg-flip-overlay')) domClose();
+            });
         }
     }
 

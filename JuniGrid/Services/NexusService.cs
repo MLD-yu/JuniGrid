@@ -22,9 +22,10 @@ public sealed class NexusService
     {
         var h = new HttpClient();
         h.DefaultRequestHeaders.UserAgent.ParseAdd("JuniGrid-Launcher");
-        // Nexus AUP 要求的应用标识头
+        // Nexus AUP 要求的应用标识头 —— 版本必须与真实发行版本一致，
+        // 取自 AppInfo 单一版本源，不再写死字面量（旧值 0.2.0 早已过期）
         h.DefaultRequestHeaders.TryAddWithoutValidation("Application-Name", "JuniGrid");
-        h.DefaultRequestHeaders.TryAddWithoutValidation("Application-Version", "0.2.0");
+        h.DefaultRequestHeaders.TryAddWithoutValidation("Application-Version", AppInfo.Version);
         h.DefaultRequestHeaders.Accept.ParseAdd("application/json");
         h.Timeout = TimeSpan.FromSeconds(15);   // v1.06.8：检查更新提速——慢请求 15s 快速失败，不再拖住整批
         return h;
@@ -351,39 +352,6 @@ public sealed class NexusService
         return list;
     }
 
-    /// <summary>
-    /// v0.69.2：抓取 mod 图片页（?tab=images）补齐完整画廊。
-    /// 根因：v1 mods.json 的 images 字段基本只含主图（官网 25 张不在其中），
-    /// 完整图集只存在于图片页 HTML 里。抓到 staticdelivery 直链、按文件名去重。
-    /// 任何失败返回 null（调用方保留原主图），绝不影响详情页。
-    /// </summary>
-    public async Task<List<string>?> GetModImagesAsync(int modId)
-    {
-        try
-        {
-            using var res = await Http.GetAsync(
-                $"https://www.nexusmods.com/stardewvalley/mods/{modId}?tab=images");
-            if (!res.IsSuccessStatusCode) return null;
-            var html = await res.Content.ReadAsStringAsync();
-            var urls = new List<string>();
-            foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(
-                html, @"https://staticdelivery\.nexusmods\.com/[^""'\s\\]+?\.(?:png|jpe?g|webp)(?:\?[^""'\s\\]*)?",
-                System.Text.RegularExpressions.RegexOptions.IgnoreCase))
-            {
-                var u = m.Value;
-                // 剔除头像/图标类小图
-                if (u.Contains("/avatars/", StringComparison.OrdinalIgnoreCase)) continue;
-                // 按 base（去掉查询串）去重，查询串不同的同图只留一张
-                var baseU = u.Split('?')[0];
-                if (!urls.Any(x => x.Split('?')[0].Equals(baseU, StringComparison.OrdinalIgnoreCase)))
-                    urls.Add(u);
-            }
-            return urls.Count > 1 ? urls : null;
-        }
-        catch { return null; }
-    }
-
-
     // ══════════════════════════════════════════════════════════════════
     // v0.69.5：Requirements 走 GraphQL v2（修复 v0.69.3 手工拼 JSON 内层引号未转义
     // 导致请求体非法、接口 400、UI 永远卡在 shimmer 的 bug —— 改用 JsonSerializer）。
@@ -392,21 +360,15 @@ public sealed class NexusService
     // 在它上面永远返回空，api-router 上正常；其余字段/形状完全兼容（官网前端也走这条）。
     private const string GraphQlEndpoint = "https://api-router.nexusmods.com/graphql";
     /// <summary>v0.79.0：成人内容总开关 —— false=浏览/搜索 GraphQL 追加 adultContent:false 过滤条件。
-    /// 由 ConfigService 按「设置 → 过滤色情内容」开关同步（FilterAdultContent=true ⇒ 这里=false）。
+    /// 由 ConfigService 按「设置 → 显示成人内容」开关同步（默认关）。
+    /// 开启时不加任何成人条件：请求随登录用户在 Nexus 账号上的成人内容设置执行（服务端强制），
+    /// 应用永不覆盖账号偏好 —— Nexus AUP 要求。
     /// v1.1.6：UI 线程写 / GraphQL 后台线程读，改走 Volatile 属性避免撕裂读。</summary>
-    private static bool _includeAdultContent = true;
+    private static bool _includeAdultContent = false;
     public static bool IncludeAdultContent
     {
         get => Volatile.Read(ref _includeAdultContent);
         set => Volatile.Write(ref _includeAdultContent, value);
-    }
-    /// <summary>「只显示成人内容」开关 —— true 时浏览/搜索 GraphQL 追加 adultContent:true 过滤条件
-    /// （优先级高于 IncludeAdultContent，两者互斥由 ConfigService 保证）。默认关闭。</summary>
-    private static bool _onlyAdultContent = false;
-    public static bool OnlyAdultContent
-    {
-        get => Volatile.Read(ref _onlyAdultContent);
-        set => Volatile.Write(ref _onlyAdultContent, value);
     }
     /// <summary>成人过滤条件的版本号：开关每实际变化一次 +1（ConfigService.SyncAdultFilter 维护）。
     /// Nexus 页快照存下取数时的版本，返回时版本对不上说明快照是旧过滤条件拉的数据 → 弃用重拉。</summary>
@@ -596,93 +558,9 @@ public sealed class NexusService
         catch { return null; }
     }
 
-    /// <summary>
-    /// v0.69.2：抓取 mod 详情页 HTML，解析「许可与致谢 / 译本 / 包含该 mod 的合集」三块
-    /// （这三块 v1 REST 与 GraphQL 公开文档均无对应端点，官网页面是服务端渲染的，可直接解析）。
-    /// 任一区块解析失败就是空/ null，UI 显示"到官网查看"兜底。
-    /// </summary>
-    public async Task<NexusModExtras?> GetModPageExtrasAsync(int modId)
-    {
-        try
-        {
-            using var res = await SlowHttp.GetAsync(
-                $"https://www.nexusmods.com/stardewvalley/mods/{modId}");
-            if (!res.IsSuccessStatusCode) return null;
-            var html = await res.Content.ReadAsStringAsync();
-
-            // ── 译本：Translations 区块里的 mod 链接 ──
-            var translations = new List<NexusLinkItem>();
-            var tRegion = ExtractRegion(html, "Translations",
-                "Changelogs", "Mods using this mod", "Collections containing this mod", "Posts");
-            if (tRegion is not null)
-                foreach (var (u, t) in ExtractModLinks(tRegion))
-                    translations.Add(new NexusLinkItem(t, "https://www.nexusmods.com" + u, ""));
-
-            // ── 合集：Collections containing this mod / Included in N collections 区块 ──
-            var collections = new List<NexusLinkItem>();
-            var cRegion = ExtractRegion(html, "Collections containing this mod",
-                "Posts", "Bug reports", "Activity logs", "Mod statistics", "</footer");
-            if (cRegion is null)
-                cRegion = ExtractRegion(html, "Included in", "Posts", "</footer");
-            if (cRegion is not null)
-            {
-                foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(
-                    cRegion, @"href=""(?<u>/stardewvalley/collections/[a-zA-Z0-9]+)""[^>]*>(?<t>[^<]{1,80})<"))
-                {
-                    var t = m.Groups["t"].Value.Trim();
-                    if (t.Length == 0) continue;
-                    // 链接附近找 "N mods" 计数
-                    var tail = cRegion.Substring(m.Index, Math.Min(400, cRegion.Length - m.Index));
-                    var cm = System.Text.RegularExpressions.Regex.Match(tail, @"(\d[\d,]*)\s*mods");
-                    var sub = cm.Success ? cm.Groups[1].Value + " mods" : "";
-                    collections.Add(new NexusLinkItem(t, "https://www.nexusmods.com" + m.Groups["u"].Value, sub));
-                }
-            }
-
-            // ── 许可与致谢：区块内剥标签取纯文本（太长截断）──
-            string? permissions = null;
-            var pRegion = ExtractRegion(html, "Permissions and credits",
-                "Translations", "Changelogs", "Mods using this mod", "Collections containing this mod");
-            if (pRegion is not null)
-            {
-                var txt = System.Text.RegularExpressions.Regex.Replace(pRegion, "<[^>]+>", " ");
-                txt = System.Text.RegularExpressions.Regex.Replace(
-                    System.Net.WebUtility.HtmlDecode(txt), "\\s+", " ").Trim();
-                // 去掉开头的区块标题本身
-                txt = System.Text.RegularExpressions.Regex.Replace(txt, "^Permissions and credits\\s*", "");
-                if (txt.Length > 30) permissions = txt.Length > 900 ? txt[..900] + "…" : txt;
-            }
-
-            return new NexusModExtras(permissions, translations, collections);
-        }
-        catch { return null; }
-    }
-
-    /// <summary>截取 startMarker 到任一 endMarker 之间的 HTML 区域（找不到返回 null）。</summary>
-    private static string? ExtractRegion(string html, string startMarker, params string[] endMarkers)
-    {
-        var i = html.IndexOf(startMarker, StringComparison.OrdinalIgnoreCase);
-        if (i < 0) return null;
-        var end = html.Length;
-        foreach (var em in endMarkers)
-        {
-            var j = html.IndexOf(em, i + startMarker.Length, StringComparison.OrdinalIgnoreCase);
-            if (j > i && j < end) end = j;
-        }
-        var len = Math.Min(end - i, 200000);   // 防御：区域异常大时截断
-        return html.Substring(i, len);
-    }
-
-    /// <summary>从 HTML 区域里提取 (mod 链接, 显示文本) 对。</summary>
-    private static IEnumerable<(string Url, string Text)> ExtractModLinks(string region)
-    {
-        foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(
-            region, @"href=""(?<u>/stardewvalley/mods/\d+)[^""]*""[^>]*>(?<t>[^<]{1,80})<"))
-        {
-            var t = m.Groups["t"].Value.Trim();
-            if (t.Length > 0) yield return (m.Groups["u"].Value, t);
-        }
-    }
+    // 原 GetModPageExtrasAsync（v0.69.2）及其 HTML 区块解析（ExtractRegion / ExtractModLinks）已移除：
+    // 它们抓取 www.nexusmods.com 页面并正则解析「译本 / 合集 / 许可致谢」区块，
+    // 违反 Nexus ToS 对自动化站点抓取的禁令 —— 详情页改为直接给出官网页面链接。
 
     /// <summary>
     /// v0.69.0：用户下载历史（modId → 最后下载日期 yyyy-MM-dd）。
@@ -802,7 +680,12 @@ public sealed class NexusService
     /// <summary>kind: trending | latest_added | latest_updated</summary>
     public async Task<IReadOnlyList<NexusModListEntry>> GetModListAsync(string apiKey, string kind)
     {
-        using var res = await Http.SendAsync(Req(apiKey, $"{Base}/mods/{kind}.json"));
+        // include_adult：默认显式 false（隐藏成人内容）；用户开启后不带该参数 ——
+        // 由服务端按登录账号自己的成人内容设置执行，应用永不覆盖账号偏好
+        var url = IncludeAdultContent
+            ? $"{Base}/mods/{kind}.json"
+            : $"{Base}/mods/{kind}.json?include_adult=false";
+        using var res = await Http.SendAsync(Req(apiKey, url));
         if (!res.IsSuccessStatusCode) return Array.Empty<NexusModListEntry>();
 
         using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
@@ -929,10 +812,9 @@ public sealed class NexusService
             {
                 "{gameId:{value:\"" + gameId + "\"}}"
             };
-            // 只显示成人内容优先；否则按总开关在关闭时过滤成人内容
-            if (OnlyAdultContent)
-                conds.Add("{adultContent:{value:true, op:EQUALS}}");
-            else if (!IncludeAdultContent)
+            // 成人内容：默认隐藏（显式过滤）；用户主动开启后不加条件 ——
+            // 请求随登录用户 Nexus 账号的成人内容设置执行（服务端强制），应用永不覆盖账号偏好
+            if (!IncludeAdultContent)
                 conds.Add("{adultContent:{value:false, op:EQUALS}}");
             if (!string.IsNullOrWhiteSpace(categoryName))
                 conds.Add("{categoryName:{value:\"" + categoryName.Replace("\"", "") + "\", op:EQUALS}}");
@@ -1105,35 +987,17 @@ public sealed class NexusService
     }
 
     /// <summary>v1.05.1：详情页作者头像。
-    /// v1.06.1：GraphQL legacyModsByDomain 提为主通道 —— 官网 HTML 抓取被 Cloudflare 403
-    /// （HttpClient/curl 无论什么 UA 都拦），而 GraphQL 的 avatar 字段实测能返回真实直链，
-    /// 之前拿不到是查询本身被服务端拒绝（见 GetUploaderInfoAsync 注释）。HTML 抓取保留兜底。</summary>
+    /// v1.06.1：GraphQL legacyModsByDomain 是唯一通道 —— 它的 avatar 字段实测能返回真实直链。
+    /// （原官网页面 HTML 抓头像的兜底已移除：对 www.nexusmods.com 页面的自动化请求违反 Nexus ToS。）
+    /// GraphQL 没有可用头像时返回 null，调用方走首字母占位。</summary>
     public async Task<string?> GetUploaderAvatarAsync(int modId, string gameDomain = "stardewvalley")
     {
-        // ① GraphQL legacyModsByDomain → uploader.avatar（当前唯一稳定通道）
         try
         {
             var up = await GetUploaderInfoAsync(modId, gameDomain);
             var gav = up?.Avatar;
             if (!string.IsNullOrWhiteSpace(gav) && !gav.Contains("/missing", StringComparison.OrdinalIgnoreCase))
                 return gav;
-        }
-        catch { }
-        // ② 官网页面 HTML 抓头像兜底（Cloudflare 放行时才有用）
-        try
-        {
-            using var res = await Http.GetAsync($"https://www.nexusmods.com/{gameDomain}/mods/{modId}");
-            if (res.IsSuccessStatusCode)
-            {
-                var html = await res.Content.ReadAsStringAsync();
-                foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(
-                    html, @"https://avatars\.nexusmods\.com/[^""'\s\\]+"))
-                {
-                    var u = m.Value;
-                    if (u.Contains("/missing", StringComparison.OrdinalIgnoreCase)) continue;
-                    return u;
-                }
-            }
         }
         catch { }
         return null;
@@ -1183,12 +1047,6 @@ public sealed record NexusFileInfo(long FileId, string Name, string Version, str
 
 /// <summary>v0.69.0：一个版本的更新日志。</summary>
 public sealed record NexusChangelog(string Version, List<string> Lines);
-
-/// <summary>v0.69.2：页面附加数据里的一条链接（译本/合集共用）。Sub 为附加说明（如"553 mods"）。</summary>
-public sealed record NexusLinkItem(string Name, string Url, string Sub);
-
-/// <summary>v0.69.2：mod 页面附加数据（许可与致谢文本 / 译本列表 / 合集列表）。抓不到就为 null，UI 兜底给官网链接。</summary>
-public sealed record NexusModExtras(string? PermissionsText, List<NexusLinkItem> Translations, List<NexusLinkItem> Collections);
 
 public sealed record NexusModListEntry(
     int Id, string Name, string Summary, string Version, long Downloads, string PictureUrl,

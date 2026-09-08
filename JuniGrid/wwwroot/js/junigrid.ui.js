@@ -382,6 +382,88 @@ window.junigridJs.tiltPerspective = function (selector, opts) {
     document.addEventListener('mousedown', hide, true);
 })();
 
+
+// ------------------ v1.1.9：热力图月份悬停 —— 从当月 1 号到月末的阶梯描边（深色白线/浅色黑线，配色在 CSS） ------------------
+// 月份标签带 data-month、格子带 data-m；悬停标签时把该月格子按周列聚合，
+// 沿真实阶梯边界画 SVG 折线（首列从 1 号所在行起、末列到月末所在行止，
+// 中间列贯通 7 行）—— 不是外接矩形，不会把相邻月份圈进去；
+// 阶梯上下拐点落在列间隙中点，线整体外扩 2px 不贴格子；pointer-events:none 不挡格子 hover
+(function () {
+    var svg = null, path = null;
+    var NS = 'http://www.w3.org/2000/svg';
+    function ensure(parent) {
+        if (!svg || svg.parentNode !== parent) {
+            if (svg) svg.remove();
+            svg = document.createElementNS(NS, 'svg');
+            // SVG 元素的 className 是只读 SVGAnimatedString，直接赋值会被静默忽略，必须 setAttribute
+            svg.setAttribute('class', 'jg-heat-month-outline');
+            path = document.createElementNS(NS, 'path');
+            svg.appendChild(path);
+            parent.appendChild(svg);
+        }
+        return svg;
+    }
+    function show(label) {
+        var scroll = label.closest('.jg-heat-scroll');
+        var grid = label.closest('.jg-heat-grid');
+        if (!scroll || !grid) return;
+        var cells = grid.querySelectorAll('.jg-heat-cell[data-m="' + label.getAttribute('data-month') + '"]');
+        if (!cells.length) return;
+        // v1.2.1：用 offsetLeft/offsetTop（布局值）测量，不用 getBoundingClientRect ——
+        // 格子有 :hover scale(1.35) 过渡，刚划过的格子 rect 是膨胀的，会把聚类撑裂、
+        // gap 变负数，整个阶梯就画歪（变形与鼠标路径相关的根因）。
+        // offset 累加到 .jg-heat-scroll 为止，得到内容坐标；transform 不影响布局值，测量永远稳定。
+        var rects = [];
+        for (var i = 0; i < cells.length; i++) {
+            var el = cells[i], x = 0, y = 0, node = el;
+            while (node && node !== scroll) { x += node.offsetLeft; y += node.offsetTop; node = node.offsetParent; }
+            rects.push({ l: x, t: y, r: x + el.offsetWidth, b: y + el.offsetHeight });
+        }
+        rects.sort(function (a, b) { return a.l - b.l; });
+        // 按 left 聚类成周列区段，半格容差防分裂
+        var cols = [];
+        for (var j = 0; j < rects.length; j++) {
+            var rc = rects[j], g = cols.length ? cols[cols.length - 1] : null;
+            if (g && rc.l - g.l < (g.r - g.l) * 0.6) {
+                if (rc.t < g.t) g.t = rc.t;
+                if (rc.b > g.b) g.b = rc.b;
+            } else cols.push({ l: rc.l, r: rc.r, t: rc.t, b: rc.b });
+        }
+        if (cols.length < 2) return;   // 一个月至少跨 4 列，防御性兜底
+        var p = 2;                                   // 线整体外扩的呼吸空隙
+        var gap = cols.length > 1 ? cols[1].l - cols[0].r : 0;
+        var mid1 = cols[0].r + gap / 2;              // 首列→次列的上拐点（列间隙中点）
+        var mid2 = cols[cols.length - 1].l - gap / 2; // 末列→前列的下拐点（列间隙中点）
+        var c0 = cols[0], cl = cols[cols.length - 1];
+        // 顺时针描边：首列顶 → 上拐点升至整月顶 → 右缘 → 末列底 → 下拐点降至整月底 → 闭合
+        var d = 'M' + (c0.l - p) + ' ' + (c0.t - p)
+            + 'L' + (mid1 - p) + ' ' + (c0.t - p)
+            + 'L' + (mid1 - p) + ' ' + (cols[1].t - p)
+            + 'L' + (cl.r + p) + ' ' + (cols[1].t - p)
+            + 'L' + (cl.r + p) + ' ' + (cl.b + p)
+            + 'L' + (mid2 + p) + ' ' + (cl.b + p)
+            + 'L' + (mid2 + p) + ' ' + (c0.b + p)
+            + 'L' + (c0.l - p) + ' ' + (c0.b + p) + 'Z';
+        ensure(scroll);
+        path.setAttribute('d', d);
+        svg.classList.add('on');
+    }
+    function hide() { if (svg) svg.classList.remove('on'); }
+    document.addEventListener('mouseover', function (e) {
+        var label = e.target.closest ? e.target.closest('.jg-heat-month span[data-month]') : null;
+        if (label) show(label); else hide();
+    });
+    document.addEventListener('mouseout', function (e) {
+        var label = e.target.closest ? e.target.closest('.jg-heat-month span[data-month]') : null;
+        if (!label) return;
+        // 直接滑到相邻月份标签时不闪断，由下一次 mouseover 换线
+        var next = e.relatedTarget;
+        if (next && next.closest && next.closest('.jg-heat-month span[data-month]')) return;
+        hide();
+    });
+    document.addEventListener('mousedown', hide, true);
+})();
+
 // ------------------ v1.x：设置页「?」帮助问号的 GSAP 弹性 tooltip ------------------
 // hover 弹入（elastic），移开立即消失（不走反向动画）；事件委托，Blazor 重渲染无需重新绑定
 (function () {

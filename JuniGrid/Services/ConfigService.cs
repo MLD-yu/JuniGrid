@@ -64,16 +64,14 @@ public sealed class ConfigService
             }
         }
 
-    /// <summary>把「过滤成人内容 / 只显示成人内容」两个互斥开关同步到 NexusService 的静态查询开关
+    /// <summary>把「显示成人内容」单一开关同步到 NexusService 的静态查询开关
     /// （浏览 GraphQL 是否加 adult 过滤条件）。开关实际发生变化时递增 NexusService.AdultFilterVersion，
     /// Nexus 页据此判断手里的浏览快照是不是旧过滤条件拉的、要不要弃用重拉。</summary>
     private void SyncAdultFilter()
     {
-        var only = Current.OnlyAdultContent;
-        var include = !Current.OnlyAdultContent && !Current.FilterAdultContent;
-        if (NexusService.OnlyAdultContent != only || NexusService.IncludeAdultContent != include)
+        var include = Current.ShowAdultContent;
+        if (NexusService.IncludeAdultContent != include)
             NexusService.BumpAdultFilterVersion();
-        NexusService.OnlyAdultContent = only;
         NexusService.IncludeAdultContent = include;
     }
 
@@ -254,12 +252,12 @@ public sealed class JuniGridConfig
     public List<string> NexusSearchHistory { get; set; } = new();
 
     /// <summary>
-    /// 过滤色情（成人）内容开关。默认开启 —— Nexus 浏览/搜索一律排除成人内容；
-    /// 与「只显示成人内容」互斥，开关切换均无年龄验证（早期版本的出生年月验证已移除）。
+    /// 「显示成人内容」开关。默认关闭 —— Nexus 浏览/搜索一律显式排除成人内容；
+    /// 开启后应用不加任何成人条件：列表随登录用户 Nexus 账号上的成人内容设置执行（服务端强制），
+    /// 应用永不覆盖账号偏好（Nexus AUP 要求）。无年龄验证（早期版本的出生年月验证已移除）。
+    /// 老配置里的 FilterAdultContent/OnlyAdultContent 已废弃，反序列化时自然忽略。
     /// </summary>
-    public bool FilterAdultContent { get; set; } = true;
-    /// <summary>「只显示成人内容」开关，与 FilterAdultContent 互斥（两者最多一个开启，可同时关闭）。默认关闭。</summary>
-    public bool OnlyAdultContent { get; set; } = false;
+    public bool ShowAdultContent { get; set; } = false;
     /// <summary>
     /// Nexus 一键安装（免弹浏览器、后台直接下载并装进 Mods）。默认开启；
     /// 关闭后详情页的「安装」按钮改为打开内置浏览器兜底。

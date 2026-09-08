@@ -198,8 +198,9 @@
    11 个年份超一屏高，菜单内部滚动 */
 .jg-heat-yeardd .jg-sort-menu { max-height: 320px; overflow-y: auto; min-width: 120px; }
 /* 响应式：以卡片内容宽度为容器，格子宽度 = (可用宽 - 固定开销194px[星期列26+边缘间隙6+53个列间隙159]) / 53 周，
-   无上限 —— 任意窗口宽度都精确铺满不留右侧空白；下限 5px，再小才出横向滚动 */
-.jg-heat-scroll { container-type: inline-size; overflow-x: auto; padding-bottom: 4px; }
+   无上限 —— 任意窗口宽度都精确铺满不留右侧空白；下限 5px，再小才出横向滚动；
+   position:relative 作为月份悬停描边框（.jg-heat-month-outline）的定位容器 */
+.jg-heat-scroll { position: relative; container-type: inline-size; overflow-x: auto; padding-bottom: 4px; }
 .jg-heat-grid { border-spacing: 3px; border-collapse: separate; }
 .jg-heat-grid th { padding: 0 0 2px; font-size: 11px; font-weight: 400; color: var(--jg-text-3); text-align: left; white-space: nowrap; }
 .jg-heat-grid th.jg-heat-wday { width: 26px; }
@@ -207,6 +208,10 @@
    文字绝对定位贴行底 —— 既不撑宽列、也不压到下面的格子 */
 .jg-heat-grid th.jg-heat-month { position: relative; width: 0; font-size: 0; padding: 0; height: 15px; vertical-align: bottom; }
 .jg-heat-month span { position: absolute; left: 0; bottom: 0; font-size: 11px; font-weight: 400; color: var(--jg-text-3); white-space: nowrap; }
+/* v1.1.9：月份标签可悬停（data-tip 显示该月总时长 + JS 圈整月）—— hover 提亮，
+   右侧 8px padding 扩大命中区（相邻标签至少隔 4 列，不会互相重叠） */
+.jg-heat-month span[data-month] { padding-right: 8px; cursor: default; }
+.jg-heat-month span[data-month]:hover { color: var(--jg-text); }
 .jg-heat-grid td { padding: 0; }
 /* v1.1.6：格子只读展示（手动改时长的入口已删，只信系统统计），不再有手型/放大反馈 */
 .jg-heat-cell { display: block; width: max(5px, calc((100cqw - 194px) / 53)); height: auto; aspect-ratio: 1; border-radius: 2.5px; background: var(--jg-track); outline: 1px solid var(--jg-line); outline-offset: -1px; transition: transform 120ms ease; }
@@ -218,6 +223,12 @@
 .jg-heat-cell.l4 { background: #000; }
 .jg-heat-cell.empty { background: transparent; outline: none; }
 .jg-heat-cell.future { opacity: .45; }
+/* v1.1.9：悬停月份标签时的整月描边 —— SVG 折线沿「1 号→月末」的阶梯边界
+   （junigrid.ui.js 按该月各周列区段生成路径，定位到 .jg-heat-scroll 内容坐标）；
+   浅色主题黑线，深色主题白线（theme.css 覆盖）；pointer-events:none 不挡格子 hover */
+.jg-heat-month-outline { position: absolute; left: 0; top: 0; width: 100%; height: 100%; z-index: 3; pointer-events: none; overflow: visible; }
+.jg-heat-month-outline path { fill: none; stroke: #000; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; opacity: 0; transition: opacity 120ms ease; }
+.jg-heat-month-outline.on path { opacity: 1; }
 .jg-heat-foot { display: flex; justify-content: flex-end; align-items: center; font-size: 11.5px; color: var(--jg-text-3); margin-top: 8px; flex-wrap: wrap; gap: 6px; }
 .jg-heat-legend { display: flex; align-items: center; gap: 3px; }
 /* v1.1.6：图例色块 hover 放大（带回弹的缓动），data-tip 胶囊提示由全局委托处理 */

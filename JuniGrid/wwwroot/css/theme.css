@@ -57,3 +57,5 @@ html[data-theme="dark"] .jg-heat-cell.l1 { background: #9cc3fb; }
 html[data-theme="dark"] .jg-heat-cell.l2 { background: #5f96f4; }
 html[data-theme="dark"] .jg-heat-cell.l3 { background: #2f6ae0; }
 html[data-theme="dark"] .jg-heat-cell.l4 { background: #17408f; }
+/* v1.1.9：月份悬停整月阶梯描边 —— 深色主题用白线（浅色黑线在 home.css） */
+html[data-theme="dark"] .jg-heat-month-outline path { stroke: #fff; }

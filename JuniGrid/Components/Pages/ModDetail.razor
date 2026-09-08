@@ -290,10 +290,15 @@
             </div>
         }
 
-        @* ─── Flip 放大用的 modal 容器 ─── *@
+        @* ─── Flip 放大用的 modal 容器（右上 ✕ 关闭按钮：v1.1.5 之前只能点图关闭，小封面时几乎找不到）─── *@
         <div class="jg-flip-modal" id="jgFlipModal">
             <div class="jg-flip-overlay"></div>
             <div class="jg-flip-content"></div>
+            <button class="jg-flip-close" type="button" aria-label="关闭">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round">
+                    <path d="M6 6l12 12M18 6L6 18" />
+                </svg>
+            </button>
         </div>
     }
 </div>

@@ -74,8 +74,19 @@
                     @foreach (var m in _monthLabels)
                     {
                         @* 月份标签绝对定位浮在列上方，不占表格列宽（占宽会周期性撑宽月份列，
-                           小屏顶出横向滚动、大屏在 10/11/12 月处留大空隙）*@
-                        <th class="jg-heat-month"><span>@m</span></th>
+                           小屏顶出横向滚动、大屏在 10/11/12 月处留大空隙）
+                           v1.1.9：标签带 data-tip（该月总时长）+ data-month（junigrid.ui.js 据此圈出整月描边）；
+                           无标签的占位列不渲染属性，避免属性存在选择器命中空值弹出空气泡 *@
+                        <th class="jg-heat-month">
+                            @if (m.Month is int heatMonth)
+                            {
+                                <span data-tip="@m.Tip" data-month="@heatMonth">@m.Text</span>
+                            }
+                            else
+                            {
+                                <span>@m.Text</span>
+                            }
+                        </th>
                     }
                 </tr>
                 @for (var r = 0; r < 7; r++)
@@ -87,13 +98,14 @@
                         {
                             var cell = _weeks[c][row];
                             <td>
+                            @* v1.1.9：data-m 标记格子所属月份（含 future），月份标签悬停时 JS 据此圈出整月 *@
                             @if (cell.InYear && !cell.Future)
                             {
-                                <span class="jg-heat-cell l@(cell.Level)" data-tip="@Tip(cell)"></span>
+                                <span class="jg-heat-cell l@(cell.Level)" data-tip="@Tip(cell)" data-m="@cell.Month"></span>
                             }
                             else if (cell.InYear && cell.Future)
                             {
-                                <span class="jg-heat-cell future"></span>
+                                <span class="jg-heat-cell future" data-m="@cell.Month"></span>
                             }
                             @* 非本年的溢出格子（首列上年/末列下年）不渲染任何元素 —— GitHub 同款留白 *@
                             </td>
@@ -127,7 +139,7 @@
     private int _activeModCount;
 
     // ─── v1.1.5：热力图 ───
-    private sealed record HeatCell(string Key, bool InYear, bool Future, long Seconds)
+    private sealed record HeatCell(string Key, bool InYear, bool Future, long Seconds, int Month)
     {
         public int Level => Seconds <= 0 ? 0
             : Seconds < 3600 ? 1        // <1 小时
@@ -136,10 +148,13 @@
             : 4;                        // ≥4 小时
     }
 
+    // v1.1.9：月份标签 —— 悬停 data-tip 显示该月总时长，data-month 驱动 JS 整月描边
+    private sealed record HeatMonth(string Text, int? Month, string? Tip);
+
     private int _heatYear = DateTime.Now.Year;
     private List<int> _years = new();
     private List<List<HeatCell>> _weeks = new();   // 每列一周（周日→周六），7 行
-    private List<string> _monthLabels = new();     // 与周列对齐的月份表头
+    private List<HeatMonth> _monthLabels = new();  // 与周列对齐的月份表头
     private long _yearTotalSeconds;
     private int _yearDays;
 
@@ -198,7 +213,7 @@
         var today = DateTime.Today;
 
         _weeks = new();
-        _monthLabels = new();
+        var colMonths = new List<int?>();   // 每列要标的月份（与周列对齐），无标签为 null
         var monthNames = new[] { "", "1月", "2月", "3月", "4月", "5月", "6月", "7月", "8月", "9月", "10月", "11月", "12月" };
         int lastMonth = -1;
         long total = 0;
@@ -212,7 +227,7 @@
             {
                 if (d.Year == _heatYear) { if (colMonth < 0) colMonth = d.Month; }
                 col.Add(new HeatCell(d.ToString("yyyy-MM-dd"), d.Year == _heatYear, d > today,
-                    d.Year == _heatYear && d <= today && data.TryGetValue(d.ToString("yyyy-MM-dd"), out var s) ? s : 0));
+                    d.Year == _heatYear && d <= today && data.TryGetValue(d.ToString("yyyy-MM-dd"), out var s) ? s : 0, d.Month));
                 d = d.AddDays(1);
             }
             _weeks.Add(col);
@@ -220,18 +235,34 @@
             // 月份标签：本月第一次出现的列才标，与 demo 同规则
             if (colMonth > 0 && colMonth != lastMonth)
             {
-                _monthLabels.Add(monthNames[colMonth]);
+                colMonths.Add(colMonth);
                 lastMonth = colMonth;
             }
-            else _monthLabels.Add("");
+            else colMonths.Add(null);
         }
 
+        // v1.1.9：顺手按月汇总（月份标签悬停提示用）
+        var monthTotals = new long[13];
+        var monthDays = new int[13];
         foreach (var cell in _weeks.SelectMany(w => w))
         {
-            if (cell.InYear && !cell.Future && cell.Seconds > 0) { total += cell.Seconds; days++; }
+            if (cell.InYear && !cell.Future && cell.Seconds > 0)
+            {
+                total += cell.Seconds; days++;
+                monthTotals[cell.Month] += cell.Seconds; monthDays[cell.Month]++;
+            }
         }
         _yearTotalSeconds = total;
         _yearDays = days;
+
+        _monthLabels = colMonths.Select(cm =>
+        {
+            if (cm is not int m) return new HeatMonth("", null, null);
+            var name = monthNames[m];
+            return new DateTime(_heatYear, m, 1) > today ? new HeatMonth(name, m, $"{name} 还没到")
+                : monthTotals[m] > 0 ? new HeatMonth(name, m, $"{name} 共游玩 {FormatHours(monthTotals[m])}（{monthDays[m]} 天）")
+                : new HeatMonth(name, m, $"{name} 没有游玩");
+        }).ToList();
     }
 
     // ─── v1.1.6：年份下拉（通用 dropdownToggle GSAP 动画，遮罩点外收回）───

@@ -649,6 +649,10 @@ html[data-theme="dark"] .jg-toast-live:not(.err) { background: #f2f3f5; color: #
 .jg-zoom-open {
     max-width: 92vw !important;
     max-height: 90vh !important;
+    /* v1.1.5：小图最小观看尺寸 —— 有的封面源图只有几十像素，原尺寸显示是「火柴盒」，
+       强制放大到至少这个盒子（object-fit:contain 保持比例，大图不受影响） */
+    min-width: min(64vmin, 460px) !important;
+    min-height: min(64vmin, 460px) !important;
     width: auto !important;
     height: auto !important;
     aspect-ratio: auto !important;
@@ -658,6 +662,25 @@ html[data-theme="dark"] .jg-toast-live:not(.err) { background: #f2f3f5; color: #
     cursor: zoom-out !important;
     animation: jg-zoom-in 0.25s ease;
 }
+/* v1.1.5：右上角 ✕ 关闭按钮 —— 放大层在暗色遮罩上，配色固定高对比不随主题 */
+.jg-flip-modal .jg-flip-close {
+    position: absolute;
+    top: 18px;
+    right: 22px;
+    z-index: 1002;
+    width: 38px;
+    height: 38px;
+    border-radius: 50%;
+    border: 1px solid rgba(255, 255, 255, 0.28);
+    background: rgba(255, 255, 255, 0.1);
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: transform 140ms ease, background 140ms ease;
+}
+.jg-flip-modal .jg-flip-close:hover { transform: scale(1.12); background: rgba(255, 255, 255, 0.2); }
 @keyframes jg-zoom-in {
     from { transform: scale(0.85); opacity: 0.4; }
     to { transform: scale(1); opacity: 1; }
