@@ -200,7 +200,7 @@
 /* 响应式：以卡片内容宽度为容器，格子宽度 = (可用宽 - 固定开销194px[星期列26+边缘间隙6+53个列间隙159]) / 53 周，
    无上限 —— 任意窗口宽度都精确铺满不留右侧空白；下限 5px，再小才出横向滚动；
    position:relative 作为月份悬停描边框（.jg-heat-month-outline）的定位容器 */
-.jg-heat-scroll { position: relative; container-type: inline-size; overflow-x: auto; padding-bottom: 4px; }
+.jg-heat-scroll { position: relative; container-type: inline-size; overflow-x: auto; padding-bottom: 8px; }   /* 常态即留足 8px（聚焦月块只向下长 ~5px 不裁边）——容器查询容器不吃负 margin 抵消，恒定预留是唯一不跳高的做法 */
 .jg-heat-grid { border-spacing: 3px; border-collapse: separate; }
 .jg-heat-grid th { padding: 0 0 2px; font-size: 11px; font-weight: 400; color: var(--jg-text-3); text-align: left; white-space: nowrap; }
 .jg-heat-grid th.jg-heat-wday { width: 26px; }
@@ -231,7 +231,7 @@
 .jg-heat-month-outline.on path { opacity: 1; }
 /* 月份聚焦 —— 悬停月份标签时：整月作为刚体放大（hl，共享变换原点 = 包围盒顶边中点，由 JS 逐格设置：
    顶边与月份标签不动，月块只向下长），其余格子与月份标签虚化（dim）。类由 junigrid.ui.js 钩子切换 */
-.jg-heat-scroll.heat-zooming { overflow: hidden; padding-bottom: 22px; }   /* 向下放大溢出不顶出滚动条，底部预留放大空间防裁边 */
+.jg-heat-scroll.heat-zooming { overflow: hidden; }   /* 聚焦时只关横向滚动（放大会顶出滚动条），高度预留已在常态留足，卡片不再长高 */
 /* 虚化只走透明度 —— 三百多个格子同时跑 blur() 滤镜动画是卡顿根源， opacity 是纯合成层操作 */
 .jg-heat-grid.heat-focus .jg-heat-cell.dim { opacity: .15; }
 .jg-heat-grid.heat-focus .jg-heat-cell.hl { transform: scale(1.15); }
