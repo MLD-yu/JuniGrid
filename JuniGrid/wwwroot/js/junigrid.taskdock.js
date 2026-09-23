@@ -2,7 +2,6 @@
 // 任务中心悬浮窗（TaskDock）：光标倾斜、胶囊↔圆形 morph、下载信息下拉、拖动
 // ============================================================
 // ─── v1.06.7：任务悬浮窗光标透视倾斜（gsap cursor-driven-perspective-tilt demo 同款）───
-// ─── v1.06.7：任务悬浮窗光标透视倾斜（gsap cursor-driven-perspective-tilt demo 同款）───
 // 外层 rotationX/Y 用 quickTo 平滑跟随光标，内层文字反向轻移产生视差；离开复位。
 junigridJs.taskDockTilt = function (sel) {
     var el = document.querySelector(sel);

@@ -8,7 +8,6 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:local="clr-namespace:JuniGrid.Components"
         xmlns:blazor="clr-namespace:Microsoft.AspNetCore.Components.WebView.Wpf;assembly=Microsoft.AspNetCore.Components.WebView.Wpf"
-        xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf"
         Title="JuniGrid — Your Junimo helper"
         Height="1000" Width="1600"
         MinHeight="650" MinWidth="1100"
@@ -58,12 +57,6 @@
                IsHitTestVisible="False"
                Visibility="Collapsed"/>
 
-        <!-- ===== 内置 Nexus 浏览器：主窗口内的覆盖层 =====
-             免费用户在这里点 Mod Manager Download，nxm:// 被拦截后自动安装。
-             用独立的 WebView2 环境（自己的用户数据目录），避免和
-             Blazor WebView 的状态冲突（0x8007139F）。 -->
-        <!-- 嵌入内容区（而非全窗口覆盖）：让出标题栏40px + 侧栏232px + 顶导航46px，
-             四周留页面内边距，看起来就是嵌在「Mod 管理」内容区里的浏览器面板。 -->
         <!-- 内置 Nexus 浏览器覆盖层已移除：统一改用系统浏览器跳转 -->
     </Grid>
 </Window>

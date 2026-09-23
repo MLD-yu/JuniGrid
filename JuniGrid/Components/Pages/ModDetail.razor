@@ -8,8 +8,6 @@
 @inject InstallService Installer
 @inject IJSRuntime JS
 @inject NavigationManager Nav
-@inject CoverCacheService Covers
-@implements IDisposable
 
 <div class="jg-page">
     <div class="jg-detail-topbar">
@@ -128,7 +126,7 @@
                                                 <span class="jg-req-name">
                                                     @if (!string.IsNullOrEmpty(r.PictureUrl))
                                                     {
-                                                        <img class="jg-req-cover" src="@Covers.GetFull(r.PictureUrl)" alt="" loading="lazy" />
+                                                        <img class="jg-req-cover" src="@r.PictureUrl" alt="" loading="lazy" />
                                                     }
                                                     @if (r.ModId > 0)
                                                     {
@@ -185,7 +183,7 @@
                                     <div class="jg-acc-row" style="align-items:center;gap:10px">
                                         @if (!string.IsNullOrEmpty(t.PictureUrl))
                                         {
-                                            <img class="jg-req-cover" src="@Covers.GetFull(t.PictureUrl)" alt="" loading="lazy" />
+                                            <img class="jg-req-cover" src="@t.PictureUrl" alt="" loading="lazy" />
                                         }
                                         <button class="jg-req-link" style="flex:1;text-align:left" @onclick="() => GoDep(t.ModId, t.Name)">@t.Name</button>
                                     </div>
@@ -205,8 +203,7 @@
                             else if (_changelogs.Count == 0) { <span style="opacity:.6">暂无更新日志。</span> }
                             else
                             {
-                                var shownLogs = _changelogs;
-                                @foreach (var c in shownLogs)
+                                @foreach (var c in _changelogs)
                                 {
                                     <div class="jg-acc-row" style="flex-direction:column;align-items:flex-start;gap:2px">
                                         <b>v@(c.Version)</b>
@@ -222,16 +219,7 @@
             <div class="jg-dl4-right">
                 @if (!string.IsNullOrEmpty(_mod.PictureUrl))
                 {
-                    var fullCover = Covers.GetFull(_mod.PictureUrl);
-                    if (fullCover is null)
-                    {
-                        @* v1.1.1：原图还在后台下载时给骨架占位 —— 之前 src=null 渲染成破图+alt 文本 *@
-                        <div class="jg-dl4-cover jg-shimmer"></div>
-                    }
-                    else
-                    {
-                        <img class="jg-dl4-cover jg-flip-cover" src="@fullCover" alt="@_mod.Name" data-flip-src="@fullCover" />
-                    }
+                    <img class="jg-dl4-cover jg-flip-cover" src="@_mod.PictureUrl" alt="@_mod.Name" data-flip-src="@_mod.PictureUrl" />
                 }
                 else
                 {
@@ -251,7 +239,7 @@
                             <span class="jg-author-bubble" id="jgAuthorBubble">
                                 @if (!string.IsNullOrEmpty(_authorAvatar))
                                 {
-                                    <img class="jg-author-ava" src="@Covers.GetFull(_authorAvatar)" alt="" />
+                                    <img class="jg-author-ava" src="@_authorAvatar" alt="" />
                                 }
                                 else
                                 {
@@ -315,9 +303,17 @@
         }
         if (!_loading && _mod is not null)
         {
-            try { await JS.InvokeVoidAsync("junigridJs.modDetailInit"); } catch { }
-            // v1.04.0：by 作者名 blur 高光 + hover 头像预览（GSAP easeReverse）
-            try { await JS.InvokeVoidAsync("junigridJs.authorTipInit", "jgAuthorTip", "jgAuthorBubble"); } catch { }
+            // v1.2.5：modDetailInit / authorTipInit 按「当前 mod」只跑一次 ——
+            // 组件实例会在 ModId/UniqueID 参数变化时被复用，故以 mod 键而非布尔标记守卫。
+            // accMeasureScroll 是对已展开手风琴的内容高度测量（内容随异步数据加载变化），保留每次渲染执行。
+            var modKey = $"{ModId}/{UniqueID}";
+            if (!string.Equals(_interopsInitedFor, modKey, StringComparison.Ordinal))
+            {
+                _interopsInitedFor = modKey;
+                try { await JS.InvokeVoidAsync("junigridJs.modDetailInit"); } catch { }
+                // v1.04.0：by 作者名 blur 高光 + hover 头像预览（GSAP easeReverse）
+                try { await JS.InvokeVoidAsync("junigridJs.authorTipInit", "jgAuthorTip", "jgAuthorBubble"); } catch { }
+            }
             if (_pendingAnimAcc > 0)
             {
                 var animId = "jgAcc" + _pendingAnimAcc;
@@ -333,14 +329,6 @@
     /// <summary>同一 Nexus Mod 可能含多个子包（共享 UpdateKey），靠 UniqueID 二次定位到具体那条。</summary>
     [Parameter] public string? UniqueID { get; set; }
 
-    // v1.1.1：订阅封面缓存事件 —— 详情页此前不订阅，首次进入时原图还在后台下载，
-    // src 为空显示破图，要等其它后台请求碰巧触发重渲染封面才出来。
-    protected override void OnInitialized() => Covers.Changed += OnCoversChanged;
-
-    private void OnCoversChanged() => _ = InvokeAsync(StateHasChanged);
-
-    public void Dispose() => Covers.Changed -= OnCoversChanged;
-
     private string _key = "";
     private NexusModDetail? _mod;
     // v0.72.0：最新 MAIN 文件（可更新判定与一键直装 InstallModDirectAsync 同一权威源）
@@ -348,13 +336,13 @@
     // v1.04.0：作者头像（data URI，hover 预览气泡用；拉取失败用首字母兜底）
     private string? _authorAvatar;
     private bool _loading = true;
+    /// <summary>v1.2.5：modDetailInit/authorTipInit 已绑定过的 mod 键（"ModId/UniqueID"），
+    /// 防止每次渲染重复发 interop；参数变化（换 mod）时重置以重新绑定。</summary>
+    private string? _interopsInitedFor;
     private string? _error;
     private string? _installedFolder;
     private bool _installing;
     private string? _installMsg;
-
-    // 多图图集（v0.69.3：画廊已下线，此列表仅保留供封面 flip 放大取源）
-    private List<string> _imgUrls = new();
 
     // v0.69.5：最后安装时间 / Requirements(GraphQL v2) / 三项手风琴（多开）
     private string? _lastDownloaded;
@@ -370,9 +358,6 @@
     private string? _descHtml;
     /// <summary>当前详情页这个 mod 的本地条目（null = 未安装）。读它的 Dependencies 列依赖。</summary>
     private ModEntry? _thisEntry;
-
-    // 传递依赖展开结果（含间接依赖 + CPF 宿主）
-    private List<ResolvedDep> _resolvedDeps = new();
 
     // v1.06.8：详情数据内存缓存 —— 依赖跳转 A→B→返回 A 不再重新走网络，A 秒开。
     // 静态字段跨组件实例存活；TTL 10 分钟内重复进同一详情零请求。
@@ -397,6 +382,21 @@
         }
     }
 
+    /// <summary>v1.2.4：本地已装列表的 5 秒 TTL 缓存（key 含 GamePath，换游戏目录自动失效）。
+    /// TTL 取得极短：过期即重扫，唯一需要主动失效的是详情页自己的一键安装（改磁盘）。</summary>
+    private static readonly TimeSpan ScanCacheTtl = TimeSpan.FromSeconds(5);
+    private static (string Path, DateTime At, IReadOnlyList<ModEntry> Mods)? _scanCache;
+
+    private IReadOnlyList<ModEntry> ScanLocal(string gamePath)
+    {
+        var c = _scanCache;
+        if (c is not null && c.Value.Path == gamePath && DateTime.UtcNow - c.Value.At < ScanCacheTtl)
+            return c.Value.Mods;
+        var mods = ModSvc.Scan(gamePath);
+        _scanCache = (gamePath, DateTime.UtcNow, mods);
+        return mods;
+    }
+
     protected override async Task OnParametersSetAsync()
     {
         _loading = true;
@@ -404,7 +404,6 @@
         _mod = null;
         _descHtml = null;
         _latestFile = null;
-        _imgUrls = new();
         _lastDownloaded = null;
         _reqFailed = false;
         _openAccs.Clear();
@@ -423,7 +422,10 @@
 
         // 这个 mod 是不是已经装了？装了的话安装按钮变成"更新到原文件夹"
         // v1.1.6：全盘扫描移出 UI 线程 —— 进详情页不该为查一个本地条目卡住整页
-        _localMods = await Task.Run(() => ModSvc.Scan(Cfg.Current.GamePath));
+        // v1.2.4：走 5 秒 TTL 静态缓存 —— 网络侧数据有 10 分钟详情缓存，磁盘侧却每次
+        // 进详情都重扫全盘 manifest（被 await，挡在 shimmer 后面）。同会话反复进详情/
+        // 依赖跳转结果必然一样；一键安装成功即失效，已装判定不会用旧数据。
+        _localMods = await Task.Run(() => ScanLocal(Cfg.Current.GamePath));
         // 同 NexusModId 可能存在多个子包（如 [CC]/[CS]/[DLL]/[FTM] 共用 UpdateKey）。
         // 优先按路由带来的 UniqueID 精确定位；没带（旧路由/依赖跳转）才退化到按 ModId 取第一个。
         _thisEntry = !string.IsNullOrEmpty(UniqueID)
@@ -431,7 +433,6 @@
                 && string.Equals(m.UniqueID, UniqueID, StringComparison.OrdinalIgnoreCase))
             : _localMods.FirstOrDefault(m => m.NexusModId == ModId);
         _installedFolder = _thisEntry?.Folder;
-        ResolveDepTree();
 
         try
         {
@@ -454,7 +455,6 @@
             {
                 _mod = hit.Mod;
                 _latestFile = hit.Latest;
-                _imgUrls = _mod.ImageUrls.Where(u => !string.IsNullOrWhiteSpace(u)).ToList();
                 // v1.1.6：灰阶颜色规整只算一次 —— 旧版写在模板里，任何 StateHasChanged
                 //（封面下载完成、后台任务回填）都会对整段 HTML 重跑正则
                 _descHtml = NormalizeGrayColors(_mod.DescriptionHtml ?? "");
@@ -544,42 +544,13 @@
     /// 「判无更新、一点更新却装出 1.3.1」。</summary>
     private bool HasUpdate =>
         _thisEntry is not null && _mod is not null
-        && !string.IsNullOrWhiteSpace(EffectiveRemoteVersion) && !string.IsNullOrWhiteSpace(_thisEntry.Version)
-        && IsNewer(EffectiveRemoteVersion, _thisEntry.Version);
+        && NexusUpdateTruth.ShouldShowUpdate(Cfg.Current, _thisEntry, EffectiveRemoteVersion, _latestFile?.FileId);
 
     /// <summary>v0.72.0：可更新判定的权威远端版本 = 最新 MAIN 文件的版本；
     /// 主文件没写版本号时退回 mod 顶层 version（旧逻辑的唯一来源）。</summary>
     private string EffectiveRemoteVersion =>
         !string.IsNullOrWhiteSpace(_latestFile?.Version) ? _latestFile!.Version : _mod?.Version ?? "";
 
-    /// <summary>v0.71.9：与 Mods.razor 的 IsNewer 同逻辑 —— 语义化版本逐段数值比较。
-    /// 剥离 v/V 前缀与 -beta/+build 类后缀，段数不齐按 0 补齐；完全相等 → 不是更新。</summary>
-    private static bool IsNewer(string remote, string local)
-    {
-        static int[] Parts(string v)
-        {
-            var s = v.Trim().TrimStart('v', 'V');
-            var dash = s.IndexOfAny(new[] { '-', '+', ' ' });
-            if (dash >= 0) s = s[..dash];
-            var segs = s.Split('.', StringSplitOptions.RemoveEmptyEntries);
-            var nums = new int[segs.Length];
-            for (var i = 0; i < segs.Length; i++)
-            {
-                var digits = new string(segs[i].TakeWhile(char.IsDigit).ToArray());
-                nums[i] = int.TryParse(digits, out var n) ? n : 0;
-            }
-            return nums;
-        }
-        var rp = Parts(remote); var lp = Parts(local);
-        var len = Math.Max(rp.Length, lp.Length);
-        for (var i = 0; i < len; i++)
-        {
-            var r = i < rp.Length ? rp[i] : 0;
-            var l = i < lp.Length ? lp[i] : 0;
-            if (r != l) return r > l;
-        }
-        return false;
-    }
 
     private async Task Install()
     {
@@ -605,6 +576,7 @@
             if (err is null)
             {
                 _installMsg = null;   // v0.69.1：安装成功不再显示提示条（用户要求删掉）
+                _scanCache = null;   // v1.2.4：磁盘变了，本地扫描缓存立即失效
                 _installedFolder ??= ModSvc.Scan(Cfg.Current.GamePath)
                     .FirstOrDefault(m => m.NexusModId == ModId)?.Folder;
             }
@@ -613,6 +585,11 @@
                 _installMsg = "这个 mod 需要 Premium 才能直装 —— 已为你打开系统浏览器，点 Mod Manager Download 即可自动安装";
                 MainWindow.OpenNexusOverlay(
                     $"https://www.nexusmods.com/stardewvalley/mods/{ModId}?tab=files");
+            }
+            else if (err is "已取消" or "已暂停")
+            {
+                // v1.1.7：用户暂停/取消任务 —— 不是安装失败，别吓人
+                _installMsg = err == "已暂停" ? "任务已暂停，可在任务中心继续" : null;
             }
             else
             {
@@ -650,36 +627,6 @@
         catch { Nav.NavigateTo("/mods"); }
     }
 
-    /// <summary>常用依赖 UniqueID → 友好名字。缺失依赖未装时没有本地名，靠这张表给个能看懂的名字。</summary>
-    private static string FriendlyDepName(string uniqueId)
-    {
-        if (string.IsNullOrWhiteSpace(uniqueId)) return uniqueId;
-        // 匹配时忽略大小写；用首字母小写统一选中
-        var key = uniqueId.Trim();
-        if (_depNameMap.TryGetValue(key, out var name)) return name;
-        // 易错：大小写不一致时也尝试
-        foreach (var (k, v) in _depNameMap)
-            if (string.Equals(k, key, StringComparison.OrdinalIgnoreCase)) return v;
-        return key;
-    }
-
-    private static readonly Dictionary<string, string> _depNameMap = new(StringComparer.OrdinalIgnoreCase)
-    {
-        // 常见 SMAPI 框架依赖（这些是确定的名字，缺失时用它替代生硬的 UniqueID）
-        { "Pathoschild.ContentPatcher", "内容补丁器 (Content Patcher)" },
-        { "Pathoschild.LookupAnything", "查看一切 (Lookup Anything)" },
-        { "spacechase0.JsonAssets", "JSON 资源包 (JsonAssets)" },
-        { "spacechase0.GenericModConfigMenu", "通用模组配置 (GMCM)" },
-        { "spacechase0.SpaceCore", "SpaceCore" },
-        { "PeacefulEnd.CustomCompanions", "自定义伴侣 (Custom Companions)" },
-        { "Esca.FarmTypeManager", "农场类型管理器 (FTM)" },
-        { "Cherry.ExpandedPreconditionsUtility", "扩展前置条件 (EPU)" },
-        { "bcmpinc.StardewHack", "StardewHack" },
-        { "bcmpinc.WearMoreRings", "更多戒指槽 (Wear More Rings)" },
-        { "MuseumHeir.CJBCheatsMenu", "CJB 作弊菜单" },
-        { "SMAPI", "SMAPI" },
-    };
-
     /// <summary>Requirements 里的某项是否已安装：先按 Nexus ModId 对本地已装列表匹配，
     /// 匹配不到再按名字兜底（Nexus 名和本地 manifest Name 通常一致）。
     /// v1.1.4：SMAPI 特判 —— 它装在游戏根目录（StardewModdingAPI.exe），不在 Mods/
@@ -697,70 +644,6 @@
                 && File.Exists(Path.Combine(gp, "StardewModdingAPI.exe"));
         }
         return _localMods.Any(m => string.Equals(m.Name?.Trim(), n, StringComparison.OrdinalIgnoreCase));
-    }
-
-    /// <summary>依赖项（含间接依赖展开后的一项）。</summary>
-    private sealed class ResolvedDep
-    {
-        public string UniqueID = "";
-        public string Name = "";
-        public string? Version;
-        public int? NexusModId;
-        public string? CoverUrl;
-        public bool Installed;
-        public bool Required = true;
-    }
-
-    /// <summary>
-    /// BFS 展开当前 mod 的"传递依赖 + CPF 宿主"（去环、去重）。只收"必需"依赖，
-    /// 可选依赖（后端已从 Dependencies 过滤）不参与递归。
-    /// </summary>
-    private void ResolveDepTree()
-    {
-        _resolvedDeps.Clear();
-        if (_thisEntry is null) return;
-
-        var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        // 同一 UniqueID 可能被重复安装（同名文件夹多份），ToDictionary 严格模式会抛重复键，
-        // 这里遇重复保留第一条即可，BFS 照常用它定位已装依赖。
-        var byUid = new Dictionary<string, ModEntry?>(StringComparer.OrdinalIgnoreCase);
-        foreach (var m in _localMods)
-            if (!string.IsNullOrWhiteSpace(m.UniqueID))
-                byUid.TryAdd(m.UniqueID, m);
-
-        // 从本 mod 的所有依赖 + CP 宿主 出发
-        var queue = new Queue<string>();
-        foreach (var d in _thisEntry.HasManifest ? _thisEntry.Dependencies : new List<string>())
-            if (!string.IsNullOrWhiteSpace(d)) queue.Enqueue(d);
-        foreach (var h in _thisEntry.ContentPackIds)
-            if (!string.IsNullOrWhiteSpace(h)) queue.Enqueue(h);
-
-        while (queue.Count > 0)
-        {
-            var uid = queue.Dequeue();
-            if (!visited.Add(uid)) continue;
-
-            var installed = byUid.TryGetValue(uid, out var depEntry) ? depEntry : null;
-            var cover = installed is not null
-                && Cfg.Current.ModCovers.TryGetValue(installed.Folder, out var cu) ? cu : null;
-
-            _resolvedDeps.Add(new ResolvedDep
-            {
-                UniqueID = uid,
-                Name = installed?.Name ?? FriendlyDepName(uid),
-                Version = installed?.Version,
-                NexusModId = installed?.NexusModId,
-                CoverUrl = cover,
-                Installed = installed is not null
-            });
-
-            // 递归它的依赖（已装才能继续展开）
-            if (installed is not null)
-            {
-                foreach (var sub in installed.Dependencies.Concat(installed.ContentPackIds))
-                    if (!string.IsNullOrWhiteSpace(sub)) queue.Enqueue(sub);
-            }
-        }
     }
 
     /// <summary>依赖 → 跳它的详情页。拿得到 mod_id 就进内部详情；拿不到（=0）才降级到 Nexus 搜索。</summary>

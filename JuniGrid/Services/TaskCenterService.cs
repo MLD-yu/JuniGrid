@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Text.Json;
@@ -18,8 +19,7 @@ public sealed class TaskCenterService
     public event Action? OnChanged;
 
     private readonly object _lock = new();
-    private static readonly string PersistPath = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "JuniGrid", "tasks.json");
+    private static readonly string PersistPath = Path.Combine(StoragePaths.AppDataDir, "tasks.json");
     // v1.1.2：构造时创建、只在 RequestSave 里触发 —— 之前懒初始化无锁，并发首调可能建出两个 Timer 泄漏一个
     private readonly Timer _saveTimer;
 
@@ -38,12 +38,19 @@ public sealed class TaskCenterService
             if (list is null) return;
             foreach (var t in list)
             {
-                if (t.Status == "running") t.Status = "failed";   // 上次中断的下载不可能再继续
+                t.Status = RestoreStatus(t.Kind, t.Status);
                 Items.Add(t);
             }
         }
         catch (Exception ex) { AppLog.Warn("TaskCenter", "任务恢复失败: " + ex.Message); }
     }
+
+    /// <summary>落盘恢复时"上次退出还在跑"的任务该标成什么：
+    /// 版本下载能按标题里的 manifest 重新发起（VersionDownloadService 自己重建 worker）→ 标「已暂停」，
+    /// 用户点得到「继续」；其余 kind 没有可重建的 worker，标成暂停等于给一个点了没反应的按钮 → 标失败。</summary>
+    public static string RestoreStatus(string kind, string savedStatus)
+        => savedStatus != "running" ? savedStatus
+         : kind == "gameversion" ? "paused" : "failed";
 
     /// <summary>进度回报非常频繁，落盘用 800ms 防抖：静默 800ms 后才真正写盘。</summary>
     private void RequestSave() => _saveTimer.Change(800, Timeout.Infinite);
@@ -88,30 +95,40 @@ public sealed class TaskCenterService
         //（含每条 t.Log），这里锁外 Add 会撞「集合已修改」让该次落盘静默丢失。
         lock (_lock)
         {
-            if (IsDownloadHeartbeat(line)
-                && t.Log.Count > 0 && IsDownloadHeartbeat(t.Log[t.Log.Count - 1]))
+            var stamped = $"[{DateTime.Now:HH:mm:ss}] {line}";
+            var last = t.Log.Count > 0 ? t.Log[t.Log.Count - 1] : null;
+            if (last is not null
+                && (last == stamped
+                    // 同一条心跳（下载进度）：覆盖上一行，别把 200 条上限刷满
+                    || (IsDownloadHeartbeat(line) && IsDownloadHeartbeat(last))
+                    // 同一步在重试循环里报了很多次（实测一次失败下载刷了 5 行
+                    // 「Steam 授权成功，正在完成…」）：剥掉时间戳后同文就只留最新一条
+                    || StripStamp(last) == line))
             {
-                t.Log[t.Log.Count - 1] = $"[{DateTime.Now:HH:mm:ss}] {line}";
+                t.Log[t.Log.Count - 1] = stamped;
             }
             else
             {
-                t.Log.Add($"[{DateTime.Now:HH:mm:ss}] {line}");
+                t.Log.Add(stamped);
                 if (t.Log.Count > 200) t.Log.RemoveAt(0);
             }
         }
         if (percent is not null) t.Percent = percent.Value;
-        if (speedMBps is not null) t.SpeedMBps = speedMBps.Value;
+        if (speedMBps is not null) { t.SpeedMBps = speedMBps.Value; t.SpeedReported = true; }
         t.LastLine = line;
         OnChanged?.Invoke();
         RequestSave();
     }
 
     /// <summary>带时间戳的日志行是否是下载心跳行（Report 写入时已加 "[HH:mm:ss] " 前缀）。</summary>
-    private static bool IsDownloadHeartbeat(string logLine)
+    private static bool IsDownloadHeartbeat(string logLine) =>
+        StripStamp(logLine).StartsWith("正在下载…", StringComparison.Ordinal);
+
+    /// <summary>去掉行首 "[HH:mm:ss] " 时间戳，拿到正文。</summary>
+    private static string StripStamp(string logLine)
     {
         var i = logLine.IndexOf("] ", StringComparison.Ordinal);
-        var body = i >= 0 && logLine.StartsWith("[") ? logLine[(i + 2)..] : logLine;
-        return body.StartsWith("正在下载…", StringComparison.Ordinal);
+        return i >= 0 && logLine.StartsWith("[") ? logLine[(i + 2)..] : logLine;
     }
 
     public void Finish(TaskItem t, bool success, string? finalMsg = null)
@@ -138,22 +155,12 @@ public sealed class TaskCenterService
         // v1.1.3：移除 = 同步取消后台下载/安装 —— 之前只删条目，管线继续跑完，
         // mod 照样出现在 Mod 管理页（下载一半移除还会"复活"）。
         try { t.Cts.Cancel(); } catch { }
+        UnregisterResume(t);
         OnChanged?.Invoke();
         RequestSave();
     }
 
-    public void ClearFinished()
-    {
-        lock (_lock)
-        {
-            for (int i = Items.Count - 1; i >= 0; i--)
-                if (Items[i].Status != "running") Items.RemoveAt(i);
-        }
-        OnChanged?.Invoke();
-        RequestSave();
-    }
-
-    /// <summary>v1.06.6：按条件清理（下载页「清理全部」= 清掉当前筛选下的所有任务）。</summary>
+    /// <summary>v1.06.6：按条件清理（下载页「全部删除」= 清掉当前筛选下的所有任务）。</summary>
     public void ClearMatching(Func<TaskItem, bool> match)
     {
         List<TaskItem>? killed = null;
@@ -168,12 +175,58 @@ public sealed class TaskCenterService
         }
         // v1.1.3：批量清理也取消还在跑的，避免"清了任务还继续装"
         if (killed is not null)
-            foreach (var k in killed) { try { k.Cts.Cancel(); } catch { } }
+            foreach (var k in killed)
+            {
+                try { k.Cts.Cancel(); } catch { }
+                UnregisterResume(k);
+            }
         OnChanged?.Invoke();
         RequestSave();
     }
 
     public int RunningCount { get { lock (_lock) return Items.Count(t => t.Status == "running"); } }
+
+    /// <summary>v1.1.7：暂停后继续用的 worker 注册表（进程内；落盘恢复的任务没有 worker，继续会失败）。</summary>
+    private readonly ConcurrentDictionary<Guid, Func<CancellationToken, Task>> _resumeWork = new();
+
+    public void RegisterResume(TaskItem t, Func<CancellationToken, Task> work)
+        => _resumeWork[t.Id] = work;
+
+    public void UnregisterResume(TaskItem t)
+        => _resumeWork.TryRemove(t.Id, out _);
+
+    /// <summary>暂停运行中的任务（worker 通过 Cts 感知；状态改为 paused）。</summary>
+    public void Pause(TaskItem t)
+    {
+        if (t.Status != "running") return;
+        t.Status = "paused";
+        t.SpeedMBps = 0;
+        try { t.Cts.Cancel(); } catch { }
+        Report(t, "已暂停", t.Percent);
+    }
+
+    /// <summary>继续已暂停任务：重置 Cts，由调用方重新挂 worker。</summary>
+    public void ResumeMark(TaskItem t)
+    {
+        if (t.Status != "paused") return;
+        t.ResetCts();
+        t.Status = "running";
+        t.StartedAt = DateTime.Now;   // 「已运行」从这次继续算起，别把停机的那段也计进去
+        Report(t, "继续中…", t.Percent);
+    }
+
+    /// <summary>v1.1.7：统一继续入口。有注册 worker 就重挂；历史版本下载走 VersionDownloadService 时由其自行处理。</summary>
+    public bool Resume(TaskItem t)
+    {
+        if (t.Status != "paused") return false;
+        if (!_resumeWork.TryGetValue(t.Id, out var work)) return false;
+        ResumeMark(t);
+        _ = Task.Run(() => work(t.Cts.Token), CancellationToken.None);
+        return true;
+    }
+
+    public void Notify() => OnChanged?.Invoke();
+
     public double TotalPercent
     {
         get
@@ -194,16 +247,31 @@ public sealed class TaskCenterService
     {
         get { lock (_lock) return Items.Where(t => t.Status == "running").Sum(t => t.SpeedMBps); }
     }
+
+    /// <summary>跑着的任务里有没有谁真报过速度 —— 一个都没有时界面不许显示 0.00 M/s。</summary>
+    public bool TotalSpeedKnown
+    {
+        get { lock (_lock) return Items.Any(t => t.Status == "running" && t.SpeedReported); }
+    }
 }
 
 public sealed class TaskItem
 {
     public Guid Id { get; set; }
     public string Title { get; set; } = "";
-    public string Kind { get; set; } = "download";       // download / install / update
-    public string Status { get; set; } = "running";      // running / done / failed
+    public string Kind { get; set; } = "download";       // download / install / update / gameversion
+    public string Status { get; set; } = "running";      // running / paused / done / failed
     public double Percent { get; set; }
     public double SpeedMBps { get; set; }
+
+    /// <summary>这一路到底有没有报过速度。版本下载（DepotDownloader）压根不输出字节数，
+    /// 从没报过 —— 界面据此显示「—」而不是 0.00 M/s，那是个假数字。</summary>
+    [JsonIgnore]
+    public bool SpeedReported { get; set; }
+
+    /// <summary>v1.1.7：可暂停 = 下载/安装/更新/游戏版本；缓存清理等短任务不可暂停。</summary>
+    [JsonIgnore]
+    public bool CanPause => Kind is "download" or "install" or "update" or "gameversion";
         public string? LastLine { get; set; }
         // v1.06.7：必须有 setter —— 只读集合属性反序列化时不被填充，重启恢复的任务会丢光日志
         public List<string> Log { get; set; } = new();
@@ -211,5 +279,14 @@ public sealed class TaskItem
 
     /// <summary>v1.1.3：任务取消源 —— 「移除/清理」时取消后台下载安装；不落盘。</summary>
     [JsonIgnore]
-    public CancellationTokenSource Cts { get; } = new();
+    private CancellationTokenSource _cts = new();
+    [JsonIgnore]
+    public CancellationTokenSource Cts => _cts;
+
+    /// <summary>v1.4.5：暂停后继续 —— 旧 CTS 已 Cancel，换新的给 worker。</summary>
+    public void ResetCts()
+    {
+        try { _cts.Dispose(); } catch { }
+        _cts = new CancellationTokenSource();
+    }
 }

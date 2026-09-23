@@ -2,7 +2,6 @@ using System.Diagnostics;
 using System.IO;
 using System.IO.Pipes;
 using System.Windows;
-using System.Windows.Media.Animation;
 using System.Windows.Threading;
 using JuniGrid.Services;
 using Microsoft.Extensions.DependencyInjection;
@@ -11,9 +10,7 @@ namespace JuniGrid;
 
 public partial class App : Application
 {
-    private static readonly string LogPath = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-        "JuniGrid", "crash.log");
+    private static readonly string LogPath = Path.Combine(StoragePaths.AppDataDir, "crash.log");
 
     // ---- 单实例 + nxm:// 转发 ----
     // 用户在 Nexus 网页点「Mod Manager Download」时，Windows 会用

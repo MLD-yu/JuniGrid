@@ -128,8 +128,6 @@ public partial class SplashWindow : Window
         IntroCompleted?.Invoke();
     }
 
-    public bool IntroDone => _introDone;
-
     /// <summary>直出：不做淡出动画，动画播完立即关闭 Splash，交棒主窗滑入。</summary>
     public void FadeOutAndClose()
     {

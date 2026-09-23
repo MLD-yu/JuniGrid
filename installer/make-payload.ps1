@@ -1,4 +1,4 @@
-﻿# 把 publish\sc（主程序 self-contained 输出）压成安装器内嵌的 payload.lz
+# 把 publish\sc（主程序 self-contained 输出）压成安装器内嵌的 payload.lz
 # （JGP1 容器 + 单流 LZMA 固实压缩，比逐文件 Deflate 的旧 payload.zip 小 25~30%）
 $ErrorActionPreference = 'Stop'
 $installerDir = $PSScriptRoot
@@ -8,7 +8,8 @@ $sc           = Join-Path $repo 'publish\sc'
 
 if (-not (Test-Path (Join-Path $sc 'JuniGrid.exe'))) {
     Write-Host "publish\sc 不存在，先发布主程序（self-contained）…"
-    dotnet publish (Join-Path $repo 'JuniGrid') -c Release -r win-x64 --self-contained true -p:DebugType=none -o $sc
+    # 指定 .csproj，别传目录 —— obj 里 wpftmp 临时工程会让 dotnet publish 报「多个项目」
+    dotnet publish (Join-Path $repo 'JuniGrid\JuniGrid.csproj') -c Release -r win-x64 --self-contained true -p:DebugType=none -o $sc
     if ($LASTEXITCODE -ne 0) { throw "主程序发布失败" }
 }
 

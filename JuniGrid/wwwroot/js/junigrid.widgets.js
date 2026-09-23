@@ -52,9 +52,12 @@
         if (!p || !p.menu || p.wrap.__filterBound) return;
         p.wrap.__filterBound = true;
         if (!window.gsap) return;   // 无 gsap：靠 .open + CSS 兜底开关
-        document.addEventListener('click', function (e) {
+        // Blazor 进 Logs 页重建 DOM 后守卫失效会重挂 document 监听 —— 先摘旧再挂新，避免累积
+        if (window.__logsFilterDocClick) document.removeEventListener('click', window.__logsFilterDocClick);
+        window.__logsFilterDocClick = function (e) {
             if (p.wrap.__ddOpen && !p.wrap.contains(e.target)) close(p);
-        });
+        };
+        document.addEventListener('click', window.__logsFilterDocClick);
     };
     window.junigridJs.logsFilterToggle = function (wrapSel) {
         var p = parts(wrapSel);
@@ -176,18 +179,9 @@ window.junigridJs.initPixelHover = function () {
 };
 
 // ------------------ v0.2.2：内存管理滑杆面板开合动画（与下拉菜单同款弹性曲线） ------------------
-// collapseSet：无动画直接定状态（页面首帧用）；collapseToggle：带 GSAP 弹性开合
+// collapseToggle：带 GSAP 弹性开合
 (function () {
     window.junigridJs = window.junigridJs || {};
-
-    function setInstant(el, open) {
-        if (!window.gsap) { el.style.display = open ? '' : 'none'; return; }
-        gsap.set(el, { display: open ? '' : 'none', height: 'auto', autoAlpha: open ? 1 : 0 });
-    }
-
-    window.junigridJs.collapseSet = function (el, open) {
-        if (el) setInstant(el, open);
-    };
 
     // 返回 Promise：C# await 它可以等到动画真正播完再提交状态
     // （v0.2.2 修复「收不回去」：原先 clearProps:'all' 会把 Blazor 写的 display:none 一并清掉，
@@ -459,6 +453,8 @@ junigridJs.initLogoLoop = function (selector) {
             }
         }
         function frame(ts) {
+            // 元素被 Blazor 移除 → 自停（参考 nexus.js grainientInit 的 isConnected 检查）
+            if (!container.isConnected) { cancelAnimationFrame(raf); return; }
             if (last === null) last = ts;
             var dt = Math.max(0, ts - last) / 1000;
             last = ts;

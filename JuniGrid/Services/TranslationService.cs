@@ -32,9 +32,7 @@ public sealed class TranslationService
     private static int _preferredChannel;   // 0=直连 1=系统代理；成功通道优先复用，避免每批都白等直连超时
 
 
-    private static readonly string CachePath = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-        "JuniGrid", "junigrid.translate-cache.json");
+    private static readonly string CachePath = Path.Combine(StoragePaths.AppDataDir, "junigrid.translate-cache.json");
 
     // ── 引擎主机（按优先级，同一协议三通道互为备份）──
     private static readonly (string Name, string Url)[] GoogleHosts =
@@ -74,7 +72,6 @@ public sealed class TranslationService
     private readonly ConcurrentDictionary<string, CacheEntry> _cache = new();
     private readonly ConcurrentDictionary<string, TaskCompletionSource<string>> _pendingTcs = new();
     private readonly ConcurrentQueue<(string Key, string Text)> _queue = new();
-    private readonly SemaphoreSlim _gate = new(3);                    // 并发 HTTP 上限
     private int _draining;
     private readonly System.Timers.Timer _sweepTimer;                 // 过期清扫器
 

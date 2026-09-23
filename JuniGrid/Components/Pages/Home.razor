@@ -3,9 +3,9 @@
 @inject ConfigService Cfg
 @inject GameService Game
 @inject ModService Mods
-@inject LauncherService Launcher
 @inject UpdateService Updater
 @inject PlayTimeService PlayTime
+@inject PageRefreshService PageRefresh
 @inject IJSRuntime JS
 @implements IDisposable
 
@@ -25,10 +25,24 @@
             </div>
         </div>
 
-        <div class="jg-card">
+        @* v1.4：版本卡可点击 → 版本管理弹窗（官方分支切换 / 锁定更新）
+           id = FLIP 源：点这张卡，弹窗从它的矩形放大出来 *@
+        <div class="jg-card jg-card-click" id="jgVerCard" @onclick="OpenVersionMgr" data-tip="切换官方旧版本 / 锁定自动更新">
             <div class="jg-stat-label">游戏版本</div>
-            <div class="jg-stat-num">@(_gameVersion ?? "未定位")</div>
-            <div class="jg-stat-sub">Stardew Valley</div>
+            <div class="jg-stat-num">
+                @if (UpdateService.DisplayGameVersion(_gameVersion, Cfg.Current.LastHistoricalLabel, Cfg.Current.LastHistoricalInternalVersion) is { Length: > 0 } ver)
+                {
+                    @ver
+                }
+                else
+                {
+                    <span class="jg-shimmer jg-shimmer-line" style="width:4.5em;height:.95em;display:inline-block"></span>
+                }
+            </div>
+            <div class="jg-stat-sub jg-ver-card-sub">
+                <span>Stardew Valley</span>
+                <span class="jg-ver-hint">管理版本 ⇄</span>
+            </div>
         </div>
 
         <div class="jg-card">
@@ -65,7 +79,7 @@
                     }
                 </div>
             </div>
-            <div class="jg-dd-overlay" data-dd="heatyear" @(_heatDdOpen ? "open" : "") @onclick="CloseYearDd"></div>
+            <div class="jg-dd-overlay @(_heatDdOpen ? "open" : "")" data-dd="heatyear" @onclick="CloseYearDd"></div>
         </div>
         <div class="jg-heat-scroll">
             <table class="jg-heat-grid">
@@ -129,6 +143,9 @@
             </div>
         </div>
     </div>
+
+    @* ─── v1.4：游戏版本管理弹窗（版本卡入口）─── *@
+    <GameVersionDialog Open="_verOpen" OnClose="CloseVersionMgr" OnVersionChanged="RefreshVersions"/>
 </div>
 
 @code {
@@ -137,6 +154,43 @@
     private string? _gameVersion;
     private int _totalModCount;
     private int _activeModCount;
+
+    // ─── v1.4：版本管理入口 ───
+    private bool _verOpen;
+
+    private void OpenVersionMgr() => _verOpen = true;
+
+    private void RefreshVersions()
+    {
+        var cfg = Cfg.Current;
+        _cfg = cfg;
+        StateHasChanged();
+        // 全挪到后台：ProbeSmapiVersion(freshRead) 会把 SMAPI exe **拷一份到临时目录**再读版本
+        // （绕开 Windows 的版本资源缓存），加上本体版本探测和整棵 Mods 重扫 —— 原来这些
+        // 全在 UI 线程上跑，就是"关闭版本管理卡一下"。现在先画旧值，探完再补。
+        _ = Task.Run(() =>
+        {
+            var gv = Updater.GetGameVersion(cfg.GamePath);
+            var sv = Game.ProbeSmapiVersion(cfg.GamePath, freshRead: true);
+            // 1.0/1.1 等无适配 SMAPI：磁盘上若还残留 1.6 的 4.x，不要显示成「就绪」
+            if (UpdateService.IsSmapiUnsupported(gv)) sv = null;
+            var mods = Mods.Scan(cfg.GamePath);
+            _ = InvokeAsync(() =>
+            {
+                _gameVersion = gv;
+                _smapiVersion = sv;
+                _totalModCount = mods.Count;
+                _activeModCount = mods.Count(m => !m.Disabled);
+                StateHasChanged();
+            });
+        });
+    }
+
+    private void CloseVersionMgr()
+    {
+        _verOpen = false;
+        RefreshVersions();   // 关闭时兜底对齐一次（切换成功时弹窗已实时刷过）
+    }
 
     // ─── v1.1.5：热力图 ───
     private sealed record HeatCell(string Key, bool InYear, bool Future, long Seconds, int Month)
@@ -172,27 +226,45 @@
             }
         }
 
-        _smapiVersion = Game.ProbeSmapiVersion(_cfg.GamePath);
-        _gameVersion = Updater.GetGameVersion(_cfg.GamePath);
-
-        // v1.1.6：全盘扫描移出 UI 线程 —— 首页只为取两个计数，旧版同步 Scan
-        // 几百个 mod 的 manifest 会让首页切换明显卡顿；计数就位后再刷新一帧。
+        // v1.4.6：版本探测（读 exe FileVersion + SMAPI freshRead 拷贝）也丢后台 ——
+        // 同步跑会把「点首页」卡成半天，和 Scan 一起回来再刷一帧
         _ = Task.Run(() =>
         {
+            var gv = Updater.GetGameVersion(_cfg.GamePath);
+            var sv = Game.ProbeSmapiVersion(_cfg.GamePath, freshRead: true);
+            if (UpdateService.IsSmapiUnsupported(gv)) sv = null;
             var mods = Mods.Scan(_cfg.GamePath);
-            _totalModCount = mods.Count;
-            _activeModCount = mods.Count(m => !m.Disabled);
-            return InvokeAsync(StateHasChanged);
+            return InvokeAsync(() =>
+            {
+                _gameVersion = gv;
+                _smapiVersion = sv;
+                _totalModCount = mods.Count;
+                _activeModCount = mods.Count(m => !m.Disabled);
+                StateHasChanged();
+            });
         });
 
         // v1.1.5：时长数据每 30s 可能被后台累计，订阅变化实时刷新热力图
         PlayTime.OnChanged += OnPlayChanged;
+        // 换版本会把本体整包替换：切换那一瞬间读到的版本号是空的（exe 还没落回来），
+        // 首页/侧栏因此一直显示「未定位」。订阅版本信号，切完主动重读。
+        PageRefresh.OnRefresh += OnPageRefresh;
         RebuildHeat();
+    }
+
+    private void OnPageRefresh(string key)
+    {
+        if (key != "version") return;
+        _ = InvokeAsync(RefreshVersions);
     }
 
     private void OnPlayChanged() => InvokeAsync(RebuildHeat);
 
-    public void Dispose() => PlayTime.OnChanged -= OnPlayChanged;
+    public void Dispose()
+    {
+        PlayTime.OnChanged -= OnPlayChanged;
+        PageRefresh.OnRefresh -= OnPageRefresh;
+    }
 
     private void RebuildHeat()
     {
@@ -304,4 +376,5 @@
 
     private static string FormatTime(string iso) =>
         DateTime.TryParse(iso, out var t) ? t.ToString("MM-dd HH:mm") : iso;
+
 }

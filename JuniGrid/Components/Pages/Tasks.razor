@@ -1,13 +1,13 @@
 @namespace JuniGrid.Components.Pages
 @page "/tasks"
 @inject TaskCenterService Center
-@inject NavigationManager Nav
+@inject VersionDownloadService VerDl
 @inject IJSRuntime JS
 @implements IDisposable
 
 <div class="jg-page jg-tasks-page">
     <div class="jg-tasks-inner" style="display:flex;gap:16px;">
-        <aside style="flex:0 0 200px;">
+        <aside class="jg-tasks-side" style="flex:0 0 200px;">
             @* ─── 透明底黑箭头返回（悬浮白底黑字胶囊提示跟随鼠标）─── *@
             <button class="jg-tasks-back" @onclick="GoBack" data-tip="返回" aria-label="返回">
                 <svg width="20" height="20" viewBox="0 0 1024 1024" fill="none">
@@ -17,12 +17,19 @@
             <div style="margin-top:24px;font-size:13px;opacity:.7;">总进度</div>
             <div style="font-size:26px;font-weight:600;color:var(--jg-text)">@Center.TotalPercent.ToString("F2") %</div>
             <div style="margin-top:16px;font-size:13px;opacity:.7;">下载速度</div>
-            <div style="font-size:22px;font-weight:600;color:var(--jg-text)">@Center.TotalSpeedMBps.ToString("F2") M/s</div>
+            <div style="font-size:22px;font-weight:600;color:var(--jg-text)">@(Center.TotalSpeedKnown ? Center.TotalSpeedMBps.ToString("F2") + " M/s" : "—")</div>
             <div style="margin-top:16px;font-size:13px;opacity:.7;">剩余任务</div>
             <div style="font-size:22px;font-weight:600;color:var(--jg-text)">@Center.RunningCount</div>
-            <div style="margin-top:24px;">
-                <button class="jg-tasks-clear" @onclick="AskClear" data-tip="清理当前筛选下的所有任务"
-                        disabled="@(_visible.Count == 0)">清理全部</button>
+            <div style="margin-top:24px;display:flex;flex-direction:column;gap:8px;">
+                <button class="jg-tasks-clear" @onclick="ResumeAll"
+                        data-tip="继续所有已暂停的任务（历史版本会从头重下）"
+                        disabled="@(!HasPaused)">全部继续</button>
+                <button class="jg-tasks-clear" @onclick="PauseAll"
+                        data-tip="暂停所有进行中的任务（含排队中的）"
+                        disabled="@(!HasRunning)">全部暂停</button>
+                <button class="jg-tasks-clear" @onclick="AskClear"
+                        data-tip="删除当前筛选下的所有任务记录，正在跑的会一起取消"
+                        disabled="@(_visible.Count == 0)">全部删除</button>
             </div>
         </aside>
         <section style="flex:1;min-width:0;">
@@ -62,12 +69,27 @@
                     var dropId = "jgDrop-" + t.Id.ToString("N");
                     var arrowId = "jgArr-" + t.Id.ToString("N");
                     <div class="jg-card" @key="t.Id" style="margin-bottom:10px;">
-                        <div style="display:flex;justify-content:space-between;align-items:center;">
+                        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
                             <div style="font-weight:600;word-break:break-word;overflow-wrap:anywhere;flex:1;min-width:0;">@t.Title</div>
-                            <button class="jg-rowbtn" @onclick="() => Remove(t)" title="移除">×</button>
+                            @if (t.Status == "running" && t.CanPause)
+                            {
+                                <button class="jg-rowbtn" @onclick="() => Pause(t)" title="暂停">⏸</button>
+                            }
+                            else if (t.Status == "paused" && t.CanPause)
+                            {
+                                <button class="jg-rowbtn" @onclick="() => Resume(t)" title="继续">▶</button>
+                            }
+                            @if (t.Status is "running" or "paused")
+                            {
+                                <button class="jg-rowbtn" @onclick="() => Remove(t)" title="取消">×</button>
+                            }
+                            else
+                            {
+                                <button class="jg-rowbtn" @onclick="() => Remove(t)" title="移除">×</button>
+                            }
                         </div>
                         <div style="margin-top:6px;font-size:12px;display:flex;align-items:center;gap:6px;">
-                            <span style="opacity:.7;">@(t.Status == "running" ? "运行中" : t.Status == "done" ? "已完成" : "失败") · @t.Percent.ToString("F0")% @(t.SpeedMBps > 0 ? $" · {t.SpeedMBps:F2} M/s" : "")</span>
+                            <span style="opacity:.7;">@(RowState(t)) · @t.Percent.ToString("F0")% @(RowExtra(t))</span>
                             @if (log.Count > 0)
                             {
                                 @* ─── 数字进度后边的下拉按钮：展开该任务的下载信息 ─── *@
@@ -167,16 +189,16 @@
         </section>
     </div>
 
-    @* ─── 清理确认弹窗 ─── *@
+    @* ─── 全部删除确认弹窗 ─── *@
     @if (_confirmClear)
     {
-        <div class="jg-tasks-confirm-mask" @onclick="() => _confirmClear = false">
+        <div class="jg-tasks-confirm-mask" @onclick="CancelConfirm">
             <div class="jg-tasks-confirm" @onclick:stopPropagation>
-                <div style="font-weight:600;margin-bottom:6px;">清理任务</div>
-                <div style="font-size:13px;opacity:.8;">确定清理当前筛选下的所有任务吗？</div>
+                <div style="font-weight:600;margin-bottom:6px;">删除任务</div>
+                <div style="font-size:13px;opacity:.8;">确定删除当前筛选下的 @_visible.Count 条任务吗？正在下载/安装的会一起取消。</div>
                 <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px;">
-                    <button class="jg-tasks-cancel" @onclick="() => _confirmClear = false">取消</button>
-                    <button class="jg-tasks-clear" style="margin:0;" @onclick="DoClear">确定清理</button>
+                    <button class="jg-tasks-cancel" @onclick="CancelConfirm">取消</button>
+                    <button class="jg-tasks-clear" style="margin:0;" @onclick="DoClear">确定删除</button>
                 </div>
             </div>
         </div>
@@ -187,6 +209,7 @@
     // v1.1.6：渲染改用线程安全快照 —— 之前直接枚举 Center.Items（后台下载线程随时
     // Insert/Remove），渲染途中撞「集合已修改」会炸掉整页；t.Log 的枚举同理改用副本。
     private List<(TaskItem Item, List<string> Log)> _visible = new();
+    private bool HasPaused, HasRunning;
 
     protected override void OnInitialized()
     {
@@ -198,7 +221,10 @@
 
     private void RebuildVisible()
     {
-        IEnumerable<TaskItem> q = Center.Snapshot();
+        var snap = Center.Snapshot();
+        HasPaused = snap.Any(t => t.Status == "paused");
+        HasRunning = snap.Any(t => t.Status == "running");
+        IEnumerable<TaskItem> q = snap;
         // 类型维度：Mod 下载 = 下载/安装/更新；缓存清理 = cleanup
         if (_kind == "mod") q = q.Where(t => t.Kind != "cleanup");
         else if (_kind == "cleanup") q = q.Where(t => t.Kind == "cleanup");
@@ -333,9 +359,67 @@
         _openDrops.Remove(t.Id);
     }
 
-    // ─── 清理全部（当前筛选）：确认弹窗 → 按筛选条件清空 ───
+    private void Pause(TaskItem t) => Center.Pause(t);
+    private void Resume(TaskItem t)
+    {
+        // 历史版本走 VersionDownloadService（自带 resume 字典）；其余走任务中心统一注册表
+        if (t.Kind == "gameversion")
+        {
+            VerDl.Resume(t);
+            return;
+        }
+        if (!Center.Resume(t))
+            _ = JS.InvokeVoidAsync("junigridJs.toast", "该任务暂停后需重新发起（已保留已下载部分）", "err");
+    }
+
+    // ─── 全部删除（当前筛选）：确认弹窗 → 按筛选清掉记录，正在跑的同步取消 ───
     private bool _confirmClear;
     private void AskClear() => _confirmClear = true;
+    private void CancelConfirm() => _confirmClear = false;
+
+    /// <summary>行首状态字：版本下载在排队等 Steam 会话时，磁盘上什么都没发生，
+    /// 写「运行中」是骗人的 → 写「等待中」。</summary>
+    private string RowState(TaskItem t) => t.Status switch
+    {
+        "running" when VerDl.IsQueued(t) => "等待中",
+        "running" => "运行中",
+        "paused" => "已暂停",
+        "done" => "已完成",
+        _ => "失败",
+    };
+
+    /// <summary>状态后面的第二个数：报过速度的（走启动器下载的 mod）显示速度；
+    /// 版本下载没有速度可报（DepotDownloader 不输出字节数）→ 显示跑了多久，
+    /// 至少能看出它是不是在动。排队中的两个都不显示 —— 那一路什么都没发生。</summary>
+    private string RowExtra(TaskItem t)
+    {
+        if (t.Status != "running" || VerDl.IsQueued(t)) return "";
+        return t.SpeedReported ? $"· {t.SpeedMBps:F2} M/s" : $"· 已运行 {Elapsed(t.StartedAt)}";
+    }
+
+    private static string Elapsed(DateTime since)
+    {
+        var d = DateTime.Now - since;
+        if (d.TotalHours >= 1) return $"{(int)d.TotalHours} 小时 {d.Minutes:00} 分";
+        if (d.TotalMinutes >= 1) return $"{(int)d.TotalMinutes} 分 {d.Seconds:00} 秒";
+        return $"{(int)Math.Max(0, d.TotalSeconds)} 秒";
+    }
+
+    /// <summary>全部继续：逐条按各自 kind 重挂 worker。历史版本下载现在会**接着半截包续传**
+    /// （底层认出同一 manifest 就不清空，见 DepotDownloaderService.CanResumeStagedPackage）。</summary>
+    private void ResumeAll()
+    {
+        foreach (var t in Center.Snapshot().Where(t => t.Status == "paused").ToList())
+            Resume(t);
+    }
+
+    /// <summary>全部暂停：排队中的版本下载也一起掐掉（取消 CTS 会让它退出等会话）。</summary>
+    private void PauseAll()
+    {
+        foreach (var t in Center.Snapshot().Where(t => t.Status == "running" && t.CanPause).ToList())
+            Center.Pause(t);
+    }
+
     private void DoClear()
     {
         _confirmClear = false;
@@ -348,13 +432,6 @@
         });
     }
 
-    private void Clear() => Center.ClearFinished();
     // v1.06.6：返回 = history.back 回到进入前的页面
     private void GoBack() => _ = JS.InvokeVoidAsync("junigridJs.goBack");
-    private void OpenSmapiInstallerFolder()
-    {
-        try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(StoragePaths.SmapiInstallerDir) { UseShellExecute = true }); } catch { }
-    }
-    private void OpenSmapiSite() =>
-        System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("https://smapi.io") { UseShellExecute = true });
 }

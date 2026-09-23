@@ -8,8 +8,7 @@ namespace JuniGrid.Services;
 /// </summary>
 public sealed class ConfigService
 {
-    private static readonly string ConfigDir =
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "JuniGrid");
+    private static readonly string ConfigDir = StoragePaths.AppDataDir;
     private static readonly string ConfigPath = Path.Combine(ConfigDir, "junigrid.config.json");
 
     private static readonly JsonSerializerOptions JsonOpts = new()
@@ -76,8 +75,10 @@ public sealed class ConfigService
     }
 
         /// <summary>v0.2.1：把统一缓存目录同步到 StoragePaths 静态入口 —— 各服务取路径零改动即时生效。</summary>
-        private void SyncStoragePaths() =>
+        private void SyncStoragePaths()
+        {
             StoragePaths.CacheRoot = string.IsNullOrWhiteSpace(Current.CacheRoot) ? null : Current.CacheRoot;
+        }
 
     // v0.72.6：持久化协调器 —— Save() 不再每次全量写盘，改为 dirty 标记 + 250ms 防抖合并 +
     // 版本号快照 + 单写者后台落盘 + tmp 原子替换 + 异步重试。批量 63 个 mod 的 100+ 次
@@ -213,11 +214,14 @@ public sealed class ConfigService
     }
 }
 
-/// <summary>v0.46.0：mod 存档（仿 Stardrop Profile）—— 记录该存档下启用哪些 mod（按 UniqueID）。</summary>
+/// <summary>v0.46.0：mod 存档（仿 Stardrop Profile）—— 记录该存档下启用哪些 mod（按 UniqueID）。
+/// vNext：按游戏版本隔离 —— 切换版本会整包替换 Mods/，启用清单不能跨版本共用。</summary>
 public sealed class ModProfile
 {
     public string Name { get; set; } = "";
     public List<string> EnabledModUids { get; set; } = new();
+    /// <summary>所属游戏版本（展示号，如 1.6.15 / 1.4 / 1.0）。空 = 旧配置，首次读取时迁到当前版本。</summary>
+    public string GameVersion { get; set; } = "";
 }
 
 public sealed class JuniGridConfig
@@ -225,12 +229,10 @@ public sealed class JuniGridConfig
     public string GamePath { get; set; } = "";
     public string LaunchMode { get; set; } = "smapi";   // "smapi" | "steam"
     public string SteamAppId { get; set; } = "413150";
-    public string ActiveShaderPreset { get; set; } = "balanced";
     public string NexusApiKey { get; set; } = "";
 
     // Launch history
     public string? LastLaunchTime { get; set; }          // ISO-8601
-    public string? LastLaunchMode { get; set; }
     public int TotalLaunchCount { get; set; }
 
     /// <summary>v1.1.5：首次使用 JuniGrid 的日期（ISO-8601，首次保存配置时补写一次）。
@@ -243,6 +245,15 @@ public sealed class JuniGridConfig
     /// <summary>用户给 mod 起的备注名：mod 文件夹名 → 备注（列表里显示成 “备注(原名)”）。</summary>
     /// <summary>v1.1.2：mod 文件夹 → 备注名。列表显示成「备注(原名)」，并同步进 mod 的
     /// manifest.json（游戏内 GMCM 标题读的就是它）。</summary>
+    /// <summary>
+    /// v1.6.8：启动器从 N 网装过的 MAIN 文件记录（UniqueID/Folder → fileId+文件版本）。
+    /// 更新比对的权威口径是「N 网 MAIN 文件」而不是 manifest.Version ——
+    /// 作者上传新文件却忘改包内 Version（Haley 恒 0.0.1、N 网文件 1）时，
+    /// 只比 manifest 会永远报「可更新」，用户反复点更新都装不掉，误以为启动器坏了。
+    /// 安装成功后记下 fileId/文件版本，并把该版本回写进本地 manifest，装完即粘住。
+    /// </summary>
+    public Dictionary<string, NexusInstallRecord> ModNexusInstalls { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
     public Dictionary<string, string> ModRemarks { get; set; } = new();
     /// <summary>v1.1.2：mod 文件夹 → 该 mod 清单里的原始 Name。备注同步进 manifest 前先存档，
     /// 取消备注时用它还原，避免原名丢失。</summary>
@@ -264,9 +275,47 @@ public sealed class JuniGridConfig
     /// </summary>
     public bool EnableOneClickInstall { get; set; } = true;
 
+    /// <summary>
+    /// v1.2.4：锁定游戏版本 —— 把 Steam 的 appmanifest_413150.acf 设为只读，
+    /// Steam 客户端（含 steam:// 启动前的强制更新）写不进版本清单，本体停留在当前版本，
+    /// 想玩旧版 mod 的玩家不再被 Steam 强升。想更新游戏时关掉本开关即可恢复。
+    /// 非 Steam 版（GOG 等）找不到清单文件，开关自动禁用。
+    /// </summary>
+    public bool LockGameVersion { get; set; } = false;
+
+    /// <summary>
+    /// v1.4：版本相关 Steam 账号名 —— 只记住 Steam 账号名方便下次回填；
+    /// 密码与验证码每次输入、不落盘。
+    /// </summary>
+    public string SteamCmdAccount { get; set; } = "";
+
+    /// <summary>v1.4.1：最近一次经 DepotDownloader 装上的历史 Manifest ID（空 = 当前走官方分支）。</summary>
+    public string LastHistoricalManifest { get; set; } = "";
+
+    /// <summary>v1.4.1：历史版本展示名（如 "1.5.4 · 1.5.4"），配合 LastHistoricalManifest 回填 UI。</summary>
+    public string LastHistoricalLabel { get; set; } = "";
+
+    /// <summary>
+    /// v1.4.5：上一次应用的历史版本对应的"文件内部版本号"（星露谷 1.4 → 1.3.7269 这种）。
+    /// 当前文件内部版本号与其一致时，UI 可放心用 LastHistoricalLabel 作为展示版本号。
+    /// </summary>
+    public string LastHistoricalInternalVersion { get; set; } = "";
+
+    /// <summary>
+    /// v1.5：DepotDownloader 扫码登录 —— 手机扫码确认过一次后置 true，
+    /// 刷新令牌由 DepotDownloader 自行持久化在本机；之后下载走令牌免密。
+    /// 令牌失效（约几个月/改密码）时由 UI 重置为 false 重新扫码。
+    /// </summary>
+    public bool DepotQrLoggedIn { get; set; } = false;
+
+    /// <summary>
+    /// v1.4.2：用户自定义历史版本条目 —— 从 SteamDB 复制的任意 Manifest ID。
+    /// 与内置清单合并展示；可删除。按需下载，不预拉全量。
+    /// </summary>
+    public List<CustomHistoricalVersion> CustomHistoricalVersions { get; set; } = new();
+
     /// <summary>Nexus 登录后缓存的用户信息（来自 /v1/users/validate.json）。</summary>
     public string NexusUserName { get; set; } = "";
-    public string NexusUserEmail { get; set; } = "";
     public string NexusProfileUrl { get; set; } = "";
     public bool   NexusIsPremium { get; set; }
 
@@ -274,6 +323,11 @@ public sealed class JuniGridConfig
     /// 启动时 TitleBar 用它对齐前端（localStorage 为防闪白的同步快路径）。
     /// v1.1.2：默认改为 dark（用户主用暗色观察界面）。</summary>
     public string Theme { get; set; } = "dark";
+
+    /// <summary>v1.3.9：每季节独立皮肤 —— 角色 id → "spring:包␟summer:包␟fall:包␟winter:包"
+    ///（缺季 = 该季用全局选择）。覆盖包按季钉变体资产。</summary>
+    public Dictionary<string, string> PortraitSeasonSkins { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
     /// <summary>v0.69.0：modId → 最后一次从该 mod 下载文件的日期（yyyy-MM-dd）。本地安装/更新时记录，并与 N 网下载历史合并。</summary>
     public Dictionary<string, string> ModLastDownload { get; set; } = new();
     /// <summary>v0.69.0：fileId → 该文件的下载日期（仅本机经系统内下载过的）。</summary>
@@ -290,10 +344,12 @@ public sealed class JuniGridConfig
     /// <summary>累计游玩时间（分钟）。LauncherService 在游戏进程退出时累加。</summary>
     public long TotalPlayMinutes { get; set; }
 
-    /// <summary>v0.46.0：mod 存档列表（"默认" 为内置存档，不可删除）。</summary>
+    /// <summary>v0.46.0：mod 存档列表（"默认" 为内置存档，不可删除）。按 GameVersion 分组使用。</summary>
     public List<ModProfile> ModProfiles { get; set; } = new();
-    /// <summary>当前激活的存档名。</summary>
+    /// <summary>当前激活的存档名（旧字段，仅作迁移兜底）。</summary>
     public string ActiveProfile { get; set; } = "默认";
+    /// <summary>各游戏版本的当前存档名（展示号 → 存档名）。切版本后互不干扰。</summary>
+    public Dictionary<string, string> ActiveProfileByGame { get; set; } = new();
 
     /// <summary>Nexus 官方分类表（category_id → 英文名），运行时带 API Key 拉取一次并缓存。</summary>
     public Dictionary<int, string> NexusCategories { get; set; } = new();
@@ -313,9 +369,18 @@ public sealed class JuniGridConfig
     public Dictionary<string, int> DependencyNexusIds { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>v1.2.4：缺失依赖弹窗的展示缓存 —— UniqueID → (modId, 名称, 封面 URL)。
-    /// 弹窗打开时先查此缓存同步出结果（封面本体由 CoverCacheService 落盘），
+    /// 弹窗打开时先查此缓存同步出结果（封面本体由 WebView2 直连远程 URL），
     /// 未命中才做免 key 搜索并回写。只用于展示 —— 安装仍以下载后的 UniqueID 校验为准。</summary>
     public Dictionary<string, DependencyDisplayEntry> DependencyDisplays { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>v1.3.0 立绘页：每个角色当前生效的皮肤 —— 角色 id → 包 Folder（相对 Mods/）。
+    /// v2 规格：只有这一个字典（选中某皮肤 = 大头照+精灵图一起切换）；键为角色 id 或 "Horse"。</summary>
+    public Dictionary<string, string> PortraitSkins { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>v1.4 覆盖包机制：用户显式点了「默认」的角色 id。覆盖包会把这些角色的
+    /// 原版立绘拷进去以最高优先级 Load，压过其它启用包的同名补丁；不在名单里的角色
+    /// = 从未碰过，游戏里按 mod 自己的默认走。</summary>
+    public List<string> PortraitVanillaDefaults { get; set; } = new();
 
     /// <summary>v0.2.1：统一缓存目录（null = 各类缓存走历史默认位置）。
     /// 设置后下载/安装临时、SMAPI 安装包、WebView2 数据、Mods 备份都迁到该目录下的子目录。</summary>
@@ -341,6 +406,15 @@ public sealed class JuniGridConfig
 
 }
 
+/// <summary>v1.4.2：用户从 SteamDB 手动收录的历史版本。</summary>
+public sealed class CustomHistoricalVersion
+{
+    public string Label { get; set; } = "";
+    public string ManifestId { get; set; } = "";
+    public string? Version { get; set; }
+    public string? Note { get; set; }
+}
+
 /// <summary>vNext：单条更新检查指纹。UpdatedAt 与 GraphQL 批量结果逐字比对；
 /// LatestFileVersion 只会写「files.json 精查成功」的结果（与安装源同一权威口径）；
 /// CheckedAtUtc 给缓存兜底有效期（24h，防 updatedAt 假设之外的极端情况长期滞留）。</summary>
@@ -357,4 +431,14 @@ public sealed class DependencyDisplayEntry
     public string Name { get; set; } = "";
     public int ModId { get; set; }
     public string CoverUrl { get; set; } = "";
+}
+
+/// <summary>启动器从 Nexus 安装过的 MAIN 文件快照（更新粘住判定用）。</summary>
+public sealed class NexusInstallRecord
+{
+    public int NexusModId { get; set; }
+    public long FileId { get; set; }
+    /// <summary>N 网 MAIN 文件上的版本号（可能与包内 manifest.Version 不一致）。</summary>
+    public string RemoteVersion { get; set; } = "";
+    public DateTime InstalledAtUtc { get; set; } = DateTime.UtcNow;
 }

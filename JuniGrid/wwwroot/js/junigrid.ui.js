@@ -1,5 +1,5 @@
 // ============================================================
-// 通用 UI 交互：toast、光标倾斜、像素溶解（PixelSwap/启动按钮 hover）、
+// 通用 UI 交互：toast、光标倾斜、
 // scrollSpy、存档/头像/更新/作者气泡 tooltip、聚焦辅助
 // ============================================================
 // ------------------ 全局 toast（黑底白字默认；kind="err" 红底白字；2.6s 自动消失） ------------------
@@ -83,178 +83,9 @@ window.junigridJs.tiltPerspective = function (selector, opts) {
     el.addEventListener('pointerleave', onLeave);
 };
 
-
-// ---- PixelSwap 像素溶解：第二阶段内容以像素块逐个 reveal/收合。（纯 JS，WAAPI）----
-// pixelSwap(btn, maskEl, activate, opts)：把 maskEl 作为第二态，以网格像素 reveal(进入)或收回(离开)。
-(function () {
-    if (typeof document === 'undefined') return;
-
-    var clamp = function (v, a, b) { return v < a ? a : (v > b ? b : v); };
-    var noise = function (s) { var v = Math.sin(s * 127.1 + 311.7) * 43758.5453; return v - Math.floor(v); };
-    var MAXP = 240;
-
-    function buildGrid(w, h, size, gap, randomness) {
-        var cols = Math.max(1, Math.ceil((w + gap) / (size + gap)));
-        var rows = Math.max(1, Math.ceil((h + gap) / (size + gap)));
-        if (cols * rows > 240) {
-            size = Math.ceil(size * Math.sqrt((cols * rows) / 240));
-            cols = Math.max(1, Math.ceil((w + gap) / (size + gap)));
-            rows = Math.max(1, Math.ceil((h + gap) / (size + gap)));
-        }
-        var stride = size + gap;
-        var ox = (w - (cols * stride - gap)) / 2;
-        var oy = (h - (rows * stride - gap)) / 2;
-        var mix = clamp(randomness, 0, 1);
-        var pos = [], i = 0;
-        for (var r = 0; r < rows; r++) for (var c = 0; c < cols; c++) {
-            var x = cols <= 1 ? 0.5 : c / (cols - 1);
-            var y = rows <= 1 ? 0.5 : r / (rows - 1);
-            var base = (x + y) / 2;
-            var rst = noise(i + 1);
-            pos.push({ left: ox + c * stride, top: oy + r * stride, off: base * (1 - mix) + rst * mix });
-            i++;
-        }
-        return { pos: pos, size: size };
-    }
-
-    window.junigridJs.pixelSwap = function (btn, mask, activate, opts) {
-        opts = opts || {};
-        if (!btn) return;
-        // 清除旧网格
-        var old = btn.querySelector('.px-grid');
-        var oldAnims = old ? old.__anims : null;
-        if (oldAnims) oldAnims.forEach(function (a) { try { a.cancel(); } catch (e) {} });
-        if (old) { old.parentNode && old.parentNode.removeChild(old); }
-
-        var w = Math.max(20, btn.clientWidth);
-        var h = Math.max(20, btn.clientHeight);
-        var gg = opts.gap || 0;
-        var grid = buildGrid(w, h, opts.pixelSize || Math.round(Math.max(8, w / 13)), gg, opts.randomness || 0.2);
-        btn.style.position = 'relative';
-
-        var ms = Math.max(180, opts.duration || 420);
-        var pixMs = clamp(opts.pixelDuration || 250, 60, ms);
-        var spread = Math.max(0, ms - pixMs);
-        var s0 = opts.pixelScale || 0.3;
-
-        // 生成 keyframes（放大揭示）
-        var kf = [];
-        for (var s = 0; s <= 10; s++) {
-            var p = s / 10, t = p;
-            var sc = s0 + (1 - s0) * t;
-            kf.push({ offset: p, opacity: t, transform: 'scale(' + sc + ')' });
-        }
-
-        // 若 activate=false(收回)：反向收缩 + 淡出（scale 1→s0, opacity 1→0）
-        var outKf = [];
-        for (var q = 0; q <= 10; q++) {
-            var pr = q / 10;
-            var sc2 = 1 + (s0 - 1) * pr;
-            outKf.push({ offset: pr, opacity: 1 - pr, transform: 'scale(' + sc2 + ')' });
-        }
-
-        var gridEl = document.createElement('div');
-        gridEl.className = 'px-grid';
-        gridEl.style.cssText = 'position:absolute;inset:0;z-index:6;pointer-events:none;overflow:hidden;';
-        btn.appendChild(gridEl);
-
-        var anims = [];
-        grid.pos.forEach(function (p) {
-            var px = document.createElement('div');
-            px.style.cssText = 'position:absolute;left:' + p.left + 'px;top:' + p.top + 'px;width:' + grid.size + 'px;height:' + grid.size + 'px;border-radius:' + (opts.pixelRadius || 3) + '%;overflow:hidden;';
-
-            // 每个像素内放 mask 的窗口版
-            var win = document.createElement('div');
-            win.style.cssText = 'width:100%;height:100%;';
-            var clone = mask.cloneNode(true);
-            clone.style.cssText = 'position:absolute;left:' + (-p.left) + 'px;top:' + (-p.top) + 'px;width:' + w + 'px;height:' + h + 'px;transform-origin:' + (p.left + grid.size / 2) + 'px ' + (p.top + grid.size / 2) + 'px;';
-            win.appendChild(clone);
-            px.appendChild(win);
-            gridEl.appendChild(px);
-            var timing = { duration: pixMs, delay: p.off * spread, easing: 'linear', fill: 'both' };
-            try { anims.push(px.animate(activate ? kf : outKf, timing)); } catch (e) {}
-        });
-        gridEl.__anims = anims;
-
-        // 非激活（收回时）：动画结束移除网格；激活则保留住呈现第二态，稍后清理由 leave 触发收回
-        if (!activate) {
-            setTimeout(function () {
-                if (gridEl.parentNode) gridEl.parentNode.removeChild(gridEl);
-            }, Math.max(ms, 600));
-        }
-    };
-
-    // hover 绑定：etriz进入 显示"点击启动！"白蒙版；离开 收回到按钮原样
-    window.junigridJs.launchHover = function (sel) {
-        var btn = sel ? document.querySelector(sel) : document.getElementById('launch-btn');
-        if (!btn) return;
-        var mask;   // 缓存的第二态内容
-        var show = false;
-        function buildMask() {
-            var m = document.createElement('div');
-            m.className = 'px-launch-mask';
-            var txt = document.createElement('span');
-            txt.className = 'px-launch-txt';
-            txt.textContent = '点击启动！';
-            m.appendChild(txt);
-            return m;
-        }
-        // 启动中/运行中（disabled 或 .running/.launching）时，不做像素溶解
-        function busy() {
-            return btn.disabled || !!btn.closest('.jg-launch-row.running') || !!btn.closest('.jg-launch-row.launching');
-        }
-        function clearGrids() {
-            btn.querySelectorAll('.px-grid').forEach(function (grid) {
-                if (grid.__anims) grid.__anims.forEach(function (a) { try { a.cancel(); } catch (e) {} });
-                if (grid.parentNode) grid.parentNode.removeChild(grid);
-            });
-        }
-        // 宽度过渡（关游戏/取消启动时 320ms 展回全宽）是否进行中
-        function widthTransitioning() {
-            var anims;
-            try { anims = btn.getAnimations(); } catch (e) { return false; }
-            for (var i = 0; i < anims.length; i++) {
-                var a = anims[i];
-                if (a && typeof CSSTransition !== 'undefined' && a instanceof CSSTransition
-                    && a.transitionProperty === 'width' && a.playState === 'running') return true;
-            }
-            return false;
-        }
-        btn.addEventListener('mouseenter', function () {
-            if (busy()) {
-                // 非空闲（启动中/运行中）：即使此前残留了蒙版也一并清掉，保证显示原始按钮文案
-                clearGrids();
-                show = false;
-                return;
-            }
-            if (show) return;
-            show = true;   // 先占位，防快速 enter/leave 竞态重复铺
-            // 拖一帧再铺：宽度过渡可能恰在本帧才开始（running/launching class 刚切换），
-            // 当场量宽会缺一块；且宽度动画进行中 hover 完全无效果（产品要求）
-            requestAnimationFrame(function () {
-                if (!show || busy() || widthTransitioning() || !btn.matches(':hover')) { show = false; return; }
-                if (!mask) mask = buildMask();
-                window.junigridJs.pixelSwap(btn, mask, true);
-            });
-        });
-        btn.addEventListener('mouseleave', function () {
-            // 启动中/运行中：不做像素「收回」动画，直接复位并清掉残留，避免移开鼠标时闪出反转动效
-            if (busy()) {
-                show = false;
-                clearGrids();
-                return;
-            }
-            if (!show) return;
-            show = false;
-            // rAF 前就移开的话网格还没铺，无需收回动画
-            if (!btn.querySelector('.px-grid')) return;
-            if (mask) window.junigridJs.pixelSwap(btn, mask, false);
-        });
-    };
-})();
 (function () {
     window.junigridJs = window.junigridJs || {};
-    var tracked = null, trackedKey = null, ticking = false;
+    var tracked = null, trackedKey = null, ticking = false, scrollHandler = null;
 
     window.junigridJs.scrollSpy = function (selector, key, restore) {
         var el = document.querySelector(selector);
@@ -272,12 +103,15 @@ window.junigridJs.tiltPerspective = function (selector, opts) {
             }
         } catch (e) { }
         if (tracked === el && trackedKey === key) return;   // 已挂载不重复监听
+        // v1.09：.jg-main 跨页持久 —— 切页换 key 时先摘掉旧 handler（否则导航 N 次后
+        // 一次滚动会触发 N 个回调，sessionStorage 写入也重复 N 次）
+        if (tracked && scrollHandler) tracked.removeEventListener('scroll', scrollHandler);
         tracked = el; trackedKey = key;
         // v1.06.8：双重门控 —— 监听挂在跨页共享的 .jg-main 上，组件销毁后监听仍在：
         // ① 只在绑定时的页面 URL 上才写（否则在下载页滚动会把下载页的位置写进 modslist，
         //    返回列表就回不到原位）；② 页面切换过渡期（__jgScrollLock）不写。
         var pagePath = location.pathname + location.search;
-        el.addEventListener('scroll', function () {
+        scrollHandler = function () {
             if (ticking) return;
             ticking = true;
             requestAnimationFrame(function () {
@@ -286,7 +120,8 @@ window.junigridJs.tiltPerspective = function (selector, opts) {
                 if (location.pathname + location.search !== pagePath) return;
                 try { sessionStorage.setItem('jg-scroll:' + trackedKey, String(el.scrollTop)); } catch (e) { }
             });
-        }, { passive: true });
+        };
+        el.addEventListener('scroll', scrollHandler, { passive: true });
     };
 })();
 
@@ -331,13 +166,6 @@ window.junigridJs.tiltPerspective = function (selector, opts) {
         }
     };
 })();
-
-// ------------------ 问号帮助按钮的 GSAP 弹性 tooltip ------------------
-(function () {
-    window.junigridJs = window.junigridJs || {};
-    var bound = {};
-})();
-
 
 // ------------------ data-tip 跟随鼠标胶囊提示（与导航栏一致） ------------------
 (function () {
@@ -556,54 +384,356 @@ window.junigridJs.tiltPerspective = function (selector, opts) {
 
 
 
-// v0.70.1：用户头像卡片 —— easeReverse 源码同款：头像 elastic 放大 + 气泡弹出
-// v1.08.0：hover 自动开关废除 —— 移向气泡途中鼠标会扫过下方 mod 卡，离开头像即开始关闭倒计时，
-// 开启动画期间气泡命中区域又小（scale 0.4 起步），「卡片开着却自己关了」且概率性复现。
-// 改纯手动：点击头像开启、再点头像关闭；点击卡片外任意处收回；卡片内（查看主页/退出登录）不关。
-// v1.08.1：头像 hover 动画保留 —— 悬停弹性放大 / 移开还原，仅作反馈，不带动卡片开关。
+// ─── 对话框退场 ──────────────────────────────────────────────────────────
+// Blazor 一清状态就把节点从 DOM 摘掉，CSS 的退场动画根本没机会播。
+// 所以先拦下"关闭"那一击：演 180ms 退场，放完把同一击重新派发一次，让真正的 @onclick 去清状态。
+// 只拦关闭路径（点遮罩、点取消）；确认按钮不拦 —— 动作已生效还先演一段，反馈就拖慢了。
+(function () {
+    var OUT_MS = 180;
+    document.addEventListener("click", function (e) {
+        if (!e.target || !e.target.closest) return;
+        var overlay = e.target.closest(".jg-modal-overlay");
+        if (!overlay || overlay.__modalClosing || overlay.__modalAllow) return;
+        if (overlay.querySelector(".jg-ver-modal")) return;   // 版本弹窗自己走 FLIP，别抢它
+        var btn = e.target.closest("button");
+        var isBackdrop = e.target === overlay;
+        var isCancel = btn && btn.hasAttribute("data-modal-close");
+        if (!isBackdrop && !isCancel) return;
+        e.preventDefault();
+        e.stopPropagation();
+        overlay.__modalClosing = true;
+        overlay.classList.add("closing");
+        var target = isCancel ? btn : overlay;
+        setTimeout(function () {
+            overlay.__modalClosing = false;
+            overlay.__modalAllow = true;
+            target.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
+            overlay.__modalAllow = false;
+        }, OUT_MS);
+    }, true);
+})();
+
+// SwipeRow（vanilla）：左划露出删除。rail 和 surface 由同一个露出量驱动
+// （surface 左移 ex，rail 从它右边缘下跟着露出），所以按钮永远贴着行、中间不露底色。
+// 露出量到按钮宽封顶：再多划只有 22px 内容橡皮筋，不自动删，删除只认点击。
+
+// 当前敞着的行记在这里而不是 swipeRowsInit 内部：那个函数每次渲染都会再跑一遍，
+// 各自存一份的话，文档监听器和各行闭包握的就不是同一个变量（实测点外面收不回）。
+window.junigridJs.__swipeOpen = null;
+if (!window.junigridJs.__swipeDocBound) {
+    window.junigridJs.__swipeDocBound = true;
+    // 点这行外面（别的行、标题、空白）就先收回，不用非得往右划回来
+    document.addEventListener("pointerdown", function (e) {
+        window.junigridJs.__swipeSwallow = false;
+        var o = window.junigridJs.__swipeOpen;
+        if (o && !o.el.contains(e.target)) {
+            o.close();
+            // 这一下是用来收抽屉的，别再让它落到别的行上去切版本/下载
+            window.junigridJs.__swipeSwallow = true;
+        }
+    }, true);
+    document.addEventListener("click", function (e) {
+        if (!window.junigridJs.__swipeSwallow) return;
+        window.junigridJs.__swipeSwallow = false;
+        e.preventDefault();
+        e.stopPropagation();
+    }, true);
+    // 指针移出窗口再松手时 pointerup 不会送到，grip 会烂在那儿：那一行冻在橡皮筋位，
+    // 而且之后所有行都划不动（down 见 grip 就 return）。失焦/切走时按“就地收手”结算。
+    document.addEventListener("visibilitychange", function () {
+        if (document.hidden && window.junigridJs.__swipeAbort) window.junigridJs.__swipeAbort();
+    });
+    window.addEventListener("blur", function () {
+        if (window.junigridJs.__swipeAbort) window.junigridJs.__swipeAbort();
+    });
+}
+
+window.junigridJs.swipeRowsInit = function (rootSel) {
+    var root = document.querySelector(rootSel || ".jg-ver-vlist");
+    if (!root) return;
+    var HYST = 10, FLICK = 110, DECEL = 0.998;
+    var clamp = function (v, lo, hi) { return Math.min(hi, Math.max(lo, v)); };
+    var project = function (v) { return ((v / 1000) * DECEL) / (1 - DECEL); };
+    function vel(hist) {
+        if (hist.length < 2) return 0;
+        var a = hist[0], b = hist[hist.length - 1];
+        return ((b[1] - a[1]) / Math.max(1, b[0] - a[0])) * 1000;
+    }
+
+    root.querySelectorAll(".swipe-row").forEach(function (row) {
+        if (row.__swipeBound) return;
+        var surf = row.querySelector(".swipe-row__surface");
+        var rail = row.querySelector(".swipe-row__rail");
+        var act = row.querySelector(".swipe-row__action");
+        if (!surf || !rail || !act) return;   // 没有本地包的行没有抽屉，不绑
+        row.__swipeBound = true;
+
+        var A = rail.offsetWidth || 80;
+        var SOFT = 22, NEG = 28, K = 70;   // 越过终点的渐进阻力：只撑内容，按钮全露后钉在行右边
+        var glyph = act.querySelector(".swipe-row__glyph");
+        var ex = 0, grip = null, unwatch = null, swallow = false;
+
+        var clampEx = function (v) { return clamp(v, -NEG, A + SOFT); };
+        // 0..A 跟手；越界后越划越沉，行程渐近封顶（划到底也不会多露一颗按钮）
+        function resist(raw) {
+            if (raw > A) return A + SOFT * ((raw - A) / K) / (1 + (raw - A) / K);
+            if (raw < 0) return -NEG * ((-raw) / K) / (1 + (-raw) / K);
+            return raw;
+        }
+
+        function put(target, anim, v) {
+            ex = target;
+            var sx = -target;
+            var rx = Math.max(0, A - target);   // 全露之后面板不再跟着往左跑
+            if (target === A) { var o = window.junigridJs.__swipeOpen; if (!o || o.el !== row) window.junigridJs.__swipeOpen = { el: row, close: function () { put(0, true, 0); } }; }
+            else if (window.junigridJs.__swipeOpen && window.junigridJs.__swipeOpen.el === row) window.junigridJs.__swipeOpen = null;
+            if (typeof gsap === "undefined") {
+                surf.style.transform = "translateX(" + sx + "px)";
+                rail.style.transform = "translateX(" + rx + "px)";
+                return;
+            }
+            if (!anim) {
+                gsap.set(surf, { x: sx });
+                gsap.set(rail, { x: rx });
+                return;
+            }
+            // 越甩回弹越狠，慢放也带一次回弹；两条 tween 同参数 → 过冲的每一帧都还贴合
+            var k = clamp(Math.abs(v) / 900, 0, 1);
+            var opt = { duration: 0.45 + k * 0.15, ease: "back.out(" + (2.1 + k * 1.5) + ")", overwrite: "auto" };
+            gsap.to(surf, Object.assign({ x: sx }, opt));
+            gsap.to(rail, Object.assign({ x: rx }, opt));
+            if (target === A && glyph) {
+                gsap.fromTo(glyph, { scale: 0.8 }, { scale: 1, duration: 0.5, ease: "back.out(3)", overwrite: "auto", clearProps: "transform" });
+            }
+        }
+        // 动画进行中被打断时以真实位置为准，别从上一帧的目标值跳走
+        function current() {
+            if (typeof gsap !== "undefined") ex = clampEx(-(gsap.getProperty(surf, "x") || 0));
+            return ex;
+        }
+
+        function down(e) {
+            if (e.button !== 0 || e.target.closest(".swipe-row__action")) return;
+            // 上一笔没收到 up（窗口外松手）就先就地结算，绝不能让 grip 卡住所有行
+            if (grip) abandon();
+            if (typeof gsap !== "undefined") { gsap.killTweensOf(surf); gsap.killTweensOf(rail); }
+            grip = { id: e.pointerId, cx: e.clientX, cy: e.clientY, base: current(), grab: false, hist: [], wasOpen: ex > 0 };
+            window.junigridJs.__swipeAbort = abandon;
+            swallow = false;
+            unwatch && unwatch();
+            unwatch = watch();
+        }
+        function move(e) {
+            if (!grip || grip.id !== e.pointerId) return;
+            var dx = e.clientX - grip.cx, dy = e.clientY - grip.cy;
+            if (!grip.grab) {
+                if (Math.abs(dx) < HYST || Math.abs(dx) < Math.abs(dy)) return;
+                grip.grab = true;
+                row.setAttribute("data-dragging", "");
+            }
+            var now = performance.now();
+            // 露出量到按钮宽封顶，再多划只有 22px 内容橡皮筋（按钮不会多露一点）
+            var next = resist(grip.base - dx);
+            put(next, false, 0);
+            grip.hist.push([now, next]);
+            if (grip.hist.length > 4) grip.hist.shift();
+        }
+        function end(g) {
+            grip = null;
+            if (window.junigridJs.__swipeAbort === abandon) window.junigridJs.__swipeAbort = null;
+            unwatch && unwatch();
+            unwatch = null;
+            row.removeAttribute("data-dragging");
+            if (!g.grab) { if (ex !== 0) put(0, true, 0); return; }
+            var v = vel(g.hist);
+            // 甩左（露出量在涨）才开，甩右就关；慢放看惯性投影过没过半
+            put(Math.abs(v) >= FLICK ? (v > 0 ? A : 0) : (ex + project(v) > A / 2 ? A : 0), true, v);
+        }
+        function up(e) {
+            if (!grip || grip.id !== e.pointerId) return;
+            var g = grip;
+            // 划过一遍、或抽屉敞着的时候点行：只收抽屉，不把这一击交给「切换版本」
+            swallow = g.grab || g.wasOpen;
+            end(g);
+        }
+        // 按不住也松不开的那种死局：没有速度可算，就按当前露出量收手
+        function abandon() { if (grip) end({ id: grip.id, grab: grip.grab, wasOpen: grip.wasOpen, hist: [] }); }
+        function watch() {
+            function om(ev) { if (ev.isTrusted) move(ev); }
+            function ou(ev) { if (ev.isTrusted) up(ev); }
+            window.addEventListener("pointermove", om);
+            window.addEventListener("pointerup", ou);
+            window.addEventListener("pointercancel", ou);
+            return function () {
+                window.removeEventListener("pointermove", om);
+                window.removeEventListener("pointerup", ou);
+                window.removeEventListener("pointercancel", ou);
+            };
+        }
+        surf.addEventListener("pointerdown", down);
+        act.addEventListener("click", function () { put(0, true, 0); });
+        surf.addEventListener("click", function (e) {
+            if (!swallow) return;
+            swallow = false;
+            e.preventDefault();
+            e.stopPropagation();
+        }, true);
+    });
+};
+
+// App Store 卡片展开（motion.dev animate-view-app-store）：
+// 源卡矩形 → 弹窗矩形 FLIP，spring ≈ visualDuration 0.35 / bounce 0.25
+window.junigridJs.flipModal = function (srcId, open) {
+    var src = document.getElementById(srcId);
+    var panel = document.querySelector(".jg-ver-modal");
+    var overlay = document.querySelector(".jg-modal-overlay");
+    if (!panel || typeof gsap === "undefined") return;
+    if (panel.__flipTl) { panel.__flipTl.kill(); panel.__flipTl = null; }
+    var kids = panel.children;
+    var s = src ? src.getBoundingClientRect() : null;
+    var d = panel.getBoundingClientRect();
+    // motion spring bounce 0.2~0.3 → back.out 轻微过冲
+    var EASE = open ? "back.out(1.35)" : "power2.in";
+    var DUR = open ? 0.38 : 0.28;
+    var tl = gsap.timeline();
+    panel.__flipTl = tl;
+
+    if (open) {
+        tl.fromTo(overlay, { opacity: 0 }, { opacity: 1, duration: 0.25, ease: "power2.out" }, 0);
+        if (s && s.width > 0 && d.width > 0) {
+            var sx = s.width / d.width, sy = s.height / d.height;
+            var dx = (s.left + s.width / 2) - (d.left + d.width / 2);
+            var dy = (s.top + s.height / 2) - (d.top + d.height / 2);
+            tl.fromTo(panel,
+                { x: dx, y: dy, scaleX: sx, scaleY: sy, transformOrigin: "center center" },
+                { x: 0, y: 0, scaleX: 1, scaleY: 1, duration: DUR, ease: EASE }, 0);
+        } else {
+            tl.fromTo(panel, { scale: 0.92, opacity: 0, y: 14 },
+                { scale: 1, opacity: 1, y: 0, duration: DUR, ease: EASE }, 0);
+        }
+        tl.fromTo(kids, { opacity: 0, y: 8 },
+            { opacity: 1, y: 0, duration: 0.28, delay: 0.12, ease: "power2.out", stagger: 0.02 }, 0);
+        return;
+    }
+    tl.to(kids, { opacity: 0, y: 6, duration: 0.12, ease: "power2.in", overwrite: "auto" }, 0);
+    if (s && s.width > 0 && d.width > 0) {
+        var sx2 = s.width / d.width, sy2 = s.height / d.height;
+        var dx2 = (s.left + s.width / 2) - (d.left + d.width / 2);
+        var dy2 = (s.top + s.height / 2) - (d.top + d.height / 2);
+        tl.to(panel, {
+            x: dx2, y: dy2, scaleX: sx2, scaleY: sy2,
+            duration: DUR, ease: EASE, overwrite: "auto"
+        }, 0.04);
+    } else {
+        tl.to(panel, { scale: 0.92, opacity: 0, y: 12,
+            duration: 0.22, ease: EASE, overwrite: "auto" }, 0.04);
+    }
+    tl.to(overlay, { opacity: 0, duration: 0.2, ease: "power2.in", overwrite: "auto" }, 0.08);
+};
+
+// motion.dev Clerk User Button：layoutId 双形变
+//  1) 容器：圆钮 → 卡片（同锚点胀出）
+//  2) 头像：FLIP 从钮位飞进卡片头（原 DOM 不搬，fixed 飞，Blazor 安全）
+//  3) 内容：blur 淡入（contentAnimations）
+// spring ≈ bounce 0.15 / visualDuration 0.25
 window.junigridJs.userTipInit = function (wrapId, bubbleId) {
     var wrap = document.getElementById(wrapId);
     var bubble = document.getElementById(bubbleId);
-    if (!wrap || !bubble || wrap.__tipBound) return;
-    wrap.__tipBound = true;
-    var avatar = wrap.querySelector(".jg-user-tip-avatar");
+    if (!wrap || !bubble) return;
     if (typeof gsap === "undefined") { wrap.classList.add("jg-user-tip-nogsap"); return; }
-    gsap.set(bubble, { autoAlpha: 0, y: 14, scale: 0.4, transformOrigin: "top right" });
-    gsap.set(avatar, { scale: 1, transformOrigin: "center center" });
-    // v1.08.1：开卡时间线只管气泡 —— 头像缩放独立出来给 hover 用，两边不再互相打架
-    var tl = gsap.timeline({ paused: true })
-        .to(bubble, { autoAlpha: 1, y: 0, scale: 1, duration: 1.0, ease: "elastic.out(1.2, 0.3)" }, 0);
+    if (wrap.__tipBound) return;
+    wrap.__tipBound = true;
 
-    // hover 动画保留：悬停头像 elastic 放大，移开快速还原（纯反馈，不带动卡片开关）
-    // v1.08.2：每次现查当前头像元素 —— 头像数据到位后 Blazor 会把首字母兜底 div 换成 img，
-    // 绑定时抓到的旧元素已脱离 DOM（这就是「Y 头像有动画、真头像没动画」的原因）
-    function avatarEl() { return wrap.querySelector(".jg-user-tip-avatar"); }
-    function avatarScale(v, quick) {
-        var el = avatarEl();
-        if (!el) return;
-        gsap.killTweensOf(el);
-        gsap.to(el, { scale: v, transformOrigin: "center center",
-            duration: quick ? 0.35 : 0.9, ease: quick ? "power2.out" : "elastic.out(1.2, 0.3)" });
+    var btn = wrap.querySelector(".jg-user-tip-btn");
+    var slot = wrap.querySelector(".jg-user-tip-ava-slot");
+    var fades = wrap.querySelectorAll(".jg-user-tip-fade");
+    // motion SPRING
+    var EASE = "back.out(1.15)", DUR = 0.35;
+    var isOpen = false, tl = null;
+
+    function avatarEl() { return wrap.querySelector(".jg-user-tip-btn .jg-user-tip-avatar"); }
+    function landEl() { return wrap.querySelector(".jg-user-tip-ava-land"); }
+
+    // 幽灵头像挂 body、position:fixed —— 不受卡片 scale/overflow 影响，FLIP 一定可见
+    function flyGhost(fromR, toR, srcEl, onDone) {
+        var g = srcEl.cloneNode(true);
+        g.id = "";
+        g.style.cssText = "position:fixed;margin:0;z-index:100000;pointer-events:none;left:" +
+            fromR.left + "px;top:" + fromR.top + "px;width:" + fromR.width + "px;height:" + fromR.height +
+            "px;border-radius:99px;object-fit:cover;box-sizing:border-box;";
+        document.body.appendChild(g);
+        gsap.to(g, {
+            left: toR.left, top: toR.top, width: toR.width, height: toR.height,
+            duration: DUR, ease: EASE,
+            onComplete: function () {
+                g.remove();
+                if (onDone) onDone();
+            }
+        });
     }
-    wrap.addEventListener("mouseenter", function () { if (!isOpen) avatarScale(1.15); });
-    wrap.addEventListener("mouseleave", function () { if (!isOpen) avatarScale(1, true); });
 
-    var isOpen = false;
     function setOpen(v) {
         if (v === isOpen) return;
         isOpen = v;
-        // 气泡默认 pointer-events:none（.open 时才放开，见 app.css）—— 点击开合必须同步，否则卡片开着点不了按钮
         wrap.classList.toggle("open", v);
-        if (v) { avatarScale(1.15); tl.timeScale(1).play(); return; }
-        // 收回沿用既有约定：不做反向动画，瞬间归位
-        tl.pause(0);
-        gsap.set(bubble, { autoAlpha: 0, y: 14, scale: 0.4 });
-        var el = avatarEl();
-        if (el) { gsap.killTweensOf(el); gsap.set(el, { scale: 1, transformOrigin: "center center" }); }
+        if (tl) tl.kill();
+
+        var A = avatarEl(), B = landEl();
+        var fades = wrap.querySelectorAll(".jg-user-tip-fade");
+
+        // 全尺寸量完再缩 —— 缩放后 slot 的 rect 是假位置
+        gsap.set(bubble, {
+            autoAlpha: 0, scaleX: 1, scaleY: 1,
+            borderRadius: 16, transformOrigin: "top right"
+        });
+        var sx = 40 / (bubble.offsetWidth || 216);
+        var sy = 40 / (bubble.offsetHeight || 200);
+        var aR = A && A.getBoundingClientRect();
+        var bR = B && B.getBoundingClientRect();
+
+        if (v) {
+            gsap.set(bubble, { scaleX: sx, scaleY: sy, borderRadius: 99, autoAlpha: 1 });
+            bubble.style.visibility = "visible";
+            if (B) gsap.set(B, { autoAlpha: 0 });
+            tl = gsap.timeline();
+            tl.fromTo(bubble,
+                { scaleX: sx, scaleY: sy, borderRadius: 99 },
+                { scaleX: 1, scaleY: 1, borderRadius: 16, duration: DUR, ease: EASE, overwrite: "auto" }, 0);
+            tl.fromTo(fades, { opacity: 0, filter: "blur(8px)" },
+                { opacity: 1, filter: "blur(0px)", duration: 0.28, delay: 0.12, ease: "power2.out", overwrite: "auto" }, 0);
+            // 幽灵从钮位平移到卡头；A 遮住，落定后露出 B
+            if (A && B && aR && bR && aR.width) {
+                flyGhost(aR, bR, A, function () {
+                    if (B) gsap.set(B, { autoAlpha: 1 });
+                    if (A) gsap.set(A, { autoAlpha: 0 });
+                });
+            } else if (B) {
+                gsap.set(B, { autoAlpha: 1 });
+            }
+            return;
+        }
+        // 关：幽灵从卡头飞回钮位，再缩回圆钮
+        gsap.set(bubble, { scaleX: 1, scaleY: 1, borderRadius: 16, autoAlpha: 1 });
+        aR = A && A.getBoundingClientRect();
+        bR = B && B.getBoundingClientRect();
+        tl = gsap.timeline();
+        tl.to(fades, { opacity: 0, filter: "blur(6px)", duration: 0.12, ease: "power2.in", overwrite: "auto" }, 0);
+        tl.to(bubble, {
+            autoAlpha: 0, scaleX: sx, scaleY: sy, borderRadius: 99,
+            duration: 0.28, ease: "back.in(1.1)", overwrite: "auto",
+            onComplete: function () { gsap.set(bubble, { autoAlpha: 0, scaleX: sx, scaleY: sy, borderRadius: 99 }); }
+        }, 0.04);
+        if (A && B && aR && bR && bR.width) {
+            gsap.set(B, { autoAlpha: 0 });
+            flyGhost(bR, aR, A, function () {
+                if (A) gsap.set(A, { autoAlpha: 1 });
+            });
+        }
     }
-    // 绑在 wrap 上而非 avatar 元素本身：头像数据到位后 img/fallback 兄弟互换，绑 wrap 不丢监听
+
     wrap.addEventListener("click", function (e) {
         if (bubble.contains(e.target)) return;
+        e.preventDefault();
         e.stopPropagation();
         setOpen(!isOpen);
     });

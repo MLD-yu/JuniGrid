@@ -1,13 +1,11 @@
 @namespace JuniGrid.Components.Pages
 @page "/nexus"
 @implements IDisposable
-@inject CoverCacheService Covers
 @inject ConfigService Cfg
 @inject NexusService NexusApi
 @inject NexusSsoService Sso
 @inject ModService ModSvc
 @inject GameService Game
-@inject InstallService Installer
 @inject NavigationManager Nav
 @inject IJSRuntime JS
 @inject PageRefreshService PageRefresh
@@ -65,39 +63,51 @@
         <div style="display:flex;align-items:center;gap:10px;flex:1 1 0;justify-content:flex-end">
             @if (!string.IsNullOrEmpty(_key))
             {
-                @* ─── v0.70.1：只显示头像，hover 弹出 GSAP easeReverse-tooltip 用户卡片 ─── *@
+                @* ─── motion.dev Clerk User Button：头像 layoutId 形变进卡片头 + 容器胀形 ─── *@
                 <div class="jg-user-tip" id="jgUserTip">
-                    @if (!string.IsNullOrEmpty(_userAvatar))
-                    {
-                        <img class="jg-user-tip-avatar" src="@Covers.GetFull(_userAvatar)" alt="avatar" />
-                    }
-                    else
-                    {
-                        <div class="jg-user-tip-avatar jg-user-tip-fallback">
-                            @(_userName.Length>0 ? _userName[..1].ToUpperInvariant() : "N")
-                        </div>
-                    }
-                    <div class="jg-user-tip-bubble" id="jgUserTipBubble">
-                        <div class="jg-user-tip-name">
-                            @(_userName.Length==0 ? "Nexus 用户" : _userName)
-                            @if (_isPremium) { <span class="jg-premium-badge">Premium</span> }
-                            else { <span style="opacity:.55;font-size:11px;font-weight:400">免费账户</span> }
-                        </div>
-                        @if (_userExtras is not null)
+                    <div class="jg-user-tip-btn" id="jgUserTipBtn">
+                        @if (!string.IsNullOrEmpty(_userAvatar))
                         {
-                            <div class="jg-user-tip-stats">
-                                @if (_userExtras.ModCount > 0) { <span>发布 @_userExtras.ModCount 个 mod</span> }
-                                @if (_userExtras.UniqueModDownloads > 0) { <span>@FormatNum(_userExtras.UniqueModDownloads) 下载</span> }
-                                @if (_userExtras.EndorsementsGiven > 0) { <span>点赞 @_userExtras.EndorsementsGiven</span> }
-                                @if (!string.IsNullOrEmpty(_userExtras.Joined)) { <span>@_userExtras.Joined[..Math.Min(10, _userExtras.Joined.Length)] 加入</span> }
-                            </div>
-                            @if (!string.IsNullOrWhiteSpace(_userExtras.About))
-                            {
-                                <div class="jg-user-tip-about">@(_userExtras.About.Length > 90 ? _userExtras.About[..90] + "…" : _userExtras.About)</div>
-                            }
+                            <img class="jg-user-tip-avatar" id="jgUserTipAvatar" src="@_userAvatar" alt="avatar" />
                         }
-                        <div style="display:flex;flex-direction:column;align-items:flex-start;gap:8px;margin-top:9px;">
-                            <button class="jg-user-tip-link" style="margin-top:0" @onclick="OpenProfile">查看主页 →</button>
+                        else
+                        {
+                            <div class="jg-user-tip-avatar jg-user-tip-fallback" id="jgUserTipAvatar">
+                                @(_userName.Length>0 ? _userName[..1].ToUpperInvariant() : "N")
+                            </div>
+                        }
+                    </div>
+                    <div class="jg-user-tip-bubble" id="jgUserTipBubble">
+                        <div class="jg-user-tip-head jg-user-tip-fade">
+                            <div class="jg-user-tip-ava-slot" id="jgUserTipAvaSlot">
+                                @* 卡头落点头像（官方 layoutId=clerk-avatar 的 open 态）*@
+                                @if (!string.IsNullOrEmpty(_userAvatar))
+                                {
+                                    <img class="jg-user-tip-ava-land" id="jgUserTipAvaLand" src="@_userAvatar" alt="" />
+                                }
+                                else
+                                {
+                                    <div class="jg-user-tip-ava-land jg-user-tip-fallback" id="jgUserTipAvaLand">
+                                        @(_userName.Length>0 ? _userName[..1].ToUpperInvariant() : "N")
+                                    </div>
+                                }
+                            </div>
+                            <div class="jg-user-tip-username">@(_userName.Length==0 ? "Nexus 用户" : _userName)</div>
+                            <div class="jg-user-tip-plan">
+                                @if (_isPremium) { <span class="jg-premium-badge">Premium</span> }
+                                else { <span>免费账户</span> }
+                            </div>
+                            <div class="jg-user-tip-joined">
+                                @(_userExtras is not null && !string.IsNullOrEmpty(_userExtras.Joined)
+                                    ? _userExtras.Joined[..Math.Min(10, _userExtras.Joined.Length)] + " 加入"
+                                    : "")
+                            </div>
+                        </div>
+                        <div class="jg-user-tip-menu jg-user-tip-fade">
+                            <div class="jg-user-tip-row">
+                                <button class="jg-user-tip-darkbtn" @onclick="OpenProfile"><span>查看主页</span></button>
+                                <button class="jg-user-tip-darkbtn" @onclick="OpenEditAbout"><span>编辑简介</span></button>
+                            </div>
                             <button class="jg-user-tip-logoutbtn" @onclick="LogoutNexus">退出登录</button>
                         </div>
                     </div>
@@ -112,7 +122,6 @@
             }
         </div>
     </div>
-    @if (!string.IsNullOrEmpty(_ssoMsg)) { <div class="jg-note" style="margin-top:6px;">@_ssoMsg</div> }
     @* ─── v0.74.0：官网风首页（图3 Trending + 图4 Mods 板块）─── *@
     @if (_viewMode == "home")
     {
@@ -153,7 +162,7 @@
                         <div class="jg-trend-big" @onclick="() => OpenDetail(mod.Id)">
                             @if (!string.IsNullOrEmpty(mod.PictureUrl ?? mod.ThumbnailUrl))
                             {
-                                <img class="jg-trend-big-cover" src="@Covers.GetFull(mod.PictureUrl ?? mod.ThumbnailUrl)" loading="lazy" alt="" />
+                                <img class="jg-trend-big-cover" src="@(mod.PictureUrl ?? mod.ThumbnailUrl)" loading="lazy" alt="" />
                             }
                             <div class="jg-trend-big-info">
                                 <div class="jg-trend-big-name">@mod.Name</div>
@@ -174,7 +183,7 @@
                             <div class="jg-trend-sm" @onclick="() => OpenDetail(mod.Id)">
                                 @if (!string.IsNullOrEmpty(mod.ThumbnailUrl ?? mod.PictureUrl))
                                 {
-                                    <img class="jg-trend-sm-cover" src="@Covers.GetFull(mod.ThumbnailUrl ?? mod.PictureUrl)" loading="lazy" alt="" />
+                                    <img class="jg-trend-sm-cover" src="@(mod.ThumbnailUrl ?? mod.PictureUrl)" loading="lazy" alt="" />
                                 }
                                 else
                                 {
@@ -231,34 +240,7 @@
                 <div class="jg-browse2" style="margin-top:10px">
                     @foreach (var mod in _homeMods)
                     {
-                        <div class="jg-modcard2" @onclick="() => OpenDetail(mod.Id)">
-                            <div class="jg-modcard2-cover-wrap">
-                                @if (!string.IsNullOrEmpty(mod.ThumbnailUrl) || !string.IsNullOrEmpty(mod.PictureUrl))
-                                {
-                                    <img class="jg-modcard2-cover" src="@Covers.GetFull(mod.ThumbnailUrl ?? mod.PictureUrl)" loading="lazy" alt="" />
-                                }
-                                else
-                                {
-                                    <div class="jg-modcard2-cover jg-modcard2-fb">@(mod.Name.Length>0 ? mod.Name[..1].ToUpperInvariant() : "?")</div>
-                                }
-                                @if (_installedIds.Contains(mod.Id))
-                                {
-                                    <span class="jg-modcard2-badge">已安装</span>
-                                }
-                            </div>
-                            <div class="jg-modcard2-body">
-                                @* ─── v1.04.0：官网紧凑排列 —— 封面/标题/分类chip/两行简介 ─── *@
-                                <div class="jg-modcard2-title">@mod.Name</div>
-                                @if (!string.IsNullOrEmpty(mod.Category))
-                                {
-                                    <span class="jg-modcard2-cat-chip">@mod.Category</span>
-                                }
-                                @if (!string.IsNullOrWhiteSpace(mod.Summary))
-                                {
-                                    <div class="jg-modcard2-summary">@(mod.Summary.Length > 90 ? mod.Summary[..90] + "…" : mod.Summary)</div>
-                                }
-                            </div>
-                        </div>
+                        <NexusModCard Mod="mod" Installed="_installedIds.Contains(mod.Id)" OnOpen="OpenDetail" />
                     }
                 </div>
                 @* ─── v1.04.0：Mods 板块底部「查看全部」改成胶囊按钮（箭头在后、随字色）─── *@
@@ -323,16 +305,16 @@
                 </div>
             </div>
             @* v1.1.6：搜索页下拉遮罩（data-dd=search 与上方两个下拉配对；常驻 DOM 同浏览页防穿透） *@
-            <div class="jg-dd-overlay @((_searchSortOpen || _searchDirOpen) ? "open" : "")" data-dd="search" @onclick="CloseSearchDds"></div>
+            <div class="jg-dd-overlay @((_searchSortOpen || _searchDirOpen) ? "open" : "")" data-dd="search" @onclick="CloseAllDd"></div>
             @if (_exactMod is not null)
             {
-                var exName = PropStr(_exactMod, "Name");
-                var exPic = PropStr(_exactMod, "PictureUrl");
-                var exVer = PropStr(_exactMod, "Version");
+                var exName = _exactMod.Name;
+                var exPic = _exactMod.PictureUrl;
+                var exVer = _exactMod.Version;
                 <div class="jg-search-exact" @onclick="() => OpenDetail(_exactMod.Id)">
                     @if (!string.IsNullOrEmpty(exPic))
                     {
-                        <img class="jg-search-exact-cover" src="@Covers.GetFull(exPic)" alt="" />
+                        <img class="jg-search-exact-cover" src="@exPic" alt="" />
                     }
                     else
                     {
@@ -359,34 +341,7 @@
                 <div class="jg-browse2" style="margin-top:10px">
                     @foreach (var mod in _browse)
                     {
-                        <div class="jg-modcard2" @onclick="() => OpenDetail(mod.Id)">
-                            <div class="jg-modcard2-cover-wrap">
-                                @if (!string.IsNullOrEmpty(mod.ThumbnailUrl) || !string.IsNullOrEmpty(mod.PictureUrl))
-                                {
-                                    <img class="jg-modcard2-cover" src="@Covers.GetFull(mod.ThumbnailUrl ?? mod.PictureUrl)" loading="lazy" alt="" />
-                                }
-                                else
-                                {
-                                    <div class="jg-modcard2-cover jg-modcard2-fb">@(mod.Name.Length>0 ? mod.Name[..1].ToUpperInvariant() : "?")</div>
-                                }
-                                @if (_installedIds.Contains(mod.Id))
-                                {
-                                    <span class="jg-modcard2-badge">已安装</span>
-                                }
-                            </div>
-                            <div class="jg-modcard2-body">
-                                @* ─── v1.04.0：官网紧凑排列 —— 封面/标题/分类chip/两行简介 ─── *@
-                                <div class="jg-modcard2-title">@mod.Name</div>
-                                @if (!string.IsNullOrEmpty(mod.Category))
-                                {
-                                    <span class="jg-modcard2-cat-chip">@mod.Category</span>
-                                }
-                                @if (!string.IsNullOrWhiteSpace(mod.Summary))
-                                {
-                                    <div class="jg-modcard2-summary">@(mod.Summary.Length > 90 ? mod.Summary[..90] + "…" : mod.Summary)</div>
-                                }
-                            </div>
-                        </div>
+                        <NexusModCard Mod="mod" Installed="_installedIds.Contains(mod.Id)" OnOpen="OpenDetail" />
                     }
                 </div>
                 <div class="jg-pager">
@@ -528,34 +483,7 @@
                 <div class="jg-browse2" style="margin-top:10px">
                     @foreach (var mod in _browse)
                     {
-                        <div class="jg-modcard2" @onclick="() => OpenDetail(mod.Id)">
-                            <div class="jg-modcard2-cover-wrap">
-                                @if (!string.IsNullOrEmpty(mod.ThumbnailUrl) || !string.IsNullOrEmpty(mod.PictureUrl))
-                                {
-                                    <img class="jg-modcard2-cover" src="@Covers.GetFull(mod.ThumbnailUrl ?? mod.PictureUrl)" loading="lazy" alt="" />
-                                }
-                                else
-                                {
-                                    <div class="jg-modcard2-cover jg-modcard2-fb">@(mod.Name.Length>0 ? mod.Name[..1].ToUpperInvariant() : "?")</div>
-                                }
-                                @if (_installedIds.Contains(mod.Id))
-                                {
-                                    <span class="jg-modcard2-badge">已安装</span>
-                                }
-                            </div>
-                            <div class="jg-modcard2-body">
-                                @* ─── v1.04.0：官网紧凑排列 —— 封面/标题/分类chip/两行简介 ─── *@
-                                <div class="jg-modcard2-title">@mod.Name</div>
-                                @if (!string.IsNullOrEmpty(mod.Category))
-                                {
-                                    <span class="jg-modcard2-cat-chip">@mod.Category</span>
-                                }
-                                @if (!string.IsNullOrWhiteSpace(mod.Summary))
-                                {
-                                    <div class="jg-modcard2-summary">@(mod.Summary.Length > 90 ? mod.Summary[..90] + "…" : mod.Summary)</div>
-                                }
-                            </div>
-                        </div>
+                        <NexusModCard Mod="mod" Installed="_installedIds.Contains(mod.Id)" OnOpen="OpenDetail" />
                     }
                 </div>
                 @* ─── v0.90.0：分页器（对照官网：页码 + 跳页 + 换一批；v1.04.0 移除每页条数选择，固定 40）─── *@
@@ -665,16 +593,6 @@
                 </div>
                 <button class="jg-login-cancel" @onclick="BackToChoose" disabled="@_apiKeyBusy">返回</button>
             }
-            else if (_loginStep == LoginStep.SsoWaiting)
-            {
-                <div class="jg-login-title">等待授权</div>
-                <div class="jg-login-sub">已打开 Nexus 官网授权页，请在浏览器中点击 Authorise 完成授权</div>
-                <div class="jg-login-waiting">
-                    <span class="jg-login-spinner large"></span>
-                    <span>正在等待浏览器授权…</span>
-                </div>
-                <button class="jg-login-cancel" @onclick="CancelSsoFlow">取消授权</button>
-            }
             else if (_loginStep == LoginStep.Success)
             {
                 @* Pixel Reveal：Canvas 像素扫过揭示，头像/昵称/欢迎语藏在像素幕布下 *@
@@ -682,7 +600,7 @@
                 <div class="jg-login-success-inner">
                     @if (!string.IsNullOrEmpty(_userAvatar))
                     {
-                        <img class="jg-login-avatar" src="@Covers.GetFull(_userAvatar)" alt="avatar" />
+                        <img class="jg-login-avatar" src="@_userAvatar" alt="avatar" />
                     }
                     else
                     {
@@ -707,10 +625,8 @@
 @code {
     // v0.59.0：首屏 shimmer
 
-    private string? _ssoMsg;
-
     // ---- v0.39.0：登录对话框状态机 ----
-    private enum LoginStep { Closed, Choose, ApiKey, SsoWaiting, Success }
+    private enum LoginStep { Closed, Choose, ApiKey, Success }
     private LoginStep _loginStep = LoginStep.Closed;
     private string _apiKeyInput = "";
     private bool _apiKeyBusy;
@@ -726,8 +642,6 @@
 
     private void CloseLoginDialog()
     {
-        // 授权等待中点遮罩等同取消
-        if (_loginStep == LoginStep.SsoWaiting) { CancelSsoFlow(); return; }
         _loginStep = LoginStep.Closed;
     }
 
@@ -768,13 +682,10 @@
                 var c0 = Cfg.Current;
                 c0.NexusApiKey = _key;
                 c0.NexusUserName = _userName;
-                c0.NexusUserEmail = user.Email ?? "";
                 c0.NexusProfileUrl = user.ProfileUrl ?? "";
                 c0.NexusIsPremium = _isPremium;
                 Cfg.Save(c0);
             }
-            _userName = user.Name ?? "";
-            _isPremium = user.IsPremium;
             // v1.08.3：成功卡先走首字母兜底，后台拉头像转 data URI 并落缓存 ——
             // 像素揭示动画有 2.6s，足够图片就位后换上；下次进页直接读缓存秒显
             _userAvatar = "";
@@ -805,43 +716,6 @@
         }
     }
 
-    // 官网授权：进入等待态 → SSO → 成功卡片
-    private async Task StartSsoFlow()
-    {
-        _loginStep = LoginStep.SsoWaiting;
-        StateHasChanged();
-        using var cts = _ssoCts = new CancellationTokenSource();
-        try
-        {
-            var key = await Sso.LoginAsync("junigrid", cts.Token);
-            if (!string.IsNullOrEmpty(key))
-            {
-                _key = key;
-                Save();
-                await LoadNexusUserAsync();
-                await ShowLoginSuccess();
-            }
-            else if (_ssoCts?.IsCancellationRequested != true)
-            {
-                // 非取消的失败：退回方式选择并提示
-                _loginStep = LoginStep.Choose;
-                _ssoMsg = "SSO 未完成：" + (Sso.LastError ?? "已超时（5 分钟）");
-            }
-        }
-        finally
-        {
-            _ssoCts = null;
-            if (_loginStep == LoginStep.SsoWaiting) _loginStep = LoginStep.Choose;
-            StateHasChanged();
-        }
-    }
-
-    private void CancelSsoFlow()
-    {
-        _ssoCts?.Cancel();
-        _loginStep = LoginStep.Choose;
-    }
-
     // 成功卡片：切到 Success 步 → 播 Pixel Reveal → toast
     private async Task ShowLoginSuccess()
     {
@@ -867,14 +741,11 @@
                 _ = LoadHomeAsync();
         }
     }
-    private CancellationTokenSource? _ssoCts;   // 授权等待期的取消令牌，供“取消授权”钮中断 LoginAsync
-
     private string _key = "";
     private string _userName = "";
     private string _userAvatar = "";
     private bool _isPremium;
     private string? _profileUrl;
-    private int _memberId;
     private NexusUserExtras? _userExtras;
     private static string FormatNum(long n) => n >= 10000 ? (n / 10000.0).ToString("0.0") + "万" : n >= 1000 ? (n / 1000.0).ToString("0.0") + "K" : n.ToString();
 
@@ -888,7 +759,7 @@
     private bool _browseLoading;
     // ─── v0.90.0：分页状态（懒加载已移除）───
     private int _page = 1;
-    private int _pageSize = 40;
+    private const int _pageSize = 40;   // v1.04.0：固定 40 条，每页条数选择已删除
     private string _jumpText = "";
 
     // ─── v0.93.0：浏览状态静态快照 —— 跳 mod 详情页后返回时恢复视图/页码/tab/时间段 ───
@@ -904,16 +775,9 @@
     private List<NexusModListEntry> _browse = new();
     // v0.76.0：跨页去重 —— 服务端截断/随机排序下 offset 边界可能重复，无限滚动绝不追加重复卡
 
-    private static string FormatCompact(long n) => n >= 1_000_000 ? (n / 1_000_000.0).ToString("0.#") + "M"
-        : n >= 1000 ? (n / 1000.0).ToString("0.#") + "K" : n.ToString();
-    /// <summary>v0.73.0：文件大小格式化（对照官网统计行 65.0KB / 190.0KB）。</summary>
-    private static string FormatBytes(long b) => b >= 1_048_576 ? (b / 1_048_576.0).ToString("0.#") + " MB"
-        : b >= 1024 ? (b / 1024.0).ToString("0.#") + " KB" : b + " B";
     /// <summary>v1.04.0：「查看全部」后缀箭头（用户提供的 arrow-right 图标路径，fill=currentColor 随字色、透明背景）。</summary>
     private static readonly string ViewAllArrow = "<svg width=\"11\" height=\"11\" viewBox=\"0 0 1024 1024\" fill=\"currentColor\" aria-hidden=\"true\" style=\"margin-left:4px;vertical-align:-1px\"><path d=\"M629.963157 511.976464 282.01449 848.324932c-20.50808 19.85828-20.50808 51.997258 0 71.792093 20.507056 19.826558 53.778834 19.826558 74.28589 0l385.061936-372.252189c20.47738-19.825534 20.47738-51.981908 0-71.745021L356.30038 103.882975c-10.285251-9.91379-23.728424-14.869662-37.173644-14.869662-13.446243 0-26.889417 4.956895-37.112246 14.901385-20.50808 19.826558-20.50808 51.919487 0 71.746044L629.963157 511.976464\"/></svg>";
 
-    private readonly Dictionary<int, string?> _browseStates = new();
-    private readonly HashSet<int> _installing = new();
     private HashSet<int> _installedIds = new();
 
     // v0.73.0：对照官网 Mods 区 5 个 tab
@@ -1027,7 +891,6 @@
     // v1.1.6：搜索页排序/方向下拉
     private Task ToggleSearchSortDd() => ToggleDdCore(_searchSortOpen, v => _searchSortOpen = v, "jgSearchSortDd");
     private Task ToggleSearchDirDd() => ToggleDdCore(_searchDirOpen, v => _searchDirOpen = v, "jgSearchDirDd");
-    private Task CloseSearchDds() { CloseAllDdCore(); return Task.CompletedTask; }
 
     private async Task SetTimeRange(string key)
     {
@@ -1041,12 +904,6 @@
         _direction = dir;
         CloseAllDdCore();
         await ReloadBrowseAsync();
-    }
-
-    /// <summary>v0.77.0：切 tab 时自动矫正时间范围 —— Surprise 本地洗牌与时间无关，强制回 all。</summary>
-    private void NormalizeTimeRangeForKind()
-    {
-        if (_browseKind == "surprise") _timeRange = "all";
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -1098,8 +955,6 @@
             // v1.04.0：首页 tab 芯片（New/Updated/Downloads/Popular/Surprise）全部默认全部时段
             var m = await NexusApi.BrowseModsAsync(key, 0, 20, timeRange: "all");
             if (m is not null) _homeMods = m;
-            // v1.06.8：切 tab = 新内容 → 滚动归零
-            try { await JS.InvokeVoidAsync("junigridJs.setScroll", ".jg-main", 0); } catch { }
         }
         catch { }
         finally { _homeLoading = false; StateHasChanged(); }
@@ -1122,29 +977,6 @@
         NexusApi.ReshuffleSurprise();
         await ReloadBrowseAsync();
     }
-
-    /// <summary>v0.75.0：浏览页顶栏标题（Trending 标注真实口径：近 N 时间 + 推荐数）。
-    /// v0.98.1：搜索进行中时优先显示搜索词。
-    /// v1.04.0：Trending 榜位改为 Downloads（按下载数排序）。</summary>
-    private string BrowseTitle => !string.IsNullOrWhiteSpace(_searchText)
-        ? "🔍 搜索:" + _searchText.Trim()
-        : _browseKind switch
-        {
-            "updated"  => "🔄 最近更新",
-            "trending" => _timeRange switch
-            {
-                "day"    => "🔥 24 小时热门 · 按推荐数",
-                "week"   => "🔥 近 7 天热门 · 按推荐数",
-                "2week"  => "🔥 近 14 天热门 · 按推荐数",
-                "month"  => "🔥 近 28 天热门 · 按推荐数",
-                "year"   => "🔥 热门趋势 · 按推荐数",
-                _        => "🔥 热门 · 按推荐数",
-            },
-            "downloads" => $"⬇ 最多下载 · 按下载数{(_direction == "ASC" ? "（正序）" : "")}",
-            "popular"  => "⭐ 最受欢迎 · 按下载数",
-            "surprise" => "🎲 随机惊喜",
-            _          => "✨ 最新发布",
-        };
 
     /// <summary>v0.75.0：从浏览页返回官网风首页。</summary>
     private void BackToHome()
@@ -1256,10 +1088,6 @@
         _exactMod = null;
     }
 
-    /// <summary>v1.02.0：反射取属性字符串（NexusModInfo 为位置记录，属性名随定义可能变动，反射最稳）。</summary>
-    private static string? PropStr(object o, string n) =>
-        o.GetType().GetProperty(n)?.GetValue(o)?.ToString();
-
     // 头像气泡「退出登录」：清 key/用户信息并回登录引导
     private void LogoutNexus()
     {
@@ -1278,12 +1106,8 @@
 
     // v0.85.0：Dispose 统一收敛到下方完整实现（JS 清理 + 引用释放），此处删除旧单行版本避免重复定义
 
-    // v1.06.7：顶栏点「当前页」NEXUS MODS 图标 → 按当前视图重新拉取数据
-    private void OnCoverCached() => _ = InvokeAsync(StateHasChanged);
-
     protected override void OnInitialized()
     {
-        Covers.Changed += OnCoverCached;   // v1.08
         PageRefresh.OnRefresh += OnPageRefresh;
     }
 
@@ -1323,7 +1147,7 @@ protected override async Task OnInitializedAsync()
         if (_svMode is not null)
         {
             _viewMode = _svMode; _browseKind = _svKind ?? "new";
-            _page = _svPage < 1 ? 1 : _svPage; _pageSize = 40;   // v1.04.0：固定 40 条
+            _page = _svPage < 1 ? 1 : _svPage;
             _timeRange = _svRange ?? "all"; _searchText = _svSearch ?? ""; _searchTitle = _svSearch ?? "";
             _searchSort = _svSort ?? "new"; _searchDirection = _svSearchDir ?? "DESC";   // v1.1.6：搜索页排序恢复
             _exactMod = _svExact;   // v1.02.0：搜索页快照恢复
@@ -1388,9 +1212,6 @@ protected override async Task OnInitializedAsync()
     /// <summary>SMAPI 在 Nexus 上的 mod ID（nexusmods.com/stardewvalley/mods/2400）。</summary>
     private const int SmapiNexusId = 2400;
 
-    private string? GetBrowseState(int id) =>
-        _browseStates.TryGetValue(id, out var s) ? s : null;
-
     // ---- API key ----
     private void Save()
     {
@@ -1409,7 +1230,6 @@ protected override async Task OnInitializedAsync()
         Save();
         var cfg = Cfg.Current;
         cfg.NexusUserName = "";
-        cfg.NexusUserEmail = "";
         cfg.NexusProfileUrl = "";
         cfg.NexusIsPremium = false;
         cfg.NexusAvatarDataUri = "";   // v1.08.3：头像缓存一并清空，防止换账号登录后闪上一任头像
@@ -1439,7 +1259,6 @@ protected override async Task OnInitializedAsync()
             _userName = u.Name;
             _isPremium = u.IsPremium;
             _profileUrl = u.ProfileUrl;
-            _memberId = u.MemberId;
             if (u.MemberId > 0)
                 _ = Task.Run(async () =>
                 {
@@ -1465,7 +1284,6 @@ protected override async Task OnInitializedAsync()
                 });
             var cfg = Cfg.Current;
             cfg.NexusUserName = u.Name;
-            cfg.NexusUserEmail = u.Email;
             cfg.NexusProfileUrl = u.ProfileUrl;
             cfg.NexusIsPremium = u.IsPremium;
             Cfg.Save(cfg);
@@ -1497,14 +1315,15 @@ protected override async Task OnInitializedAsync()
             UpdateService.OpenUrl(_profileUrl);
     }
 
-    private void OpenApiKeysPage() =>
-        UpdateService.OpenUrl("https://www.nexusmods.com/users/myaccount?tab=api");
+    /// <summary>编辑简介 → 官网资料设置（settings/profile 的「简介」）。</summary>
+    private void OpenEditAbout()
+        => UpdateService.OpenUrl("https://www.nexusmods.com/settings/profile");
 
     // ---- v0.70.2：无限滚动 + GraphQL 分页 ----
     private async Task LoadBrowse(string kind)
     {
         _browseKind = kind;
-        NormalizeTimeRangeForKind();  // v0.77.0：Surprise 强制回 all
+        if (_browseKind == "surprise") _timeRange = "all";   // v0.77.0：Surprise 强制回 all
         CloseAllDdCore();             // 切完类型收起下拉 —— 与时间/正序倒序切换同款行为
         await ReloadBrowseAsync();
     }
@@ -1598,7 +1417,6 @@ protected override async Task OnInitializedAsync()
     // v0.90.0：懒加载已移除，Dispose 只需清理搜索防抖
     public void Dispose()
     {
-        Covers.Changed -= OnCoverCached;
         // v0.93.0：离开页面前快照当前浏览状态（返回时恢复）
         _nexusDisposed = true;
         PageRefresh.OnRefresh -= OnPageRefresh;
@@ -1609,62 +1427,6 @@ protected override async Task OnInitializedAsync()
         _svFilterVer = NexusService.AdultFilterVersion;   // v1.1.3：记录快照是哪个过滤版本拉的
     }
 
-    // ---- 安装新 mod：一键直装（后台静默），失败才回落内置浏览器 ----
-    private async Task InstallBrowse(NexusModListEntry mod)
-    {
-        if (string.IsNullOrEmpty(_key)) return;
-        if (!Cfg.Current.EnableOneClickInstall)
-        {
-            // 一键安装开关被关 → 直接打开内置浏览器手动下载
-            OpenEmbedded(mod.Id);
-            return;
-        }
-        _installing.Add(mod.Id);
-        _browseStates[mod.Id] = null;   // 下载中状态由按钮"正在安装…"呈现
-        StateHasChanged();
-        try
-        {
-            var err = await Installer.InstallModDirectAsync(mod.Id);
-            if (err is null)
-            {
-                _browseStates[mod.Id] = "✅ 已安装";
-            }
-            else if (err.Contains("premium", StringComparison.OrdinalIgnoreCase))
-            {
-                // v0.44.0：不再在卡片上塞大段提示文字（会撑变形）；下载进度在下载列表可见
-                _browseStates[mod.Id] = null;
-                MainWindow.OpenNexusOverlay(
-                    $"https://www.nexusmods.com/stardewvalley/mods/{mod.Id}?tab=files");
-            }
-            else
-            {
-                _browseStates[mod.Id] = "安装失败：" + err;
-            }
-        }
-        catch (Exception ex)
-        {
-            _browseStates[mod.Id] = "失败：" + ex.Message;
-        }
-        finally
-        {
-            _installing.Remove(mod.Id);
-        }
-    }
-
-    private void OpenModPage(int id) =>
-        UpdateService.OpenUrl($"https://www.nexusmods.com/stardewvalley/mods/{id}");
-
     private void OpenDetail(int id) =>
         Nav.NavigateTo($"mod/{id}");
-
-    private void OpenEmbedded(int id) =>
-        MainWindow.OpenNexusOverlay($"https://www.nexusmods.com/stardewvalley/mods/{id}");
-
-    private void OpenEmbeddedHome() =>
-        MainWindow.OpenNexusOverlay("https://www.nexusmods.com/stardewvalley");
-
-    private static string FormatDownloads(long n) =>
-        n >= 1_000_000 ? $"{n / 1_000_000.0:0.#}M"
-        : n >= 1_000 ? $"{n / 1_000.0:0.#}K"
-        : n.ToString();
 }

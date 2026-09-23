@@ -6,10 +6,7 @@
    清空/复制为黑底白字胶囊；诊断明细开关与右侧分类图例已删除。
    （v1.07.1：GhostFibers 动画背景已整体移除，页头/卡片/下拉恢复主题默认外观） */
 
-.jg-logs-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 12px; flex-wrap: wrap; }
-.jg-logs-actions { display: flex; gap: 8px; align-items: center; }
-
-/* 黑底白字胶囊（清空 / 复制全部 / 确认框主按钮） */
+.jg-logs-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 12px; flex-wrap: wrap; }.jg-logs-actions { display: flex; gap: 8px; align-items: center; }/* 黑底白字胶囊（清空 / 复制全部 / 确认框主按钮） */
 .jg-pill-dark {
     display: inline-flex;
     align-items: center;
@@ -24,10 +21,7 @@
     font-family: inherit;
     cursor: pointer;
     transition: background 120ms ease, transform 100ms ease;
-}
-.jg-pill-dark:hover { background: var(--jg-ink-hover); transform: translateY(-1px); }
-.jg-pill-dark:active { transform: translateY(0); }
-/* 确认框取消键：透明胶囊描边（浅色主题深描边 / 深色主题浅描边） */
+}.jg-pill-dark:hover { background: var(--jg-ink-hover); transform: translateY(-1px); }.jg-pill-dark:active { transform: translateY(0); }/* 确认框取消键：透明胶囊描边（浅色主题深描边 / 深色主题浅描边） */
 .jg-pill-ghost {
     display: inline-flex;
     align-items: center;
@@ -42,10 +36,7 @@
     font-family: inherit;
     cursor: pointer;
     transition: background 120ms ease;
-}
-.jg-pill-ghost:hover { background: var(--jg-track); }
-
-/* -------- v1.06.9：危险操作红胶囊（删除 mod / 关闭游戏确认键）-------- */
+}.jg-pill-ghost:hover { background: var(--jg-track); }/* -------- v1.06.9：危险操作红胶囊（删除 mod / 关闭游戏确认键）-------- */
 .jg-pill-danger {
     display: inline-flex;
     align-items: center;
@@ -60,20 +51,12 @@
     font-family: inherit;
     cursor: pointer;
     transition: background 120ms ease, transform 100ms ease, box-shadow 120ms ease;
-}
-.jg-pill-danger:hover { background: #d93b40; transform: translateY(-1px); box-shadow: 0 6px 18px rgba(229,72,77,0.4); }
-.jg-pill-danger:active { transform: translateY(0); }
-
-/* v1.07.3：Mod 管理页头部的普通文件夹按钮（提示用全局 data-tip 胶囊） */
+}.jg-pill-danger:hover { background: #d93b40; transform: translateY(-1px); box-shadow: 0 6px 18px rgba(229,72,77,0.4); }.jg-pill-danger:active { transform: translateY(0); }/* v1.07.3：Mod 管理页头部的普通文件夹按钮（提示用全局 data-tip 胶囊） */
 .jg-mods-folder-btn {
     border: none; background: transparent; padding: 2px; cursor: pointer;
     line-height: 0; border-radius: 8px; flex: none;
     transition: transform 120ms ease, background 120ms ease;
-}
-.jg-mods-folder-btn:hover { background: var(--jg-track); transform: translateY(-1px); }
-.jg-mods-folder-btn:active { transform: translateY(0); }
-
-/* 设置页 · Nexus 未登录时的胶囊登录按钮 */
+}.jg-mods-folder-btn:hover { background: var(--jg-track); transform: translateY(-1px); }.jg-mods-folder-btn:active { transform: translateY(0); }/* 设置页 · Nexus 未登录时的胶囊登录按钮 */
 .jg-nexus-login-btn {
     border: none;
     border-radius: 999px;
@@ -84,11 +67,7 @@
     cursor: pointer;
     white-space: nowrap;
     transition: background .15s ease, transform .15s ease;
-}
-.jg-nexus-login-btn:hover { background: #333; transform: translateY(-1px); }
-.jg-nexus-login-btn:active { transform: translateY(0); }
-
-/* 设置页 · Nexus 已登录时的胶囊退出按钮 */
+}.jg-nexus-login-btn:hover { background: #333; transform: translateY(-1px); }.jg-nexus-login-btn:active { transform: translateY(0); }/* 设置页 · Nexus 已登录时的胶囊退出按钮 */
 .jg-nexus-logout-btn {
     border: none;
     border-radius: 999px;
@@ -99,11 +78,7 @@
     cursor: pointer;
     white-space: nowrap;
     transition: background .15s ease, transform .15s ease;
-}
-.jg-nexus-logout-btn:hover { background: #333; transform: translateY(-1px); }
-.jg-nexus-logout-btn:active { transform: translateY(0); }
-
-/* v0.2.1：设置页游戏目录胶囊按钮 —— 保存为黑底白字 */
+}.jg-nexus-logout-btn:hover { background: #333; transform: translateY(-1px); }.jg-nexus-logout-btn:active { transform: translateY(0); }/* v0.2.1：设置页游戏目录胶囊按钮 —— 保存为黑底白字 */
 .jg-path-btn {
     padding: 6px 18px;
     border-radius: 999px;
@@ -114,23 +89,17 @@
     font-family: inherit;
     cursor: pointer;
     transition: background 120ms ease, color 120ms ease;
-}
-.jg-path-btn:hover { background: var(--jg-track); }
-.jg-path-btn.primary {
+}.jg-path-btn:hover { background: var(--jg-track); }.jg-path-btn.primary {
     background: var(--jg-ink);
     border-color: var(--jg-outline);
     color: var(--jg-on-ink);
     font-weight: 600;
-}
-.jg-path-btn.primary:hover { background: var(--jg-ink-hover); }
-
-/* v0.2.2：设置页开关行 —— 整行可点、黑色滑块、开启态行底黑色标记线 */
+}.jg-path-btn.primary:hover { background: var(--jg-ink-hover); }/* v0.2.2：设置页开关行 —— 整行可点、黑色滑块、开启态行底黑色标记线 */
 .jg-switch-col {
     display: flex;
     flex-direction: column;
     margin-top: 4px;
-}
-.jg-switch-row {
+}.jg-switch-row {
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -138,8 +107,7 @@
     padding: 10px 4px;
     cursor: pointer;
     user-select: none;
-}
-/* hover 标记线：从中间向两边蔓延 */
+}/* hover 标记线：从中间向两边蔓延 */
 .jg-switch-row::after {
     content: "";
     position: absolute;
@@ -152,23 +120,18 @@
     transition: width 220ms cubic-bezier(0.5, 1, 0.89, 1);
     z-index: 2;
     pointer-events: none;
-}
-.jg-switch-row:hover::after { width: 100%; }
-.jg-switch-row:hover { background: var(--jg-well); }
-.jg-switch-row.disabled:hover::after { width: 0; }
-.jg-switch-row.disabled { cursor: not-allowed; }
-/* 用颜色/局部透明变淡，而不是整行 opacity —— 否则父级透明度会把「?」的气泡提示一起压淡 */
-.jg-switch-row.disabled { color: rgba(32, 32, 32, 0.45); }
-.jg-switch-row.disabled .jg-switch { opacity: .45; }
-
-.jg-switch {
+}.jg-switch-row:hover::after { width: 100%; }.jg-switch-row:hover { background: var(--jg-well); }.jg-switch-row.disabled:hover::after { width: 0; }.jg-switch-row.disabled { cursor: not-allowed; }/* 用颜色/局部透明变淡，而不是整行 opacity —— 否则父级透明度会把「?」的气泡提示一起压淡 */
+.jg-switch-row.disabled { color: rgba(32, 32, 32, 0.45); }.jg-switch-row.disabled .jg-switch { opacity: .45; }.jg-switch {
     position: relative;
     flex: none;
     width: 40px;
     height: 22px;
     border-radius: 999px;
     background: var(--jg-line-heavy);
-    transition: background 140ms ease;
+    transition: background 320ms ease;
+    touch-action: pan-y;
+    user-select: none;
+    -webkit-user-select: none;
 }
 .jg-switch-row.on .jg-switch { background: var(--jg-ink); }
 .jg-switch-knob {
@@ -180,11 +143,13 @@
     border-radius: 50%;
     background: var(--jg-on-ink);
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
-    transition: left 140ms ease;
+    will-change: transform;
+    --sw-x: 0px;
+    transform: translateX(var(--sw-x)) scale(var(--sw-sx, 1), var(--sw-sy, 1));
 }
-.jg-switch-row.on .jg-switch-knob { left: 20px; }
-
-/* v0.2.2：设置页年龄验证弹窗（不设 z-index —— 同名规则 v1.1.x 已定为 99998，
+/* 位移和挤压分成两个变量：交互中由 junigrid.switch.js 逐帧写 --sw-x，落定就撤，
+   静止位置始终归这条 CSS —— 状态从别处被改（键盘、代码里翻）旋钮也不会钉在旧位置。 */
+.jg-switch-row.on .jg-switch-knob { --sw-x: var(--sw-travel, 18px); }/* v0.2.2：设置页年龄验证弹窗（不设 z-index —— 同名规则 v1.1.x 已定为 99998，
    此处再写低值会把删除确认遮罩一起拉低，被排序/存档下拉 9500 压住） */
 .jg-modal-overlay {
     position: fixed;
@@ -193,51 +158,53 @@
     display: flex;
     align-items: center;
     justify-content: center;
-}
-.jg-modal {
+}.jg-modal {
     width: min(420px, 92vw);
     background: var(--jg-card);
     color: var(--jg-text);
     border-radius: 14px;
     padding: 18px 20px;
     box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
+    /* FLIP 从版本卡放大时裁内容 */
+    overflow: hidden;
 }
-
-/* v0.2.1：内存管理 —— 摘要条 + 占用小卡 + 滑杆行 */
+/* ─── 对话框进出场（motion.dev modal 的形状：遮罩淡入 + 面板 scale 过冲）───
+   必须排除版本弹窗自己（.jg-ver-modal）：它走 flipModal 的 GSAP inline transform，
+   而 CSS animation 在层叠里压过 inline 样式，加上 both 填充会把 FLIP 整个顶掉。 */
+@keyframes jg-modal-fade-in { from { opacity: 0 } to { opacity: 1 } }
+@keyframes jg-modal-pop-in { from { opacity: 0; transform: scale(.94) } to { opacity: 1; transform: scale(1) } }
+@keyframes jg-modal-fade-out { from { opacity: 1 } to { opacity: 0 } }
+@keyframes jg-modal-pop-out { from { opacity: 1; transform: scale(1) } to { opacity: 0; transform: scale(.94) } }
+.jg-modal-overlay:not(:has(.jg-ver-modal)) { animation: jg-modal-fade-in 160ms ease-out both; }
+.jg-modal:not(.jg-ver-modal) { animation: jg-modal-pop-in 260ms cubic-bezier(.34, 1.56, .64, 1) both; }
+.jg-modal-overlay.closing:not(:has(.jg-ver-modal)) { animation: jg-modal-fade-out 180ms ease-in both; }
+.jg-modal-overlay.closing .jg-modal { animation: jg-modal-pop-out 180ms ease-in both; }
+@media (prefers-reduced-motion: reduce) {
+    .jg-modal-overlay:not(:has(.jg-ver-modal)),
+    .jg-modal:not(.jg-ver-modal),
+    .jg-modal-overlay.closing .jg-modal { animation-duration: 1ms; }
+}/* v0.2.1：内存管理 —— 摘要条 + 占用小卡 + 滑杆行 */
 .jg-mem-line {
     padding: 9px 12px;
     border-radius: 10px;
     background: var(--jg-well);
     font-size: 12.5px;
     font-variant-numeric: tabular-nums;
-}
-.jg-kv-grid {
+}.jg-kv-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
     gap: 8px;
-}
-.jg-kv {
+}.jg-kv {
     background: var(--jg-well);
     border-radius: 10px;
     padding: 8px 10px;
-}
-.jg-kv .k { font-size: 11.5px; opacity: .6; }
-.jg-kv .v { font-weight: 600; font-size: 14px; font-variant-numeric: tabular-nums; margin-top: 2px; }
-.jg-kv-sub { font-size: 10.5px; font-weight: 500; opacity: .55; margin-left: 6px; }
-.jg-slider-row {
+}.jg-kv .k { font-size: 11.5px; opacity: .6; }.jg-kv .v { font-weight: 600; font-size: 14px; font-variant-numeric: tabular-nums; margin-top: 2px; }.jg-kv-sub { font-size: 10.5px; font-weight: 500; opacity: .55; margin-left: 6px; }.jg-slider-row {
     display: flex;
     align-items: center;
     gap: 12px;
     padding: 8px 4px;
-}
-.jg-slider-label { flex: none; font-size: 12.5px; opacity: .75; min-width: 52px; }
-.jg-slider { flex: 1; accent-color: var(--jg-outline); cursor: pointer; }
-.jg-slider-val { flex: none; font-size: 12.5px; font-weight: 600; font-variant-numeric: tabular-nums; min-width: 44px; text-align: right; }
-/* v0.2.2：滑杆随开关弹性开合的面板（height 动画需 overflow:hidden 裁剪） */
-.jg-slider-panel { overflow: hidden; }
-.jg-slider-panel .jg-slider-row { padding-left: 16px; }
-
-/* v0.2.2：弹性滑杆（React Bits ElasticSlider 风格）—— 胶囊轨道 hover 增高、
+}.jg-slider-label { flex: none; font-size: 12.5px; opacity: .75; min-width: 52px; }.jg-slider { flex: 1; accent-color: var(--jg-outline); cursor: pointer; }/* v0.2.2：滑杆随开关弹性开合的面板（height 动画需 overflow:hidden 裁剪） */
+.jg-slider-panel { overflow: hidden; }.jg-slider-panel .jg-slider-row { padding-left: 16px; }/* v0.2.2：弹性滑杆（React Bits ElasticSlider 风格）—— 胶囊轨道 hover 增高、
    拖到两端橡皮筋拉伸回弹，数值固定显示在右侧 */
 .e-slider {
     position: relative;
@@ -250,10 +217,7 @@
     -webkit-user-select: none;
     cursor: grab;
     padding: 10px 0 12px;
-}
-.e-slider:active { cursor: grabbing; }
-.es-track-wrap { flex: 1; display: flex; }
-.es-track {
+}.e-slider:active { cursor: grabbing; }.es-track-wrap { flex: 1; display: flex; }.es-track {
     position: relative;
     flex: 1;
     height: 6px;
@@ -261,10 +225,8 @@
     background: var(--jg-hover-strong);
     transition: height .2s ease;
     will-change: transform;
-}
-.e-slider:hover .es-track,
-.e-slider:active .es-track { height: 12px; }
-.es-fill {
+}.e-slider:hover .es-track,
+.e-slider:active .es-track { height: 12px; }.es-fill {
     position: absolute;
     left: 0;
     top: 0;
@@ -272,8 +234,7 @@
     width: 0;
     border-radius: 999px;
     background: var(--jg-ink);
-}
-.es-value {
+}.es-value {
     flex: none;
     min-width: 44px;
     text-align: right;
@@ -281,21 +242,35 @@
     font-weight: 600;
     font-variant-numeric: tabular-nums;
     color: var(--jg-text-2);
-}
-
-/* v0.2.1：缓存与存储 —— 分类行 */
+}/* v0.2.1：缓存与存储 —— 分类行 */
 .jg-store-row {
     display: flex;
     align-items: center;
     gap: 10px;
     padding: 9px 2px;
     border-bottom: 1px solid var(--jg-line);
+}.jg-store-row:last-child { border-bottom: none; }.jg-store-main { flex: 1; min-width: 0; }.jg-store-name { font-weight: 600; font-size: 13px; display: flex; align-items: center; gap: 6px; }.jg-store-path { font-size: 11px; opacity: .55; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }.jg-store-size { flex: none; font-weight: 600; font-size: 13px; font-variant-numeric: tabular-nums; min-width: 64px; text-align: right; }
+/* v1.4.4：版本缓存手风琴 */
+.jg-acc-head {
+    display: flex; align-items: center; gap: 10px;
+    width: 100%; border: none; background: none; color: inherit;
+    padding: 9px 2px; cursor: pointer; text-align: left; font: inherit;
 }
-.jg-store-row:last-child { border-bottom: none; }
-.jg-store-main { flex: 1; min-width: 0; }
-.jg-store-name { font-weight: 600; font-size: 13px; display: flex; align-items: center; gap: 6px; }
-.jg-store-path { font-size: 11px; opacity: .55; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
-.jg-store-size { flex: none; font-weight: 600; font-size: 13px; font-variant-numeric: tabular-nums; min-width: 64px; text-align: right; }
+.jg-acc-chev { flex: none; width: 16px; height: 16px; color: var(--jg-text-3); }
+.jg-acc-panel { height: 0; overflow: hidden; }
+.jg-acc-inner { padding: 0 2px 10px 26px; display: flex; flex-direction: column; gap: 6px; }
+/* 版本缓存手风琴：收起必须 hidden（否则空态/列表会漏到面板外）；展开后内部滚动 */
+#jg-vercache-panel { overflow: hidden; }
+#jg-vercache-panel.open { max-height: 320px; overflow-y: auto; overflow-x: hidden; }
+#jg-vercache-panel .jg-acc-inner { height: auto !important; overflow: visible !important; max-height: none !important; }
+.jg-acc-item {
+    display: flex; align-items: center; gap: 10px;
+    background: var(--jg-well); border-radius: 10px; padding: 8px 12px;
+    font-size: 13px;
+}
+.jg-acc-item-name { flex: 1; font-weight: 600; font-variant-numeric: tabular-nums; }
+.jg-acc-item-size { color: var(--jg-text-3); font-size: 12px; font-variant-numeric: tabular-nums; }
+.jg-acc-empty { font-size: 12px; opacity: .6; padding: 4px 0 8px; }
 .jg-store-tag {
     flex: none;
     font-size: 10px;
@@ -305,11 +280,8 @@
     border-radius: 999px;
     padding: 0 6px;
     line-height: 15px;
-}
-
-/* v0.2.2：禁用开关行的像素特效画布（React Bits PixelCard 移植） */
-.jg-switch-row { position: relative; }
-.jg-pixel-canvas {
+}/* v0.2.2：禁用开关行的像素特效画布（React Bits PixelCard 移植） */
+.jg-switch-row { position: relative; }.jg-pixel-canvas {
     position: absolute;
     inset: 0;
     width: 100%;
@@ -317,40 +289,37 @@
     pointer-events: none;
     z-index: 0;
     clip-path: inset(0);   /* 只裁剪像素画布自身，不能裁剪行 —— 否则会把上方弹出的气泡剪没 */
-}
-.jg-switch-row > *:not(.jg-pixel-canvas) { position: relative; z-index: 1; }
-
-/* ───────── 关于卡片：像素风标题 + 流光版本号 + 作者行 ───────── */
+}.jg-switch-row > *:not(.jg-pixel-canvas) { position: relative; z-index: 1; }/* ───────── 关于卡片：像素风标题 + 流光版本号 + 作者行 ───────── */
 @font-face {
     font-family: 'Press Start 2P';
     src: url('../fonts/PressStart2P.woff2') format('woff2');
     font-weight: 400;
     font-style: normal;
     font-display: swap;
-}
-
-.jg-about {
+}/* v1.3.8：星露谷本体像素字体（用户提供的 StardewValley.ttf），关于卡片标题用 */
+@font-face {
+    font-family: 'Stardew Valley';
+    src: url('../fonts/StardewValley.ttf') format('truetype');
+    font-weight: 400;
+    font-style: normal;
+    font-display: swap;
+}.jg-about {
     display: flex;
     flex-direction: column;
     gap: 10px;
     margin-top: 10px;
-}
-
-/* 关于卡片：左信息 / 右赞助 */
+}/* 关于卡片：左信息 / 右赞助 */
 .jg-about-main {
     display: flex;
     align-items: flex-start;
     gap: 24px;
-}
-.jg-about-leftcol {
+}.jg-about-leftcol {
     flex: 1;
     min-width: 0;
     display: flex;
     flex-direction: column;
     gap: 10px;
-}
-
-/* 赞助支持区 */
+}/* 赞助支持区 */
 .jg-sponsor {
     flex: 0 0 auto;
     display: flex;
@@ -359,23 +328,19 @@
     gap: 8px;
     padding-left: 24px;
     border-left: 1px solid var(--jg-line);
-}
-.jg-sponsor-title {
+}.jg-sponsor-title {
     font-size: 20px;
     font-weight: 800;
     color: var(--jg-text);
     line-height: 1.2;
-}
-.jg-sponsor-sub {
+}.jg-sponsor-sub {
     font-size: 12px;
     opacity: .65;
-}
-.jg-sponsor-tabs {
+}.jg-sponsor-tabs {
     display: flex;
     gap: 8px;
     margin-top: 2px;
-}
-.jg-sponsor-tab {
+}.jg-sponsor-tab {
     appearance: none;
     border: 1px solid var(--jg-line-strong);
     background: var(--jg-card);
@@ -386,14 +351,11 @@
     border-radius: 999px;
     cursor: pointer;
     transition: background .18s ease, color .18s ease, border-color .18s ease;
-}
-.jg-sponsor-tab:hover { border-color: var(--jg-line-heavy); }
-.jg-sponsor-tab.active {
+}.jg-sponsor-tab:hover { border-color: var(--jg-line-heavy); }.jg-sponsor-tab.active {
     background: var(--jg-ink);
     border-color: var(--jg-outline);
     color: var(--jg-on-ink);
-}
-.jg-sponsor-qr {
+}.jg-sponsor-qr {
     width: 180px;
     height: 180px;
     object-fit: contain;
@@ -402,48 +364,37 @@
     border: 1px solid var(--jg-line);
     padding: 6px;
 }
-@media (max-width: 720px) {
-    .jg-about-main { flex-direction: column; }
-    .jg-sponsor {
+@media (max-width: 720px) {.jg-about-main { flex-direction: column; }.jg-sponsor {
         padding-left: 0;
         border-left: none;
         align-self: center;
     }
-}
-.jg-about-title-row { display: flex; align-items: center; gap: 10px; }
-
-/* 像素风标题：纯黑文字，无背景 */
+}.jg-about-title-row { display: flex; align-items: center; gap: 10px; }/* 像素风标题：纯黑文字，无背景（v1.3.8 换用星露谷本体像素字体） */
 .jg-pixel-title {
-    font-family: 'Press Start 2P', monospace;
-    font-size: 22px;
+    font-family: 'Stardew Valley', 'Press Start 2P', monospace;
+    font-size: 32px;
     line-height: 1;
     color: var(--jg-text);
     letter-spacing: 0;
     image-rendering: pixelated;
-}
-.jg-about-title-side {
+}.jg-about-title-side {
     display: flex;
     flex-direction: column;
     gap: 4px;
-}
-.jg-about-desc { font-size: 12px; opacity: .65; }
-
-/* 作者行 */
+}.jg-about-desc { font-size: 12px; opacity: .65; }/* 作者行 */
 .jg-author-row {
     display: flex;
     align-items: center;
     gap: 8px;
     font-size: 13px;
     opacity: .9;
-}
-.jg-author-avatar {
+}.jg-author-avatar {
     width: 28px;
     height: 28px;
     border-radius: 50%;
     object-fit: cover;
     border: 1px solid var(--jg-line-strong);
-}
-.jg-pixel-name {
+}.jg-pixel-name {
     font-family: 'Press Start 2P', monospace;
     font-size: 12px;
     line-height: 1;
@@ -451,9 +402,7 @@
     background: var(--jg-well);
     padding: 6px 8px;
     border-radius: 4px;
-}
-
-/* Shiny Text：渐变裁切 + 背景位移动画 */
+}/* Shiny Text：渐变裁切 + 背景位移动画 */
 .jg-shiny {
     display: inline-block;
     font-size: 13px;
@@ -465,25 +414,17 @@
     -webkit-text-fill-color: transparent;
     animation: jgShiny 3s linear infinite;
 }
-@keyframes jgShiny {
-    from { background-position: 150% center; }
-    to   { background-position: -50% center; }
-}
-
-/* CursorGrid：关于卡片底层光标网格 */
-.jg-cursor-grid { position: relative; overflow: hidden; }
-.jg-cursor-grid > .jg-cgrid-canvas {
+@keyframes jgShiny {from { background-position: 150% center; }to   { background-position: -50% center; }
+}/* CursorGrid：关于卡片底层光标网格 */
+.jg-cursor-grid { position: relative; overflow: hidden; }.jg-cursor-grid > .jg-cgrid-canvas {
     position: absolute;
     inset: 0;
     z-index: 0;
     pointer-events: none;
-}
-.jg-cursor-grid > :not(.jg-cgrid-canvas) {
+}.jg-cursor-grid > :not(.jg-cgrid-canvas) {
     position: relative;
     z-index: 1;
-}
-
-/* LogoLoop：联系图标跑马灯 */
+}/* LogoLoop：联系图标跑马灯 */
 .jg-logoloop {
     position: relative;
     overflow: hidden;
@@ -493,27 +434,23 @@
     max-width: 100%;
     -webkit-mask-image: linear-gradient(to right, transparent 0, #000 40px, #000 calc(100% - 40px), transparent 100%);
     mask-image: linear-gradient(to right, transparent 0, #000 40px, #000 calc(100% - 40px), transparent 100%);
-}
-.jg-ll-track {
+}.jg-ll-track {
     display: flex;
     width: max-content;
     will-change: transform;
     user-select: none;
-}
-.jg-ll-seq {
+}.jg-ll-seq {
     display: flex;
     align-items: center;
     list-style: none;
     margin: 0;
     padding: 0;
-}
-.jg-ll-item {
+}.jg-ll-item {
     flex: 0 0 auto;
     margin-right: 32px;
     display: inline-flex;
     align-items: center;
-}
-.jg-ll-item img {
+}.jg-ll-item img {
     height: 24px;
     width: auto;
     display: block;
@@ -521,10 +458,7 @@
     pointer-events: none;
     -webkit-user-drag: none;
     transition: transform .3s cubic-bezier(.4, 0, .2, 1);
-}
-.jg-ll-item:hover img { transform: scale(1.25); }
-
-/* 复制邮箱 toast */
+}.jg-ll-item:hover img { transform: scale(1.25); }/* 复制邮箱 toast */
 .jg-copy-toast {
     position: fixed;
     left: 50%;
@@ -540,19 +474,15 @@
     pointer-events: none;
     transition: opacity .25s ease, transform .25s ease;
     z-index: 9999;
-}
-.jg-copy-toast.show {
+}.jg-copy-toast.show {
     opacity: 1;
     transform: translateX(-50%) translateY(0);
-}
-
-/* ─── v1.x：设置页「?」帮助问号 + GSAP 弹性 tooltip（gsap demo easeReverse 同款）─── */
+}/* ─── v1.x：设置页「?」帮助问号 + GSAP 弹性 tooltip（gsap demo easeReverse 同款）─── */
 .jg-help-tip {
     position: relative;
     display: inline-flex;
     flex: none;
-}
-.jg-help-tip-btn {
+}.jg-help-tip-btn {
     width: 16px; height: 16px;
     border-radius: 50%;
     background: #0e100f;            /* 黑底白问号 */
@@ -562,8 +492,7 @@
     cursor: help;
     user-select: none;
     transform-origin: center;
-}
-.jg-help-tip-bubble {
+}.jg-help-tip-bubble {
     position: absolute;
     bottom: calc(100% + 12px);
     left: 50%;
@@ -584,8 +513,7 @@
     opacity: 0;
     transform-origin: bottom center;
     z-index: 30;
-}
-.jg-help-tip-bubble::after {
+}.jg-help-tip-bubble::after {
     content: "";
     position: absolute;
     top: 100%;
@@ -593,11 +521,8 @@
     transform: translateX(-50%);
     border: 6px solid transparent;
     border-top-color: #fffce1;
-}
-
-/* ── 返回顶部（左下角；右边留给任务中心悬浮球）── */
-.jg-content { position: relative; }
-.jg-backtop {
+}/* ── 返回顶部（左下角；右边留给任务中心悬浮球）── */
+.jg-content { position: relative; }.jg-backtop {
     position: absolute;
     left: 18px;
     bottom: 22px;
@@ -618,17 +543,12 @@
     transform: translateY(16px) scale(0.82);
     transition: opacity 220ms ease, transform 260ms cubic-bezier(.34, 1.56, .64, 1), visibility 0s linear 220ms;
     z-index: 9998;
-}
-.jg-backtop img { width: 34px; height: 34px; pointer-events: none; }
-.jg-backtop.show {
+}.jg-backtop img { width: 34px; height: 34px; pointer-events: none; }.jg-backtop.show {
     opacity: 1;
     visibility: visible;
     transform: translateY(0) scale(1);
     transition: opacity 220ms ease, transform 260ms cubic-bezier(.34, 1.56, .64, 1), visibility 0s;
-}
-.jg-backtop.show:hover { transform: translateY(-2px) scale(1.08); }
-.jg-backtop.show:active { transform: translateY(0) scale(0.94); }
-/* v1.1.3：上下拖动中 —— 关过渡（bottom 每帧在变）、锁形状（:active 缩放会抽搐） */
+}.jg-backtop.show:hover { transform: translateY(-2px) scale(1.08); }.jg-backtop.show:active { transform: translateY(0) scale(0.94); }/* v1.1.3：上下拖动中 —— 关过渡（bottom 每帧在变）、锁形状（:active 缩放会抽搐） */
 .jg-backtop.dragging,
 .jg-backtop.dragging.show,
 .jg-backtop.dragging.show:hover,
@@ -637,3 +557,100 @@
     transform: scale(1.06);
     cursor: grabbing;
 }
+
+
+/* ─── v1.4：游戏版本管理弹窗（Home「游戏版本」卡 → 官方分支切换 + 更新锁定）─── */
+/* 不要给弹窗加 overflow/max-height —— 下拉菜单是 absolute，会被 overflow 裁成一条缝 */
+.jg-ver-modal { width: min(560px, 94vw); }
+.jg-ver-tabs { display: flex; gap: 6px; margin-bottom: 12px; background: var(--jg-well); border-radius: 10px; padding: 4px; }
+.jg-ver-tab { flex: 1; border: none; background: transparent; color: var(--jg-text-2); border-radius: 8px; padding: 7px 0; font-size: 12.5px; font-weight: 600; cursor: pointer; transition: background .15s ease, color .15s ease; }
+.jg-ver-tab.on { background: var(--jg-card); color: var(--jg-text); box-shadow: 0 1px 2px rgba(0,0,0,.06); }
+.jg-ver-tab:hover:not(.on) { color: var(--jg-text); }
+.jg-ver-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.jg-ver-head-meta { display:flex; align-items:center; gap:8px; }
+.jg-ver-title { font-size: 16.5px; font-weight: 700; }
+.jg-ver-x { border: none; background: var(--jg-well); color: var(--jg-text-2); width: 28px; height: 28px; border-radius: 9px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+.jg-ver-x:hover { background: var(--jg-hover); color: var(--jg-text); }
+.jg-ver-current { display: flex; align-items: baseline; gap: 10px; background: var(--jg-well); border-radius: 10px; padding: 8px 12px; margin-bottom: 10px; }
+.jg-ver-cur-num { font-size: 20px; font-weight: 800; letter-spacing: .3px; font-variant-numeric: tabular-nums; }
+.jg-ver-cur-meta { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--jg-text-2); }
+.jg-ver-lockchip { padding: 2.5px 9px; border-radius: 999px; font-size: 11px; font-weight: 600; border: 1px solid var(--jg-line-strong); color: var(--jg-text-2); cursor: pointer; user-select: none; transition: border-color .15s ease; }
+.jg-ver-lockchip:hover { border-color: var(--jg-line-heavy); }
+.jg-ver-lockchip.on { background: rgba(26,196,120,.12); border-color: rgba(26,196,120,.45); color: #12965c; }
+html[data-theme="dark"] .jg-ver-lockchip.on { color: #2fdd8d; }
+.jg-ver-sec { font-size: 12.5px; font-weight: 600; color: var(--jg-text-2); margin: 2px 0 8px; }
+.jg-official-card { display:flex; align-items:center; gap:10px; background:var(--jg-well); border:1px solid var(--jg-line-strong); border-radius:10px; padding:10px 12px; }
+.jg-official-card.cur { border-color: var(--jg-accent, #7aa2ff); }
+.jg-official-main { flex:1; min-width:0; }
+.jg-official-row { display:flex; align-items:center; gap:6px; margin-bottom:2px; }
+.jg-official-badge { font-size:10px; font-weight:700; letter-spacing:.3px; padding:1px 5px; border-radius:5px; background:rgba(122,162,255,.14); color:var(--jg-accent, #7aa2ff); }
+.jg-official-name { font-size:12.5px; font-weight:700; }
+.jg-official-chip { font-size:10px; font-weight:600; padding:1px 6px; border-radius:999px; background:rgba(26,196,120,.14); color:#12965c; }
+html[data-theme="dark"] .jg-official-chip { color:#2fdd8d; }
+.jg-official-ver { font-size:18px; font-weight:800; font-variant-numeric:tabular-nums; line-height:1.2; }
+.jg-official-sub { font-size:11px; color:var(--jg-text-2); margin-top:2px; }
+.jg-official-actions { display:flex; flex-direction:column; gap:5px; align-items:stretch; flex:none; }
+.jg-official-actions .jg-ver-mini { white-space:nowrap; padding:5px 8px; }
+.jg-ver-branchdd { width: 100%; margin-bottom: 10px; position: relative; z-index: 1; }
+/* 打开的下拉必须压住下方兄弟（已下载/版本列表叠在一起时） */
+.jg-ver-branchdd.open { z-index: 20; }
+/* v1.4.5：版本弹窗下拉遮罩修层 —— .jg-dd-overlay 全局 z-index 9000，会盖住菜单(30)/打开态(20)：
+   菜单"看得见"(遮罩透明)但点击全落在遮罩上，一点选项就关闭、永远选不中（实测）。
+   弹窗内把遮罩压到 15，低于打开态 20 / 菜单 30，遮罩仍负责"点空白处关闭"。 */
+.jg-ver-modal .jg-dd-overlay { z-index: 15; }
+.jg-ver-branchdd .jg-sort-trigger { width: 100%; justify-content: space-between; }
+.jg-ver-branchdd .jg-sort-menu { width: 100%; max-height: 250px; overflow-y: auto; z-index: 30; }
+.jg-ver-item-meta { margin-left: auto; font-size: 11px; opacity: .55; font-variant-numeric: tabular-nums; }
+/* v1.4.5：统一版本列表行 —— 已下载置顶、点击即切换/下载 */
+.jg-ver-vlist { max-height: 340px; overflow-y: auto; border: 1px solid var(--jg-track, rgba(255,255,255,.08)); border-radius: 10px; padding: 4px; }
+.jg-ver-vrow { display: flex; gap: 6px; align-items: stretch; margin-bottom: 4px; }
+.jg-ver-vrow .jg-ver-vbtn { flex: 1; display: flex; justify-content: space-between; align-items: center; background: var(--jg-well); border: 1px solid transparent; border-radius: 10px; padding: 10px 12px; color: var(--jg-text); cursor: pointer; font-size: 13px; text-align: left; }
+.jg-ver-vrow .jg-ver-vbtn:hover:not(:disabled) { background: var(--jg-hover); }
+.jg-ver-vrow .jg-ver-vbtn.cur { border-color: var(--jg-accent, #7aa2ff); }
+.jg-ver-vrow .jg-ver-vbtn:disabled { opacity: .55; cursor: default; }
+.jg-ver-vrow .jg-ver-vname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.jg-ver-note { font-size: 12px; line-height: 1.55; border-radius: 10px; padding: 9px 12px; margin-bottom: 10px; background: var(--jg-well); color: var(--jg-text-2); }
+.jg-ver-note.warn { background: rgba(245,166,35,.10); color: #9a6b0a; }
+html[data-theme="dark"] .jg-ver-note.warn { color: #f0b95a; }
+.jg-ver-note.danger { background: rgba(230,60,91,.09); color: #b22347; }
+html[data-theme="dark"] .jg-ver-note.danger { color: #ff7b96; }
+.jg-ver-note.ok { background: rgba(26,196,120,.10); color: #12965c; }
+html[data-theme="dark"] .jg-ver-note.ok { color: #2fdd8d; }
+.jg-ver-steps { font-size: 12px; line-height: 1.7; color: var(--jg-text-2); background: var(--jg-well); border-radius: 10px; padding: 10px 12px; margin-bottom: 10px; }
+.jg-ver-steps a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+.jg-ver-steps b { color: var(--jg-text); font-weight: 600; }
+.jg-ver-row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.jg-ver-manifest { font-family: Consolas, monospace; font-size: 11px; color: var(--jg-text-3); background: var(--jg-well); border-radius: 6px; padding: 4px 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.jg-ver-mini { border: none; background: var(--jg-well); color: var(--jg-text-2); border-radius: 8px; padding: 6px 10px; font-size: 11.5px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+.jg-ver-mini:hover { background: var(--jg-hover); color: var(--jg-text); }
+.jg-ver-mini.primary { background: var(--jg-ink); color: var(--jg-on-ink); }
+.jg-ver-mini.primary:hover:not(:disabled) { filter: brightness(1.2); color: var(--jg-on-ink); }
+.jg-ver-mini.primary:disabled { opacity: .4; cursor: not-allowed; }
+.jg-ver-mini.danger { color: #ff7b96; }
+.jg-ver-addrow { display: flex; gap: 6px; margin-bottom: 10px; align-items: center; }
+.jg-ver-addrow .jg-ver-input { margin-bottom: 0; }
+.jg-ver-add-label { flex: 0 0 120px; }
+.jg-ver-add-id { flex: 1; min-width: 0; }
+.jg-ver-staged { display: flex; align-items: center; gap: 8px; background: var(--jg-well); border-radius: 8px; padding: 7px 10px; margin-bottom: 6px; font-size: 12px; }
+.jg-ver-staged-id { font-family: Consolas, monospace; color: var(--jg-text-2); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.jg-ver-staged-size { color: var(--jg-text-3); font-variant-numeric: tabular-nums; }
+.jg-ver-form { background: var(--jg-well); border-radius: 12px; padding: 12px 14px; margin-bottom: 12px; }
+.jg-ver-form-title { font-size: 12.5px; font-weight: 600; margin-bottom: 8px; }
+.jg-ver-input { width: 100%; box-sizing: border-box; border: 1px solid var(--jg-line-strong); background: var(--jg-card); color: var(--jg-text); border-radius: 9px; padding: 8px 11px; font-size: 13px; margin-bottom: 8px; outline: none; }
+.jg-ver-input:focus { border-color: var(--jg-outline); }
+.jg-ver-input::placeholder { color: var(--jg-text-4); }
+.jg-ver-privacy { font-size: 11px; color: var(--jg-text-3); }
+.jg-ver-btn { width: 100%; border: none; border-radius: 11px; padding: 11px 0; font-size: 14px; font-weight: 700; cursor: pointer; transition: filter .15s ease; }
+.jg-ver-btn.primary { background: var(--jg-ink-grad); color: var(--jg-on-ink); }
+.jg-ver-btn.primary:hover:not(:disabled) { filter: brightness(1.35); }
+.jg-ver-btn.primary:disabled { opacity: .45; cursor: not-allowed; }
+.jg-ver-btn.ghost { background: var(--jg-well); color: var(--jg-text-2); font-weight: 600; padding: 8px 0; font-size: 12.5px; }
+.jg-ver-btn.ghost:hover { background: var(--jg-hover); }
+.jg-ver-progress { margin-bottom: 12px; }
+.jg-ver-state { font-size: 13px; font-weight: 600; margin-bottom: 8px; }
+.jg-ver-bar { height: 8px; border-radius: 999px; background: var(--jg-track); overflow: hidden; margin-bottom: 8px; }
+.jg-ver-bar-fill { height: 100%; border-radius: 999px; background: var(--jg-ink); transition: width .4s ease; }
+html[data-theme="dark"] .jg-ver-bar-fill { background: #e7e9ee; }
+.jg-ver-log { font-family: Consolas, monospace; font-size: 11px; color: var(--jg-text-3); background: var(--jg-well); border-radius: 8px; padding: 7px 10px; margin-bottom: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.jg-ver-qr { font-family: Consolas, monospace; font-size: 9px; line-height: 1.02; color: #111; background: #fff; border-radius: 8px; padding: 10px 12px; margin-bottom: 6px; width: fit-content; user-select: none; }
+.jg-ver-mini.link { background: transparent; border: none; color: var(--jg-accent, #7aa2ff); cursor: pointer; padding: 2px 0; font-size: 11px; }

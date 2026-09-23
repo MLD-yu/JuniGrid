@@ -97,12 +97,6 @@
     };
 })();
 
-
-// ============ v0.69.0：详情页视差图片轮播（滚轮横滚 + 拖拽；放大时暂停滚动）============
-(function () {
-    if (!window.junigridJs) window.junigridJs = {};
-    })();
-
 // v0.69.9：手风琴按需滚动 —— 展开后测量真实内容高度，>360px 才给 .jg-acc 加 .jg-acc-scroll
 window.junigridJs = window.junigridJs || {};
 window.junigridJs.accMeasureScroll = function () {
@@ -330,8 +324,3 @@ window.junigridJs.backTopInit = function () {
     });
     update();
 };
-
-
-// v0.71.1：等容器 scrollHeight 足够再设 scrollTop（图片未加载导致高度不够时不会被钳回顶部）
-// v0.71.6：抗双重干扰 —— ①更新检测把列表 display:none（骨架屏期 scrollHeight 塌成 0）
-// ②返回瞬间 playPageEnter 给 .jg-main 套了 transform 入场动画，transform 会让

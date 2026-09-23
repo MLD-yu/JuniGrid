@@ -2,7 +2,6 @@
 // 滚动管理：滚动位置记忆/恢复（/mods 专用 + 全局 URL 级）、popstate 处理
 // ============================================================
 // scrollTop 设置无效/被重置。先摘掉 transform，再轮询等列表真实撑高后落位。
-// scrollTop 设置无效/被重置。先摘掉 transform，再轮询等列表真实撑高后落位。
 // v0.72.0：重写为「就绪门控 + 离开时到底标记」——
 // ① 旧 "y > limit" 分支在返回时【猜】用户离开前在底部，列表被封面懒加载
 //    (<img loading=lazy>) 撑高的过渡期会误触发：先落到偏小的 limit 并收工，
@@ -67,7 +66,10 @@ window.junigridJs.setScrollWhenReady = function (sel, y, atBottom, report) {
             // v0.72.4：首次成功落位的同一帧就显示行列表 —— 顶部状态从未被绘制过
             if (placed) revealIfPending();
             done = (placed && heightStable) ? done + 1 : 0;
-            if (done >= 16) { reportFn(target, el.scrollTop, tries, 'placed-stable'); finish(); return; }   // 稳定约 1.5s，收工
+            // v1.2.4：稳定窗口 16 轮（~1.5s）收紧到 8 轮（~0.7s）—— 稳定后的轮询每轮
+            // 都在改 scrollTop/transform，纯白跑；落位早已完成，跟随重落位 0.7s 足够
+            // 覆盖图片迟到的渐进撑高期。
+            if (done >= 8) { reportFn(target, el.scrollTop, tries, 'placed-stable'); finish(); return; }   // 稳定约 0.7s，收工
         } else {
             done = 0;
         }
@@ -169,11 +171,10 @@ window.junigridJs.saveScrollKey = function (key, y, atBottom) {
         return r;
     };
 
-    // ② 返回/前进：立「返回导航」标记（/mods 兜底恢复用）+ 锁 + 排队恢复
+    // ② 返回/前进：锁 + 排队恢复
     // vNext：返回 /nexus 且有存档 → 本监听注册早于 Blazor 路由，同步挂隐藏标记，
     // 新 nexus 内容首帧即隐藏，restoreFor 落位同帧揭开（消除「先顶部后中间」闪屏）
     window.addEventListener('popstate', function () {
-        try { window.__jgBackNav = true; } catch (e) { }
         lock();
         try {
             if (urlKey() === '/nexus') {

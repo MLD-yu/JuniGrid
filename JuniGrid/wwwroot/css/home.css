@@ -12,42 +12,23 @@
     justify-content: space-between;
     align-items: center;
     gap: 14px;
-}
-.jg-hero-info { min-width: 0; flex: 1; }
-.jg-hero-title { font-size: 20px; font-weight: 600; margin: 0 0 4px; }
-.jg-hero-sub { display: block; opacity: 0.7; font-size: 12px; word-break: break-all; }
-
-.jg-card {
+}.jg-card {
     padding: 14px 16px;
     border-radius: 12px;
     background: var(--neutral-layer-1, #ffffff);
     border: 1px solid var(--jg-line);
-}
-
-.jg-grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
-.jg-grid-4 {
+}.jg-grid-4 {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
     gap: 10px;
-}
-.jg-modlist {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-    gap: 10px;
-    margin-top: 12px;
-}
-
-.jg-stat-label {
+    overflow: visible;
+}.jg-stat-label {
     opacity: 0.7;
     font-size: 12px;
     text-transform: uppercase;
     letter-spacing: 0.5px;
-}
-.jg-stat-num { font-size: 24px; font-weight: 700; margin-top: 4px; }
-.jg-stat-sub { font-size: 12px; opacity: 0.6; margin-top: 2px; }
-
-/* -------- Logs (SMAPI colors) -------- */
-.jg-logtail, .jg-logview {
+}.jg-stat-num { font-size: 24px; font-weight: 700; margin-top: 4px; }.jg-stat-sub { font-size: 12px; opacity: 0.6; margin-top: 2px; }/* -------- Logs (SMAPI colors) -------- */
+.jg-logview {
     font-family: 'Cascadia Code', 'JetBrains Mono', Consolas, monospace;
     font-size: 12px;
     line-height: 1.5;
@@ -55,16 +36,12 @@
     background: var(--jg-well);
     border-radius: 8px;
     padding: 8px 10px;
-}
-.jg-logtail { max-height: 160px; }
-.jg-logview { height: calc(100vh - 350px); min-height: 220px; margin: 0; border-radius: 8px 8px 0 0; }
-/* v1.07.0：SMAPI 命令胶囊输入 —— 发送键内嵌右侧；聚焦黑色描边（深色主题描边用近白） */
+}.jg-logview { height: calc(100vh - 350px); min-height: 220px; margin: 0; border-radius: 8px 8px 0 0; }/* v1.07.0：SMAPI 命令胶囊输入 —— 发送键内嵌右侧；聚焦黑色描边（深色主题描边用近白） */
 .jg-loginput {
     display: flex;
     padding: 8px 10px;
     border-top: 1px solid var(--jg-line);
-}
-.jg-cmdcaps {
+}.jg-cmdcaps {
     flex: 1;
     min-width: 0;
     display: flex;
@@ -75,9 +52,7 @@
     padding: 3px 3px 3px 16px;
     background: var(--jg-glass-70);
     transition: border-color 120ms ease, box-shadow 120ms ease;
-}
-.jg-cmdcaps:focus-within { border-color: var(--jg-outline); box-shadow: 0 0 0 1px var(--jg-line-heavy); }
-.jg-cmdcaps input {
+}.jg-cmdcaps:focus-within { border-color: var(--jg-outline); box-shadow: 0 0 0 1px var(--jg-line-heavy); }.jg-cmdcaps input {
     flex: 1;
     min-width: 0;   /* 到发送键处文字开始滚动隐藏，而不是把胶囊顶宽 */
     font-family: 'Cascadia Code', 'JetBrains Mono', Consolas, monospace;
@@ -87,9 +62,7 @@
     border: 0;
     background: transparent;
     outline: none;
-}
-.jg-cmdcaps input:disabled { opacity: .5; }
-.jg-cmdsend {
+}.jg-cmdcaps input:disabled { opacity: .5; }.jg-cmdsend {
     flex: none;
     border: 0;
     border-radius: 999px;
@@ -101,71 +74,42 @@
     padding: 7px 18px;
     cursor: pointer;
     transition: background 120ms ease, transform 100ms ease;
-}
-.jg-cmdsend:hover:not(:disabled) { background: var(--jg-ink-hover); transform: translateY(-1px); }
-.jg-cmdsend:disabled { opacity: .45; cursor: not-allowed; }
-
-/* 日志框底部状态条（行数统计） */
+}.jg-cmdsend:hover:not(:disabled) { background: var(--jg-ink-hover); transform: translateY(-1px); }.jg-cmdsend:disabled { opacity: .45; cursor: not-allowed; }/* 日志框底部状态条（行数统计） */
 .jg-logfooter {
     padding: 6px 12px;
     font-size: 12px;
     opacity: .65;
     border-top: 1px solid var(--jg-line);
     border-radius: 0 0 8px 8px;
-}
-
-.jg-logline { white-space: pre-wrap; word-break: break-all; }
-/* v1.08.0：日志行内链接 —— 点击由 C# 用系统浏览器打开（WebView 内不导航） */
+}.jg-logline { white-space: pre-wrap; word-break: break-all; }/* v1.08.0：日志行内链接 —— 点击由 C# 用系统浏览器打开（WebView 内不导航） */
 .jg-logline a {
     color: inherit;
     text-decoration: underline;
     text-decoration-style: dotted;
     text-underline-offset: 2px;
-}
-.jg-logline a:hover { text-decoration-style: solid; }
-.jg-logline.err   { color: #e81123; }
-.jg-logline.upd   { color: #b4009e; }
-.jg-logline.warn  { color: #d97b00; }
-.jg-logline.info  { color: var(--jg-text); }
-.jg-logline.trace { color: var(--jg-text-3); }
-.jg-logline.sys   { color: #107c10; }
-
-/* v1.07.0：日志页右侧分类图例已删（错误/诊断/可更新/信息/警告） */
+}.jg-logline a:hover { text-decoration-style: solid; }.jg-logline.err   { color: #e81123; }.jg-logline.upd   { color: #b4009e; }.jg-logline.warn  { color: #d97b00; }.jg-logline.info  { color: var(--jg-text); }.jg-logline.trace { color: var(--jg-text-3); }.jg-logline.sys   { color: #107c10; }/* v1.07.0：日志页右侧分类图例已删（错误/诊断/可更新/信息/警告） */
 
 /* -------- Responsive: 全站断点体系 -------- */
 /* 窄窗口：缩紧一切 */
 @media (max-width: 980px) {
     .jg-account { width: 200px; padding: 14px 12px; }
-    .jg-avatar-fallback { font-size: 30px; }
     .jg-account-name { font-size: 14.5px; }
     .jg-launch-big { font-size: 14px; padding: 11px 12px; }
-    .jg-hero-title { font-size: 18px; }
 }
-@media (max-width: 860px) {
-    .jg-grid-4 { grid-template-columns: repeat(2, 1fr); }
-    .jg-taskdock { right: 12px; bottom: 12px; padding: 8px 10px; }
-    .jg-taskdock-title { font-size: 12px; }
+@media (max-width: 860px) {.jg-grid-4 { grid-template-columns: repeat(2, 1fr); }.jg-taskdock { right: 12px; bottom: 12px; padding: 8px 10px; }.jg-taskdock-title { font-size: 12px; }
 }
-@media (max-width: 680px) {
-    .jg-grid-4 { grid-template-columns: 1fr; }
-    .jg-account { width: 160px; padding: 10px 8px; }
-}
-/* 大屏：字号、间距同步放大，避免"放大后跟没放大一样" */
+@media (max-width: 680px) {.jg-grid-4 { grid-template-columns: 1fr; }.jg-account { width: 160px; padding: 10px 8px; }
+}/* 大屏：字号、间距同步放大，避免"放大后跟没放大一样" */
 @media (min-width: 1400px) {
     .jg-account-name { font-size: 16px; }
     .jg-launch-big { font-size: 16px; padding: 14px 16px; }
-    .jg-hero-title { font-size: 22px; }
 }
 @media (min-width: 1800px) {
-    .jg-hero-title { font-size: 26px; }
-}
-
-/* -------- SMAPI pinned card + mod update states -------- */
+}/* -------- SMAPI pinned card + mod update states -------- */
 .jg-smapi-card {
     border: 1.5px solid var(--jg-line-heavy);
     background: linear-gradient(135deg, var(--jg-hover), rgba(194,57,179,0.06));
-}
-.jg-update-link {
+}.jg-update-link {
     width: 100%;
     padding: 8px 12px;
     border-radius: 10px;
@@ -177,68 +121,38 @@
     font-family: inherit;
     cursor: pointer;
     transition: background 120ms ease;
-}
-.jg-update-link:hover { background: rgba(194,57,179,0.16); }
-.jg-update-link[disabled] { opacity: .55; cursor: not-allowed; }
-
-.jg-mod-updmsg { font-size: 11.5px; margin-top: 6px; }
-.jg-mod-updmsg.checking  { color: var(--jg-text); }
-.jg-mod-updmsg.updating  { color: var(--jg-text); }
-.jg-mod-updmsg.updated   { color: #107c10; }
-.jg-mod-updmsg.available { color: #b4009e; }
-.jg-mod-updmsg.failed    { color: #e81123; }
-.jg-mod-updmsg.premium   { color: #d97b00; }
-
-
-/* ── v1.1.5：游玩时长热力图（GitHub contributions 风格，黑灰色阶）── */
-.jg-heat-card { margin-top: 16px; padding: 18px 20px 14px; }
-.jg-heat-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; flex-wrap: wrap; gap: 8px; }
-.jg-heat-title { font-size: 14.5px; font-weight: 600; color: var(--jg-text); }
-/* v1.1.6：年份选择改为通用下拉（.jg-sort-dd 结构复用，动画走 dropdownToggle）；
+}.jg-update-link:hover { background: rgba(194,57,179,0.16); }.jg-update-link[disabled] { opacity: .55; cursor: not-allowed; }.jg-mod-updmsg { font-size: 11.5px; margin-top: 6px; }.jg-mod-updmsg.checking  { color: var(--jg-text); }.jg-mod-updmsg.updating  { color: var(--jg-text); }.jg-mod-updmsg.updated   { color: #107c10; }.jg-mod-updmsg.available { color: #b4009e; }.jg-mod-updmsg.failed    { color: #e81123; }.jg-mod-updmsg.premium   { color: #d97b00; }/* ── v1.1.5：游玩时长热力图（GitHub contributions 风格，黑灰色阶）── */
+.jg-heat-card { margin-top: 16px; padding: 18px 20px 14px; }.jg-heat-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; flex-wrap: wrap; gap: 8px; }.jg-heat-title { font-size: 14.5px; font-weight: 600; color: var(--jg-text); }/* v1.1.6：年份选择改为通用下拉（.jg-sort-dd 结构复用，动画走 dropdownToggle）；
    11 个年份超一屏高，菜单内部滚动 */
-.jg-heat-yeardd .jg-sort-menu { max-height: 320px; overflow-y: auto; min-width: 120px; }
-/* 响应式：以卡片内容宽度为容器，格子宽度 = (可用宽 - 固定开销194px[星期列26+边缘间隙6+53个列间隙159]) / 53 周，
+.jg-heat-yeardd .jg-sort-menu { max-height: 320px; overflow-y: auto; min-width: 120px; }/* 响应式：以卡片内容宽度为容器，格子宽度 = (可用宽 - 固定开销194px[星期列26+边缘间隙6+53个列间隙159]) / 53 周，
    无上限 —— 任意窗口宽度都精确铺满不留右侧空白；下限 5px，再小才出横向滚动；
    position:relative 作为月份悬停描边框（.jg-heat-month-outline）的定位容器 */
-.jg-heat-scroll { position: relative; container-type: inline-size; overflow-x: auto; padding-bottom: 8px; }   /* 常态即留足 8px（聚焦月块只向下长 ~5px 不裁边）——容器查询容器不吃负 margin 抵消，恒定预留是唯一不跳高的做法 */
-.jg-heat-grid { border-spacing: 3px; border-collapse: separate; }
-.jg-heat-grid th { padding: 0 0 2px; font-size: 11px; font-weight: 400; color: var(--jg-text-3); text-align: left; white-space: nowrap; }
-.jg-heat-grid th.jg-heat-wday { width: 26px; }
-/* 月份标签：th 本体 0 宽不参与列宽分配，但保留 15px 行高让标签独占一条带，
+.jg-heat-scroll { position: relative; container-type: inline-size; overflow-x: auto; }
+/* 聚焦放大绕「月块顶边」做（junigrid.ui.js：ZOOM=1.15、原点=包围盒顶边中点）→ 月块底边向下长
+   0.15 × 月块高。最长月块占 6 行 ≈ 6 格 + 15px 行距，即约 0.9 格 + 2px，再加描边 2px 外扩。
+   所以预留必须跟着格子宽度算：v1.1.9 之前固定 8px，宽窗口下少 20 多像素，整行被 overflow 裁掉
+   （描边 SVG 是 overflow:visible 会伸出去，看着就是"框在、格子没了"）。
+   同时必须恒定 —— 悬停时才加 padding 会把卡片撑高，那正是当初要消掉的症状。 */
+.jg-heat-scroll::after { content: ""; display: block; height: calc((100cqw - 194px) * 0.017 + 6px); }
+.jg-heat-grid { border-spacing: 3px; border-collapse: separate; }.jg-heat-grid th { padding: 0 0 2px; font-size: 11px; font-weight: 400; color: var(--jg-text-3); text-align: left; white-space: nowrap; }.jg-heat-grid th.jg-heat-wday { width: 26px; }/* 月份标签：th 本体 0 宽不参与列宽分配，但保留 15px 行高让标签独占一条带，
    文字绝对定位贴行底 —— 既不撑宽列、也不压到下面的格子 */
-.jg-heat-grid th.jg-heat-month { position: relative; width: 0; font-size: 0; padding: 0; height: 15px; vertical-align: bottom; }
-.jg-heat-month span { position: absolute; left: 0; bottom: 0; font-size: 11px; font-weight: 400; color: var(--jg-text-3); white-space: nowrap; }
-/* v1.1.9：月份标签可悬停（data-tip 显示该月总时长 + JS 圈整月）—— hover 提亮，
+.jg-heat-grid th.jg-heat-month { position: relative; width: 0; font-size: 0; padding: 0; height: 15px; vertical-align: bottom; }.jg-heat-month span { position: absolute; left: 0; bottom: 0; font-size: 11px; font-weight: 400; color: var(--jg-text-3); white-space: nowrap; }/* v1.1.9：月份标签可悬停（data-tip 显示该月总时长 + JS 圈整月）—— hover 提亮，
    右侧 8px padding 扩大命中区（相邻标签至少隔 4 列，不会互相重叠） */
-.jg-heat-month span[data-month] { padding-right: 8px; cursor: default; }
-.jg-heat-month span[data-month]:hover { color: var(--jg-text); }
-.jg-heat-grid td { padding: 0; }
-/* v1.1.6：格子只读展示（手动改时长的入口已删，只信系统统计），不再有手型/放大反馈 */
-.jg-heat-cell { display: block; width: max(5px, calc((100cqw - 194px) / 53)); height: auto; aspect-ratio: 1; border-radius: 2.5px; background: var(--jg-track); outline: 1px solid var(--jg-line); outline-offset: -1px; transition: transform 120ms ease, opacity 260ms ease; }
-/* v1.1.7：hover 轻微放大 —— 纯静态格子配悬停提示太「死」，给个缩放反馈 */
-.jg-heat-cell:hover { transform: scale(1.35); }
-.jg-heat-cell.l1 { background: #c4c4c4; }
-.jg-heat-cell.l2 { background: #8c8c8c; }
-.jg-heat-cell.l3 { background: #474747; }
-.jg-heat-cell.l4 { background: #000; }
-.jg-heat-cell.empty { background: transparent; outline: none; }
-.jg-heat-cell.future { opacity: .45; }
-/* v1.1.9：悬停月份标签时的整月描边 —— SVG 折线沿「1 号→月末」的阶梯边界
+.jg-heat-month span[data-month] { padding-right: 8px; cursor: default; }.jg-heat-month span[data-month]:hover { color: var(--jg-text); }.jg-heat-grid td { padding: 0; }/* v1.1.6：格子只读展示（手动改时长的入口已删，只信系统统计），不再有手型/放大反馈 */
+.jg-heat-cell { display: block; width: max(5px, calc((100cqw - 194px) / 53)); height: auto; aspect-ratio: 1; border-radius: 2.5px; background: var(--jg-track); outline: 1px solid var(--jg-line); outline-offset: -1px; transition: transform 120ms ease, opacity 260ms ease; }/* v1.1.7：hover 轻微放大 —— 纯静态格子配悬停提示太「死」，给个缩放反馈 */
+.jg-heat-cell:hover { transform: scale(1.35); }.jg-heat-cell.l1 { background: #c4c4c4; }.jg-heat-cell.l2 { background: #8c8c8c; }.jg-heat-cell.l3 { background: #474747; }.jg-heat-cell.l4 { background: #000; }.jg-heat-cell.empty { background: transparent; outline: none; }.jg-heat-cell.future { opacity: .45; }/* v1.1.9：悬停月份标签时的整月描边 —— SVG 折线沿「1 号→月末」的阶梯边界
    （junigrid.ui.js 按该月各周列区段生成路径，定位到 .jg-heat-scroll 内容坐标）；
    浅色主题黑线，深色主题白线（theme.css 覆盖）；pointer-events:none 不挡格子 hover */
-.jg-heat-month-outline { position: absolute; left: 0; top: 0; width: 100%; height: 100%; z-index: 3; pointer-events: none; overflow: visible; }
-.jg-heat-month-outline path { fill: none; stroke: #000; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; opacity: 0; transition: opacity 120ms ease; }
-.jg-heat-month-outline.on path { opacity: 1; }
-/* 月份聚焦 —— 悬停月份标签时：整月作为刚体放大（hl，共享变换原点 = 包围盒顶边中点，由 JS 逐格设置：
+.jg-heat-month-outline { position: absolute; left: 0; top: 0; width: 100%; height: 100%; z-index: 3; pointer-events: none; overflow: visible; }.jg-heat-month-outline path { fill: none; stroke: #000; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; opacity: 0; transition: opacity 120ms ease; }.jg-heat-month-outline.on path { opacity: 1; }/* 月份聚焦 —— 悬停月份标签时：整月作为刚体放大（hl，共享变换原点 = 包围盒顶边中点，由 JS 逐格设置：
    顶边与月份标签不动，月块只向下长），其余格子与月份标签虚化（dim）。类由 junigrid.ui.js 钩子切换 */
-.jg-heat-scroll.heat-zooming { overflow: hidden; }   /* 聚焦时只关横向滚动（放大会顶出滚动条），高度预留已在常态留足，卡片不再长高 */
+.jg-heat-scroll.heat-zooming { overflow: hidden; }/* 聚焦时只关横向滚动（放大会顶出滚动条），高度预留已在常态留足，卡片不再长高 */
 /* 虚化只走透明度 —— 三百多个格子同时跑 blur() 滤镜动画是卡顿根源， opacity 是纯合成层操作 */
-.jg-heat-grid.heat-focus .jg-heat-cell.dim { opacity: .15; }
-.jg-heat-grid.heat-focus .jg-heat-cell.hl { transform: scale(1.15); }
-.jg-heat-month span { transition: opacity 260ms ease; z-index: 4; }
-.jg-heat-grid.heat-focus .jg-heat-month span.dim { opacity: .3; }
-.jg-heat-foot { display: flex; justify-content: flex-end; align-items: center; font-size: 11.5px; color: var(--jg-text-3); margin-top: 8px; flex-wrap: wrap; gap: 6px; }
-.jg-heat-legend { display: flex; align-items: center; gap: 3px; }
-/* v1.1.6：图例色块 hover 放大（带回弹的缓动），data-tip 胶囊提示由全局委托处理 */
-.jg-heat-legend .jg-heat-cell { cursor: default; transform: none; width: 11px; height: 11px; aspect-ratio: auto; transition: transform 160ms cubic-bezier(.34,1.56,.64,1); }
-.jg-heat-legend .jg-heat-cell:hover { transform: scale(1.4); }
+.jg-heat-grid.heat-focus .jg-heat-cell.dim { opacity: .15; }.jg-heat-grid.heat-focus .jg-heat-cell.hl { transform: scale(1.15); }.jg-heat-month span { transition: opacity 260ms ease; z-index: 4; }.jg-heat-grid.heat-focus .jg-heat-month span.dim { opacity: .3; }.jg-heat-foot { display: flex; justify-content: flex-end; align-items: center; font-size: 11.5px; color: var(--jg-text-3); margin-top: 8px; flex-wrap: wrap; gap: 6px; }.jg-heat-legend { display: flex; align-items: center; gap: 3px; }/* v1.1.6：图例色块 hover 放大（带回弹的缓动），data-tip 胶囊提示由全局委托处理 */
+.jg-heat-legend .jg-heat-cell { cursor: default; transform: none; width: 11px; height: 11px; aspect-ratio: auto; transition: transform 160ms cubic-bezier(.34,1.56,.64,1); }.jg-heat-legend .jg-heat-cell:hover { transform: scale(1.4); }
+
+/* ─── v1.4：游戏版本卡可点击 → 版本管理弹窗 ─── */
+.jg-card-click { cursor: pointer; transition: transform .18s ease, box-shadow .18s ease; overflow: visible; }
+.jg-card-click:hover { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(0,0,0,.08); }
+.jg-card-click .jg-ver-card-sub { display: flex; align-items: center; }
+.jg-ver-hint { margin-left: auto; font-size: 11px; color: var(--jg-text-4); opacity: 0; transition: opacity .18s ease; }
+.jg-card-click:hover .jg-ver-hint { opacity: 1; }

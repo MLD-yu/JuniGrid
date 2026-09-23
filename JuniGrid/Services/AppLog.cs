@@ -10,15 +10,18 @@ namespace JuniGrid.Services;
 public static class AppLog
 {
     private static readonly object Gate = new();
-    private static readonly string Dir = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-        "JuniGrid");
+    private static readonly string Dir = StoragePaths.AppDataDir;
     private static readonly string FilePath = Path.Combine(Dir, "juni-grid.log");
     private const long MaxBytes = 1024 * 1024;   // 1MB 就滚动
 
     /// <summary>记录一条警告（WRN）。不必要不问断调用，调用方应只在确实失败/异常才调。</summary>
     public static void Warn(string source, string message)
         => Write("WRN", source, message);
+
+    /// <summary>记录一条常规信息（INF）。没出错但值得留痕的走这里 —— 阶段耗时汇总等。
+    /// 不用 Warn：耗时是常态数据，混进 WRN 会把真正的告警淹掉。</summary>
+    public static void Info(string source, string message)
+        => Write("INF", source, message);
 
     /// <summary>记录一条错误（ERR）。</summary>
     public static void Error(string source, string message)
@@ -32,12 +35,12 @@ public static class AppLog
     {
         try
         {
+            var line = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] [{level}] [{source}] {message}";
             lock (Gate)
             {
                 Directory.CreateDirectory(Dir);
                 RollIfNeeded();
-                File.AppendAllText(FilePath,
-                    $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] [{level}] [{source}] {message}{Environment.NewLine}");
+                File.AppendAllText(FilePath, line + Environment.NewLine);
             }
         }
         catch { /* 日志本身失败也绝不能把程序拖崩 */ }

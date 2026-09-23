@@ -51,6 +51,13 @@ public static class LogLineClassifier
         if (line.Contains(" INFO ")) return "info";
         if (line.Contains(" TRACE ") || line.Contains(" DEBUG ")) return "trace";
 
+        // 异常与堆栈的续行不带级别标签（SMAPI 只在错误块里输出这些行），必须归进错误：
+        // 否则它们会掉到下面的内容启发式里 —— 方法名含 "update" 的栈帧
+        // （UpdateRandomMovements / updateEvenIfFarmerIsntHere / <UpdateLocations>b__0 /
+        // Game1._update）被当成"可更新"染成品红，其余帧没人认领变白色，
+        // 一条 ERROR 的堆栈就花成了紫白相间（用户实测）。
+        if (StackFrame.IsMatch(line) || ExceptionLine.IsMatch(line)) return "err";
+
         // 无级别标签的行（如 stderr 转发）才走启发式：SMAPI 更新提示的稳定特征
         // 是 "update" / "(you have x)" 字样（SMAPI 控制台把更新提示渲染为品红）。
         if (line.Contains("update", StringComparison.OrdinalIgnoreCase)
@@ -59,4 +66,12 @@ public static class LogLineClassifier
 
         return "";
     }
+
+    // 「   at Xxx.Yyy(...) in D:\...\Game1.cs:line 6169」—— 缩进 + at + 非空白
+    private static readonly Regex StackFrame =
+        new(@"^\s+at\s+\S", RegexOptions.Compiled);
+
+    // 「System.NullReferenceException: ...」「InnerException:」「--- End of inner ...」
+    private static readonly Regex ExceptionLine =
+        new(@"^\s*(---\s*End of|\w+(\.\w+)*Exception\b|InnerException\b)", RegexOptions.Compiled);
 }

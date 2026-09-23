@@ -1,6 +1,8 @@
 using System.Collections.Concurrent;
 using System.IO;
+using System.Net;
 using System.Net.Http;
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
@@ -12,6 +14,8 @@ namespace JuniGrid.Services;
 ///  - Direct download links are Premium-only (Nexus policy): free accounts
 ///    get HTTP 403 on download_link — surfaced as NeedsPremium.
 /// Rate limits: ~100 req/day free, 2500/day premium (X-RL-* headers).
+/// All api.nexusmods.com / GraphQL traffic goes through SendApiAsync (central concurrency
+/// cap + 429 / Retry-After / X-RL-*-Reset handling) so one client never bursts aggressively.
 /// </summary>
 public sealed class NexusService
 {
@@ -31,12 +35,150 @@ public sealed class NexusService
         return h;
     }
 
-    private static HttpRequestMessage Req(string? apiKey, string url)
+    // ══════════════════════════════════════════════════════════════════
+    // Nexus API 集中限流闸门（AUP 二审：降低并发 + 集中识别 429 + 遵守 Retry-After）
+    //  - MaxConcurrent：本进程在飞的 API/GraphQL 请求硬顶
+    //  - 429：优先 Retry-After（秒或 HTTP-date），否则 X-RL-*-Reset
+    //  - 成功响应若 Remaining==0 也主动暂停，避免下一轮冲进 429
+    // CDN 文件下载不进此闸门（不同 host；download_link 本身只是一次 API 调用）
+    // ══════════════════════════════════════════════════════════════════
+    private const int MaxConcurrentApiRequests = 2;
+    private static readonly SemaphoreSlim ApiGate = new(MaxConcurrentApiRequests, MaxConcurrentApiRequests);
+    private static long _apiPauseUntilUtcTicks;
+    // 服务端明确给出的等待时长不做上限截断（免费号 daily reset 可能数小时）；
+    // 仅无头兜底与「单次调用内联重试」有短上限。
+    private static readonly TimeSpan MinRetryAfter = TimeSpan.FromSeconds(1);
+    private static readonly TimeSpan FallbackWhenNoHeaders = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan MaxInlineRetryWait = TimeSpan.FromSeconds(15);
+
+    private static void PauseUntil(DateTimeOffset untilUtc)
     {
-        var r = new HttpRequestMessage(HttpMethod.Get, url);
-        if (!string.IsNullOrEmpty(apiKey))
-            r.Headers.TryAddWithoutValidation("apikey", apiKey);
-        return r;
+        var ticks = untilUtc.UtcTicks;
+        while (true)
+        {
+            var cur = Volatile.Read(ref _apiPauseUntilUtcTicks);
+            if (ticks <= cur) return;
+            if (Interlocked.CompareExchange(ref _apiPauseUntilUtcTicks, ticks, cur) == cur) return;
+        }
+    }
+
+    private static async Task WaitIfPausedAsync(CancellationToken ct)
+    {
+        while (true)
+        {
+            var until = Volatile.Read(ref _apiPauseUntilUtcTicks);
+            var now = DateTimeOffset.UtcNow.UtcTicks;
+            if (until <= now) return;
+            var waitMs = (int)Math.Min((until - now) / TimeSpan.TicksPerMillisecond + 25, 30_000);
+            if (waitMs <= 0) return;
+            await Task.Delay(waitMs, ct).ConfigureAwait(false);
+        }
+    }
+
+    private static bool TryGetIntHeader(HttpResponseMessage res, string name, out int value)
+    {
+        value = 0;
+        if (!res.Headers.TryGetValues(name, out var vals)) return false;
+        foreach (var v in vals)
+            if (int.TryParse(v.Trim(), out value)) return true;
+        return false;
+    }
+
+    /// <summary>配额耗尽（Remaining==0）时的主动暂停。</summary>
+    private static void ObserveRateLimit(HttpResponseMessage res)
+    {
+        try
+        {
+            if (TryGetIntHeader(res, "X-RL-Hourly-Remaining", out var hourlyLeft) && hourlyLeft <= 0
+                && TryGetIntHeader(res, "X-RL-Hourly-Reset", out var hourlyReset) && hourlyReset > 0)
+            {
+                var wait = TimeSpan.FromSeconds(Math.Max(hourlyReset, 1));
+                PauseUntil(DateTimeOffset.UtcNow + wait);
+                AppLog.Warn("Nexus", $"小时配额耗尽 — 暂停 API 调用 {wait.TotalSeconds:0}s");
+            }
+            else if (TryGetIntHeader(res, "X-RL-Daily-Remaining", out var dailyLeft) && dailyLeft <= 0
+                     && TryGetIntHeader(res, "X-RL-Daily-Reset", out var dailyReset) && dailyReset > 0)
+            {
+                var wait = TimeSpan.FromSeconds(Math.Max(dailyReset, 1));
+                PauseUntil(DateTimeOffset.UtcNow + wait);
+                AppLog.Warn("Nexus", $"日配额耗尽 — 暂停 API 调用 {wait.TotalSeconds:0}s");
+            }
+        }
+        catch { /* 头解析失败不得影响正常响应 */ }
+    }
+
+    /// <summary>解析 429 的 Retry-After / X-RL-*-Reset，写入全局暂停并返回应等待时长。</summary>
+    private static TimeSpan ApplyPauseFrom429(HttpResponseMessage res)
+    {
+        TimeSpan wait;
+        var ra = res.Headers.RetryAfter;
+        if (ra?.Delta is TimeSpan d && d > TimeSpan.Zero) wait = d;
+        else if (ra?.Date is DateTimeOffset dt)
+        {
+            wait = dt - DateTimeOffset.UtcNow;
+            if (wait < MinRetryAfter) wait = MinRetryAfter;
+        }
+        else if (TryGetIntHeader(res, "X-RL-Hourly-Reset", out var hourlyReset) && hourlyReset > 0)
+            wait = TimeSpan.FromSeconds(hourlyReset);
+        else if (TryGetIntHeader(res, "X-RL-Daily-Reset", out var dailyReset) && dailyReset > 0)
+            wait = TimeSpan.FromSeconds(dailyReset);
+        else
+            wait = FallbackWhenNoHeaders;
+
+        if (wait < MinRetryAfter) wait = MinRetryAfter;
+        PauseUntil(DateTimeOffset.UtcNow + wait);
+        return wait;
+    }
+
+    /// <summary>
+    /// Nexus API v1 与 GraphQL 的唯一发送出口：并发硬顶、等暂停、集中识别 429。
+    /// 短窗口（≤15s）等满后重试一次；长锁立刻返回 429（释放闸门，不占槽位挂死 UI），
+    /// 全局 PauseUntil 仍按服务端完整时长生效。
+    /// </summary>
+    private static async Task<HttpResponseMessage> SendApiAsync(
+        HttpClient client,
+        string url,
+        string? apiKey = null,
+        HttpMethod? method = null,
+        string? jsonBody = null,
+        CancellationToken ct = default)
+    {
+        await ApiGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            for (var attempt = 0; ; attempt++)
+            {
+                await WaitIfPausedAsync(ct).ConfigureAwait(false);
+
+                using var req = new HttpRequestMessage(method ?? HttpMethod.Get, url);
+                if (!string.IsNullOrEmpty(apiKey))
+                    req.Headers.TryAddWithoutValidation("apikey", apiKey);
+                if (jsonBody is not null)
+                    req.Content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
+
+                var res = await client.SendAsync(req, ct).ConfigureAwait(false);
+                ObserveRateLimit(res);
+                if ((int)res.StatusCode != 429 || attempt >= 1)
+                    return res;
+
+                var wait = ApplyPauseFrom429(res);
+                res.Dispose();
+                if (wait > MaxInlineRetryWait)
+                {
+                    AppLog.Warn("Nexus", $"HTTP 429 on {url} — API 暂停 {wait.TotalSeconds:0}s，本次调用直接失败不重试");
+                    return new HttpResponseMessage(HttpStatusCode.TooManyRequests)
+                    {
+                        ReasonPhrase = "Rate limited (paused per Retry-After / rate-limit reset)",
+                    };
+                }
+                AppLog.Warn("Nexus", $"HTTP 429 on {url} — 短窗口 {wait.TotalSeconds:0}s，等待后重试一次");
+                await Task.Delay(wait, ct).ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            ApiGate.Release();
+        }
     }
 
     // v1.08：宽容客户端 —— 详情页/按需单请求专用。Nexus API 单请求实测要 5~8 秒，
@@ -53,7 +195,7 @@ public sealed class NexusService
     /// <summary>v0.46.0：拉取本游戏的官方分类表（category_id → 名称），调用方缓存进 config。</summary>
     public async Task<Dictionary<int, string>?> GetCategoriesAsync(string apiKey)
     {
-        using var res = await Http.SendAsync(Req(apiKey, Base + ".json"));
+        using var res = await SendApiAsync(Http, Base + ".json", apiKey);
         if (!res.IsSuccessStatusCode) return null;
         using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
         if (!doc.RootElement.TryGetProperty("categories", out var arr) || arr.ValueKind != JsonValueKind.Array)
@@ -71,7 +213,7 @@ public sealed class NexusService
 
     public async Task<NexusModInfo?> GetModAsync(string apiKey, int modId)
     {
-        using var res = await Http.SendAsync(Req(apiKey, $"{Base}/mods/{modId}.json"));
+        using var res = await SendApiAsync(Http, $"{Base}/mods/{modId}.json", apiKey);
         if (!res.IsSuccessStatusCode) return null;
         using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
         var root = doc.RootElement;
@@ -87,7 +229,7 @@ public sealed class NexusService
     /// <summary>Full mod detail for the in-app detail page (incl. HTML description + cover).</summary>
     public async Task<NexusModDetail?> GetModDetailAsync(string apiKey, int modId)
     {
-        using var res = await SlowHttp.SendAsync(Req(apiKey, $"{Base}/mods/{modId}.json"));
+        using var res = await SendApiAsync(SlowHttp, $"{Base}/mods/{modId}.json", apiKey);
         if (!res.IsSuccessStatusCode) return null;
         using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
         var root = doc.RootElement;
@@ -247,13 +389,13 @@ public sealed class NexusService
     /// <summary>Newest MAIN file (fallback: newest file of any category).</summary>
     public async Task<NexusFileInfo?> GetLatestMainFileAsync(string apiKey, int modId, bool patient = false)
     {
-        using var res = await (patient ? SlowHttp : Http).SendAsync(Req(apiKey, $"{Base}/mods/{modId}/files.json"));
+        using var res = await SendApiAsync(patient ? SlowHttp : Http, $"{Base}/mods/{modId}/files.json", apiKey);
         if (!res.IsSuccessStatusCode) return null;
         using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
         if (!doc.RootElement.TryGetProperty("files", out var files)) return null;
 
-            NexusFileInfo? bestMain = null, bestAny = null;
-            long bestMainTs = -1, bestAnyTs = -1;
+            NexusFileInfo? bestMain = null, bestAny = null, bestPortrait = null;
+            long bestMainTs = -1, bestAnyTs = -1, bestPortraitTs = -1;
             foreach (var f in files.EnumerateArray())
             {
                 var id = f.TryGetProperty("file_id", out var fi) ? fi.GetInt64() : 0;
@@ -268,8 +410,19 @@ public sealed class NexusService
                 if (ts > bestAnyTs) { bestAnyTs = ts; bestAny = info; }
                 if (cat.Equals("MAIN", StringComparison.OrdinalIgnoreCase) && ts > bestMainTs)
                 { bestMainTs = ts; bestMain = info; }
+                // 肖像向可选文件（名字带 xnb/png/portrait 且体积不太小）——MAIN 可能是
+                // 空壳/说明包时，安装管线要能下到真正的素材文件
+                var nlow = name.ToLowerInvariant();
+                var looksPortrait = nlow.Contains("xnb") || nlow.Contains("portrait")
+                    || nlow.Contains("肖像") || nlow.EndsWith(".xnb", StringComparison.OrdinalIgnoreCase)
+                    || nlow.EndsWith(".png", StringComparison.OrdinalIgnoreCase);
+                if (looksPortrait && size >= 16 * 1024 && ts > bestPortraitTs)
+                { bestPortraitTs = ts; bestPortrait = info; }
             }
-            return bestMain ?? bestAny;
+            // MAIN 优先；MAIN 异常小且存在更像素材包的可选文件时改用后者
+            if (bestMain is { } m && (m.Size <= 0 || m.Size >= 16 * 1024 || bestPortrait is null))
+                return m;
+            return bestPortrait ?? bestMain ?? bestAny;
     }
 
     /// <summary>
@@ -291,42 +444,31 @@ public sealed class NexusService
             if (ids.Count == 0) return new Dictionary<int, NexusModFingerprint>();
             const int CHUNK = 50;   // 与浏览页 FetchChunkedAsync 同尺寸（单批 50 稳定可用）
             var result = new Dictionary<int, NexusModFingerprint>();
-            // 各批次并行拉（几百个 mod 也只是几个并发 POST，无 key 无限流压力）
-            var chunks = new List<Task<Dictionary<int, NexusModFingerprint>?>>();
+            // 串行分批 —— 旧 Task.WhenAll 扇出会一次打开多个 GraphQL POST；
+            // 集中 ApiGate 只允许 2 路并发，串行也避免与精查 files.json 抢通道
             for (var i = 0; i < ids.Count; i += CHUNK)
             {
                 var slice = ids.Skip(i).Take(CHUNK).ToList();
-                chunks.Add(Task.Run(async () =>
+                var idArgs = string.Join(",", slice.Select(id =>
+                    "{gameDomain:\"" + gameDomain + "\", modId:" + id + "}"));
+                var d = await GraphQlAsync(
+                    "{ legacyModsByDomain(ids:[" + idArgs + "]) { nodes { modId version updatedAt pictureUrl } } }");
+                if (d is null) return null;
+                var root = d.Value;
+                if (!root.TryGetProperty("legacyModsByDomain", out var lb)
+                    || lb.ValueKind != JsonValueKind.Object
+                    || !lb.TryGetProperty("nodes", out var nodes)
+                    || nodes.ValueKind != JsonValueKind.Array)
+                    return null;
+                foreach (var n in nodes.EnumerateArray())
                 {
-                    var idArgs = string.Join(",", slice.Select(id =>
-                        "{gameDomain:\"" + gameDomain + "\", modId:" + id + "}"));
-                    var d = await GraphQlAsync(
-                        "{ legacyModsByDomain(ids:[" + idArgs + "]) { nodes { modId version updatedAt pictureUrl } } }");
-                    if (d is null) return null;
-                    var root = d.Value;
-                    if (!root.TryGetProperty("legacyModsByDomain", out var lb)
-                        || lb.ValueKind != JsonValueKind.Object
-                        || !lb.TryGetProperty("nodes", out var nodes)
-                        || nodes.ValueKind != JsonValueKind.Array)
-                        return null;
-                    var dict = new Dictionary<int, NexusModFingerprint>();
-                    foreach (var n in nodes.EnumerateArray())
-                    {
-                        var mid = n.TryGetProperty("modId", out var m1) && m1.ValueKind == JsonValueKind.Number
-                            ? m1.GetInt32()
-                            : int.TryParse(GetStr(n, "modId"), out var p) ? p : 0;
-                        if (mid <= 0) continue;
-                        dict[mid] = new NexusModFingerprint(
-                            mid, GetStr(n, "version"), GetStr(n, "updatedAt"), GetStr(n, "pictureUrl"));
-                    }
-                    return dict;
-                }));
-            }
-            foreach (var t in chunks)
-            {
-                var dict = await t;
-                if (dict is null) return null;
-                foreach (var kv in dict) result[kv.Key] = kv.Value;
+                    var mid = n.TryGetProperty("modId", out var m1) && m1.ValueKind == JsonValueKind.Number
+                        ? m1.GetInt32()
+                        : int.TryParse(GetStr(n, "modId"), out var p) ? p : 0;
+                    if (mid <= 0) continue;
+                    result[mid] = new NexusModFingerprint(
+                        mid, GetStr(n, "version"), GetStr(n, "updatedAt"), GetStr(n, "pictureUrl"));
+                }
             }
             return result;
         }
@@ -336,7 +478,7 @@ public sealed class NexusService
     /// <summary>v0.69.0：mod 的更新日志（版本 → 变更行）。对应官网 LOGS 页签的 Changelogs。</summary>
     public async Task<List<NexusChangelog>?> GetChangelogsAsync(string apiKey, int modId)
     {
-        using var res = await SlowHttp.SendAsync(Req(apiKey, $"{Base}/mods/{modId}/changelogs.json"));
+        using var res = await SendApiAsync(SlowHttp, $"{Base}/mods/{modId}/changelogs.json", apiKey);
         if (!res.IsSuccessStatusCode) return null;
         using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
         var list = new List<NexusChangelog>();
@@ -394,8 +536,8 @@ public sealed class NexusService
         try
         {
             var body = JsonSerializer.Serialize(new { query });
-            using var res = await Http.PostAsync(GraphQlEndpoint,
-                new StringContent(body, System.Text.Encoding.UTF8, "application/json"));
+            // GraphQL 浏览公开（无 apikey）——仍走集中闸门（并发 + 429）
+            using var res = await SendApiAsync(Http, GraphQlEndpoint, apiKey: null, method: HttpMethod.Post, jsonBody: body);
             if (!res.IsSuccessStatusCode) return null;
             using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
             // v0.76.0：GraphQL 语法/参数报错时响应是 200 + {"errors":[...],"data":null} ——
@@ -571,8 +713,8 @@ public sealed class NexusService
     {
         try
         {
-            using var res = await SlowHttp.SendAsync(Req(apiKey,
-                "https://api.nexusmods.com/v1/user/download_history.json"));
+            using var res = await SendApiAsync(SlowHttp,
+                "https://api.nexusmods.com/v1/user/download_history.json", apiKey);
             if (!res.IsSuccessStatusCode) return null;
             using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
             var map = new Dictionary<int, string>();
@@ -606,8 +748,8 @@ public sealed class NexusService
     /// <summary>CDN download URL for a file. NeedsPremium=true on free accounts (HTTP 403).</summary>
     public async Task<NexusDownloadResult> GetDownloadUrlAsync(string apiKey, int modId, long fileId)
     {
-        using var res = await Http.SendAsync(Req(apiKey,
-            $"{Base}/mods/{modId}/files/{fileId}/download_link.json"));
+        using var res = await SendApiAsync(Http,
+            $"{Base}/mods/{modId}/files/{fileId}/download_link.json", apiKey);
         if ((int)res.StatusCode == 403) return NexusDownloadResult.PremiumRequired;
         if (!res.IsSuccessStatusCode) return NexusDownloadResult.Fail($"HTTP {(int)res.StatusCode}");
 
@@ -658,7 +800,7 @@ public sealed class NexusService
     {
         var url = $"{Base}/mods/{modId}/files/{fileId}/download_link.json"
                 + $"?key={Uri.EscapeDataString(key)}&expires={Uri.EscapeDataString(expires)}";
-        using var res = await Http.SendAsync(Req(apiKey, url));
+        using var res = await SendApiAsync(Http, url, apiKey);
         if (!res.IsSuccessStatusCode)
         {
             var code = (int)res.StatusCode;
@@ -677,32 +819,6 @@ public sealed class NexusService
     // ------------------------------------------------------------------
     // Browse lists (no full-text search in API v1 — that's v2/OAuth only)
     // ------------------------------------------------------------------
-    /// <summary>kind: trending | latest_added | latest_updated</summary>
-    public async Task<IReadOnlyList<NexusModListEntry>> GetModListAsync(string apiKey, string kind)
-    {
-        // include_adult：默认显式 false（隐藏成人内容）；用户开启后不带该参数 ——
-        // 由服务端按登录账号自己的成人内容设置执行，应用永不覆盖账号偏好
-        var url = IncludeAdultContent
-            ? $"{Base}/mods/{kind}.json"
-            : $"{Base}/mods/{kind}.json?include_adult=false";
-        using var res = await Http.SendAsync(Req(apiKey, url));
-        if (!res.IsSuccessStatusCode) return Array.Empty<NexusModListEntry>();
-
-        using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
-        var list = new List<NexusModListEntry>();
-        foreach (var m in doc.RootElement.EnumerateArray())
-        {
-            list.Add(new NexusModListEntry(
-                m.TryGetProperty("mod_id", out var i) && i.ValueKind == JsonValueKind.Number
-                    ? i.GetInt32() : 0,
-                GetStr(m, "name"),
-                GetStr(m, "summary"),
-                GetStr(m, "version"),
-                GetInt64(m, "mod_downloads"),
-                GetStr(m, "picture_url")));
-        }
-        return list;
-    }
 
     /// <summary>
     /// v0.77.0：浏览榜单对外入口。
@@ -730,7 +846,7 @@ public sealed class NexusService
                 randomSeed: SurpriseSeed);
 
         // ─── 时间窗口 → epoch 过滤条件（Updated tab 过滤更新时间，其余过滤发布时间，对照官网）───
-        long? sinceEpoch = null, untilEpoch = null;
+        long? sinceEpoch = null;
         var dateOnUpdatedAt = kind == "updated";
         if (timeRange != "all")
         {
@@ -739,14 +855,13 @@ public sealed class NexusService
         }
 
         return await FetchChunkedAsync(kind, offset, count, gameDomain, searchText, categoryName,
-            sinceEpoch: sinceEpoch, untilEpoch: untilEpoch, dateOnUpdatedAt: dateOnUpdatedAt,
-            direction: direction);
+            sinceEpoch: sinceEpoch, dateOnUpdatedAt: dateOnUpdatedAt, direction: direction);
     }
 
     /// <summary>v0.77.0：按 CHUNK 循环补齐到 count 条（服务端截断时续拉凑满）。</summary>
     private async Task<List<NexusModListEntry>?> FetchChunkedAsync(string kind, int offset, int count,
         string gameDomain, string? searchText, string? categoryName,
-        long? sinceEpoch = null, long? untilEpoch = null, bool dateOnUpdatedAt = false,
+        long? sinceEpoch = null, bool dateOnUpdatedAt = false,
         string direction = "DESC", int? randomSeed = null)
     {
         var all = new List<NexusModListEntry>();
@@ -758,16 +873,16 @@ public sealed class NexusService
         {
             var want = Math.Min(CHUNK, count - all.Count);   // v0.88.0：不多要 —— 每页精确条数，末排不再缺
             var batch = await BrowseModsChunkAsync(kind, cur, want, gameDomain, searchText, categoryName,
-                sinceEpoch: sinceEpoch, untilEpoch: untilEpoch, dateOnUpdatedAt: dateOnUpdatedAt,
+                sinceEpoch: sinceEpoch, dateOnUpdatedAt: dateOnUpdatedAt,
                 direction: direction, randomSeed: randomSeed);
             if (batch is null)
             {
                 await Task.Delay(400);
                 batch = await BrowseModsChunkAsync(kind, cur, want, gameDomain, searchText, categoryName,
-                    sinceEpoch: sinceEpoch, untilEpoch: untilEpoch, dateOnUpdatedAt: dateOnUpdatedAt,
+                    sinceEpoch: sinceEpoch, dateOnUpdatedAt: dateOnUpdatedAt,
                     direction: direction, randomSeed: randomSeed);
                 if (batch is null) { await Task.Delay(900); batch = await BrowseModsChunkAsync(kind, cur, want, gameDomain, searchText, categoryName,
-                    sinceEpoch: sinceEpoch, untilEpoch: untilEpoch, dateOnUpdatedAt: dateOnUpdatedAt,
+                    sinceEpoch: sinceEpoch, dateOnUpdatedAt: dateOnUpdatedAt,
                     direction: direction, randomSeed: randomSeed); }
             }
             if (batch is null) return all.Count > 0 ? all : null;
@@ -785,7 +900,7 @@ public sealed class NexusService
     /// <summary>单批 GraphQL 拉取（原 BrowseModsAsync 实现，仅内部调用）。</summary>
     private async Task<List<NexusModListEntry>?> BrowseModsChunkAsync(string kind, int offset, int count,
         string gameDomain = "stardewvalley", string? searchText = null, string? categoryName = null,
-        long? sinceEpoch = null, long? untilEpoch = null, bool dateOnUpdatedAt = false,
+        long? sinceEpoch = null, bool dateOnUpdatedAt = false,
         string direction = "DESC", int? randomSeed = null)
     {
         try
@@ -841,8 +956,6 @@ public sealed class NexusService
             var dateField = dateOnUpdatedAt ? "updatedAt" : "createdAt";
             if (sinceEpoch is long se)
                 conds.Add("{" + dateField + ":{value:\"" + se + "\", op:GTE}}");
-            if (untilEpoch is long ue)
-                conds.Add("{" + dateField + ":{value:\"" + ue + "\", op:LT}}");
             var sel = "modId name summary version thumbnailUrl pictureUrl downloads endorsements createdAt updatedAt "
                     + "uploader { name avatar } modCategory { name } fileSize";
             var q = "{ mods(filter:{filter:[" + string.Join(",", conds) + "], op:AND}, sort:{" + sort
@@ -885,28 +998,6 @@ public sealed class NexusService
         catch { return null; }
     }
 
-    /// <summary>v0.71.0：拉分类 facets（Showcase 4 分类 pills 数据源，含每类 mod 数）。</summary>
-    public async Task<Dictionary<string, int>?> GetCategoryFacetsAsync(string gameDomain = "stardewvalley")
-    {
-        try
-        {
-            if (await EnsureGameIdAsync(gameDomain) is not { } gameId) return null;
-            var d = await GraphQlAsync("{ mods(filter:{gameId:{value:\"" + gameId
-                + "\"}}, count:1, facets:{categoryName:[]}) { facetsData } }");
-            if (d is null) return null;
-            var root = d.Value;
-            if (!root.TryGetProperty("mods", out var mods) || mods.ValueKind != JsonValueKind.Object ||
-                !mods.TryGetProperty("facetsData", out var fd) || fd.ValueKind != JsonValueKind.Object ||
-                !fd.TryGetProperty("categoryName", out var cn) || cn.ValueKind != JsonValueKind.Object)
-                return null;
-            var dict = new Dictionary<string, int>();
-            foreach (var p in cn.EnumerateObject())
-                if (p.Value.ValueKind == JsonValueKind.Number && p.Value.TryGetInt32(out var n))
-                    dict[p.Name] = n;
-            return dict;
-        }
-        catch { return null; }
-    }
 
     /// <summary>调 /v1/users/validate.json 拿当前 API Key 对应的账号信息。
     /// v1.08.0 实测：该接口已无 avatar / member_id 字段 —— 用户 id 叫 user_id（读 member_id 恒为 0，
@@ -916,7 +1007,7 @@ public sealed class NexusService
     {
         try
         {
-            using var res = await Http.SendAsync(Req(apiKey, "https://api.nexusmods.com/v1/users/validate.json"));
+            using var res = await SendApiAsync(Http, "https://api.nexusmods.com/v1/users/validate.json", apiKey);
             if (!res.IsSuccessStatusCode) return null;
             using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
             var r = doc.RootElement;
@@ -930,7 +1021,6 @@ public sealed class NexusService
                 profileUrl = $"https://www.nexusmods.com/users/{memberId}";
             return new NexusUser(
                 GetStr(r, "name") ?? "",
-                GetStr(r, "email") ?? "",
                 profileUrl,
                 avatar,
                 r.TryGetProperty("is_premium", out var pp) && pp.ValueKind == JsonValueKind.True,
@@ -1028,7 +1118,7 @@ public sealed class NexusService
     }
 }
 
-public sealed record NexusUser(string Name, string Email, string ProfileUrl, string Avatar, bool IsPremium, int MemberId);
+public sealed record NexusUser(string Name, string ProfileUrl, string Avatar, bool IsPremium, int MemberId);
 
 /// <summary>v0.70.1：用户扩展信息（GraphQL user(id)，tooltip 卡片用）。
 /// v1.07.0：新增 Avatar —— GraphQL 真实头像直链，validate.json 头像缺失时的回填源。</summary>

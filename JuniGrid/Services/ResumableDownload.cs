@@ -9,14 +9,16 @@ namespace JuniGrid.Services;
 /// v1.07：统一的断点续传流式下载器。此前 Nexus / SMAPI 两条下载路径都是裸流式，
 /// 中途掉连接（Nexus 免费 CDN 很常见）整个任务就失败或从 0 重下 —— 也就是
 /// 「下载到 3% 左右突然跳回 0% 重新下载」的根源。现在中途失败自动带
-/// Range: bytes=written- 续传，最多重试 maxAttempts-1 次；服务器不支持
+/// Range: bytes=written- 续传，最多重试 MaxAttempts-1 次；服务器不支持
 /// Range（返回 200 而非 206）时才真正从 0 开始。
 /// 进度回报统一按 0.4s 节流（原先每个 80KB 块都回调一次，大文件会狂刷 UI 线程）。
 /// </summary>
 public static class ResumableDownload
 {
+    private const int MaxAttempts = 5;
+
     public static async Task RunAsync(HttpClient http, string url, string destPath,
-        Action<string, double?, double?> report, int maxAttempts = 5, CancellationToken ct = default,
+        Action<string, double?, double?> report, CancellationToken ct = default,
         IEnumerable<string>? fallbackUrls = null)
     {
         // v1.08：镜像候选 —— 直连失败且尚未写入字节时立刻切换下一候选，
@@ -27,6 +29,12 @@ public static class ResumableDownload
         var candIndex = 0;
 
         long written = 0, totalBytes = 0;
+        // v1.1.7：暂停后继续 —— 目标文件已有半截数据时从断点发起 Range 请求
+        if (File.Exists(destPath))
+        {
+            var existing = new FileInfo(destPath).Length;
+            if (existing > 0) written = existing;
+        }
         for (int attempt = 1; ; attempt++)
         {
             try
@@ -35,12 +43,25 @@ public static class ResumableDownload
                 if (written > 0)
                     req.Headers.Range = new RangeHeaderValue(written, null);
                 using var res = await http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
+                // v1.1.7：本地已有完整文件时服务器回 416 —— 视为下载已完成，直接进入安装段
+                if (res.StatusCode == HttpStatusCode.RequestedRangeNotSatisfiable && written > 0)
+                {
+                    report($"已下载完成（{FormatBytes(written)}）", 100, 0);
+                    return;
+                }
                 // v1.1.2：4xx（除 408 请求超时 / 429 限流）是永久性错误 —— 404 链接失效、403 无权限，
                 // 重试满 5 次只是白等 15 秒+，立即把失败交给任务中心
                 if (!res.IsSuccessStatusCode && (int)res.StatusCode < 500
                     && (int)res.StatusCode != 408 && (int)res.StatusCode != 429)
                     throw new PermanentDownloadException($"HTTP {(int)res.StatusCode}（链接失效或无权限，已放弃重试）");
                 res.EnsureSuccessStatusCode();
+
+                // v1.6.2：镜像节点可能拿 200 状态回 HTML 错误页（实测 ghfast 偶发
+                // "Invalid input."）—— 本应用下载的全是二进制资源，收到 text/html
+                // 一律视为该候选失效，走重试逻辑立刻换下一个镜像
+                var ctype = res.Content.Headers.ContentType?.MediaType ?? "";
+                if (ctype.StartsWith("text/html", StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException($"候选源返回的是网页而非文件（{ctype}）");
 
                 // 206 = 续传成功接着写；200 = 服务器不给断点（或全新下载）→ 从头写
                 var resumed = written > 0 && res.StatusCode == HttpStatusCode.PartialContent;
@@ -86,7 +107,7 @@ public static class ResumableDownload
                 }
                 return;
             }
-            catch (Exception ex) when (attempt < maxAttempts
+            catch (Exception ex) when (attempt < MaxAttempts
                 && ex is not OperationCanceledException
                 && ex is not PermanentDownloadException)
             {
@@ -100,7 +121,7 @@ public static class ResumableDownload
                 }
                 else
                 {
-                    report($"连接中断（{ex.Message}），从 {FormatBytes(written)} 处续传（重试 {attempt}/{maxAttempts - 1}）…", pct, 0);
+                    report($"连接中断（{ex.Message}），从 {FormatBytes(written)} 处续传（重试 {attempt}/{MaxAttempts - 1}）…", pct, 0);
                     await Task.Delay(TimeSpan.FromSeconds(attempt), ct);
                 }
             }

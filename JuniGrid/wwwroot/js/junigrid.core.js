@@ -12,14 +12,52 @@ window.junigridJs = {
             { scale: 1.08, duration: 0.18, yoyo: true, repeat: 1, ease: 'power2.inOut' }
         );
     },
-    // 顶栏选中高亮滑块：把 .jg-topnav-thumb 平移到当前 .active 项（滑动/水平移动式切换）
-    placeNavThumb() {
-        const nav = document.querySelector('.jg-topnav');
-        const thumb = document.querySelector('.jg-topnav-thumb');
-        const active = nav && nav.querySelector('.jg-topnav-item.active');
-        if (!thumb || !active) return;
-        thumb.style.width = active.offsetWidth + 'px';
-        thumb.style.left = active.offsetLeft + 'px';
+    // v1.4.4：手风琴展开/收起（motion.dev accordion 风格：height 0↔auto + 淡入 + 箭头旋转）
+    accordionToggle(panelSel, open) {
+        const panel = document.querySelector(panelSel);
+        if (!panel) return;
+        const inner = panel.querySelector(':scope > .jg-acc-inner') || panel;
+        const btn = document.querySelector(`[aria-controls="${panel.id}"]`) || panel.previousElementSibling;
+        const chev = btn && btn.querySelector('.jg-acc-chev');
+        if (btn) btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+        panel.classList.toggle('open', !!open);
+
+        if (!window.gsap) {
+            panel.style.height = open ? 'auto' : '0px';
+            panel.style.opacity = open ? '1' : '0';
+            if (chev) chev.style.transform = open ? 'rotate(180deg)' : '';
+            return;
+        }
+        if (panel.__accTl) { panel.__accTl.kill(); panel.__accTl = null; }
+        gsap.killTweensOf([panel, inner, chev]);
+
+        if (open) {
+            panel.style.height = '0px';
+            panel.style.overflow = 'hidden';
+            const h = inner.scrollHeight;
+            gsap.set(inner, { opacity: 0, y: -8 });
+            const tl = gsap.timeline();
+            tl.to(panel, { height: h, duration: 0.38, ease: 'power3.out' }, 0)
+              .to(inner, { opacity: 1, y: 0, duration: 0.32, ease: 'power2.out' }, 0.06)
+              .to(chev,  { rotation: 180, duration: 0.35, ease: 'back.out(1.8)' }, 0)
+              .eventCallback('onComplete', () => {
+                  panel.style.height = 'auto';
+                  panel.style.overflow = '';
+              });
+            panel.__accTl = tl;
+        } else {
+            const h = panel.scrollHeight;
+            panel.style.height = h + 'px';
+            panel.style.overflow = 'hidden';
+            const tl = gsap.timeline();
+            tl.to(inner, { opacity: 0, y: -6, duration: 0.2, ease: 'power2.in' }, 0)
+              .to(panel,  { height: 0, duration: 0.3, ease: 'power2.inOut' }, 0.04)
+              .to(chev,   { rotation: 0, duration: 0.28, ease: 'power2.inOut' }, 0)
+              .eventCallback('onComplete', () => {
+                  panel.style.overflow = '';
+              });
+            panel.__accTl = tl;
+        }
     },
     // v0.33.0：排序下拉 —— open/close 都清干净初态，杜绝残留白块
     // v1.05.0：wrap 带 .jg-dd-right 时菜单右对齐（贴窗口右缘的下拉不再超出界面），基点用 top right
@@ -55,6 +93,8 @@ window.junigridJs = {
 
         if (open) {
             wrap.classList.add('open');
+            // 滚动位置与 item 透明度必须重置：上次滚到底再开，菜单会「空盒带滚动条」
+            try { menu.scrollTop = 0; } catch (e) {}
             gsap.set(arrow, { rotation: 0 });
             gsap.set(vis,  { autoAlpha: 0, y: -10, scale: 0.92, transformOrigin: originY });
             gsap.set(items, { opacity: 0, x: -14 });
@@ -69,6 +109,7 @@ window.junigridJs = {
                     // 关键：动画完全结束再彻底清 inline style + 移除 open 类，白块杜绝
                     gsap.set([vis, arrow, items], { clearProps: 'all' });
                     wrap.classList.remove('open');
+                    try { menu.scrollTop = 0; } catch (e) {}
                 }
             });
             tl.to(items, { opacity: 0, x: -8, duration: 0.16, ease: 'power2.in', stagger: 0.03 }, 0)
@@ -119,18 +160,6 @@ window.junigridJs = {
         }
     },
 
-    // 启动/关闭等状态切换时，立即清掉启动按钮上残留的像素溶解蒙版（.px-grid）与倾斜 transform，
-    // 否则残留的白色「点击启动！」会盖住新的按钮文案（如「启动中…」）。
-    clearLaunchFx(selector) {
-        const btn = document.querySelector(selector);
-        if (!btn) return;
-        btn.querySelectorAll('.px-grid').forEach(function (grid) {
-            if (grid.__anims) grid.__anims.forEach(function (a) { try { a.cancel(); } catch (e) {} });
-            if (grid.parentNode) grid.parentNode.removeChild(grid);
-        });
-        if (window.gsap) window.gsap.killTweensOf(btn);
-        if (window.gsap) window.gsap.set(btn, { clearProps: 'transform' });
-    },
     // v0.31.0: PCL 式页面入场 —— 给 <main.jg-main> 打上 .jg-page-enter，触发 CSS 关键帧
     playPageEnter() {
         const el = document.querySelector('.jg-main');
@@ -142,17 +171,26 @@ window.junigridJs = {
         el.classList.add('jg-page-enter');
         // v1.1.2：切页后刷新返回顶部按钮的显隐（路由变了，滚动位置也变了）
         if (window.junigridJs.backTopRefresh) window.junigridJs.backTopRefresh();
-        // 500ms 后清掉，避免与后续交互动画冲突（子项最长 delay 290 + duration 420 ≈ 710）
+        // 900ms 后清掉，避免与后续交互动画冲突（子项最长 delay 290 + duration 420 ≈ 710）
         clearTimeout(el.__peTimer);
         el.__peTimer = setTimeout(() => el.classList.remove('jg-page-enter'), 900);
     },
     scrollToBottom(selector, force) {
         const el = document.querySelector(selector);
         if (!el) return;
-        // 用户上翻读历史时不拽回底部；距底 48px 内视为"在底部"，滚回底部后恢复跟随。
-        // force 用于打开页面带历史等必须无条件落底的场景。
-        if (force || el.scrollHeight - el.scrollTop - el.clientHeight < 48)
-            el.scrollTop = el.scrollHeight;
+        // 日志跟随用"记住的跟随状态"，不能靠渲染后的几何距离判断：SMAPI 启动期一次
+        // 冲几十行，内容猛长几百 px，浏览器不会自动跟着长 —— 几何距离瞬间超阈，
+        // 会被误判成"用户上翻"而永久停跟（实机：日志页从不跟随）。滚动监听维护状态：
+        // 用户上翻 → false（停止跟随）；滚回底部 → true（恢复跟随）。force 无条件落底。
+        if (el.__followInit !== true) {
+            el.__followInit = true;
+            el.__follow = true;
+            el.addEventListener('scroll', () => {
+                el.__follow = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+            }, { passive: true });
+        }
+        if (force) el.__follow = true;
+        if (el.__follow) el.scrollTop = el.scrollHeight;
     },
     // Custom titlebar drag: forward mousedown to .NET which calls Window.DragMove().
     // (CSS -webkit-app-region is unreliable inside WebView2, so we do it manually.)
@@ -254,13 +292,12 @@ window.junigridJs.animatedListInit = function (scrollSel, listSel) {
     list.querySelectorAll('[data-al]').forEach(el => {
         if (el.__alBound) return;
         el.__alBound = true;
-        // 初始态：未进视口前收起（仅对当前不在视口内的；在视口内的立刻展开避免闪缩）
+        // v1.2.4：去掉逐行 getBoundingClientRect 预测量 —— 返回列表时几百行全是新 DOM，
+        // 每行一次强制同步布局（layout thrash）本身就是可感知的停顿。观察器的初始回调
+        // 自带首帧 intersectionRatio：视口内的行被置为展开（与旧"预测量后立即展开"等价），
+        // 视口外的行被收起（用户看不到它们，状态切换发生在可绘制之前）。
         el.style.transition = 'opacity .2s ease, transform .2s ease';
         el.style.transformOrigin = 'center center';
-        const r = el.getBoundingClientRect();
-        const sr = scroller.getBoundingClientRect();
-        const visible = r.top < sr.bottom && r.bottom > sr.top;
-        if (!visible) { el.style.opacity = '0'; el.style.transform = 'scale(0.7)'; }
         list.__alObs.observe(el);
     });
 
@@ -286,19 +323,6 @@ window.junigridJs.animatedListInit = function (scrollSel, listSel) {
         scroller.addEventListener('scroll', onScroll, { passive: true });
         onScroll();
     }
-};
-// v1.08：过滤/搜索切换时调用 —— 清掉旧行的入场动画内联样式（IntersectionObserver
-// 写入的 opacity/transform），让新过滤结果直接显示，不重播整表动画
-window.junigridJs.animatedListReset = function (listSel) {
-    const list = document.querySelector(listSel);
-    if (!list) return;
-    list.querySelectorAll('[data-al]').forEach(el => {
-        el.style.opacity = '';
-        el.style.transform = '';
-        el.style.transition = '';
-        if (el.__alBound && list.__alObs) list.__alObs.unobserve(el);
-        el.__alBound = false;
-    });
 };
 
 // v0.35.0：导航滑块实时同步 —— 路由变化/窗口缩放/刷新都立即重定位（双重 rAF 等布局稳定）
@@ -365,3 +389,4 @@ window.junigridJs.applyTheme = function (theme) {
     try { localStorage.setItem('jg-theme', t); } catch (e) { }
     return t;
 };
+

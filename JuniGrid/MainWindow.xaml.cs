@@ -5,16 +5,13 @@ using System.Windows.Input;
 using System.Windows.Interop;
 using JuniGrid.Services;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.FluentUI.AspNetCore.Components;
 using Microsoft.Web.WebView2.Core;
 
 namespace JuniGrid;
 
 public partial class MainWindow : Window
 {
-    private static readonly string LogPath = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-        "JuniGrid", "startup.log");
+    private static readonly string LogPath = Path.Combine(StoragePaths.AppDataDir, "startup.log");
 
     internal static void Log(string line)
     {
@@ -104,6 +101,33 @@ public partial class MainWindow : Window
                 }
             }
 
+            // 遗留的 depot-staging\smapi-cache（旧版"没有版本抽屉时"的安装包兜底落点）一次性并进
+            // 通用安装包缓存下的 keep 子目录 —— 那才是它该在的地方：界面上有这一行，空间可回收。
+            // ⚠ 按文件摊平搬：旧目录里还套着一层 smapi-installer\，整树并过去会落错一层
+            //   （第一版就踩过：变成 smapi-installer\smapi-installer\*.zip，代码再也找不到）。
+            try
+            {
+                var legacySmapiZip = Path.Combine(StoragePaths.DepotStagingDir, "smapi-cache");
+                if (Directory.Exists(legacySmapiZip))
+                {
+                    var keepDir = Path.Combine(StoragePaths.SmapiInstallerDir, "keep");
+                    Directory.CreateDirectory(keepDir);
+                    int moved = 0, skipped = 0;
+                    foreach (var f in Directory.EnumerateFiles(legacySmapiZip, "*", SearchOption.AllDirectories))
+                    {
+                        try
+                        {
+                            File.Move(f, Path.Combine(keepDir, Path.GetFileName(f)), overwrite: true);
+                            moved++;
+                        }
+                        catch (Exception one) { skipped++; Log($"SMAPI 安装包副本没搬动（{Path.GetFileName(f)}）: {one.Message}"); }
+                    }
+                    try { Directory.Delete(legacySmapiZip, true); } catch { }
+                    Log($"遗留的 SMAPI 安装包副本已并入通用安装包缓存的 keep：挪 {moved} 个" + (skipped > 0 ? $"，占用中留下 {skipped} 个" : ""));
+                }
+            }
+            catch (Exception ex) { Log("SMAPI 安装包副本迁移失败: " + ex.Message); }
+
             // Isolate the Blazor WebView2 user-data folder.
             // 注意：不要再 pin WEBVIEW2_BROWSER_EXECUTABLE_FOLDER ——
             // WebView2 运行时自动更新后旧版本目录会被删除，固定路径会变成
@@ -116,15 +140,15 @@ public partial class MainWindow : Window
 #if DEBUG
             services.AddBlazorWebViewDeveloperTools();
 #endif
-            services.AddFluentUIComponents();
             services.AddSingleton(configService);   // v0.2.2：最早加载的那个实例直接注册，避免二次实例化
             services.AddSingleton<GameService>();
             services.AddSingleton<ModService>();
             services.AddSingleton<LauncherService>();
             services.AddSingleton<SteamService>();
+            services.AddSingleton<DepotDownloaderService>(); // v1.4.1：历史版本（DD 扫码）
+            services.AddSingleton<VersionDownloadService>(); // v1.4.5：版本后台下载进任务中心
             services.AddSingleton<UpdateService>();
             services.AddSingleton<NexusService>();
-            services.AddSingleton<UpdateQueueService>();
             services.AddSingleton<PageRefreshService>();
             services.AddSingleton<TaskCenterService>();
             services.AddSingleton<InstallService>();
@@ -134,12 +158,12 @@ public partial class MainWindow : Window
             services.AddSingleton<MemoryService>();
             // v1.0.2：应用自更新检查
             services.AddSingleton<SelfUpdateService>();
-            // v1.08：Nexus 封面/图片本地缓存（国内 CDN 直连极慢）
-            services.AddSingleton<CoverCacheService>();
             // v1.1.5：每日游玩时长统计（首页 GitHub 式热力图数据源）
             services.AddSingleton<PlayTimeService>();
             // v1.1.2：内置翻译器（谷歌引擎 + 磁盘缓存 + 微批），详情页/日志页共用
             services.AddSingleton<TranslationService>();
+            // v1.3.0：立绘页（CP 皮肤包归类 / Portraiture 素材包 / 选择同步磁盘）
+            services.AddSingleton<PortraitSkinService>();
             var provider = services.BuildServiceProvider();
             Resources.Add("services", provider);
             App.Services = provider;
@@ -197,8 +221,7 @@ public partial class MainWindow : Window
                         try
                         {
                             var msg = e.TryGetWebMessageAsString();
-                            if (msg == "ui-ready") App.NotifyUiReady();
-                        }
+                            if (msg == "ui-ready") App.NotifyUiReady();  }
                         catch { }
                     };
                     // v1.0.9：WebView2 子进程崩溃自愈 —— 渲染进程挂掉时 Reload 重启它，
@@ -256,7 +279,7 @@ public partial class MainWindow : Window
                     try { blazorWebView.Visibility = target; }
                     catch (Exception ex) { Log("WebView 可见性同步异常: " + ex.Message); }
                     if (isMin)
-                        _ = EnterLowMemoryModeAsync();
+                        EnterLowMemoryMode();
                     else
                         ExitLowMemoryMode();
                 });
@@ -310,14 +333,12 @@ public partial class MainWindow : Window
     private static extern int DwmSetWindowAttribute(
         IntPtr hwnd, int attr, ref int attrValue, int attrSize);
 
-    // Win32 窗口状态命令（对无边框窗口最小化/还原最可靠）。
+    // Win32 窗口状态命令（对无边框窗口最小化最可靠）。
     // 无边框（WindowStyle=None + CaptionHeight=0）时 WindowState.Minimized
     // 在部分系统上不会真正把窗口从屏幕撤掉，会残留一个透明交互窗口，
     // 把下面的桌面鼠标点拦截（最小化后原区域点不动）。用 ShowWindow
-    // 强制系统级最小化/还原，会连同 WebView 子窗口一起正确处理。
+    // 强制系统级最小化，会连同 WebView 子窗口一起正确处理。
     private const int SW_MINIMIZE = 6;
-    private const int SW_RESTORE = 9;
-    private const int SW_SHOW = 5;
 
     [DllImport("user32.dll", PreserveSig = true, SetLastError = true)]
     private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
@@ -539,7 +560,7 @@ public partial class MainWindow : Window
     // 宿主自身的工作集仍一并换出。
     private Microsoft.Web.WebView2.Wpf.WebView2CompositionControl? _wv2;
 
-    private async Task EnterLowMemoryModeAsync()
+    private void EnterLowMemoryMode()
     {
         // 注意：CoreWebView2 的 getter 在 WebView2 尚未初始化或浏览器进程已崩溃时
         // 会直接抛异常，必须整体包进 try/catch，否则最小化/还原一瞬间就炸掉 UI 线程
@@ -722,38 +743,16 @@ public partial class MainWindow : Window
     }
 
     /// <summary>Blazor 页面调这里：在主窗口内打开 Nexus 浏览覆盖层。</summary>
-    public static void OpenNexusOverlay(string url, bool queueMode = false)
+    public static void OpenNexusOverlay(string url)
     {
         var w = System.Windows.Application.Current?.MainWindow as MainWindow;
         if (w is null) return;
-        _ = queueMode; // 内置浏览器已移除：统一跳系统浏览器
         try
         {
             System.Diagnostics.Process.Start(
                 new System.Diagnostics.ProcessStartInfo(url) { UseShellExecute = true });
         }
         catch (Exception ex) { Log("打开系统浏览器失败: " + ex.Message); }
-    }
-
-    /// <summary>路由离开「Mod 管理」时收起覆盖层（保留 WebView2 实例避免重新初始化）。</summary>
-    public static void HideNexusOverlay()
-    {
-        var w = System.Windows.Application.Current?.MainWindow as MainWindow;
-        if (w is null) return;
-        w.Dispatcher.Invoke(() =>
-        {
-            {
-                    App.Services?.GetService<UpdateQueueService>()?.Stop();
-            }
-        });
-    }
-
-    private void Toolbar_Drag(object sender, MouseButtonEventArgs e)
-    {
-        if (e.LeftButton == MouseButtonState.Pressed)
-        {
-            try { DragMove(); } catch { }
-        }
     }
 
     // ─── v1.1.5/v1.1.8：窗口尺寸策略 ───
@@ -961,32 +960,4 @@ public partial class MainWindow : Window
             catch { }
         });
     }
-
-    /// <summary>
-    /// 用 Win32 强制显示主窗口。WPF 的 Visibility=Visible 对已 Show()/Hidden 过的
-    /// 窗口不一定触发 HWND SW_SHOW（导致窗口 visible=False、主界面不出现）。
-    /// 这里直接对 HWND 发 ShowWindow(SW_SHOW)，绕开该情况，保证系统真正显示。
-    /// </summary>
-    public static void ShowMainWindow()
-    {
-        var w = Application.Current?.MainWindow as MainWindow;
-        if (w is null) return;
-        // 先让 WPF 的状态机认为窗口可见——否则 ShowWindow 一下会被 WPF 的
-        // layout pass 当成「仍 Hidden」而撤销（之前一直 visible=False 的根源）。
-        w.Visibility = Visibility.Visible;
-        var hwnd = new WindowInteropHelper(w).EnsureHandle();
-        Log($"ShowMainWindow: Visibility={w.Visibility} hwnd=0x{hwnd.ToInt64():X}");
-        bool r = ShowWindow(hwnd, SW_SHOW);
-        Log($"ShowMainWindow: SW_SHOW={r} IsWindowVisible={IsWindowVisible(hwnd)} style=0x{GetWindowLong(hwnd, GWL_STYLE) & (WS_VISIBLE | WS_MINIMIZE):X}");
-        w.Activate();
-    }
-    [DllImport("user32.dll")]
-    private static extern bool IsWindowVisible(IntPtr hWnd);
-    [DllImport("user32.dll")]
-    private static extern int GetWindowLong(IntPtr hWnd, int nIndex);
-    private const int GWL_STYLE = -16, WS_VISIBLE = 0x10000000, WS_MINIMIZE = 0x20000000;
-
-    private void QueueSkip_Click(object sender, RoutedEventArgs e) =>
-        App.Services?.GetService<UpdateQueueService>()?.Skip();
-
 }

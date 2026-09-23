@@ -84,7 +84,7 @@
                 <div class="jg-modal-title">清空日志</div>
                 <div class="jg-modal-body">是否清空日志全部内容？</div>
                 <div class="jg-modal-actions">
-                    <button type="button" class="jg-pill-ghost" @onclick="() => _confirmClear = false">取消</button>
+                    <button type="button" class="jg-pill-ghost" data-modal-close @onclick="() => _confirmClear = false">取消</button>
                     <button type="button" class="jg-pill-dark" @onclick="DoClear">确定</button>
                 </div>
             </div>

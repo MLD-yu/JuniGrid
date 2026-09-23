@@ -13,9 +13,7 @@ namespace JuniGrid.Services;
 /// </summary>
 public sealed class PlayTimeService : IDisposable
 {
-    private static readonly string FilePath = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-        "JuniGrid", "playtime.json");
+    private static readonly string FilePath = Path.Combine(StoragePaths.AppDataDir, "playtime.json");
 
     private static readonly JsonSerializerOptions JsonOpts = new()
     {

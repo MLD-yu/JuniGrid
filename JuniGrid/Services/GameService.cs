@@ -35,7 +35,7 @@ public sealed class GameService
         return "";
     }
 
-    public string? ProbeSmapiVersion(string gamePath)
+    public string? ProbeSmapiVersion(string gamePath, bool freshRead = false)
     {
         if (string.IsNullOrWhiteSpace(gamePath) || !Directory.Exists(gamePath))
             return null;
@@ -46,12 +46,29 @@ public sealed class GameService
         // 1) Most reliable: the SMAPI exe carries its own assembly version.
         try
         {
-            var info = FileVersionInfo.GetVersionInfo(exe);
-            var raw = info.FileVersion ?? info.ProductVersion;
-            if (!string.IsNullOrWhiteSpace(raw))
+            // v1.3.4：freshRead —— Windows 对版本资源有按路径的进程内缓存，SMAPI
+            // 覆盖安装后【立即】重探会拿到旧版本号（实测：装完 4.5.2 列表仍显示
+            // 4.5.1 并误报可更新）。freshRead 时拷到临时路径读，绕开缓存。
+            var probePath = exe;
+            if (freshRead)
             {
-                var parts = raw.Split('.');
-                return parts.Length >= 3 ? string.Join('.', parts.Take(3)) : raw;
+                probePath = Path.Combine(Path.GetTempPath(),
+                    "jg-smapi-probe-" + Guid.NewGuid().ToString("N") + ".exe");
+                File.Copy(exe, probePath, true);
+            }
+            try
+            {
+                var info = FileVersionInfo.GetVersionInfo(probePath);
+                var raw = info.FileVersion ?? info.ProductVersion;
+                if (!string.IsNullOrWhiteSpace(raw))
+                {
+                    var parts = raw.Split('.');
+                    return parts.Length >= 3 ? string.Join('.', parts.Take(3)) : raw;
+                }
+            }
+            finally
+            {
+                if (freshRead) { try { File.Delete(probePath); } catch { } }
             }
         }
         catch (Exception __ex) { AppLog.Warn("GameService", __ex.Message); }

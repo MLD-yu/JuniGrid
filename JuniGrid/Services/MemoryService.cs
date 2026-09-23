@@ -68,14 +68,12 @@ public sealed class MemoryService
                         if (now - _lastTrimUtc >= (thresholdHit ? TimeSpan.FromMinutes(2) : cooldown))
                         {
                     _lastTrimUtc = now;
-                    // 自身+WebView2 每次都压；游戏只在阈值触发时换出 —— 固定周期换出 GB 级游戏
-                    // 会造成游玩中周期性顿卡，只有系统真告急才值得这个代价。
+                    // v1.4.5：不再压缩 WebView2 —— 实测把渲染进程工作集压到 0 后，整个 Blazor 界面
+                    // 要从磁盘换页回来，表现为整界面假死、按钮/下拉全部无响应（系统内存 90%+ 时必现）。
+                    // WebView2 有自己的内存管理；系统真告急时优先换出游戏进程。
                     var (b, a) = CompressSelf();
                     var msg = new StringBuilder(
                         $"自动压缩：自身 {ResumableDownload.FormatBytes(b)} → {ResumableDownload.FormatBytes(a)}");
-                    var wv = TrimWebView2();
-                    if (wv.count > 0)
-                        msg.Append($"；WebView2×{wv.count} {ResumableDownload.FormatBytes(wv.before)} → {ResumableDownload.FormatBytes(wv.after)}");
                     if (thresholdHit)
                     {
                         var g = TrimGameWorkingSet();
@@ -113,7 +111,7 @@ public sealed class MemoryService
     public int TrimGameWorkingSet()
     {
         var n = 0;
-        foreach (var name in new[] { "StardewModdingAPI", "Stardew Valley" })
+        foreach (var name in LauncherService.GameProcessNames)
         {
             foreach (var p in Process.GetProcessesByName(name))
             {

@@ -1,0 +1,232 @@
+/* ============================================================
+   portraits：立绘页 —— 角色网格 / 皮肤选择弹窗 / 悬停提示行
+   封面底色透明/深色（用户偏好：不要灰底）；缩略图一律最近邻像素风
+   ============================================================ */
+
+/* ── 角色网格 ── */
+.jg-pt-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(108px, 1fr));
+    gap: 10px;
+    margin-top: 14px;
+}.jg-pt-card {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 7px;
+    padding: 12px 6px 9px;
+    border: 1px solid var(--jg-line);
+    border-radius: 12px;
+    background: transparent;
+    color: inherit;
+    font-family: inherit;
+    cursor: pointer;
+    transition: background 130ms ease, border-color 130ms ease, transform 130ms ease;
+}.jg-pt-card:hover {
+    background: var(--jg-well);
+    border-color: var(--jg-line-strong);
+    transform: translateY(-2px);
+}.jg-pt-card:active { transform: translateY(0); }/* 封面：透明底 + 像素风放大；没有图时用深色凹槽占位（不要灰底） */
+.jg-pt-cover {
+    width: 92px;
+    height: 92px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}.jg-pt-cover img,
+.jg-pt-skin img {
+    /* 不锁 100% 宽高（content-box 下再加 padding 会撑出格子导致不居中），
+       用 max 尺寸 + flex 居中，图片自然在格子里水平垂直居中 */
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+    image-rendering: pixelated;
+    -ms-interpolation-mode: nearest-neighbor;
+}.jg-pt-cover-empty {
+    width: 100%;
+    height: 100%;
+    border-radius: 8px;
+    background:
+        linear-gradient(45deg, var(--jg-well) 25%, transparent 25%, transparent 75%, var(--jg-well) 75%),
+        linear-gradient(45deg, var(--jg-well) 25%, transparent 25%, transparent 75%, var(--jg-well) 75%);
+    background-size: 12px 12px;
+    background-position: 0 0, 6px 6px;
+    opacity: .6;
+}.jg-pt-name {
+    max-width: 100%;
+    font-size: 12.5px;
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}/* 角标 = 可选皮肤数（官方/娘家行不计入） */
+.jg-pt-badge {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    min-width: 17px;
+    height: 17px;
+    padding: 0 4px;
+    border-radius: 9px;
+    background: var(--jg-ink);
+    color: var(--jg-on-ink);
+    font-size: 10.5px;
+    line-height: 17px;
+    text-align: center;
+    font-weight: 600;
+}/* ── 皮肤选择弹窗（左皮肤格 + 右精灵图预览）── */
+/* 3 张肖像（320px）+ 间距（16px）+ 精灵预览（220px）+ 弹窗内边距（40px）。
+   不使用可增长宽度，避免在大窗口里被拉成一整条。 */
+.jg-modal.jg-pt-modal {
+    width: 596px;
+    max-width: calc(100vw - 32px);
+    box-sizing: border-box;
+}/* 当前生效皮肤标签（标题旁，如「默认」/ mod 名） */
+.jg-pt-active {
+    font-size: 13px;
+    font-weight: 600;
+    color: #f2811d;
+}/* 悬停皮肤格时临时显示所指皮肤名（灰色），离开恢复橙色当前生效名 */
+.jg-pt-active.hovering { color: var(--jg-text-3); }.jg-pt-body { display: flex; gap: 16px; align-items: flex-start; justify-content: space-between; }/* 左列：季节行 + 皮肤格（季节行在大头照上方，用户要求） */
+.jg-pt-left {
+    flex: 1 1 320px;
+    min-width: 320px;
+    box-sizing: border-box;
+}.jg-pt-skinbox {
+    /* 300px 网格（3 × 92px + 2 × 12px）+ 20px 内边距 = 320px；
+       不允许它比三列所需空间更窄，否则第三张会被裁到横向滚动区。 */
+    box-sizing: border-box;
+    display: grid;
+    grid-template-columns: repeat(3, 92px);   /* 固定一行三个、格子原尺寸（用户要求） */
+    justify-content: start;
+    gap: 12px;
+    align-content: flex-start;
+    max-height: 56vh;
+    overflow: auto;
+    /* 内边距 ≥ 删除键的 -8px 外伸，保证第一行/第一列的 ✕ 不被滚动容器裁掉 */
+    padding: 10px;
+}/* 右侧精灵图预览面板 */
+.jg-pt-spritepane {
+    flex: none;
+    width: 220px;
+    min-width: 220px;
+    max-width: 220px;
+    box-sizing: border-box;
+    margin-left: auto;   /* 钉到弹窗最右 */
+    align-self: flex-start;
+    position: sticky;
+    top: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 12px 10px;
+    border: 1px solid var(--jg-line);
+    border-radius: 10px;
+    overflow: hidden;
+}/* 窗口再窄时先让精灵图面板换到下一行，左侧三张肖像始终完整可见。 */
+@media (max-width: 620px) {
+    .jg-pt-body { flex-wrap: wrap; }
+    .jg-pt-spritepane { margin-left: 0; }
+}.jg-pt-spritepane img {
+    width: 100%;
+    max-width: 200px;
+    max-height: 430px;
+    object-fit: contain;
+    image-rendering: pixelated;
+    -ms-interpolation-mode: nearest-neighbor;
+}/* 季节切换行（位于左侧皮肤格上方，v1.3.7 用户要求）。
+   选季 → 左侧所有皮肤格 + 右侧小人一起切到该季变体；
+   该皮肤没有这一季变体时按钮半透明（点击仍可用，保持它的当前图）。 */
+.jg-pt-seasons { display: flex; gap: 6px; justify-content: flex-start; padding: 0 10px; margin-bottom: 6px; }.jg-pt-season {
+    font-size: 12px;
+    line-height: 1;
+    padding: 4px 12px;
+    border-radius: 999px;
+    border: 1px solid var(--jg-line-strong);
+    background: transparent;
+    color: var(--jg-text-2);
+    cursor: pointer;
+    transition: border-color 120ms ease, color 120ms ease;
+}.jg-pt-season:hover { border-color: var(--jg-text-3); }/* 季节按钮常亮（用户要求：不变灰）；选中 = 橙色 */
+.jg-pt-season.active {
+    border-color: #f2811d;
+    color: #f2811d;
+    font-weight: 600;
+}.jg-pt-skin {
+    position: relative;
+    width: 92px;
+    height: 92px;
+    flex: none;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 2px solid var(--jg-line-strong);
+    border-radius: 10px;
+    background: transparent;
+    cursor: pointer;
+    transition: border-color 120ms ease, transform 120ms ease, box-shadow 120ms ease;
+}/* 格内留白：图片贴边会顶到圆角边框 */
+.jg-pt-skin img,
+.jg-pt-cover img { padding: 5px; box-sizing: border-box; }.jg-pt-skin:hover { border-color: var(--jg-text-3); transform: translateY(-1px); }/* 选中 = 橙色边框（用户偏好：不要对勾） */
+.jg-pt-skin.selected {
+    border-color: #f2811d;
+    box-shadow: 0 0 0 1px #f2811d, 0 2px 10px rgba(242, 129, 29, 0.25);
+}.jg-pt-skin.unavailable {
+    cursor: not-allowed;
+    opacity: .45;
+}/* ── 页内提示胶囊（「下次启动游戏生效」/ Portraiture 按 P 提示）── */
+.jg-pt-toast {
+    position: fixed;
+    top: 52px;
+    left: 50%;
+    transform: translateX(-50%);
+    /* 必须压过弹窗遮罩（.jg-modal-overlay z-index 99998 + backdrop 虚化），
+       否则 toast 被压在遮罩下跟着一起被虚化（实机反馈） */
+    z-index: 99999;
+    padding: 8px 18px;
+    border-radius: 999px;
+    background: var(--jg-ink);
+    color: var(--jg-on-ink);
+    font-size: 12.5px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.22);
+    animation: jgPtToastIn 220ms ease;
+}
+@keyframes jgPtToastIn {from { opacity: 0; transform: translate(-50%, -6px); }to   { opacity: 1; transform: translate(-50%, 0); }
+}/* ── 深色主题微调 ── */
+html[data-theme="dark"] .jg-pt-card { border-color: rgba(255, 255, 255, 0.08); }html[data-theme="dark"] .jg-pt-card:hover { background: rgba(255, 255, 255, 0.05); }html[data-theme="dark"] .jg-pt-skin { border-color: rgba(255, 255, 255, 0.14); }html[data-theme="dark"] .jg-pt-skin:hover { border-color: rgba(255, 255, 255, 0.4); }html[data-theme="dark"] .jg-pt-cover-empty {
+    background:
+        linear-gradient(45deg, rgba(255, 255, 255, 0.05) 25%, transparent 25%, transparent 75%, rgba(255, 255, 255, 0.05) 75%),
+        linear-gradient(45deg, rgba(255, 255, 255, 0.05) 25%, transparent 25%, transparent 75%, rgba(255, 255, 255, 0.05) 75%);
+    background-size: 12px 12px;
+    background-position: 0 0, 6px 6px;
+}/* mod 名可点（进详情页） */
+.jg-pt-packlink { cursor: pointer; }.jg-pt-packlink:hover { text-decoration: underline; }
+
+/* v1.6.8：切换皮肤进行中 —— 其它选项禁点（防并发选择），视觉降透明 */
+.jg-pt-skin.busy { opacity: .45; pointer-events: none; }
+
+/* v1.6.8：扫描中骨架卡片（微光动画复用 detail.css 的 jg-shimmer 原语） */
+.jg-pt-skelcard { display: flex; flex-direction: column; gap: 8px; padding: 10px; }
+.jg-pt-skelcover { display: block; width: 100%; aspect-ratio: 1/1; border-radius: 8px; }
+.jg-pt-skelname { display: block; width: 62%; height: 12px; border-radius: 6px; }
+
+/* 同画面合并角标：×N = 这一条背后有 N 个「解码后逐像素相同」的包（悬停看来源清单）。
+   肖像页因此少掉的卡不是丢了，是并到这张上了。 */
+.jg-pt-skin { position: relative; }
+.jg-pt-dupes { position:absolute; top:3px; right:4px; font-size:10px; font-weight:700; line-height:1.4;
+    padding:0 4px; border-radius:6px; background:rgba(0,0,0,.55); color:#fff; pointer-events:none; }
+html[data-theme="dark"] .jg-pt-dupes { background:rgba(255,255,255,.2); }
+/* 合并后的来源名直接铺在卡底（用户要求：不要只藏在悬停里）；一行放不下就省略号，
+   完整名单在 tooltip。pointer-events:none 免得抢走卡片自己的单击/右键切换。 */
+.jg-pt-dupenames { position:absolute; left:2px; right:2px; bottom:2px; font-size:9px; font-weight:600;
+    line-height:1.3; padding:1px 4px; border-radius:5px; background:rgba(0,0,0,.62); color:#fff;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; pointer-events:none; }
+html[data-theme="dark"] .jg-pt-dupenames { background:rgba(0,0,0,.72); }
+
+/* 一张卡管着游戏里几份 NPC 数据（SVE 为剧情多开的条目，连显示名都和本尊一样）：
+   并成一张卡后要说清点一次会同时改哪几个，否则用户以为另一个漏了。 */
+.jg-pt-members { margin:0 0 8px; font-size:11.5px; line-height:1.45; color:var(--jg-text-3); }
+

@@ -50,11 +50,16 @@ junigridJs.searchIslandInit = function (islandId, btnId, inputId) {
     btn.addEventListener('click', function (e) { e.stopPropagation(); toggle(); });
     // 历史面板在 island 外 —— 面板内点击（清空历史/历史行）不算「点外面」，
     // 否则点「清空历史」会把整个搜索岛一起收起；面板自身显隐由 bindHistory 的点击逻辑负责。
-    document.addEventListener('click', function (e) {
+    // Blazor 每次进页重建 DOM 都会重跑本函数 —— 先摘掉上一对 document 监听再挂新的，避免跨导航累积。
+    if (window.__siDocClick) document.removeEventListener('click', window.__siDocClick);
+    if (window.__siDocKey) document.removeEventListener('keydown', window.__siDocKey);
+    window.__siDocClick = function (e) {
         if (isOpen && !island.contains(e.target)
             && !(histWrap && histWrap.contains(e.target))) toggle(false);
-    });
-    document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && isOpen) { toggle(false); btn.focus(); } });
+    };
+    window.__siDocKey = function (e) { if (e.key === 'Escape' && isOpen) { toggle(false); btn.focus(); } };
+    document.addEventListener('click', window.__siDocClick);
+    document.addEventListener('keydown', window.__siDocKey);
     bindHistory();   // v1.06.2：按钮模式的展开逻辑恢复后，历史面板绑定也要接回（v1.05.4 起只在无按钮路径调用）
 
     // ─── v1.05.1：搜索历史面板显隐 —— 完全由 JS 驱动。
@@ -71,7 +76,8 @@ junigridJs.searchIslandInit = function (islandId, btnId, inputId) {
         input.addEventListener('focus', showHist);
         input.addEventListener('click', showHist);
         input.addEventListener('blur', hideHistSoon);
-        input.addEventListener('keydown', function (e) { if (e.key === 'Escape') hideHist(); });
+        // Esc 收起；回车提交搜索后也收起（提交后焦点仍在输入框、blur 不触发，面板会一直挂着）
+        input.addEventListener('keydown', function (e) { if (e.key === 'Escape' || e.key === 'Enter') hideHist(); });
         // 鼠标在面板内保持展开（focus 去了面板也不会闪关）
         histWrap.addEventListener('mouseover', function (e) {
             if (e.target.closest && e.target.closest('.jg-search-history')) { if (hideTimer) clearTimeout(hideTimer); }
@@ -307,7 +313,7 @@ void main(){
             raf = requestAnimationFrame(loop);
         }
         raf = requestAnimationFrame(loop);
-        states.set(el, { stop: function () { cancelAnimationFrame(raf); ro.disconnect(); } });
+        states.set(el, true);   // 仅作「已初始化」标记；rAF 循环内自带 isConnected 自清理
     };
     })();
 

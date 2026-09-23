@@ -1,0 +1,33 @@
+@namespace JuniGrid.Components
+@* DepotDownloader 输出的 ASCII 二维码 → 矢量渲染。
+    绝不能用等宽字体文本：部分环境方块字符被画成带缝细条，模块比例失真扫不出来（实测）。
+    尺寸：宽 100% + 高按 viewBox 自适应。写死成正方形（旧写法）时，29 行 × 37 格这种横扁的码
+    会按短边缩放，上下各空出一条带 ⇒ 码看着只占台子一半大（用户："空白这么多"）。 *@
+<svg width="@Size" viewBox="-@_quiet -@_quiet @(Cols + _quiet * 2) @(Rows + _quiet * 2)"
+     shape-rendering="crispEdges" style="width:100%;height:auto;max-width:@(Size)px;display:block;background:#fff;border-radius:10px">
+    <rect x="-@_quiet" y="-@_quiet" width="@(Cols + _quiet * 2)" height="@(Rows + _quiet * 2)" fill="#fff" />
+    @for (var r = 0; r < Rows; r++)
+    {
+        var line = Lines[r].PadRight(Cols * 2);
+        for (var c = 0; c < Cols; c++)
+        {
+            var filled = line.Substring(c * 2, 2).IndexOf(_block) >= 0;
+            if (filled)
+            {
+                <rect x="@c" y="@r" width="1.02" height="1.02" fill="#000" />
+            }
+        }
+    }
+</svg>
+
+@code {
+    private const char _block = (char)0x2588;
+    // 静区取规范下限 4 模块（再宽就是把宽度白送给空白：台子本来就白底白弹窗）
+    private const int _quiet = 4;
+
+    [Parameter] public IReadOnlyList<string> Lines { get; set; } = Array.Empty<string>();
+    [Parameter] public int Size { get; set; } = 260;
+
+    private int Rows => Lines.Count;
+    private int Cols => Lines.Count > 0 ? Lines[0].Length / 2 : 0;
+}

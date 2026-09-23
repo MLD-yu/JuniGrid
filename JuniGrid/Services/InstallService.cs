@@ -1,7 +1,6 @@
 using System.Collections.Concurrent;
 using System.IO;
 using System.Text;
-using Microsoft.Win32;
 
 namespace JuniGrid.Services;
 
@@ -16,17 +15,22 @@ public sealed class InstallService
     private readonly ConfigService _cfg;
     private readonly NexusService _nexus;
     private readonly ModService _mods;
-    private readonly UpdateQueueService _queue;
     private readonly TaskCenterService _center;
+    private readonly UpdateService _updater;
+    private readonly GameService _game;
+    private readonly PageRefreshService _pageRefresh;
 
     public InstallService(ConfigService cfg, NexusService nexus, ModService mods,
-        UpdateQueueService queue, TaskCenterService center)
+        TaskCenterService center, UpdateService updater,
+        GameService game, PageRefreshService pageRefresh)
     {
         _cfg = cfg;
         _nexus = nexus;
         _mods = mods;
-        _queue = queue;
         _center = center;
+        _updater = updater;
+        _game = game;
+        _pageRefresh = pageRefresh;
     }
 
     public event Action? OnChanged;
@@ -34,7 +38,32 @@ public sealed class InstallService
     // v1.1.6：RecentStatus 列表已删 —— 只写不读的死状态（全仓库无任何读取方），
     // OnChanged 事件本身仍被 Mods.razor 使用，保留。
 
-    public bool Busy { get; private set; }
+    // v1.3.4：并行安装 —— 下载互不干扰可并存（不同文件各下各的）；只有【写入 Mods
+    // 目录的安装段】必须串行（同名目录/回收站/解压覆盖互斥），用 _installGate 排队。
+    // Busy 改为活动任务计数：有任何任务在跑就 true（UI 禁用按钮的语义不变），
+    // 不再用于入口拒绝 —— 点多个 mod 的安装会全部开始下载，依次写入。
+    private int _busyCount;
+    public bool Busy => Volatile.Read(ref _busyCount) > 0;
+
+    private static readonly SemaphoreSlim _installGate = new(1, 1);
+    private int _installQueue;   // 正在排队等写入的安装数（进度提示用，近似值）
+
+    private async Task EnterInstallGateAsync(Action<string, double?, double?> Step, double pct)
+    {
+        var pos = Interlocked.Increment(ref _installQueue);
+        try
+        {
+            if (pos > 1)
+                Step($"排队等待写入 Mods…（前面还有 {pos - 1} 个安装）", pct, null);
+            await _installGate.WaitAsync();
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _installQueue);
+        }
+    }
+
+    private void ExitInstallGate() => _installGate.Release();
 
     // ------------------------------------------------------------------
     // 直接安装（免弹内置浏览器）
@@ -51,175 +80,445 @@ public sealed class InstallService
     /// </summary>
     public async Task<string?> InstallModDirectAsync(int modId)
     {
-        if (Busy) return "上一个安装还没完成，等它结束再试";
-
         var cfg = _cfg.Current;
         if (string.IsNullOrWhiteSpace(cfg.NexusApiKey))
             return "还没配置 Nexus API Key —— 先到「Nexus」页粘贴";
         if (string.IsNullOrWhiteSpace(cfg.GamePath))
             return "还没设置游戏目录 —— 先到「设置」页选择";
 
+        // v1.3.1：Nexus mod 2400 = SMAPI —— 它的 Nexus 包是官方安装器而非 mod
+        //（zip 里没有 manifest.json），普通安装管线必报"没有 manifest.json"。
+        // 转调 SMAPI 专属通道：GitHub 官方安装包静默安装（与首页 SMAPI 更新同管线）。
+        if (modId == SmapiNexusId)
+            return await InstallSmapiFromNexusEntryAsync();
+
         var taskTitle = await ResolveModTitleAsync(cfg.NexusApiKey, modId, null);
         var task = _center.Start($"下载并安装 {taskTitle}", "install");
 
-        void Step(string msg, double? pct = null, double? speed = null) =>
-            _center.Report(task, msg, pct, speed);
+        // v1.1.7：整段工作可重入 —— 暂停后继续会重新挂 worker；半截包由 ResumableDownload 续传
+        async Task<string?> RunAsync(CancellationToken ct)
+        {
+            void Step(string msg, double? pct = null, double? speed = null) =>
+                _center.Report(task, msg, pct, speed);
 
-        Busy = true;
-        string? zipPath = null;   // v1.1.3：取消时清理半截包用（catch 里拿不到 try 内的局部量）
+            Interlocked.Increment(ref _busyCount);
+            string? zipPath = null;   // v1.1.3：取消时清理半截包用（catch 里拿不到 try 内的局部量）
+            try
+            {
+                Step("正在获取文件信息…", 2);
+                var file = await _nexus.GetLatestMainFileAsync(cfg.NexusApiKey, modId);
+                ct.ThrowIfCancellationRequested();
+                if (file is null) { _center.Finish(task, false, "找不到可下载的文件"); return "找不到可下载的文件"; }
+
+                Step("正在获取下载地址…", 5);
+                var dl = await _nexus.GetDownloadUrlAsync(cfg.NexusApiKey, modId, file.FileId);
+                ct.ThrowIfCancellationRequested();
+                if (dl.NeedsPremium)
+                { _center.Finish(task, false, "需要 Nexus Premium 会员，已改为网页方式"); return "premium：这个 mod 的直链下载需要 Nexus Premium 会员"; }
+                if (dl.Url is null)
+                { _center.Finish(task, false, "获取下载地址失败：" + (dl.Error ?? "未知错误")); return "获取下载地址失败：" + (dl.Error ?? "未知错误"); }
+
+                var zip = Path.Combine(StoragePaths.DownloadsDir,
+                    $"direct-{modId}-{file.FileId}.zip");
+                zipPath = zip;
+                Directory.CreateDirectory(Path.GetDirectoryName(zip)!);
+
+                var progress = new Progress<NexusDownloadProgress>(p =>
+                    Step(p.Message, p.Percent, p.SpeedMBps));
+                Step($"正在下载 {file.Name}…", 8, 0);
+                await _nexus.DownloadFileAsync(dl.Url, zip, progress, ct);
+                if (ct.IsCancellationRequested)   // 下完才发现被移除/暂停 → 别装了
+                {
+                    if (task.Status != "paused")
+                    { try { File.Delete(zip); } catch { } }
+                    throw new OperationCanceledException(ct);
+                }
+
+                // v1.3.4：安装段 —— 写入 Mods 全局串行（下载阶段已完成，多任务在此依次写入）
+                string? err;
+                string? modName = null;
+                await EnterInstallGateAsync(Step, 95);
+                try
+                {
+                    ct.ThrowIfCancellationRequested();
+                    Step("正在安装到 Mods…", 95);
+                    // v1.6.5：Portraiture 素材包（无 manifest+PNG）在 ModService 内直接转换成
+                    // CP 肖像包，不再依赖/安装 Portraiture 框架。包名用任务标题（可能被翻译
+                    // 服务机翻，仅作目录名/展示，无碍功能）。
+                    err = _mods.InstallNew(cfg.GamePath, zip, out modName, modId,
+                        portraiturePackName: taskTitle);
+                }
+                finally { ExitInstallGate(); }
+                if (err is not null)
+                { _center.Finish(task, false, "安装失败：" + err); return "安装失败：" + err; }
+
+                // v0.69.0：记录「最后下载日期」（详情页标题下 + 文件页签绿色✓ 用）
+                cfg.ModLastDownload[modId.ToString()] = DateTime.Now.ToString("yyyy-MM-dd");
+                cfg.ModFileLastDownload[file.FileId.ToString()] = DateTime.Now.ToString("yyyy-MM-dd");
+                // 记 N 网 MAIN 安装快照 + 回写 manifest.Version —— 装完即粘住，避免
+                // 「N 网文件 1 / 包内 Version 0.0.1」导致永远显示可更新
+                if (!string.IsNullOrWhiteSpace(modName) || modId > 0)
+                {
+                    var folderGuess = modName ?? "";
+                    var entry = _mods.Scan(cfg.GamePath)
+                        .FirstOrDefault(x => x.NexusModId == modId
+                            || (!string.IsNullOrEmpty(folderGuess)
+                                && string.Equals(x.Folder, folderGuess, StringComparison.OrdinalIgnoreCase)));
+                    if (entry is not null)
+                    {
+                        entry.NexusModId ??= modId;
+                        NexusUpdateTruth.RecordInstall(cfg, entry, file.FileId, file.Version ?? "", cfg.GamePath ?? "");
+                    }
+                    else
+                    {
+                        NexusUpdateTruth.RecordInstallByModId(cfg, cfg.GamePath ?? "", folderGuess.Length > 0 ? folderGuess : modId.ToString(),
+                            modId, file.FileId, file.Version ?? "");
+                    }
+                }
+                _cfg.Save(cfg);
+                var done = $"安装完成：{modName ?? "新 Mod"}";
+                _center.Finish(task, true, done);
+                Notify();
+                // P0-3：直装可能落入肖像包（含 Portraiture→CP 转换）→ 立绘页重扫
+                NotifyPortraits();
+                return null;
+            }
+            catch (OperationCanceledException)
+            {
+                if (task.Status == "paused")
+                {
+                    // 半截包留给继续时续传
+                    return "已暂停";
+                }
+                // v1.1.3：用户移除了任务 → 清半截包，静默退出（任务条目已不在列表）
+                try { if (zipPath is not null && File.Exists(zipPath)) File.Delete(zipPath); } catch { }
+                return "已取消";
+            }
+            catch (Exception ex)
+            {
+                _center.Finish(task, false, ex.Message);
+                Notify();
+                return ex.Message;
+            }
+            finally
+            {
+                Interlocked.Decrement(ref _busyCount);
+                if (task.Status is "done" or "failed")
+                    _center.UnregisterResume(task);
+            }
+        }
+
+        _center.RegisterResume(task, ct => RunAsync(ct));
+        return await RunAsync(task.Cts.Token);
+    }
+
+    /// <summary>SMAPI 在 Nexus 上的 mod ID（nexusmods.com/stardewvalley/mods/2400）。</summary>
+    public const int SmapiNexusId = 2400;
+
+    /// <summary>
+    /// v1.3.2：nxm 回流装 SMAPI —— 用户在 Nexus 文件页点了某个具体文件（如旧文件
+    /// SMAPI 4.5.1）的「模组管理器下载」。尊重用户的选择：按 fileId 从 Nexus 下载
+    /// 【那个版本】的官方安装器包（Nexus 的 SMAPI zip 就是官方安装器，结构与 GitHub
+    /// release 相同），再走 RunSmapiInstallerAsync 同款的静默安装流程。
+    /// 不再无视用户选择强拉 GitHub 最新版。
+    /// </summary>
+    private async Task InstallSmapiFromNxmAsync(
+        TaskItem task, JuniGridConfig cfg,
+        int modId, int fileId, string? key, string? exp,
+        Action<string, double?, double?> Step, CancellationToken ct = default)
+    {
+        // v1.3.4：Busy 由调用方（HandleNxmLinkAsync）管理 —— 旧版这里重复置位/复位
+        // 会让外层 finally 提前解锁。
+        string? zipPath = null;
         try
         {
-            Step("正在获取文件信息…", 2);
-            var file = await _nexus.GetLatestMainFileAsync(cfg.NexusApiKey, modId);
-            if (file is null) { _center.Finish(task, false, "找不到可下载的文件"); return "找不到可下载的文件"; }
-
-            Step("正在获取下载地址…", 5);
-            var dl = await _nexus.GetDownloadUrlAsync(cfg.NexusApiKey, modId, file.FileId);
-            if (dl.NeedsPremium)
-            { _center.Finish(task, false, "需要 Nexus Premium 会员，已改为网页方式"); return "premium：这个 mod 的直链下载需要 Nexus Premium 会员"; }
+            Step($"正在获取下载地址（SMAPI 文件 #{fileId}）…", 8, null);
+            var dl = await _nexus.GetNxmDownloadUrlAsync(cfg.NexusApiKey, modId, fileId, key, exp);
+            ct.ThrowIfCancellationRequested();
             if (dl.Url is null)
-            { _center.Finish(task, false, "获取下载地址失败：" + (dl.Error ?? "未知错误")); return "获取下载地址失败：" + (dl.Error ?? "未知错误"); }
+            {
+                var msg = dl.Error ?? "获取下载地址失败";
+                _center.Finish(task, false, msg);
+                Notify();
+                return;
+            }
 
-            var zip = Path.Combine(StoragePaths.DownloadsDir,
-                $"direct-{modId}-{file.FileId}.zip");
-            zipPath = zip;
-            Directory.CreateDirectory(Path.GetDirectoryName(zip)!);
+            zipPath = Path.Combine(StoragePaths.DownloadsDir, $"nxm-{modId}-{fileId}.zip");
+            Directory.CreateDirectory(Path.GetDirectoryName(zipPath)!);
+            var dlProgress = new Progress<NexusDownloadProgress>(
+                p => Step(p.Message, p.Percent, p.SpeedMBps));
+            Step("正在下载 SMAPI 安装器（你选择的版本）…", 10, 0);
+            await _nexus.DownloadFileAsync(dl.Url, zipPath, dlProgress, ct);
+            if (ct.IsCancellationRequested)
+            {
+                if (task.Status != "paused")
+                { try { File.Delete(zipPath); } catch { } }
+                throw new OperationCanceledException(ct);
+            }
 
-            var progress = new Progress<NexusDownloadProgress>(p =>
-                Step(p.Message, p.Percent, p.SpeedMBps));
-            Step($"正在下载 {file.Name}…", 8, 0);
-            await _nexus.DownloadFileAsync(dl.Url, zip, progress, task.Cts.Token);
-            if (task.Cts.IsCancellationRequested)   // 下完才发现被移除 → 别装了，清掉半截包
-            { try { File.Delete(zip); } catch { } return "已取消"; }
-
-            Step("正在安装到 Mods…", 95);
-            var err = _mods.InstallNew(cfg.GamePath, zip, out var modName, modId);
+            Step("正在静默安装 SMAPI…", 90, null);
+            var progress = new Progress<UpdateService.InstallProgress>(
+                p => Step(p.Message, p.Percent, p.SpeedMBps));
+            var err = await _updater.InstallSmapiZipAsync(zipPath, cfg.GamePath, progress);
             if (err is not null)
-            { _center.Finish(task, false, "安装失败：" + err); return "安装失败：" + err; }
+            { _center.Finish(task, false, err); Notify(); return; }
 
-            _queue.NotifyInstalled(modId);
-            // v0.69.0：记录「最后下载日期」（详情页标题下 + 文件页签绿色✓ 用）
             cfg.ModLastDownload[modId.ToString()] = DateTime.Now.ToString("yyyy-MM-dd");
-            cfg.ModFileLastDownload[file.FileId.ToString()] = DateTime.Now.ToString("yyyy-MM-dd");
+            cfg.ModFileLastDownload[fileId.ToString()] = DateTime.Now.ToString("yyyy-MM-dd");
             _cfg.Save(cfg);
-            var done = $"安装完成：{modName ?? "新 Mod"}";
+            var done = "安装完成：SMAPI（你选择的版本）";
             _center.Finish(task, true, done);
-            Notify("✅ " + done);
-            return null;
+            Notify();
         }
         catch (OperationCanceledException)
         {
-            // v1.1.3：用户移除了任务 → 清半截包，静默退出（任务条目已不在列表）
+            if (task.Status == "paused") return;   // 半截包留给继续
             try { if (zipPath is not null && File.Exists(zipPath)) File.Delete(zipPath); } catch { }
-            return "已取消";
+            _center.Finish(task, false, "已取消");
         }
         catch (Exception ex)
         {
             _center.Finish(task, false, ex.Message);
-            Notify("❌ " + ex.Message);
-            return ex.Message;
+            Notify();
         }
-        finally
+    }
+
+    /// <summary>
+    /// v1.3.1：从 Nexus 页的 SMAPI 条目点「安装」→ 走 SMAPI 专属通道。
+    /// 不碰 Nexus 的 zip（那是安装器不是 mod），直接用首页 SMAPI 更新的同一条管线：
+    /// CheckSmapiAsync 拿 GitHub 官方安装包地址 → RunSmapiInstallerAsync 静默安装。
+    /// </summary>
+    private async Task<string?> InstallSmapiFromNexusEntryAsync()
+    {
+        var cfg = _cfg.Current;
+        var task = _center.Start("下载并安装 SMAPI - Stardew Modding API", "install");
+
+        async Task<string?> RunAsync(CancellationToken ct)
         {
-            Busy = false;
+            void Step(string msg, double? pct = null, double? speed = null) =>
+                _center.Report(task, msg, pct, speed);
+
+            Interlocked.Increment(ref _busyCount);
+            try
+            {
+                Step("正在获取适配当前游戏的 SMAPI…", 5);
+                // v1.1.8：按当前游戏版本取对应 release（1.6+ = latest 4.x；1.4/1.5 等 = 历史 tag）
+                var info = await _updater.CheckSmapiForGameAsync(
+                    _game.ProbeSmapiVersion(cfg.GamePath),
+                    _updater.GetGameVersion(cfg.GamePath), force: true);
+                ct.ThrowIfCancellationRequested();
+                if (info.InstallerZipUrl is null)
+                {
+                    var msg = info.Error ?? "没找到 SMAPI 安装包下载地址（GitHub 访问失败？稍后再试）";
+                    _center.Finish(task, false, msg);
+                    return msg;
+                }
+                if (info.HasUpdate is false && info.InstalledParsed)
+                    Step("本地 SMAPI 已是最新，按重装执行…", 8);
+
+                // v1.3.4：SMAPI 安装含几百 MB 的 Mods 备份与游戏目录写入，全程持安装锁
+                await EnterInstallGateAsync(Step, 8);
+                string? err;
+                try
+                {
+                    ct.ThrowIfCancellationRequested();
+                    // RunSmapiInstallerAsync 的进度（含备份/下载/解压/安装阶段）桥接到任务中心
+                    var progress = new Progress<UpdateService.InstallProgress>(
+                        p => Step(p.Message, p.Percent, p.SpeedMBps));
+                    err = await _updater.RunSmapiInstallerAsync(info, cfg.GamePath, progress, ct);
+                }
+                finally { ExitInstallGate(); }
+                if (ct.IsCancellationRequested && task.Status == "paused")
+                    return "已暂停";
+                if (err is not null)
+                { _center.Finish(task, false, "安装失败：" + err); return "安装失败：" + err; }
+
+                var done = $"安装完成：SMAPI {info.LatestVersion ?? ""}".TrimEnd();
+                _center.Finish(task, true, done);
+                Notify();
+                return null;
+            }
+            catch (OperationCanceledException)
+            {
+                return task.Status == "paused" ? "已暂停" : "已取消";
+            }
+            catch (Exception ex)
+            {
+                _center.Finish(task, false, ex.Message);
+                Notify();
+                return ex.Message;
+            }
+            finally
+            {
+                Interlocked.Decrement(ref _busyCount);
+                if (task.Status is "done" or "failed")
+                    _center.UnregisterResume(task);
+            }
         }
+
+        _center.RegisterResume(task, ct => RunAsync(ct));
+        return await RunAsync(task.Cts.Token);
     }
 
     public async Task HandleNxmLinkAsync(string link)
     {
-        if (Busy)
-        {
-            Notify("⏳ 上一个安装还没完成，等它结束再点");
-            return;
-        }
         var task = _center.Start("网页一键安装（Nexus）", "install");
-        string? zipPath = null;   // v1.1.3：取消清理用
 
-        void Step(string msg, double? pct = null, double? speed = null) =>
-            _center.Report(task, msg, pct, speed);
-
-        Busy = true;
-        try
+        // v1.1.7：整段可重入 —— 暂停后继续重新挂 worker；半截包续传
+        async Task RunAsync(CancellationToken ct)
         {
-            Step("解析收到的 Nexus 下载链接…", 2);
-            if (!TryParseNxm(link, out var modId, out var fileId, out var key, out var exp))
+            string? zipPath = null;   // v1.1.3：取消清理用
+
+            void Step(string msg, double? pct = null, double? speed = null) =>
+                _center.Report(task, msg, pct, speed);
+
+            Interlocked.Increment(ref _busyCount);
+            try
             {
-                _center.Finish(task, false, "无法解析链接");
-                Notify("❌ 无法解析链接：" + link);
-                return;
+                Step("解析收到的 Nexus 下载链接…", 2);
+                if (!TryParseNxm(link, out var modId, out var fileId, out var key, out var exp))
+                {
+                    _center.Finish(task, false, "无法解析链接");
+                    Notify();
+                    return;
+                }
+
+                var cfg = _cfg.Current;
+                if (string.IsNullOrWhiteSpace(cfg.NexusApiKey))
+                {
+                    _center.Finish(task, false, "还没配置 Nexus API Key");
+                    Notify();
+                    return;
+                }
+                if (string.IsNullOrWhiteSpace(cfg.GamePath))
+                {
+                    _center.Finish(task, false, "还没设置游戏目录");
+                    Notify();
+                    return;
+                }
+
+                // 解析出 modId 后把任务标题补上 mod 名称，方便在 /tasks 页识别
+                task.Title = "下载并安装 " + await ResolveModTitleAsync(cfg.NexusApiKey, modId, null);
+                ct.ThrowIfCancellationRequested();
+
+                // v1.3.1：SMAPI（mod 2400）网页回流同样转专属通道 —— Nexus 包是安装器
+                // 不是 mod，普通管线必失败。
+                // v1.3.2：带上 fileId —— 用户在 Nexus 选的就是他要的版本（如旧文件 4.5.1），
+                // 旧版无视选择强拉 GitHub 最新（选 4.5.1 装成 4.5.2）。
+                if (modId == SmapiNexusId)
+                {
+                    await InstallSmapiFromNxmAsync(task, cfg, modId, (int)fileId, key, exp, Step, ct);
+                    return;
+                }
+
+                Step($"正在获取下载地址（Mod #{modId}）…", 8);
+                // v0.62.0：恢复带 API key 头 —— Nexus 的 download_link.json 端点强制要求 apikey 头，
+                // 即使 URL 里有 key/expires，没头直接 401（v0.61 把 key 去掉反而引入了这个错）。
+                var dl = await _nexus.GetNxmDownloadUrlAsync(cfg.NexusApiKey, modId, fileId, key, exp);
+                ct.ThrowIfCancellationRequested();
+                if (dl.Url is null)
+                {
+                    _center.Finish(task, false, dl.Error ?? "获取下载地址失败");
+                    Notify();
+                    return;
+                }
+
+                var zip = Path.Combine(StoragePaths.DownloadsDir, $"nxm-{modId}-{fileId}.zip");
+                zipPath = zip;
+                Directory.CreateDirectory(Path.GetDirectoryName(zip)!);
+
+                var progress = new Progress<NexusDownloadProgress>(p =>
+                    Step(p.Message, p.Percent, p.SpeedMBps));
+                Step("正在下载…", 12, 0);
+                await _nexus.DownloadFileAsync(dl.Url, zip, progress, ct);
+                if (ct.IsCancellationRequested)   // 下完才发现被移除/暂停 → 别装了
+                {
+                    if (task.Status != "paused")
+                    { try { File.Delete(zip); } catch { } }
+                    throw new OperationCanceledException(ct);
+                }
+
+                // v1.3.4：安装段 —— 写入 Mods 全局串行
+                string? nxmErr;
+                string? modName = null;
+                await EnterInstallGateAsync(Step, 95);
+                try
+                {
+                    ct.ThrowIfCancellationRequested();
+                    Step("正在安装到 Mods…", 95);
+                    var nxmTitle = task.Title.StartsWith("下载并安装 ") ? task.Title["下载并安装 ".Length..] : null;
+                    // v1.6.5：Portraiture 素材包直接转换成 CP 肖像包（不再装框架）
+                    nxmErr = _mods.InstallNew(cfg.GamePath, zip, out modName, modId,
+                        portraiturePackName: nxmTitle);
+                }
+                finally { ExitInstallGate(); }
+                if (nxmErr is null)
+                {
+                    _center.Finish(task, true, $"安装完成：{modName ?? "新 Mod"}");
+                    Notify();
+                    // P0-3：nxm 接管安装同样可能带肖像包
+                    NotifyPortraits();
+
+                    // 兜底：.nxm 一键安装也必须写下「已拥有这个 fileId」。缺了它，
+                    // 作者没 bump manifest.Version 时（实测 mod 1839：包内 1.6.4 / N 网文件 1.6.7、
+                    // mod 27100：包内 0.0.1 / N 网文件版本 "1"）ShouldShowUpdate 只能拿两个
+                    // 不同命名空间的版本号比大小 → 更新提示永远消不掉。与 InstallFromNexus 同款写法。
+                    try
+                    {
+                        cfg.ModLastDownload[modId.ToString()] = DateTime.Now.ToString("yyyy-MM-dd");
+                        cfg.ModFileLastDownload[fileId.ToString()] = DateTime.Now.ToString("yyyy-MM-dd");
+                        var guess = modName ?? "";
+                        var entry = _mods.Scan(cfg.GamePath).FirstOrDefault(x => x.NexusModId == modId
+                            || (!string.IsNullOrEmpty(guess)
+                                && string.Equals(x.Folder, guess, StringComparison.OrdinalIgnoreCase)));
+                        if (entry is not null)
+                        {
+                            entry.NexusModId ??= modId;
+                            NexusUpdateTruth.RecordInstall(cfg, entry, fileId, "", cfg.GamePath ?? "");
+                        }
+                        else
+                            NexusUpdateTruth.RecordInstallByModId(cfg, cfg.GamePath ?? "",
+                                guess.Length > 0 ? guess : modId.ToString(), modId, fileId, "");
+                        _cfg.Save(cfg);
+                    }
+                    catch (Exception rex) { AppLog.Warn("Install", ".nxm 安装后写下载/安装记录失败: " + rex.Message); }
+                }
+                else
+                {
+                    _center.Finish(task, false, "安装失败：" + nxmErr);
+                    Notify();
+                }
             }
-
-            var cfg = _cfg.Current;
-            if (string.IsNullOrWhiteSpace(cfg.NexusApiKey))
+            catch (OperationCanceledException)
             {
-                _center.Finish(task, false, "还没配置 Nexus API Key");
-                Notify("❌ 还没配置 Nexus API Key —— 先到「Nexus」页粘贴");
-                return;
+                if (task.Status == "paused") return;   // 半截包留给继续
+                try { if (zipPath is not null && File.Exists(zipPath)) File.Delete(zipPath); } catch { }
             }
-            if (string.IsNullOrWhiteSpace(cfg.GamePath))
+            catch (Exception ex)
             {
-                _center.Finish(task, false, "还没设置游戏目录");
-                Notify("❌ 还没设置游戏目录 —— 先到「设置」页选择");
-                return;
+                _center.Finish(task, false, ex.Message);
+                Notify();
             }
-
-            // 解析出 modId 后把任务标题补上 mod 名称，方便在 /tasks 页识别
-            task.Title = "下载并安装 " + await ResolveModTitleAsync(cfg.NexusApiKey, modId, null);
-
-            Step($"正在获取下载地址（Mod #{modId}）…", 8);
-            // v0.62.0：恢复带 API key 头 —— Nexus 的 download_link.json 端点强制要求 apikey 头，
-            // 即使 URL 里有 key/expires，没头直接 401（v0.61 把 key 去掉反而引入了这个错）。
-            var dl = await _nexus.GetNxmDownloadUrlAsync(cfg.NexusApiKey, modId, fileId, key, exp);
-            if (dl.Url is null)
+            finally
             {
-                _center.Finish(task, false, dl.Error ?? "获取下载地址失败");
-                Notify("❌ " + (dl.Error ?? "获取下载地址失败"));
-                _queue.NotifyFailed(modId);   // 链接过期/被拒 → 跳过，别让队列卡死
-                return;
-            }
-
-            var zip = Path.Combine(StoragePaths.DownloadsDir, $"nxm-{modId}-{fileId}.zip");
-            zipPath = zip;
-            Directory.CreateDirectory(Path.GetDirectoryName(zip)!);
-
-            var progress = new Progress<NexusDownloadProgress>(p =>
-                Step(p.Message, p.Percent, p.SpeedMBps));
-            Step("正在下载…", 12, 0);
-            await _nexus.DownloadFileAsync(dl.Url, zip, progress, task.Cts.Token);
-            if (task.Cts.IsCancellationRequested)   // 下完才发现被移除 → 别装了，清掉半截包
-            { try { File.Delete(zip); } catch { } return; }
-
-            Step("正在安装到 Mods…", 95);
-            var err = _mods.InstallNew(cfg.GamePath, zip, out var modName, modId);
-            if (err is null)
-            {
-                _queue.NotifyInstalled(modId);   // 更新队列：装完一个，自动前进
-                _center.Finish(task, true, $"安装完成：{modName ?? "新 Mod"}");
-                Notify($"✅ 安装完成：{modName ?? "新 Mod"}（已在 Mod 管理页可见）");
-            }
-            else
-            {
-                _center.Finish(task, false, "安装失败：" + err);
-                Notify("❌ 安装失败：" + err);
-                _queue.NotifyFailed(modId);   // 装不进去也推进队列
+                Interlocked.Decrement(ref _busyCount);
+                if (task.Status is "done" or "failed")
+                    _center.UnregisterResume(task);
             }
         }
-        catch (OperationCanceledException)
-        {
-            try { if (zipPath is not null && File.Exists(zipPath)) File.Delete(zipPath); } catch { }
-        }
-        catch (Exception ex)
-        {
-            _center.Finish(task, false, ex.Message);
-            Notify("❌ " + ex.Message);
-        }
-        finally
-        {
-            Busy = false;
-        }
+
+        _center.RegisterResume(task, ct => RunAsync(ct));
+        await RunAsync(task.Cts.Token);
     }
 
-    private void Notify(string msg) => OnChanged?.Invoke();
+    private void Notify() => OnChanged?.Invoke();
+
+    /// <summary>P0-3：磁盘上肖像包/框架变化后，让已打开的立绘页重扫（未打开则无订阅、无操作）。</summary>
+    private void NotifyPortraits()
+    {
+        try { _pageRefresh.Request("portraits"); }
+        catch { /* 刷新信号失败不影响安装结果 */ }
+    }
 
     // ------------------------------------------------------------------
     // v1.2.0：一键安装缺失依赖
@@ -233,17 +532,13 @@ public sealed class InstallService
     // 并附 Nexus 页面链接，不再浪费 API 请求额度。
     // ------------------------------------------------------------------
 
-    /// <summary>最近一次一键装依赖的逐项结果（Mods 页结果弹窗的数据源）。
-    /// Status: installed / manual / framework / unresolved / failed。</summary>
-    public IReadOnlyList<DependencyRunItem>? LastDependencyRun { get; private set; }
-
     public sealed record DependencyRunItem(string Uid, string Status, string? Name, int? ModId, string? Detail);
 
     /// <summary>
     /// 一键安装缺失依赖。onlyUids 为 null = 全部缺失依赖；传入具体 UID 列表 =
     /// 只装这批（以及它们装上后新暴露的传递依赖）。preResolved = 确认弹窗已经
     /// 搜索解析过的 UID → modId（零搜索开销直接用，校验照做）。返回 null 表示
-    /// 流程跑完（个别依赖可能转手动/失败，逐项结果看 <see cref="LastDependencyRun"/>）。
+    /// 流程跑完（个别依赖可能转手动/失败）。
     /// </summary>
     public async Task<string?> InstallMissingDependenciesAsync(IReadOnlyList<string>? onlyUids = null,
         IReadOnlyDictionary<string, int>? preResolved = null)
@@ -259,7 +554,9 @@ public sealed class InstallService
             onlyUids is null ? "一键安装缺失依赖" : $"安装缺失依赖（{onlyUids.Count} 项）", "install");
         void Step(string msg, double? pct = null, double? speed = null) => _center.Report(task, msg, pct, speed);
 
-        Busy = true;
+        // v1.3.4：批量装依赖全程持安装锁（逐项下载+写入都是完整的安装会话），
+        // 与其它 mod 安装互斥排队。
+        Interlocked.Increment(ref _busyCount);
         var outcomes = new List<DependencyRunItem>();
         var toOpen = new List<string>();   // v1.2.2：需手动的依赖页面，结束时批量在浏览器打开
         var processed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -267,33 +564,36 @@ public sealed class InstallService
         string? zipPath = null;
         try
         {
-            // onlyUids 只约束首轮（用户指定的那批）；装上的依赖自己又缺的传递依赖照样跟进
-            var allowedFirstRound = onlyUids is null ? null : new HashSet<string>(onlyUids, StringComparer.OrdinalIgnoreCase);
-            var firstRound = true;
-
-            while (true)
+            await EnterInstallGateAsync(Step, 2);
+            try
             {
-                task.Cts.Token.ThrowIfCancellationRequested();
-                // 每轮重扫磁盘 —— 上一轮装上的依赖可能自带新的缺失依赖（传递闭包）
-                var mods = _mods.Scan(cfg.GamePath);
-                var installedUids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                foreach (var m in mods)
-                    if (!string.IsNullOrWhiteSpace(m.UniqueID))
-                        installedUids.Add(m.UniqueID.Trim());
+                // onlyUids 只约束首轮（用户指定的那批）；装上的依赖自己又缺的传递依赖照样跟进
+                var allowedFirstRound = onlyUids is null ? null : new HashSet<string>(onlyUids, StringComparer.OrdinalIgnoreCase);
+                var firstRound = true;
 
-                var batch = new List<string>();
-                foreach (var m in mods)
+                while (true)
                 {
-                    foreach (var d in m.Dependencies.Concat(m.ContentPackIds))
+                    task.Cts.Token.ThrowIfCancellationRequested();
+                    // 每轮重扫磁盘 —— 上一轮装上的依赖可能自带新的缺失依赖（传递闭包）
+                    var mods = _mods.Scan(cfg.GamePath);
+                    var installedUids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var m in mods)
+                        if (!string.IsNullOrWhiteSpace(m.UniqueID))
+                            installedUids.Add(m.UniqueID.Trim());
+
+                    var batch = new List<string>();
+                    foreach (var m in mods)
                     {
-                        var dep = d?.Trim();
-                        if (string.IsNullOrWhiteSpace(dep)
-                            || installedUids.Contains(dep)
-                            || processed.Contains(dep)) continue;
-                        if (firstRound && allowedFirstRound is not null && !allowedFirstRound.Contains(dep)) continue;
-                        if (!batch.Contains(dep, StringComparer.OrdinalIgnoreCase)) batch.Add(dep);
+                        foreach (var d in m.Dependencies.Concat(m.ContentPackIds))
+                        {
+                            var dep = d?.Trim();
+                            if (string.IsNullOrWhiteSpace(dep)
+                                || installedUids.Contains(dep)
+                                || processed.Contains(dep)) continue;
+                            if (firstRound && allowedFirstRound is not null && !allowedFirstRound.Contains(dep)) continue;
+                            if (!batch.Contains(dep, StringComparer.OrdinalIgnoreCase)) batch.Add(dep);
+                        }
                     }
-                }
                 firstRound = false;
                 if (batch.Count == 0) break;
 
@@ -328,7 +628,9 @@ public sealed class InstallService
                         }
                         Step($"⏭ {dep}：免费账户不能 API 直下，已打开网页转手动");
                         outcomes.Add(new DependencyRunItem(dep, "manual", face.Name, face.Id,
-                            "已在浏览器打开此页面 —— 点「Mod Manager Download」，启动器会自动接管下载安装（Nexus 免费账户限制）"));
+                            dep.Equals(ModService.PortraitureFrameworkUid, StringComparison.OrdinalIgnoreCase)
+                                ? "Portraiture 框架需手动下载 —— 点「Mod Manager Download」后启动器自动接管；装完请到立绘页确认素材包"
+                                : "已在浏览器打开此页面 —— 点「Mod Manager Download」，启动器会自动接管下载安装（Nexus 免费账户限制）"));
                         toOpen.Add($"https://www.nexusmods.com/stardewvalley/mods/{face.Id}");
                         continue;
                     }
@@ -364,7 +666,8 @@ public sealed class InstallService
                                 var progress = new Progress<NexusDownloadProgress>(p => Step(p.Message, p.Percent, p.SpeedMBps));
                                 Step($"({idx}/{total}) 正在下载 {c.Name}…", null, 0);
                                 await _nexus.DownloadFileAsync(dl.Url, zipPath, progress, task.Cts.Token);
-                                if (task.Cts.IsCancellationRequested) return "已取消";
+                                if (task.Cts.IsCancellationRequested)
+                                    return task.Status == "paused" ? "已暂停" : "已取消";
 
                                 Step($"({idx}/{total}) 正在安装 {c.Name}…", Math.Round(idx * 95.0 / (total + 1), 1));
                                 var err = _mods.InstallNew(cfg.GamePath, zipPath, out var modName, c.Id,
@@ -378,10 +681,14 @@ public sealed class InstallService
                                 cfg.ModLastDownload[c.Id.ToString()] = DateTime.Now.ToString("yyyy-MM-dd");
                                 cfg.ModFileLastDownload[file.FileId.ToString()] = DateTime.Now.ToString("yyyy-MM-dd");
                                 _cfg.Save(cfg);
-                                _queue.NotifyInstalled(c.Id);
-                                outcomes.Add(new DependencyRunItem(dep, "installed", modName ?? c.Name, c.Id, null));
+                                outcomes.Add(new DependencyRunItem(dep, "installed", modName ?? c.Name, c.Id,
+                                    dep.Equals(ModService.PortraitureFrameworkUid, StringComparison.OrdinalIgnoreCase)
+                                        ? "Portraiture 框架已装 —— 供声明依赖它的 mod 使用；启动器转换的 CP 肖像包不依赖它，游戏内按 P 切换高清模式"
+                                        : null));
                                 Step($"✓ 已安装 {modName ?? c.Name}（{dep}）");
-                                Notify("");
+                                Notify();
+                                // P0-3：装上的依赖可能带肖像内容/框架 → 立绘页重扫
+                                NotifyPortraits();
                                 ok = true;
                                 break;
                             }
@@ -427,7 +734,6 @@ public sealed class InstallService
                 if (processed.Count > 200) break;   // 防御：异常清单不至于无限跑
             }
 
-            LastDependencyRun = outcomes;
             var done = outcomes.Count(o => o.Status == "installed");
             var manualC = outcomes.Count(o => o.Status is "manual" or "framework");
             var unresolvedC = outcomes.Count(o => o.Status == "unresolved");
@@ -454,23 +760,28 @@ public sealed class InstallService
                     try { UpdateService.OpenUrl(url); } catch { }
                 }
             }
-            Notify("");
+            Notify();
+            // P0-3：本轮装上过依赖（含 Portraiture）→ 立绘页一次性重扫
+            if (outcomes.Any(o => o.Status == "installed"
+                    || o.Uid.Equals(ModService.PortraitureFrameworkUid, StringComparison.OrdinalIgnoreCase)))
+                NotifyPortraits();
             return null;
+            }
+            finally { ExitInstallGate(); }
         }
         catch (OperationCanceledException)
         {
             try { if (zipPath is not null && File.Exists(zipPath)) File.Delete(zipPath); } catch { }
-            return "已取消";
+            return task.Status == "paused" ? "已暂停" : "已取消";
         }
         catch (Exception ex)
         {
-            LastDependencyRun = outcomes;
             _center.Finish(task, false, "一键装依赖失败：" + ex.Message);
             return ex.Message;
         }
         finally
         {
-            Busy = false;
+            Interlocked.Decrement(ref _busyCount);
         }
     }
 

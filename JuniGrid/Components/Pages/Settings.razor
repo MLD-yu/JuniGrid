@@ -1,5 +1,6 @@
 @namespace JuniGrid.Components.Pages
 @page "/settings"
+@using JuniGrid.Components
 @implements IDisposable
 @inject ConfigService Cfg
 @inject GameService Game
@@ -9,7 +10,9 @@
 @inject IJSRuntime JS
 @inject StorageService Storage
 @inject MemoryService Mem
-@inject TranslationService Trans
+@inject DepotDownloaderService DepotQr
+@inject LauncherService Launcher
+@inject TaskCenterService Center
 
 <div class="jg-page">
     <h1 style="margin-top:0">设置</h1>
@@ -27,9 +30,32 @@
                     <img src="assets/steam.svg" alt="steam" style="width:36px;height:36px;border-radius:50%;object-fit:cover;" />
                 }
                 <div style="flex:1">
-                    <div style="font-weight:600">Steam · @(_steam.Found ? (_steam.PersonaName ?? _steam.AccountName ?? "已登录") : "未登录")</div>
-                    <div style="font-size:12px;opacity:.65">Steam 客户端级登录，切换账号请在 Steam 里操作</div>
+                    <div style="font-weight:600;display:flex;align-items:center;gap:6px;">
+                        Steam · @(_steam.Found ? (_steam.PersonaName ?? _steam.AccountName ?? "已登录") : "未登录")
+                        @if (DdAuthorized)
+                        {
+                            <span class="jg-premium-badge" style="background:#2e7d32">下载已授权</span>
+                        }
+                    </div>
+                    <div style="font-size:12px;opacity:.65">
+                        @if (DdAuthorized)
+                        {
+                            <text>历史版本下载免密@(GetDdAccountSuffix())</text>
+                        }
+                        else
+                        {
+                            <text>Steam 客户端级登录，切换账号请在 Steam 里操作；下载历史版本前需扫码授权</text>
+                        }
+                    </div>
                 </div>
+                @if (DdAuthorized)
+                {
+                    <button class="jg-nexus-logout-btn" @onclick="DdRevoke">解除授权</button>
+                }
+                else
+                {
+                    <button class="jg-nexus-login-btn" @onclick="OpenDdQr">扫码授权</button>
+                }
             </div>
             <div style="display:flex;align-items:center;gap:10px;">
                 @if (!string.IsNullOrEmpty(_nexusAvatar))
@@ -56,18 +82,97 @@
         </div>
     </div>
 
+    @* ─── Steam 下载授权：扫码弹窗 ─── *@
+    @if (_ddQrOpen)
+    {
+        <div style="position:fixed;inset:0;background:rgba(0,0,0,.65);display:flex;align-items:center;justify-content:center;z-index:1000" @onclick="CloseDdQr">
+            <div class="jg-card" style="max-width:420px;padding:18px 22px" @onclick:stopPropagation>
+                <div style="font-weight:600;margin-bottom:10px">Steam 扫码授权</div>
+
+                @if (!string.IsNullOrEmpty(_ddQrError))
+                {
+                    <div class="jg-qr-err">@_ddQrError</div>
+                }
+
+                @if (_ddQrLines is { Count: >= 27 })
+                {
+                    @* 矢量码：白底 + 静区足，手机比 PNG data URI 好扫；台子按码自己的比例收（不占方形） *@
+                    <div class="jg-qr-stage vector">
+                        <QrAsciiImage Lines="_ddQrLines" Size="340" />
+                    </div>
+                    <div class="jg-qr-hint">@DdQrScanHint</div>
+                }
+                else if (!string.IsNullOrEmpty(_ddQrDataUri))
+                {
+                    <div class="jg-qr-stage">
+                        <img class="qr" src="@_ddQrDataUri" alt="扫码授权"
+                             @onerror="OnQrImgError"/>
+                    </div>
+                    <div class="jg-qr-hint">@DdQrScanHint</div>
+                }
+                else if (!string.IsNullOrEmpty(_ddQrError) && !_ddQrBusy)
+                {
+                    <div class="jg-qr-stage fail">
+                        <div class="veil"></div>
+                        <div class="hub"><span class="bang">!</span></div>
+                    </div>
+                }
+                else
+                {
+                    @* 连接中：模糊码底 + 加载环，下面一行短进度（长文案会撑破弹窗，截到 48 字） *@
+                    <div class="jg-qr-stage">
+                        <div class="veil"></div>
+                        <div class="hub"><div class="ring"></div></div>
+                    </div>
+                    <div class="jg-qr-hint">@(string.IsNullOrWhiteSpace(_ddQrState) ? "正在连接…" : DdQrHint)</div>
+                }
+
+                <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:12px">
+                    @if (_ddQrBusy)
+                    {
+                        @* 出码截止是 20 秒，不该让人干等：点一下 1 秒内掐掉这一路马上重开，
+                           而且这次重开不占用重试次数（用户主动要的，不是失败） *@
+                        <button type="button" class="jg-path-btn" @onclick="KickQrRetry">立即重开</button>
+                    }
+                    <button type="button" class="jg-path-btn" @onclick="CloseDdQr">@(_ddQrBusy ? "取消" : "关闭")</button>
+                </div>
+            </div>
+        </div>
+    }
+
 
     <div class="jg-card" style="margin-top:12px">
         <div style="font-weight:600">游戏目录</div>
-        <FluentTextField @bind-Value="_gamePath"
-                         Placeholder="例：C:\Program Files (x86)\Steam\steamapps\common\Stardew Valley"
-                         style="width:100%;margin-top:6px" />
+        <input class="jg-ver-input" style="margin-top:6px" @bind="_gamePath"
+               placeholder="例：C:\Program Files (x86)\Steam\steamapps\common\Stardew Valley" />
 
         <div style="display:flex;gap:8px;margin-top:8px">
             <button type="button" class="jg-path-btn" @onclick="Pick">浏览...</button>
             <button type="button" class="jg-path-btn" @onclick="AutoDetect">自动检测</button>
             <button type="button" class="jg-path-btn primary" @onclick="Save">保存</button>
         </div>
+
+        @* ─── v1.2.4：游戏版本锁定 —— Steam 版才有 appmanifest，非 Steam 目录自动降级为说明文字 ─── *@
+        @if (_manifestPath is not null)
+        {
+            <div class="jg-switch-col" style="margin-top:10px">
+                <div class="jg-switch-row @(_manifestLocked ? "on" : "")" @onclick="ToggleLockGameVersion">
+                    <span style="display:flex;align-items:center;gap:8px">
+                        <span>锁定游戏版本</span>
+                        <span class="jg-help-tip">
+                            <span class="jg-help-tip-btn">?</span>
+                            <span class="jg-help-tip-bubble">开启后 Steam 无法更新游戏本体（含 Steam 启动前的强制更新），当前版本会一直保持可玩 —— 适合想留在旧版本搭配旧 mod 的玩家。想更新游戏时，先关闭本开关再启动。</span>
+                        </span>
+                    </span>
+                    <span class="jg-switch"><span class="jg-switch-knob"></span></span>
+                </div>
+            </div>
+        }
+        else
+        {
+            <div style="font-size:12px;opacity:.6;margin-top:8px">未找到 Steam 版清单文件（appmanifest）—— 版本锁定仅适用于 Steam 版游戏目录。</div>
+        }
+
     </div>
 
     <div class="jg-card" style="margin-top:12px">
@@ -197,6 +302,66 @@
         <div style="margin-top:4px">
             @foreach (var c in _cats)
             {
+                @if (c.Id == "vercache")
+                {
+                    @* ─── v1.4.4：游戏版本缓存手风琴（箭头在标题右侧） ─── *@
+                    <div class="jg-store-row" style="flex-direction:column;align-items:stretch;gap:0">
+                        <div style="display:flex;align-items:center;gap:10px;padding:9px 2px">
+                            <button type="button" class="jg-acc-head" style="padding:0;flex:1;min-width:0;flex-direction:row"
+                                    aria-expanded="@(_verAccOpen ? "true" : "false")"
+                                    aria-controls="jg-vercache-panel" @onclick="ToggleVerCache">
+                                <span class="jg-store-main" style="flex:1;min-width:0">
+                                    <span class="jg-store-name" style="display:flex;align-items:center;gap:6px">
+                                        @c.Name
+                                        <svg class="jg-acc-chev" viewBox="0 0 16 16" fill="none" aria-hidden="true"
+                                             style="display:inline-block;vertical-align:middle">
+                                            <path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+                                        </svg>
+                                        @if (c.Movable) { <span class="jg-store-tag">可迁移</span> }
+                                    </span>
+                                    <span class="jg-store-path" title="@c.DisplayPath" style="display:block">@c.Note · @c.DisplayPath</span>
+                                </span>
+                            </button>
+                            <div class="jg-store-size">@FmtSize(c.Id)</div>
+                            <button type="button" class="jg-mini-btn" @onclick='() => OpenCatFolder(c)'>打开</button>
+                        </div>
+                        <div id="jg-vercache-panel" class="jg-acc-panel @(_verAccOpen ? "open" : "")">
+                            <div class="jg-acc-inner">
+                                @if (_verCaches.Count == 0)
+                                {
+                                    <div class="jg-acc-empty">尚未下载任何历史版本。在「游戏版本管理」里切换版本后会缓存在这里。</div>
+                                }
+                                @foreach (var v in _verCaches)
+                                {
+                                    <div class="jg-acc-item">
+                                        <span class="jg-acc-item-name">@v.Label</span>
+                                        <span class="jg-acc-item-size">@ResumableDownload.FormatBytes(v.SizeBytes)</span>
+                                        <button type="button" class="jg-mini-btn danger-outline"
+                                                @onclick="() => AskDeleteVerCache(v)">删除</button>
+                                    </div>
+                                }
+                                @* 版本包之外的附属目录：删的代价不同的东西分行放（SMAPI 本体删了要重装、
+                                   Mod 暂存里是用户的东西 → 那条走回收站），每条带「?」讲清是什么。 *@
+                                @foreach (var b in _verBuckets)
+                                {
+                                    <div class="jg-acc-item">
+                                        <span class="jg-acc-item-name" style="display:flex;align-items:center;gap:6px">
+                                            @b.Kind.Name
+                                            <span class="jg-help-tip">
+                                                <span class="jg-help-tip-btn">?</span>
+                                                <span class="jg-help-tip-bubble">@b.Kind.Tip</span>
+                                            </span>
+                                        </span>
+                                        <span class="jg-acc-item-size">@(b.Bytes < 0 ? "计算中…" : ResumableDownload.FormatBytes(b.Bytes))</span>
+                                        <button type="button" class="jg-mini-btn danger-outline"
+                                                @onclick="() => AskDeleteBucket(b)">删除</button>
+                                    </div>
+                                }
+                            </div>
+                        </div>
+                    </div>
+                    continue;
+                }
                 <div class="jg-store-row">
                     <div class="jg-store-main">
                         <div class="jg-store-name">
@@ -264,7 +429,7 @@
                                     </a>
                                 </li>
                                 <li class="jg-ll-item">
-                                    <a class="jg-ll-link" href="https://www.douyin.com/user/MS4wLjABAAAA-5M0Kcg98EjyHuB9G2LYJ1lMRFwDjMIIjVwMYT8xXBfXVOBo8eiU12Qms7yddDDn" target="_blank" rel="noreferrer noopener" title="抖音">
+                                    <a class="jg-ll-link" href="https://www.douyin.com/user/MS4wLjABAAAAFva5cHzXf-dy_N7_4sKzjVHRBXj7_mkQ9EzTUXI96QM?from_tab_name=main" target="_blank" rel="noreferrer noopener" title="抖音">
                                         <img src="assets/logos/logo-douyin.svg?v=2" alt="抖音" />
                                     </a>
                                 </li>
@@ -299,22 +464,22 @@
                 WebView2 数据在重启应用后自动迁移（正在使用的文件除外，留在原处可稍后清理）。
             </div>
             <div class="jg-modal-actions">
-                <button class="jg-path-btn" @onclick="CancelChangeRoot">取消</button>
+                <button class="jg-path-btn" data-modal-close @onclick="CancelChangeRoot">取消</button>
                 <button class="jg-path-btn primary" @onclick="ConfirmChangeRoot">开始迁移</button>
             </div>
         </div>
     </div>
 }
 
-@if (_pendingCleanId is not null || _confirmCleanAll)
+@if (_pendingCleanId is not null || _confirmCleanAll || _pendingDeleteVer is not null || _pendingBucket is not null)
 {
     <div class="jg-modal-overlay" @onclick="CancelClean">
         <div class="jg-modal" @onclick:stopPropagation>
-            <div class="jg-modal-title">@(_confirmCleanAll ? "一键清理缓存" : "清理缓存")</div>
-            <div class="jg-modal-body">@CleanConfirmText</div>
+            <div class="jg-modal-title">@ConfirmTitle</div>
+            <div class="jg-modal-body">@ConfirmBody</div>
             <div class="jg-modal-actions">
-                <button class="jg-path-btn" @onclick="CancelClean">取消</button>
-                <button class="jg-path-btn primary" @onclick="DoClean">确认清理</button>
+                <button class="jg-path-btn" data-modal-close @onclick="CancelClean">取消</button>
+                <button class="jg-path-btn primary" @onclick="DoConfirm">@ConfirmOkLabel</button>
             </div>
         </div>
     </div>
@@ -332,13 +497,175 @@
         var cfg = Cfg.Current;
         cfg.NexusApiKey = "";
         cfg.NexusUserName = "";
-        cfg.NexusUserEmail = "";
         cfg.NexusProfileUrl = "";
         cfg.NexusIsPremium = false;
         cfg.NexusAvatarDataUri = "";
         Cfg.Save(cfg);
         _nexusName = ""; _nexusAvatar = null; _nexusPremium = false;
         _ = JS.InvokeVoidAsync("junigridJs.toast", "已退出 Nexus 登录");
+        StateHasChanged();
+    }
+
+    // ─── Steam 下载授权（DepotDownloader 扫码）───
+    private bool _ddQrOpen;
+    private bool _ddQrBusy;
+    private string? _ddQrDataUri;
+    private IReadOnlyList<string>? _ddQrLines;
+    private string _ddQrState = "";
+    private string? _ddQrError;
+    private CancellationTokenSource? _ddQrCts;
+
+    /// <summary>弹窗里那行进度。服务一直在报（重取新码、连第几个 CM 节点），只是原先界面写死了
+    /// 「正在连接…」没接上 —— 用户看到的就是「一直卡在正在连接」。长文案会撑破弹窗，截到 48 字。</summary>
+    private string DdQrHint => _ddQrState.Length > 48 ? _ddQrState[..48] + "…" : _ddQrState;
+
+    /// <summary>码下面那行：等扫时给操作说明，服务一报别的（换码 / 授权成功收尾）就换成进度。
+    /// 这里原先挂的是 s.team 长链接（用户要求去掉），链接本身仍写在 juni-grid.log 里。</summary>
+    private string DdQrScanHint =>
+        string.IsNullOrWhiteSpace(_ddQrState) || _ddQrState.StartsWith("等待手机扫码")
+            ? "用 Steam 手机 App 扫这张码"
+            : DdQrHint;
+
+    private void OnQrImgError()
+    {
+        _ddQrError = "二维码图片加载失败，请点取消后重试";
+        StateHasChanged();
+    }
+
+    private bool DdAuthorized => Cfg.Current.DepotQrLoggedIn;
+
+    /// <summary>授权账号与本机 Steam 客户端账号的异同说明（跟在"下载免密"后面）。</summary>
+    private string GetDdAccountSuffix()
+    {
+        var acc = Cfg.Current.SteamCmdAccount;
+        if (string.IsNullOrWhiteSpace(acc)) return "";
+        if (_steam.Found && string.Equals(acc, _steam.AccountName, StringComparison.OrdinalIgnoreCase))
+            return "（本机 Steam 账号）";
+        return $"（授权账号：{acc}）";
+    }
+
+    private void OpenDdQr()
+    {
+        // 同账号只允许一路 Steam 会话：下载在飞时再起一路扫码，会把那一路顶掉（实测互踢）
+        if (DepotDownloaderService.SteamSessionBusy)
+        {
+            _ = JS.InvokeVoidAsync("junigridJs.toast", "有版本正在下载，等它下完（或先在任务中心取消）再重新授权", "err");
+            return;
+        }
+        _ddQrOpen = true;
+        ClearDdQrImage();
+        _ddQrError = null;
+        _ddQrState = "正在准备扫码组件…";
+        _ddQrBusy = true;
+        _ddQrCts = new CancellationTokenSource();
+        StateHasChanged();
+        _ = RunDdQrAsync();
+    }
+
+    // 首次安装组件会下载并解压。页面打开后后台预热，扫码时不再等这一段。
+    private async Task WarmDepotDownloaderAsync()
+    {
+        try
+        {
+            await DepotQr.EnsureDepotDownloaderAsync();
+        }
+        catch (Exception ex)
+        {
+            // 预热不影响正常使用；真正扫码时会给出可见错误。
+            AppLog.Warn("DepotDownloader", "授权组件后台预热失败: " + ex.Message);
+        }
+    }
+
+    private async Task RunDdQrAsync()
+    {
+        var progress = new Progress<DepotDownloaderService.Progress>(p =>
+            _ = InvokeAsync(() =>
+            {
+                _ddQrState = string.IsNullOrEmpty(p.Line) ? p.State : p.Line;
+                StateHasChanged();
+            }));
+        try
+        {
+            var account = await DepotQr.QrLoginOnlyAsync(
+                dataUri => InvokeAsync(() =>
+                {
+                    _ddQrDataUri = dataUri;
+                    StateHasChanged();
+                }),
+                progress, _ddQrCts?.Token ?? CancellationToken.None,
+                onAsciiLines: lines => InvokeAsync(() =>
+                {
+                    _ddQrLines = lines;
+                    StateHasChanged();
+                }),
+                // 上一张码随 Steam 连接一起作废了：撤干净，等下一路刷出的新码
+                onStale: () => InvokeAsync(ClearDdQrImage));
+
+            await InvokeAsync(() =>
+            {
+                var cfg = Cfg.Current;
+                cfg.DepotQrLoggedIn = true;
+                if (!string.IsNullOrWhiteSpace(account)) cfg.SteamCmdAccount = account.Trim();
+                Cfg.Save(cfg);
+                _ddQrBusy = false;
+                _ddQrState = "授权成功";
+                ClearDdQrImage();   // 撤掉旧码，避免成功后还显示二维码
+                _ = JS.InvokeVoidAsync("junigridJs.toast", "Steam 下载授权成功，历史版本下载已免密");
+                StateHasChanged();
+            });
+            // 稍候自动关窗，让用户看到 toast / 状态
+            await Task.Delay(900, CancellationToken.None);
+            await InvokeAsync(() =>
+            {
+                if (!_ddQrBusy)
+                {
+                    _ddQrOpen = false;
+                    StateHasChanged();
+                }
+            });
+        }
+        catch (Exception ex)
+        {
+            await InvokeAsync(() =>
+            {
+                _ddQrBusy = false;
+                _ddQrError = ex is OperationCanceledException ? "已取消" : ex.Message;
+                ClearDdQrImage();   // 走到这儿那张 challenge 已经作废，不许留在屏上让人扫
+            });
+        }
+    }
+
+    /// <summary>撤掉界面上的二维码。出过码后再失败 ⇒ challenge 已随 DD 进程退出作废，
+    /// 留着就是让人扫一张死码（手机端只报「加载二维码失败」，实测 03:45:20 出码 / 03:45:36 掉线）。</summary>
+    /// <summary>「立即重开」：掐掉当前这一路连接，马上开下一路（服务层 1 秒内响应，
+    /// 且不占用重试次数）。省得人对着 20 秒出码截止干等。</summary>
+    private void KickQrRetry()
+    {
+        DepotDownloaderService.RequestKickNow();
+        _ddQrState = "正在按你的要求重开一路连接…";
+        StateHasChanged();
+    }
+
+    private void ClearDdQrImage()
+    {
+        _ddQrDataUri = null;
+        _ddQrLines = null;
+        StateHasChanged();
+    }
+
+    private void CloseDdQr()
+    {
+        if (_ddQrBusy) { try { _ddQrCts?.Cancel(); } catch { } }
+        _ddQrOpen = false;
+        StateHasChanged();
+    }
+
+    private void DdRevoke()
+    {
+        var cfg = Cfg.Current;
+        cfg.DepotQrLoggedIn = false;
+        Cfg.Save(cfg);
+        _ = JS.InvokeVoidAsync("junigridJs.toast", "已解除 Steam 下载授权，下次下载需重新扫码");
         StateHasChanged();
     }
 
@@ -391,6 +718,38 @@
     private string _gamePath = "";
     private bool _oneClickInstall;
     private bool _autoInstall;
+
+    // ─── v1.2.4：游戏版本锁定（阻止 Steam 自动更新，玩旧版用）───
+    // UI 状态以清单文件的只读属性为准（文件可能被 Steam/用户改掉），配置项只在切换时落盘；
+    // Steam 启动路径还有一次启动前补锁兜底（LauncherService.LaunchSteam）。
+    private string? _manifestPath;
+    private bool _manifestLocked;
+
+    private void ProbeManifest()
+    {
+        _manifestPath = SteamService.FindAppManifest(Cfg.Current.GamePath, Cfg.Current.SteamAppId);
+        _manifestLocked = SteamService.IsGameVersionLocked(_manifestPath);
+    }
+
+    private void ToggleLockGameVersion()
+    {
+        if (_manifestPath is null) return;
+        var want = !_manifestLocked;
+        var (ok, err) = SteamService.SetGameVersionLock(_manifestPath, want);
+        if (!ok)
+        {
+            _ = JS.InvokeVoidAsync("junigridJs.toast", err, "err");
+            return;
+        }
+        _manifestLocked = want;
+        var cfg = Cfg.Current;
+        cfg.LockGameVersion = want;
+        Cfg.Save(cfg);
+        _ = JS.InvokeVoidAsync("junigridJs.toast", want
+            ? "已锁定游戏版本 —— Steam 不会再自动更新本体，可一直玩当前版本"
+            : "已解除锁定 —— 下次通过 Steam 启动会正常更新游戏");
+        StateHasChanged();
+    }
 
     // ─── 显示成人内容：单一开关，默认关（一律排除；开 = 跟随登录账号的账号设置）───
     private bool _showAdult;
@@ -511,6 +870,109 @@
     // ─── v0.2.1：缓存与存储 ───
     private List<StorageCategory> _cats = new();
 
+    // ─── v1.4.4：游戏版本缓存手风琴 ───
+    private bool _verAccOpen;
+    private List<DepotDownloaderService.StagedPackage> _verCaches = new();
+    private (StorageService.StagingBucketKind Kind, string Path, long Bytes)[] _verBuckets = Array.Empty<(StorageService.StagingBucketKind, string, long)>();
+
+    private void LoadVerCaches()
+    {
+        try
+        {
+            _verCaches = DepotQr.ListStagedPackages();
+            AppLog.Warn("Storage", $"版本缓存列表：{_verCaches.Count} 项 " +
+                string.Join(", ", _verCaches.Select(v => v.Label + ":" + v.SizeBytes)));
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warn("Storage", "列出版本缓存失败: " + ex.Message);
+            _verCaches = new();
+        }
+        LoadVerBuckets();
+    }
+
+    /// <summary>depot-staging 里的附属目录。大小要遍历目录树（Mods 备份可能几百 MB），
+    /// 所以先以「计算中」占位、后台算完再填 —— 直接在本方法里算会卡住 UI 线程。</summary>
+    private void LoadVerBuckets()
+    {
+        var rows = StorageService.ListStagingBuckets();
+        _verBuckets = rows;
+        if (rows.Length == 0) return;
+        _ = Task.Run(() =>
+        {
+            var filled = StorageService.ListStagingBuckets();
+            _ = InvokeAsync(() => { _verBuckets = filled; StateHasChanged(); });
+        });
+    }
+
+    /// <summary>v1.4.5：下载任务结束自动刷新手风琴列表（之前只在展开时加载一次，
+    /// 下载完成后新版本不出现，让人以为"只剩一个版本"）。刷新后强制面板高度归位 auto——
+    /// GSAP 展开动画会把 height 固定为当时内容的高度，内容变多后不归位就会溢出/裁剪。</summary>
+    private void OnCenterChangedForVerCache()
+    {
+        _ = InvokeAsync(async () =>
+        {
+            if (!_verAccOpen) return;
+            var running = Center.Snapshot().Any(t => t.Kind == "gameversion" && t.Status == "running");
+            if (!running)
+            {
+                LoadVerCaches();
+                StateHasChanged();
+                await Task.Delay(50);   // 等 Blazor 把新条目渲染进 DOM 再量高
+                try { await JS.InvokeVoidAsync("junigridJs.eval",
+                    "var p=document.querySelector('#jg-vercache-panel'); if(p&&p.classList.contains('open')){p.style.height='auto';p.style.overflow='';}"); }
+                catch { }
+            }
+        });
+    }
+
+    private async Task ToggleVerCache()
+    {
+        _verAccOpen = !_verAccOpen;
+        // 每次展开都重新扫盘 —— 避免只显示上次缓存的一条
+        if (_verAccOpen) LoadVerCaches();
+        await InvokeAsync(StateHasChanged);
+        // 等 Blazor 把全部条目渲染进 DOM 再量高，否则 GSAP 只按旧内容高度展开
+        await Task.Delay(30);
+        try { await JS.InvokeVoidAsync("junigridJs.accordionToggle", "#jg-vercache-panel", _verAccOpen); } catch { }
+        if (_verAccOpen)
+        {
+            await Task.Delay(420);   // 等展开动画结束
+            try { await JS.InvokeVoidAsync("junigridJs.eval",
+                "var p=document.querySelector('#jg-vercache-panel'); if(p&&p.classList.contains('open')){p.style.height='auto';p.style.overflow='';p.style.maxHeight='320px';}"); }
+            catch { }
+        }
+    }
+
+    // 版本缓存是硬删（Depot.DeleteStagedPackage → Directory.Delete），不进回收站、删了要重下几 GB
+    // 才回得来，所以走上面那个确认弹窗；点「删除」只记目标，确认才真删。
+    private DepotDownloaderService.StagedPackage? _pendingDeleteVer;
+    private (StorageService.StagingBucketKind Kind, string Path, long Bytes)? _pendingBucket;
+
+    private void AskDeleteVerCache(DepotDownloaderService.StagedPackage pkg)
+    {
+        _pendingDeleteVer = pkg;
+        _pendingCleanId = null;
+        _confirmCleanAll = false;
+    }
+
+    private async Task DoDeleteVerCache()
+    {
+        var pkg = _pendingDeleteVer;
+        _pendingDeleteVer = null;
+        if (pkg is null) return;
+        if (!DepotQr.DeleteStagedPackage(pkg.ManifestId))
+        {
+            await JS.InvokeVoidAsync("junigridJs.toast", "删除失败（文件可能被占用）", "err");
+            return;
+        }
+        LoadVerCaches();
+        _cats = Storage.GetCategories();
+        _ = Storage.RefreshAllAsync(force: true);
+        await InvokeAsync(StateHasChanged);
+        await JS.InvokeVoidAsync("junigridJs.toast", $"已删除版本缓存 {pkg.Label}");
+    }
+
     private string FmtSize(string id)
     {
         if (Storage.IsComputing(id)) return "计算中…";
@@ -527,9 +989,64 @@
         await JS.InvokeVoidAsync("junigridJs.toast", msg);
     }
 
-    // ─── 清理确认弹窗：单项与一键共用 ───
+    // ─── 确认弹窗：单项清理、一键清理、删某个版本缓存共用同一个框 ───
     private string? _pendingCleanId;
     private bool _confirmCleanAll;
+
+    private string ConfirmTitle => _pendingDeleteVer is not null ? "删除版本缓存"
+        : _pendingBucket is not null ? (_pendingBucket.Value.Kind.Danger ? "移出" + _pendingBucket.Value.Kind.Name : "删除" + _pendingBucket.Value.Kind.Name)
+        : _confirmCleanAll ? "一键清理缓存" : "清理缓存";
+    private string ConfirmOkLabel => _pendingDeleteVer is not null || _pendingBucket is not null
+        ? (_pendingBucket is { } pb && pb.Kind.Danger ? "确认移出" : "确认删除") : "确认清理";
+    private string ConfirmBody => _pendingDeleteVer is not null ? DeleteVerConfirmText
+        : _pendingBucket is not null ? BucketConfirmText : CleanConfirmText;
+
+    private string BucketConfirmText
+    {
+        get
+        {
+            var b = _pendingBucket!.Value;
+            return b.Kind.Danger
+                ? $"{b.Kind.Name}（{ResumableDownload.FormatBytes(b.Bytes)}）里的 mod 会移到游戏卸载回收站，不直接删。\n\n{b.Kind.Tip}\n\n反悔的话：在「缓存与存储」那行「游戏卸载回收站」里能拿回来；清空那个回收站之后就真没了。"
+                : $"{b.Kind.Name}（{ResumableDownload.FormatBytes(b.Bytes)}）将被删除。\n\n{b.Kind.Tip}";
+        }
+    }
+
+    private void AskDeleteBucket((StorageService.StagingBucketKind Kind, string Path, long Bytes) b)
+    {
+        _pendingBucket = b; _pendingCleanId = null; _confirmCleanAll = false; _pendingDeleteVer = null;
+    }
+
+    private async Task DoDeleteBucket()
+    {
+        var b = _pendingBucket;
+        _pendingBucket = null;
+        if (b is null) return;
+        var msg = await Storage.CleanStagingBucketAsync(b.Value.Kind.Key);
+        _cats = Storage.GetCategories();
+        LoadVerCaches();
+        await InvokeAsync(StateHasChanged);
+        await JS.InvokeVoidAsync("junigridJs.toast", msg);
+    }
+
+    private string DeleteVerConfirmText
+    {
+        get
+        {
+            var v = _pendingDeleteVer!;
+            // 正文（含"抽屉里还存着 N 个 mod 文件夹"）走服务层单一口径 —— 版本管理弹窗删的是
+            // 同一个目录，两处不能一个报 mod 一个不报。这里只补本机授权这一句事实。
+            return DepotDownloaderService.DeletePackConfirmText(v)
+                 + "\n\nSteam 授权还在，重新下载不用再扫一次码。";
+        }
+    }
+
+    private async Task DoConfirm()
+    {
+        if (_pendingDeleteVer is not null) await DoDeleteVerCache();
+        else if (_pendingBucket is not null) await DoDeleteBucket();
+        else await DoClean();
+    }
 
     private string CleanConfirmText
     {
@@ -537,8 +1054,8 @@
         {
             if (_confirmCleanAll)
             {
-                var n = _cats.Count(x => x.Cleanable);
-                return $"将逐个清理全部 {n} 项可清理缓存。\n\n"
+                var n = _cats.Count(x => x.Cleanable && x.Id != "vercache");
+                return $"将逐个清理全部可清理缓存（不含游戏版本缓存 —— 每个版本的去留在版本管理里单独决定）。\n\n"
                      + "正在使用的文件会自动跳过；游戏卸载回收站清空后无法恢复。";
             }
             var c = _cats.FirstOrDefault(x => x.Id == _pendingCleanId);
@@ -549,7 +1066,10 @@
 
     private void AskClean(string id) { _confirmCleanAll = false; _pendingCleanId = id; }
     private void AskCleanAll() { _pendingCleanId = null; _confirmCleanAll = true; }
-    private void CancelClean() { _pendingCleanId = null; _confirmCleanAll = false; }
+    private void CancelClean()
+    {
+        _pendingCleanId = null; _confirmCleanAll = false; _pendingDeleteVer = null; _pendingBucket = null;
+    }
 
     private async Task DoClean()
     {
@@ -558,9 +1078,10 @@
         CancelClean();
         if (all)
         {
-            foreach (var c in _cats.Where(x => x.Cleanable).ToList())
+            // 版本缓存不参与一键清理 —— 每个历史版本的去留在版本管理里单独决定
+            foreach (var c in _cats.Where(x => x.Cleanable && x.Id != "vercache").ToList())
                 await Storage.CleanCategoryAsync(c.Id);
-            await JS.InvokeVoidAsync("junigridJs.toast", "全部缓存已处理完，详见任务记录");
+            await JS.InvokeVoidAsync("junigridJs.toast", "全部缓存已处理完（版本缓存不受影响），详见任务记录");
         }
         else if (id is not null)
         {
@@ -619,6 +1140,7 @@
         Mem.OnSnapshot -= OnMemSnap;
         ConfigService.Saved -= OnCfgSaved;   // v1.1.4
         Storage.OnStats -= OnStorageStats;
+        Center.OnChanged -= OnCenterChangedForVerCache;
         _sliderCb?.Dispose();
     }
 
@@ -642,6 +1164,14 @@
     {
         await LoadAccountsAsync();
         _gamePath = Cfg.Current.GamePath;        _oneClickInstall = Cfg.Current.EnableOneClickInstall;
+        // 重 IO 丢后台：ProbeManifest 扫 Steam 清单 + ListStagedPackages 过 52 个版本包，
+        // 同步跑会把首屏整个卡住（「点设置进半天」就是这里）
+        _ = Task.Run(() =>
+        {
+            try { ProbeManifest(); } catch { }
+            try { LoadVerCaches(); } catch { }
+            _ = InvokeAsync(StateHasChanged);
+        });
         _autoInstall = Cfg.Current.EnableAutoInstall && _nexusPremium;   // 非会员一律默认关闭
         if (!_nexusPremium && Cfg.Current.EnableAutoInstall)
         {
@@ -665,6 +1195,7 @@
         Storage.OnStats += OnStorageStats;
         _cats = Storage.GetCategories();
         Storage.RefreshAll();
+        Center.OnChanged += OnCenterChangedForVerCache;   // v1.4.5：版本下载完成 → 手风琴自动刷新
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -673,17 +1204,20 @@
         // 旧版每次渲染都发 4 个 JS interop 初始化调用（靠 JS 侧防重复标记兜底，纯浪费往返）
         if (firstRender)
         {
-            // GSAP 弹性按钮 hover + 问号 tooltip + 禁用行像素特效绑定（内部有防重复绑定标记）
-            await JS.InvokeVoidAsync("junigridJs.initGsapFx");
-            await JS.InvokeVoidAsync("junigridJs.initPixelHover");
-            await JS.InvokeVoidAsync("junigridJs.initCursorGrid", ".jg-cursor-grid");
-            await JS.InvokeVoidAsync("junigridJs.initLogoLoop", ".jg-logoloop");
+            _ = WarmDepotDownloaderAsync();
+            // 特效绑定全部 fire-and-forget —— 串行 await 会把交互拖到 6 次往返之后
+            // （JS 侧有防重复绑定标记，晚到也安全）
+            _ = JS.InvokeVoidAsync("junigridJs.initGsapFx");
+            _ = JS.InvokeVoidAsync("junigridJs.initPixelHover");
+            _ = JS.InvokeVoidAsync("junigridJs.initCursorGrid", ".jg-cursor-grid");
+            _ = JS.InvokeVoidAsync("junigridJs.initLogoLoop", ".jg-logoloop");
+            _ = JS.InvokeVoidAsync("junigridJs.squishSwitchInit");
             // v0.2.2：弹性滑杆绑定（值变化经 OnElasticValue 回调落配置）
             try
             {
                 _sliderCb = DotNetObjectReference.Create(this);
-                await JS.InvokeVoidAsync("junigridJs.elasticInit", _timerSlider, "timer", (double)_memTimerMinutes, _sliderCb);
-                await JS.InvokeVoidAsync("junigridJs.elasticInit", _thresholdSlider, "threshold", (double)_memThresholdPercent, _sliderCb);
+                _ = JS.InvokeVoidAsync("junigridJs.elasticInit", _timerSlider, "timer", (double)_memTimerMinutes, _sliderCb);
+                _ = JS.InvokeVoidAsync("junigridJs.elasticInit", _thresholdSlider, "threshold", (double)_memThresholdPercent, _sliderCb);
             }
             catch { }
         }
@@ -737,6 +1271,7 @@
         var cfg = Cfg.Current;
         cfg.GamePath = _gamePath;
         Cfg.Save(cfg);
+        ProbeManifest();   // v1.2.4：目录变了 → Steam 清单与锁状态重探
         _ = JS.InvokeVoidAsync("junigridJs.toast", HasSmapi(_gamePath)
             ? "已保存游戏目录"
             : "已保存游戏目录（未检测到 SMAPI，可通过首页「Steam 官方」启动游玩）");

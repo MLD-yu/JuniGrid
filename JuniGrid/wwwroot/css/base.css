@@ -146,30 +146,6 @@ body.jg-booting #app { background: transparent !important; }
 body.jg-booting #app > * { opacity: 0 !important; visibility: hidden !important; }
 #jg-splash { display: none; }   /* 前端 splash 不再显示，改由 WPF 层负责 */
 
-.jg-splash-stage {
-    display: flex;
-    align-items: center;
-    gap: 14px;
-}
-#jg-splash-logo {
-    width: 96px; height: 96px;
-    border-radius: 20%;
-    box-shadow: 0 8px 40px rgba(0,0,0,.45);
-}
-.jg-splash-word {
-    display: block;
-    height: clamp(64px, 11vmin, 120px);
-    filter: drop-shadow(0 4px 18px rgba(26,154,60,.35));
-}
-.jg-splash-word text {
-    font-family: 'Segoe UI Variable', 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
-    font-weight: 800;
-}
-@media (max-width: 640px) {
-    .jg-splash-stage { gap: 8px; }
-    #jg-splash-logo { width: 64px; height: 64px; }
-}
-
 /* -------- Shell layout -------- */
 .jg-shell {
     position: relative;      /* TaskDock 用 absolute 挂在这上面，保证不跑出可视区 */
@@ -236,7 +212,7 @@ body.jg-booting #app > * { opacity: 0 !important; visibility: hidden !important;
 
 /* ── v1.1.1：标题栏深浅主题开关（Element Plus 导航栏同款胶囊）──
    形态完全照搬官网：40x20 圆角胶囊轨道 + 圆形旋钮，浅色=旋钮居左太阳图标，
-   深色=旋钮滑到右侧月亮图标；点击触发的圆形扩散/收回动画见 core.js toggleTheme。 */
+   深色=旋钮滑到右侧月亮图标；点击触发的圆形揭示动画在宿主侧（MainWindow.RevealThemeSwitchAsync）。 */
 .jg-theme-wrap {
     display: flex;
     align-items: center;
@@ -308,4 +284,3 @@ html[data-theme="dark"] .jg-trans-toggle.on .jg-tt-knob { left: 22px; }
 body.jg-max .jg-shell,
 body.jg-max .jg-titlebar,
 body.jg-max .jg-winbtn-close { border-radius: 0; }
-

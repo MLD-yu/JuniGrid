@@ -4,6 +4,7 @@
 @inject LauncherService Launcher
 @inject SteamService Steam
 @inject UpdateService Updater
+@inject PageRefreshService PageRefresh
 @inject NavigationManager Nav
 @inject IJSRuntime JS
 @implements IDisposable
@@ -17,8 +18,13 @@
                 <img src="assets/steam.svg" alt="Steam" style="width:18px;height:18px;vertical-align:-3px;margin-right:6px;" />
                 官方
             </button>
-            <button class="jg-pill @(_cfg.LaunchMode == "smapi" ? "active" : "")"
-                    disabled="@(_busy || _isRunning)" @onclick='() => SetMode("smapi")'>
+            @* 无适配 SMAPI 的版本（1.0/1.01）：置灰 + 悬停说明。这里用 aria-disabled 而不是
+               disabled —— 真 disabled 的按钮浏览器不派发鼠标事件，提示气泡根本弹不出来。 *@
+            <button class="@SmapiPillClass"
+                    disabled="@(_busy || _isRunning)"
+                    aria-disabled="@SmapiAriaDisabled"
+                    data-tip="@SmapiTip"
+                    @onclick='() => SetMode("smapi")'>
                 <img src="assets/smapi-pufferchick.svg" alt="SMAPI" style="width:18px;height:18px;vertical-align:-3px;margin-right:6px;border-radius:4px;" />
                 SMAPI
             </button>
@@ -57,11 +63,9 @@
         @if (!_isRunning && !_launching)
         {
             <span class="jg-launch-ver">
-                当前游戏版本：@(_gameVersion ?? "未定位")
-                @if (_gameHasUpdate && _gameLatest is not null)
-                {
-                    <span class="jg-upd-arrow">→ @_gameLatest</span>
-                }
+                当前游戏版本：@DisplayVersion
+                @* v1.1.7：去掉「→ 有新版本」提示与跳转 —— 停在历史版本本来就是用户自己选的，
+                   回到最新版走版本管理弹窗，主按钮上不再挂催促。 *@
             </span>
         }
     </button>
@@ -85,18 +89,32 @@
     </div>
 }
 
+@* 启动前的闸门（存档版本不匹配 / 云同步断在半路）：整段说明必须原样显示，并且带「仍然启动」这个出口。
+   走 toast 的话文案会被 SummarizeLaunchError 截到 60 字，出口那半句正好被切掉 —— 没有出口的硬拦
+   只会把人逼去用 Steam 直接启动，那条路我们连拦都拦不到。 *@
+@if (_gateText is not null)
+{
+    <div class="jg-dlg-overlay" @onclick="DismissGate">
+        <div class="jg-dialog" style="max-width:520px;text-align:left" @onclick:stopPropagation>
+            <div class="jg-dialog-body" style="white-space:pre-line;max-height:52vh;overflow:auto">@_gateText</div>
+            <div class="jg-dialog-actions">
+                <button type="button" class="jg-pill-ghost" @onclick="DismissGate">取消</button>
+                <button type="button" class="jg-pill-danger" @onclick="LaunchAnyway">仍然启动</button>
+            </div>
+        </div>
+    </div>
+}
+
 @code {
 
     private JuniGridConfig _cfg = new();
     private SteamProfile _profile = SteamProfile.None;
-    private string? _smapiVersion;
     private string? _gameVersion;
-    private string? _gameLatest;
-    private bool _gameHasUpdate;
-    private SmapiUpdateInfo? _update;
     private bool _launching;
     private bool _isRunning;
     private bool _showConfirm;
+    /// <summary>启动前闸门拦下来时要整段显示的说明（null = 没有待处理的闸门）。</summary>
+    private string? _gateText;
     private readonly CancellationTokenSource _cts = new();
 
     private bool _busy => _launching;
@@ -109,7 +127,6 @@
     private string MainButtonLabel =>
         _launching ? "启动中…" :
         _isRunning ? "运行中…" :
-        _gameHasUpdate ? "⬆ 更新游戏" :
         "▶ 启动游戏";
 
     protected override void OnInitialized()
@@ -128,16 +145,20 @@
 
         _profile = Steam.GetProfile();
         ProbeVersions();
-        _ = CheckGameVersionAsync();
         Launcher.OnLogLine += HandleLogLine;
         ConfigService.Saved += HandleCfgSaved;
+        // 换版本后侧栏「当前游戏版本」要跟着重读，否则停在切换那次读到的空值上显示「未定位」
+        PageRefresh.OnRefresh += OnPageRefresh;
+    }
+
+    private void OnPageRefresh(string key)
+    {
+        if (key != "version") return;
+        _ = InvokeAsync(() => { ProbeVersions(); StateHasChanged(); });
     }
 
     protected override async Task OnInitializedAsync()
     {
-        _update = await Updater.CheckSmapiAsync(_smapiVersion);
-        StateHasChanged();
-
         // 轮询真实游戏进程，让「关闭游戏」按钮对 SMAPI / Steam 官方两种模式都生效
         _ = PollRunningAsync();
     }
@@ -148,6 +169,7 @@
         try { _cts.Dispose(); } catch { }   // v1.1.6：Cancel 后释放，轮询循环抛 OCE 正常退出
         Launcher.OnLogLine -= HandleLogLine;
         ConfigService.Saved -= HandleCfgSaved;
+        PageRefresh.OnRefresh -= OnPageRefresh;
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -172,67 +194,75 @@
         }
     }
 
-    private string? _probedGamePath;   // 上次探测版本时用的目录（config 是共享可变对象，_cfg 会跟着变，不能拿它判断「目录有没有变」）
-
     private void ProbeVersions()
     {
-        _smapiVersion = Game.ProbeSmapiVersion(_cfg.GamePath);
         _gameVersion = Updater.GetGameVersion(_cfg.GamePath);
-        _probedGamePath = _cfg.GamePath;
+
+        // 有的版本压根没有可安装的 SMAPI（1.0/1.01），默认停在 SMAPI 模式就是「一点就失败」
+        // （实测红条：未检测到 SMAPI…）。这类版本一律把默认页归到「官方」。
+        if (_cfg.LaunchMode == "smapi" && SmapiUnavailable)
+        {
+            _cfg.LaunchMode = "steam";
+            Cfg.Save(_cfg);
+            AppLog.Warn("AccountPanel", $"游戏 {_gameVersion} 无可用 SMAPI，启动模式已自动切到「官方」");
+        }
     }
+
+    /// <summary>当前游戏版本没有适配的 SMAPI（不是「还没装」，是「装不了」）。</summary>
+    private bool SmapiUnavailable => UpdateService.IsSmapiUnsupported(_gameVersion);
+
+    private string SmapiPillClass => "jg-pill"
+        + (_cfg.LaunchMode == "smapi" ? " active" : "")
+        + (SmapiUnavailable ? " unavail" : "");
+    private string? SmapiAriaDisabled => SmapiUnavailable ? "true" : null;
+    private string? SmapiTip => SmapiUnavailable ? SmapiUnavailableTip : null;
+
+    private string SmapiUnavailableTip
+        => $"该游戏版本（{DisplayVersion}）没有可用的 SMAPI，只能用官方模式启动";
 
     // v1.1.2：设置页保存游戏目录后即时重探版本 —— AccountPanel 常驻 MainLayout 不会重建，
     // 之前保存后启动按钮一直「未定位」，要重启应用才消失。Saved 可能在后台线程触发 → InvokeAsync 回 UI（同 TaskDock.Refresh）。
     private void HandleCfgSaved()
     {
-        // 目录没变的保存（主题/备注/指纹等高频落盘）直接跳过，不做无谓的文件探测
-        if (string.Equals(Cfg.Current.GamePath, _probedGamePath, StringComparison.OrdinalIgnoreCase)) return;
+        // v1.2.4：任何保存都要同步引用并重渲染。
+        // v1.4.5：版本切换不会改游戏目录，但会改目录里的文件 —— 每次保存都重探版本号，
+        // 否则切到 1.0 后按钮还停留在旧快照（实测：应用 1.0 后按钮一直显示 1.3.7269）。
         InvokeAsync(() =>
         {
             _cfg = Cfg.Current;
             ProbeVersions();
-            RecomputeGameHasUpdate();
             StateHasChanged();
         });
     }
 
-    // 版本比较：本地 1.6.15 vs 远端 1.6.16；本地无法解析时当作未知、不误报
-    private void RecomputeGameHasUpdate()
-    {
-        _gameHasUpdate = false;
-        if (_gameLatest is not null
-            && !string.IsNullOrWhiteSpace(_gameVersion)
-            && Version.TryParse(_gameVersion, out var local)
-            && Version.TryParse(_gameLatest, out var remote))
-        {
-            _gameHasUpdate = remote > local;
-        }
-    }
-
-    // 每次启动 JuniGrid 都自动检测一次游戏本体最新版，有新版本就在启动按钮里显示
-    private async Task CheckGameVersionAsync()
-    {
-        var latest = await Updater.GetLatestGameVersionAsync();
-        if (string.IsNullOrWhiteSpace(latest)) { _gameLatest = null; _gameHasUpdate = false; return; }
-        _gameLatest = latest;
-        RecomputeGameHasUpdate();
-
-        StateHasChanged();
-    }
+    /// <summary>启动按钮上显示的版本号：文件内部版本号与最近一次应用的历史版本一致时，
+    /// 显示对外的营销版本号（星露谷 1.4 的内部版本一直是 1.3.7269，直接显示会把人绕晕）。</summary>
+    private string DisplayVersion
+        => UpdateService.DisplayGameVersion(_gameVersion, _cfg.LastHistoricalLabel, _cfg.LastHistoricalInternalVersion);
 
     private void SetMode(string mode)
     {
+        // 兜底：SMAPI 选项已经置灰，但键盘/脚本仍可能把点击送进来 —— 不能让用户
+        // 停在一个「点启动必失败」的模式上。
+        if (mode == "smapi" && SmapiUnavailable)
+        {
+            _ = JS.InvokeVoidAsync("junigridJs.toast", SmapiUnavailableTip, "err");
+            return;
+        }
         _cfg.LaunchMode = mode;
         Cfg.Save(_cfg);
     }
 
     private async Task Launch()
     {
+        // v1.3.1：点启动时重探本地版本 —— AccountPanel 常驻 MainLayout，游戏在启动器
+        // 外被 Steam 更新/降级后按钮仍显示旧快照（用户报告"按钮显示 1.6.8 游戏里
+        // 是 1.6.15"就是这个）。启动前对齐一次，显示与真实版本绝不打架。
+        ProbeVersions();
+
         _launching = true;
         _launchCancelled = false;   // v1.1.2c：清掉上一次的取消标记
         StateHasChanged();
-        // 立刻清掉按钮上残留的像素溶解蒙版与倾斜 transform，避免盖住「启动中…」
-        try { await JS.InvokeVoidAsync("junigridJs.clearLaunchFx", "#launch-btn"); } catch { }
 
         try { await JS.InvokeVoidAsync("junigridJs.popAnimate", "#launch-btn"); } catch { }
 
@@ -242,14 +272,16 @@
             _profile = Steam.GetProfile();
             StateHasChanged();
 
-            LaunchResult result = _cfg.LaunchMode == "steam"
+            // 放到后台线程：启动前可能要放回聚焦暂存的档，那是同步磁盘活；
+            // （本机实测抽屉里 439 MB）。留在 UI 线程上的话，点一次「启动游戏」界面会白屏十几秒，
+            // 连「启动中…」都画不出来 —— 看着就是卡死。await 让出线程，状态先渲染出来。
+            LaunchResult result = await Task.Run(() => _cfg.LaunchMode == "steam"
                 ? Launcher.LaunchSteam(_cfg.SteamAppId)
-                : Launcher.LaunchSmapi(_cfg.GamePath);
+                : Launcher.LaunchSmapi(_cfg.GamePath));
 
             if (result.Success)
             {
                 _cfg.LastLaunchTime = DateTime.Now.ToString("o");
-                _cfg.LastLaunchMode = _cfg.LaunchMode;
                 _cfg.TotalLaunchCount++;
                 Cfg.Save(_cfg);
 
@@ -262,6 +294,13 @@
                 // 启动成功但进程可能还在被 Steam/运行时拉起：
                 // 保持「启动中…」直到 IsGameRunning 真正为 true（或超时），避免回弹成「▶ 启动游戏」。
                 _ = WaitForRunningAsync();
+            }
+            else if (result.GateKind is not null)
+            {
+                // 闸门主动拦下的（不是启动失败）：整段说明走弹窗，出口是「仍然启动」
+                _gateText = result.Error;
+                _launching = false;
+                StateHasChanged();
             }
             else
             {
@@ -370,7 +409,10 @@
         }
     }
 
-    // 主按钮统一入口：正在运行→弹确认框关游戏；有更新→去更新；否则启动
+    // 主按钮统一入口：正在运行→弹确认框关游戏；否则启动。
+    // v1.2.4：删掉「有更新 → 劫持成打开 Steam 商店」的分流 —— 本地旧版本本来就能玩
+    //（SMAPI 模式不经过 Steam，Steam 模式想不被强升可锁版本），有更新时把启动入口
+    // 换成更新入口，旧版玩家连「启动游戏」都点不到。更新意愿交给版本行上的箭头。
     private void OnButtonClick()
     {
         // v1.1.2c：启动等待期点 ✕ = 中途取消 —— 无论游戏有没有被拉起，直接终断等待并
@@ -381,30 +423,7 @@
             _showConfirm = true;
             return;
         }
-        if (_gameHasUpdate)
-        {
-            OpenUpdatePage();
-            return;
-        }
         _ = Launch();
-    }
-
-    // 有新版本 → 打开 Steam 游戏页让用户点更新（不再直接启动本体，否则旧版会被启动）
-    private void OpenUpdatePage()
-    {
-        try
-        {
-            var psi = new System.Diagnostics.ProcessStartInfo
-            {
-                UseShellExecute = true,
-                FileName = "steam://store/413150"
-            };
-            System.Diagnostics.Process.Start(psi);
-        }
-        catch (Exception)
-        {
-            ShowToast("启动失败");
-        }
     }
 
     // 取消关闭 / 点遮罩关闭 → 关闭确认框，不做任何事
@@ -440,6 +459,23 @@
         catch (OperationCanceledException) { }
     }
 
+
+    private void DismissGate()
+    {
+        _gateText = null;
+        StateHasChanged();
+    }
+
+    /// <summary>
+    /// 闸门弹窗上的「仍然启动」。闸门记住的是「这批读不了的档」这个指纹，90 秒内第二次点就放行并写日志 ——
+    /// 所以这里只要原样再走一次启动流程，不需要任何绕过标记。
+    /// </summary>
+    private void LaunchAnyway()
+    {
+        _gateText = null;
+        StateHasChanged();
+        _ = Launch();
+    }
 
     private void ShowToast(string text)
     {

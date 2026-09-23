@@ -1,9 +1,9 @@
 @namespace JuniGrid.Components.Layout
 @inherits LayoutComponentBase
 @inject IJSRuntime JS
+@inject TranslationService Trans
 @inject NavigationManager Nav
 @inject ConfigService Cfg
-@inject TranslationService Trans
 @implements IDisposable
 
 <div class="jg-shell">
@@ -35,12 +35,6 @@
 
     private void OnLocChanged(object? sender, Microsoft.AspNetCore.Components.Routing.LocationChangedEventArgs e)
     {
-        // 切走「Mod 管理」相关页面时自动收起内置浏览器覆盖层 ——
-        // 它在语义上就是 Mod 管理页的内容区，路由离开就得跟着走。
-        var rel = Nav.ToBaseRelativePath(e.Location).ToLowerInvariant().TrimEnd('/');
-        var onModsPage = rel.StartsWith("mods") || rel.StartsWith("mod/");
-        if (!onModsPage) JuniGrid.MainWindow.HideNexusOverlay();
-
         // v0.31.0：每次切页给 <main.jg-main> 播入场动画（PCL 风格）
         _ = InvokeAsync(async () =>
         {
@@ -48,10 +42,7 @@
         });
     }
 
-    public void Dispose() => Nav.LocationChanged -= OnLocChanged;
-
-    protected override async Task OnAfterRenderAsync(bool firstRender)
-    {
+    protected override async Task OnAfterRenderAsync(bool firstRender)    {
         if (firstRender)
         {
             // v0.20.0：不要一挂载完就通知 —— 那时 shell DOM 有了但 CSS 还没铺完，
@@ -74,5 +65,10 @@
             }
             catch { }
         }
+    }
+
+    public void Dispose()
+    {
+        Nav.LocationChanged -= OnLocChanged;
     }
 }

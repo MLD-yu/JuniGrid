@@ -22,11 +22,11 @@
     }
     <div class="jg-taskdock-body">
         <div class="jg-taskdock-title">@(Center.RunningCount > 0
-            ? $"{Center.RunningCount} 个任务运行中"
-            : Center.RunningCount == 0 && Center.Items.Count > 0 ? "" : Center.Items.Count > 0 ? "全部完成" : "暂无任务")</div>
+            ? $"{Center.RunningCount} 个任务进行中"
+            : Center.Items.Count > 0 ? "" : "暂无任务")</div>
         @if (Center.RunningCount > 0)
         {
-            <div class="jg-taskdock-sub">@Center.TotalPercent.ToString("F0")% · @Center.TotalSpeedMBps.ToString("F1") M/s</div>
+            <div class="jg-taskdock-sub">@Center.TotalPercent.ToString("F0")% · @(Center.TotalSpeedKnown ? Center.TotalSpeedMBps.ToString("F1") + " M/s" : "—")</div>
         }
     </div>
     <svg class="jg-taskdock-check" viewBox="0 0 1024 1024" aria-hidden="true">

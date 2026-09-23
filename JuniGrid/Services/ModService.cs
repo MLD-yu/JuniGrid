@@ -3,6 +3,8 @@ using System.IO.Compression;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using Microsoft.Win32.SafeHandles;
+using SharpCompress.Archives;      // v1.6.3：rar/7z 托管解压（WriteToFile 扩展在此命名空间）
+using SharpCompress.Common;
 
 namespace JuniGrid.Services;
 
@@ -45,6 +47,23 @@ public sealed class ModService
                 // v0.52.0：回收站目录不参与扫描
                 if (string.Equals(Path.GetFileName(dir), ".junigrid_trash", StringComparison.OrdinalIgnoreCase))
                     continue;
+                // 老版转换留下的裸素材留底（当时留在 Mods\ 里）：不是 mod，也没有清单，
+                // 列出来只会是一行让人误会的「无清单」。新留底已改放缓存根的 mods-backup。
+                if (Path.GetFileName(dir).EndsWith("-raw-backup", StringComparison.OrdinalIgnoreCase))
+                    continue;
+                // v1.6.8：空壳目录清理 —— 只剩 .junigrid.json 安装来源标记、实体文件已
+                // 不存在的目录（版本切换/卸载残留），是"无清单幽灵条目"的来源。零用户
+                // 内容，直接清除并记日志，不再作为 mod 列出。
+                var shellEntries = Directory.Exists(dir)
+                    ? Directory.GetFileSystemEntries(dir) : Array.Empty<string>();
+                if (shellEntries.Length == 1
+                    && Path.GetFileName(shellEntries[0]).Equals(".junigrid.json", StringComparison.OrdinalIgnoreCase))
+                {
+                    AppLog.Warn("Mods", $"[空壳清理] {Path.GetFileName(dir)}（仅剩安装标记，实体已不存在）已移除");
+                    try { Directory.Delete(dir, true); } catch (Exception ex)
+                    { AppLog.Warn("Mods", $"空壳清理失败: {ex.Message}"); }
+                    continue;
+                }
                 // v1.1.4：完全空目录直接跳过 —— 捆绑包子包删空后的顶层空壳不产生
                 // 孤儿条目、不进列表（Uninstall 已顺手删壳，这里兜住手删等其它来源）
                 bool isEmpty;
@@ -254,7 +273,7 @@ public sealed class ModService
             if (File.Exists(rootMf))
             {
                 var text = ReadManifestText(rootMf);
-                using var doc = System.Text.Json.JsonDocument.Parse(CleanManifestJson(text));
+                using var doc = System.Text.Json.JsonDocument.Parse(text, ManifestJson);
                 if (doc.RootElement.TryGetProperty("Version", out var v)
                     && v.ValueKind == System.Text.Json.JsonValueKind.String
                     && Version.TryParse((v.GetString() ?? "").TrimStart('v', 'V'), out var ver))
@@ -364,8 +383,19 @@ public sealed class ModService
     {
         try
         {
-            var dir = Path.Combine(gamePath, "Mods", folderName);
-            if (!Directory.Exists(dir)) return "找不到 Mod 文件夹";
+            // 禁用包磁盘名末段带 . 前缀（立绘页记录的是规范化无点名）—— 与 SetDisabled 的启用容错同款
+            var modsDir = Path.Combine(gamePath, "Mods");
+            var parts = folderName.Replace('\\', '/').Split('/');
+            var parent = parts.Length == 1
+                ? modsDir
+                : Path.Combine(modsDir, string.Join(Path.DirectorySeparatorChar, parts, 0, parts.Length - 1));
+            var dir = Path.Combine(parent, parts[^1]);
+            if (!Directory.Exists(dir))
+            {
+                var alt = Path.Combine(parent, "." + parts[^1]);
+                if (!Directory.Exists(alt)) return "找不到 Mod 文件夹";
+                dir = alt;
+            }
             var trash = EnsureTrashReady(gamePath);
             var baseName = folderName.Replace('/', '_');
             string staging;
@@ -460,10 +490,7 @@ public sealed class ModService
     {
         get
         {
-            foreach (var name in new[] { "StardewModdingAPI", "Stardew Valley" })
-                foreach (var p in System.Diagnostics.Process.GetProcessesByName(name))
-                    using (p) return true;
-            return false;
+            return LauncherService.IsGameProcessRunning();
         }
     }
 
@@ -490,7 +517,7 @@ public sealed class ModService
 
             // Newtonsoft 宽松解析（SMAPI manifest 允许尾随逗号/注释），再规整写回
             var text = ReadManifestText(manifestPath);
-            var root = Newtonsoft.Json.Linq.JObject.Parse(CleanManifestJson(text));
+            var root = Newtonsoft.Json.Linq.JObject.Parse(text);
             var currentName = root["Name"]?.Type == Newtonsoft.Json.Linq.JTokenType.String
                 ? (string?)root["Name"] : null;
             if (string.IsNullOrEmpty(currentName)) return "清单缺少 Name 字段";
@@ -537,8 +564,7 @@ public sealed class ModService
                 if (!File.Exists(manifestPath)) continue;
                 try
                 {
-                    var root = Newtonsoft.Json.Linq.JObject.Parse(
-                        CleanManifestJson(ReadManifestText(manifestPath)));
+                    var root = Newtonsoft.Json.Linq.JObject.Parse(ReadManifestText(manifestPath));
                     var name = root["Name"]?.Type == Newtonsoft.Json.Linq.JTokenType.String
                         ? (string?)root["Name"] : null;
                     if (name == kv.Value)
@@ -614,38 +640,23 @@ public sealed class ModService
         }
     }
 
-    /// <summary>剥掉 SMAPI manifest 允许的尾随逗号与行内 // 注释，让 JObject.Parse 不炸。</summary>
-    private static string CleanManifestJson(string raw)    {
-        // 与 Scan 同一套宽松解析前置处理：去 // 注释与尾逗号的极简实现
-        var sb = new System.Text.StringBuilder(raw.Length);
-        var inStr = false;
-        for (var i = 0; i < raw.Length; i++)
-        {
-            var ch = raw[i];
-            if (inStr)
-            {
-                sb.Append(ch);
-                if (ch == '\\' && i + 1 < raw.Length) { sb.Append(raw[++i]); continue; }
-                if (ch == '"') inStr = false;
-                continue;
-            }
-            if (ch == '"') { inStr = true; sb.Append(ch); continue; }
-            if (ch == '/' && i + 1 < raw.Length && raw[i + 1] == '/')
-            {
-                while (i < raw.Length && raw[i] != '\n') i++;
-                if (i < raw.Length) sb.Append('\n');
-                continue;
-            }
-            if (ch == ',')
-            {
-                var j = i + 1;
-                while (j < raw.Length && (raw[j] == ' ' || raw[j] == '\t' || raw[j] == '\r' || raw[j] == '\n')) j++;
-                if (j < raw.Length && (raw[j] == '}' || raw[j] == ']')) continue;   // 尾逗号跳过
-            }
-            sb.Append(ch);
-        }
-        return sb.ToString();
-    }
+    /// <summary>剥掉 SMAPI manifest 允许的注释（// 行注释 + /* */ 块注释，如 East Scarp
+    /// 的自动生成 manifest）与尾随逗号，让 System.Text.Json 的严格解析不炸。
+    /// SMAPI 走 Newtonsoft 默认容忍注释能加载，这里必须对齐同样的宽容度，
+    /// 否则会把好 mod 误报成"manifest.json 已损坏"。
+    /// v1.3.2：internal —— 立绘扫描（PortraitSkinService.ParseContentPack）解析
+    /// content.json 同样会遇到 CP 生态的非严格 JSON（East Scarp 尾逗号+注释组合
+    /// 让 Newtonsoft 都炸），整套 CP 包解析共用这一份清洗。
+    /// v1.3.3：改两遍法 —— 单遍流式在「"值", ⏎ //注释 ⏎ }」场景会漏剥尾逗号
+    ///（扫空白时被注释行开头的 / 截停），East Scarp 的 NPC 子文件全是这个写法，
+    /// 结果 Newtonsoft 拿着带尾逗号的文本照样炸、整个包静默消失。</summary>
+    /// <summary>SMAPI 的 manifest/content 方言允许注释与尾逗号。Newtonsoft 默认就容忍，
+    /// System.Text.Json 要显式开这两项 —— 不必再自己扫一遍字符串。</summary>
+    internal static readonly System.Text.Json.JsonDocumentOptions ManifestJson = new()
+    {
+        CommentHandling = System.Text.Json.JsonCommentHandling.Skip,
+        AllowTrailingCommas = true,
+    };
 
     // ------------------------------------------------------------------
     // Install / update from zips
@@ -676,7 +687,10 @@ public sealed class ModService
                 {
                     try
                     {
-                        using var check = JsonDocument.Parse(ReadManifestText(mf));
+                        // v1.3.1：校验必须用宽松选项 —— 带块注释的 manifest（East Scarp
+                        // 等）裸 JsonDocument.Parse 会炸并被 catch 跳过，导致
+                        // UID 明明匹配却误报"下载的包不是这个 Mod"。
+                        using var check = JsonDocument.Parse(ReadManifestText(mf), ManifestJson);
                         var uid = check.RootElement.TryGetProperty("UniqueID", out var u)
                             ? u.GetString() : null;
                         if (string.Equals(uid, expectedUniqueId, StringComparison.OrdinalIgnoreCase))
@@ -741,7 +755,7 @@ public sealed class ModService
     public const string UidMismatchError = "uniqueid-mismatch";
 
     public string? InstallNew(string gamePath, string zipPath, out string? modName, int? nexusModId = null,
-        string? requireUniqueId = null)
+        string? requireUniqueId = null, string? portraiturePackName = null)
     {
         modName = null;
         string? temp = null;
@@ -750,6 +764,22 @@ public sealed class ModService
             var manifest = ExtractToTemp(zipPath, "mod-install-", out temp);
             if (manifest is null)
             {
+                // v1.6.5：裸 PNG 肖像包（Portraiture 素材包形态）—— 不再装 Portraiture 框架
+                //（框架的全局 HD 覆盖会压过启动器生成的 CP 肖像切换，两者打架），直接转换成
+                // 标准 CP 内容包：与有 manifest 的肖像包走同一条扫描/切换管线。
+                // 依赖直装流程带 requireUniqueId，与此分支互斥（找不到 manifest 直接按 UID
+                // 不匹配处理，绝不误装素材包）。
+                if (requireUniqueId is null && TempContainsImages(temp!))
+                {
+                    var packName = SanitizeFolderName(
+                        string.IsNullOrWhiteSpace(portraiturePackName)
+                            ? Path.GetFileNameWithoutExtension(zipPath)
+                            : portraiturePackName);
+                    var err = InstallPortraitPackAsCp(gamePath, temp!, packName, nexusModId, out modName);
+                    TryDelete(temp);
+                    if (err is null) modName = packName;
+                    return err;
+                }
                 // 没有 manifest.json 的不是独立 mod（多为汉化补丁/覆盖型文件包），
                 // 自动装进去会以"孤儿文件夹"混进列表、且无法识别版本/依赖。
                 // 改为提示手动下载，让用户自己决定怎么处理。
@@ -771,12 +801,12 @@ public sealed class ModService
 
             // v1.1.5：与"没有 manifest 就拒绝"同一策略——manifest 是坏 JSON / 空文件 /
             // 根不是对象的也拒绝安装（否则会静默装上 SMAPI 无法加载的孤儿条目）。
-            // CleanManifestJson 先行，SMAPI 风格的注释/尾逗号不受影响。
+            // ManifestJson 选项已容忍 SMAPI 风格的注释/尾逗号。
             foreach (var mf in allManifests)
             {
                 try
                 {
-                    using var checkDoc = JsonDocument.Parse(CleanManifestJson(ReadManifestText(mf)));
+                    using var checkDoc = JsonDocument.Parse(ReadManifestText(mf), ManifestJson);
                     if (checkDoc.RootElement.ValueKind != JsonValueKind.Object)
                         throw new JsonException("root is not an object");
                 }
@@ -928,6 +958,327 @@ public sealed class ModService
         }
     }
 
+    // ---------------- Portraiture 素材包（v1.3.0 立绘页配套） ----------------
+
+    public const string PortraitureFrameworkUid = "Platonymous.Portraiture";
+
+
+    /// <summary>
+    /// v1.6.12：把「手工拖进 Mods\ 的裸 PNG/XNB 素材目录」转成 CP 肖像包。
+    /// 转换原本只挂在"走启动器下载安装"那一刻（InstallNew 里那条分支），手放的一直没人管 ——
+    /// 这里给一个显式入口，判定用 PortraitSkinService.LooksLikeLoosePortraitFolder（会挡住
+    /// SVE / 捆绑包这类"包内有图"的目录）。
+    /// 留底挪到缓存根的 mods-backup 下，**不再留在 Mods\ 里**：留底当时就叫
+    /// 「原名-raw-backup」且没有 manifest，扫描把它当成一个 mod → 转完自己冒出一行「无清单」，
+    /// 用户看到的是"我转了个啥出来"。失败时 TryMoveTree 已把半截目标清掉、原目录还在原地。
+    /// </summary>
+    public string? ConvertLoosePortraitFolder(string gamePath, string folderName, out string? modName)
+    {
+        modName = null;
+        var src = Path.Combine(gamePath, "Mods", folderName);
+        if (!PortraitSkinService.LooksLikeLoosePortraitFolder(gamePath, src))
+            return $"「{folderName}」不符合转换条件：目录里不能有 manifest.json（那样它已经是完整的 mod/包），" +
+                   "并且至少要有一张图的文件名对得上原版角色名（例：Emily.png、Abigail_Spring.png）。";
+        var backup = Path.Combine(StoragePaths.ModsBackupDir,
+            folderName + "-raw-" + DateTime.Now.ToString("yyyyMMdd_HHmmss"));
+        try { Directory.CreateDirectory(Path.GetDirectoryName(backup)!); }
+        catch (Exception ex) { return "建留底目录失败（缓存目录不可写？）：" + ex.Message; }
+        if (!StorageService.TryMoveTree(src, backup))
+            return "挪动原目录失败（可能被游戏/资源管理器占用，或跨盘拷贝中断）—— 原素材还在 Mods 里没动。";
+
+        var err = InstallPortraitPackAsCp(gamePath, backup, folderName, null, out modName);
+        if (err is not null)
+        {
+            modName = null;
+            try { if (!Directory.Exists(src)) Directory.Move(backup, src); }
+            catch (Exception rex) { err += $"\n⚠ 回滚也没成功，你的原素材在：{backup}（{rex.Message}）"; }
+            return err;
+        }
+        AppLog.Warn("Portraits",
+            $"素材目录已转成 CP 肖像包：{folderName}（原目录留底 {backup}，可随时挪回 Mods）");
+        return null;
+    }
+
+    /// <summary>自动转换：扫描时把「手工拖进来的裸图目录」就地转成 CP 包，判定与手动入口
+    /// 完全同一个（LooksLikeLoosePortraitFolder）。手动那条菜单入口保留不动。</summary>
+    public void AutoConvertLoosePortraits(string gamePath)
+    {
+        if (string.IsNullOrWhiteSpace(gamePath)) return;
+        var modsDir = Path.Combine(gamePath, "Mods");
+        if (!Directory.Exists(modsDir)) return;
+        List<string> dirs;
+        try { dirs = Directory.EnumerateDirectories(modsDir).ToList(); }
+        catch { return; }
+        var done = 0;
+        foreach (var dir in dirs)
+        {
+            var name = Path.GetFileName(dir);
+            // 禁用目录（. 前缀）不碰：SMAPI 没加载它，转换会把用户明确关掉的东西变成开的
+            if (name.StartsWith('.') || !PortraitSkinService.LooksLikeLoosePortraitFolder(gamePath, dir)) continue;
+            var err = ConvertLoosePortraitFolder(gamePath, name, out var modName);
+            if (err is not null) { AppLog.Warn("Portraits", $"[自动转换] {name} 未转换：{err.Split('\n')[0]}"); continue; }
+            AppLog.Warn("Portraits", $"[自动转换] {name} → CP 肖像包「{modName}」");
+            if (++done >= 20) break;   // 一次最多 20 个，剩下的下轮再来
+        }
+    }
+
+    /// <summary>
+    /// v1.6.5：裸 PNG 肖像包 → 标准 Content Patcher 内容包（自制转换，不再依赖
+    /// Portraiture 框架）。装到 Mods/&lt;包名&gt;/：manifest（UID = JuniGrid.PortraitPack.*）
+    /// + content.json（每张 PNG 一条 EditImage）+ assets/。
+    /// · 季节后缀（_Spring/_Summer/_Fall/_Winter）→ 基础立绘 + Season 条件；
+    ///   基础图的 When 会排除已被季节图覆盖的季节（CP 后打的补丁盖先打的）。
+    /// · 其余后缀（_Beach/_Hospital…）按 Portraiture 同款约定映射到 Portraits/&lt;名&gt;_&lt;后缀&gt;。
+    /// 重装 = 旧包挪回收站原名装新版。返回 null = 成功。
+    /// </summary>
+    private static string? InstallPortraitPackAsCp(
+        string gamePath, string extractedDir, string packName, int? nexusModId, out string? modName)
+    {
+        modName = packName;
+        try
+        {
+            var dest = Path.Combine(gamePath, "Mods", packName);
+            if (Directory.Exists(dest))
+                StageExistingToTrash(gamePath, dest);
+            Directory.CreateDirectory(dest);
+
+            var seasons = new[] { "spring", "summer", "fall", "winter" };
+            string? SeasonOf(string id)
+            {
+                foreach (var s in seasons)
+                    if (id.EndsWith("_" + s, StringComparison.OrdinalIgnoreCase))
+                        return s;
+                return null;
+            }
+
+            // ① 收集素材 → assets/：PNG 直接拷；XNB（老式编译素材，图在 xnb 里）解码转成
+            // PNG。说明图（Usage/安装方式/readme…）只落盘不登记
+            var registered = new List<(string Id, string AssetRel)>();
+            var files = Directory.EnumerateFiles(extractedDir, "*", SearchOption.AllDirectories)
+                .Where(f =>
+                {
+                    var ext = Path.GetExtension(f);
+                    return ext.Equals(".png", StringComparison.OrdinalIgnoreCase)
+                        || ext.Equals(".xnb", StringComparison.OrdinalIgnoreCase);
+                })
+                .OrderBy(f => f, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            if (files.Length == 0)
+            { TryDelete(dest); return "压缩包里没有 PNG/XNB 肖像素材，不是可识别的肖像包"; }
+
+            var xnbDecodeFail = 0;
+            var xnbDecodeOk = 0;
+            foreach (var file in files)
+            {
+                var rel = Path.GetRelativePath(extractedDir, file);
+                var segs = rel.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                if (segs.Any(s => s == ".." || s.Length == 0)) continue;   // 防穿越
+                var id = Path.GetFileNameWithoutExtension(rel);
+                if (id.Length == 0) continue;
+
+                string assetRel;
+                if (rel.EndsWith(".xnb", StringComparison.OrdinalIgnoreCase))
+                {
+                    // 老式 XNB 素材：解码成 PNG 再进 CP 包
+                    var tex = XnbDecoder.TryDecode(file);
+                    if (tex is null)
+                    {
+                        xnbDecodeFail++;
+                        AppLog.Warn("Portraits", $"[XNB解码] {rel} 失败（非 Color/LZ4/损坏？），已跳过");
+                        continue;
+                    }
+                    xnbDecodeOk++;
+                    var pngSegs = segs.Select(s => Path.GetFileNameWithoutExtension(s) + ".png").ToArray();
+                    assetRel = "assets/" + string.Join('/', pngSegs);
+                    var xnbDest = Path.Combine(dest, "assets", Path.Combine(pngSegs));
+                    Directory.CreateDirectory(Path.GetDirectoryName(xnbDest)!);
+                    File.WriteAllBytes(xnbDest,
+                        PixelKit.CropScalePng(tex, 0, 0, tex.Width, tex.Height, tex.Width, tex.Height));
+                }
+                else
+                {
+                    assetRel = "assets/" + string.Join('/', segs);
+                    var assetDest = Path.Combine(dest, "assets", Path.Combine(segs));
+                    Directory.CreateDirectory(Path.GetDirectoryName(assetDest)!);
+                    File.Copy(file, assetDest, overwrite: true);
+                }
+
+                var low = id.ToLowerInvariant();
+                if (low.StartsWith("usage") || low.StartsWith("readme") || low.StartsWith("install")
+                    || low.StartsWith("how") || id.Contains("安装方式") || id.Contains("说明"))
+                    continue;
+
+                if (!registered.Any(r => r.Id.Equals(id, StringComparison.OrdinalIgnoreCase)))
+                    registered.Add((id, assetRel));
+            }
+            if (registered.Count == 0)
+            {
+                TryDelete(dest);
+                return xnbDecodeFail > 0 && xnbDecodeOk == 0
+                    ? $"压缩包里是 XNB 素材但全部解码失败（{xnbDecodeFail} 个）。可能是 LZ4/非 Color 格式或文件损坏。请改用 Manual download，或换用 PNG 版肖像包。"
+                    : "压缩包里只有说明文件、没有可用肖像素材，已放弃安装";
+            }
+
+            // ①b 安装时自动体检（v1.6.8）：逐张校验 可解码 / 尺寸合法（宽高为 64 的
+            // 倍数）/ 非全透明 —— 有问题的素材剔除出包并记日志，从源头拦住"进游戏
+            // 才发现显示错误"；全部不可用则拒绝安装。
+            var valid = new List<(string Id, string AssetRel)>();
+            foreach (var (id, assetRel) in registered)
+            {
+                var p = Path.Combine(dest, assetRel.Replace('/', Path.DirectorySeparatorChar));
+                string? problem = null;
+                try
+                {
+                    var tex = PixelKit.DecodePng(p);
+                    if (tex is null) problem = "无法解码";
+                    else if (tex.Width < 64 || tex.Height < 64
+                        || tex.Width % 64 != 0 || tex.Height % 64 != 0)
+                        problem = $"尺寸 {tex.Width}x{tex.Height} 非法（宽高应为 64 的倍数）";
+                    else
+                    {
+                        var blankPx = true;
+                        for (var i = 3; i < tex.PixelsRgba.Length; i += 4)
+                            if (tex.PixelsRgba[i] > 16) { blankPx = false; break; }
+                        if (blankPx) problem = "全透明空白图";
+                    }
+                }
+                catch { problem = "解码异常"; }
+                if (problem is null) valid.Add((id, assetRel));
+                else AppLog.Warn("Portraits", $"[素材校验] {Path.GetFileName(dest)}/{id}: {problem}，已从包中剔除");
+            }
+            if (valid.Count == 0)
+            { TryDelete(dest); return "压缩包里的肖像素材全部未通过校验（无法解码/空白/尺寸非法），已放弃安装"; }
+            registered = valid;
+
+            // ② 按基础 id 分组生成 EditImage
+            var changes = new List<Dictionary<string, object?>>();
+            Dictionary<string, object?> NewEdit(
+                string target, string fromFile, Dictionary<string, string?>? when = null)
+            {
+                var ch = new Dictionary<string, object?>
+                {
+                    ["Action"] = "EditImage",
+                    ["Target"] = "Portraits/" + target,
+                    ["FromFile"] = fromFile,
+                    ["PatchMode"] = "Replace",
+                };
+                if (when is not null) ch["When"] = when;
+                return ch;
+            }
+
+            foreach (var g in registered
+                .GroupBy(e => SeasonOf(e.Id) is { } s ? e.Id[..^(s.Length + 1)] : e.Id,
+                    StringComparer.OrdinalIgnoreCase)
+                .OrderBy(g => g.Key, StringComparer.OrdinalIgnoreCase))
+            {
+                var baseId = g.Key;
+                string? baseRel = null;
+                var seasonRels = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                var extras = new List<(string Id, string AssetRel)>();
+                foreach (var (id, rel) in g)
+                {
+                    var s = SeasonOf(id);
+                    if (s is not null) seasonRels[s] = rel;
+                    else if (id.Equals(baseId, StringComparison.OrdinalIgnoreCase)) baseRel = rel;
+                    else extras.Add((id, rel));
+                }
+
+                if (baseRel is not null)
+                {
+                    var covered = seasonRels.Keys.ToHashSet(StringComparer.OrdinalIgnoreCase);
+                    var ch = NewEdit(baseId, baseRel);
+                    if (covered.Count > 0 && covered.Count < seasons.Length)
+                        ch["When"] = new Dictionary<string, string?>
+                        { ["Season"] = string.Join(", ", seasons.Where(s => !covered.Contains(s))) };
+                    changes.Add(ch);
+                }
+                foreach (var s in seasons)
+                    if (seasonRels.TryGetValue(s, out var rel))
+                        changes.Add(NewEdit(baseId, rel,
+                            new Dictionary<string, string?> { ["Season"] = s }));
+                foreach (var (id, rel) in extras)
+                    changes.Add(NewEdit(id, rel));
+            }
+
+            // ③ manifest + content.json（UID 按包名稳定哈希，重装不换 UID）
+            // 终检：只写入 FromFile 在 dest/assets 下真实存在的条目 ——
+            // 幽灵引用会让 CP 把资产置 null，游戏绘制崩溃（Gil/Lewis 实测）。
+            var safeChanges = new List<Dictionary<string, object?>>();
+            var ghost = 0;
+            foreach (var chg in changes)
+            {
+                if (chg.TryGetValue("FromFile", out var ffObj)
+                    && ffObj is string ff
+                    && File.Exists(Path.Combine(dest, ff.Replace('/', Path.DirectorySeparatorChar))))
+                {
+                    safeChanges.Add(chg);
+                }
+                else
+                {
+                    ghost++;
+                    AppLog.Warn("Portraits", $"[转换包] {packName}: 跳过幽灵补丁 FromFile={ffObj}");
+                }
+            }
+            if (safeChanges.Count == 0)
+            { TryDelete(dest); return "转换结果里没有可引用的立绘文件，已放弃安装"; }
+
+            var uid = "JuniGrid.PortraitPack." + Convert.ToHexString(
+                System.Security.Cryptography.SHA256.HashData(
+                    System.Text.Encoding.UTF8.GetBytes(packName.ToLowerInvariant())))[..10];
+            var jsonOpts = new JsonSerializerOptions
+            {
+                WriteIndented = true,
+                Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+            };
+            File.WriteAllText(Path.Combine(dest, "manifest.json"), JsonSerializer.Serialize(
+                new Dictionary<string, object?>
+                {
+                    ["Name"] = packName,
+                    ["Author"] = "JuniGrid",
+                    ["Version"] = "1.0.0",
+                    ["Description"] = "Portrait pack converted to Content Patcher by JuniGrid (no Portraiture framework needed).",
+                    ["UniqueID"] = uid,
+                    ["ContentPackFor"] = new Dictionary<string, string>
+                    { ["UniqueID"] = "Pathoschild.ContentPatcher" },
+                }, jsonOpts));
+            File.WriteAllText(Path.Combine(dest, "content.json"), JsonSerializer.Serialize(
+                new Dictionary<string, object?>
+                {
+                    ["Format"] = "2.5",
+                    ["Changes"] = safeChanges,
+                }, jsonOpts));
+            if (ghost > 0)
+                AppLog.Warn("Portraits", $"[转换包] {packName}: content.json 共 {safeChanges.Count} 条，跳过幽灵 {ghost} 条");
+
+            if (nexusModId is not null) WriteNexusIdSidecar(dest, nexusModId.Value);
+            return null;
+        }
+        catch (Exception ex)
+        {
+            if (ex is IOException or UnauthorizedAccessException)
+                return "肖像包写入失败（可能被占用）：" + ex.Message;
+            return ex.Message;
+        }
+    }
+
+    private static bool TempContainsImages(string dir)
+    {
+        try
+        {
+            foreach (var f in Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories))
+            {
+                var ext = Path.GetExtension(f);
+                if (ext.Equals(".png", StringComparison.OrdinalIgnoreCase)
+                    || ext.Equals(".xnb", StringComparison.OrdinalIgnoreCase)
+                    || ext.Equals(".jpg", StringComparison.OrdinalIgnoreCase)
+                    || ext.Equals(".jpeg", StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+            return false;
+        }
+        catch { return false; }
+    }
+
     // ---------------- 安装来源边车（.junigrid.json） ----------------
 
     private const string SidecarFileName = ".junigrid.json";
@@ -992,16 +1343,94 @@ public sealed class ModService
     // ------------------------------------------------------------------
     // Helpers
     // ------------------------------------------------------------------
-    /// <summary>Extracts zip to a unique temp dir; returns the shallowest manifest.json path.</summary>
+    /// <summary>Extracts zip to a unique temp dir; returns the shallowest manifest.json path.
+    /// 支持「裸 XNB / 裸 PNG」肖像资源（Nexus 上无 manifest 的老包）：拷进临时目录后走 CP 转换。</summary>
     private static string? ExtractToTemp(string zipPath, string prefix, out string tempDir)
     {
         tempDir = Path.Combine(StoragePaths.DownloadsDir, prefix + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempDir);
-        ZipFile.ExtractToDirectory(zipPath, tempDir);
+        switch (DetectArchiveFormat(zipPath))
+        {
+            case "zip":
+                ZipFile.ExtractToDirectory(zipPath, tempDir);
+                break;
+            case "rar":
+            case "7z":
+                // v1.6.3：Nexus 上不少作者传 rar/7z（如 East Scarp 某文件）——
+                // SharpCompress 纯托管解压（只解不压），zip 仍走 ZipFile 原路径
+                ExtractManagedArchive(zipPath, tempDir);
+                break;
+            case "xnb":
+            case "png":
+                // 纯资源文件（无压缩包壳）：原样拷入临时目录，后续肖像转换管线可识别
+                File.Copy(zipPath, Path.Combine(tempDir,
+                    Path.GetFileName(zipPath.Length > 0 ? zipPath : "portrait" + Path.GetExtension(zipPath))),
+                    overwrite: true);
+                break;
+            case "html":
+                throw new InvalidOperationException("下载到的是网页而不是压缩包（可能被网络拦截），请稍后重试。");
+            case "empty":
+                throw new InvalidOperationException("压缩包是空的或不完整（下载中断），请重新下载。");
+            default:
+                throw new InvalidOperationException("压缩包损坏或格式未知（可能下载不完整），请重新下载。");
+        }
         return Directory
             .GetFiles(tempDir, "manifest.json", SearchOption.AllDirectories)
             .OrderBy(p => p.Length)
             .FirstOrDefault();
+    }
+
+    /// <summary>压缩包/资源格式按文件头判定：zip / rar / 7z / xnb / png / html / empty / unknown。</summary>
+    private static string DetectArchiveFormat(string path)
+    {
+        var head = new byte[8];
+        int read;
+        using (var s = File.OpenRead(path))
+            read = s.Read(head, 0, head.Length);
+
+        if (read >= 2 && head[0] == (byte)'P' && head[1] == (byte)'K')
+            return "zip";
+        if (read >= 4 && head[0] == (byte)'R' && head[1] == (byte)'a' && head[2] == (byte)'r' && head[3] == (byte)'!')
+            return "rar";
+        if (read >= 6 && head[0] == (byte)'7' && head[1] == (byte)'z' && head[2] == 0xBC
+            && head[3] == 0xAF && head[4] == 0x27 && head[5] == 0x1C)
+            return "7z";
+        // 裸 XNB（老式肖像/精灵资源，Nexus 可能直接传这个文件而非 zip）
+        if (read >= 3 && head[0] == (byte)'X' && head[1] == (byte)'N' && head[2] == (byte)'B')
+            return "xnb";
+        // 裸 PNG
+        if (read >= 4 && head[0] == 0x89 && head[1] == (byte)'P' && head[2] == (byte)'N' && head[3] == (byte)'G')
+            return "png";
+        if (read >= 1 && head[0] == (byte)'<')
+            return "html";
+        if (read < 4)
+            return "empty";
+        return "unknown";
+    }
+
+    /// <summary>
+    /// rar / 7z 托管解压（SharpCompress，纯托管 unrar 实现）。逐条守路径：
+    /// 压缩包里带 ../ 或绝对路径的条目不得越出解压根（zip-slip 防御）。
+    /// </summary>
+    private static void ExtractManagedArchive(string path, string destDir)
+    {
+        var root = Path.GetFullPath(destDir);
+        // SharpCompress 0.50：ArchiveFactory.Open 已移除，按格式用各自 OpenArchive
+        using SharpCompress.Archives.IArchive archive = DetectArchiveFormat(path) == "rar"
+            ? SharpCompress.Archives.Rar.RarArchive.OpenArchive(path)
+            : SharpCompress.Archives.SevenZip.SevenZipArchive.OpenArchive(path);
+        foreach (var entry in archive.Entries)
+        {
+            if (entry.IsDirectory) continue;
+            var key = (entry.Key ?? "").Replace('\\', '/');
+            if (key.Length == 0 || key.Contains("../") || Path.IsPathRooted(key))
+                continue;   // 越界/可疑条目直接跳过，不写盘
+            var dest = Path.GetFullPath(Path.Combine(root, key));
+            if (!dest.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                continue;
+            Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
+            entry.WriteToFile(dest, new SharpCompress.Common.ExtractionOptions { Overwrite = true });
+        }
     }
 
     /// <summary>
@@ -1042,7 +1471,7 @@ public sealed class ModService
         {
             try
             {
-                using var doc = JsonDocument.Parse(CleanManifestJson(ReadManifestText(mf)));
+                using var doc = JsonDocument.Parse(ReadManifestText(mf), ManifestJson);
                 if (doc.RootElement.ValueKind == JsonValueKind.Object
                     && doc.RootElement.TryGetProperty("UniqueID", out var u)
                     && string.Equals(u.GetString(), expectedUid, StringComparison.OrdinalIgnoreCase))
@@ -1109,13 +1538,27 @@ public sealed class ModService
             try { Directory.Delete(src, recursive: true); } catch (Exception __ex) { AppLog.Warn("ModService", __ex.Message); }
         }
     }
-    private static void CopyDirectoryContents(string src, string dest)
+    /// <summary>递归拷贝目录内容（ModService / UpdateService / StorageService 共用实现）。
+    /// skipTrash：跳过 Mods 回收站目录（junigrid_trash / .junigrid_trash，可达数 GB）——
+    /// 备份场景用它，回收站留在原位不受影响。</summary>
+    /// <summary>把 src 的内容并进 dest。skipExisting：目标已存在的文件一律不动 —— 用于「把更新前的
+    /// 快照并回去」这类场景，目标在那之后可能已被安装器或用户改过，拿旧内容盖回去就是静默回滚。</summary>
+    public static void CopyDirectoryContents(string src, string dest, bool skipTrash = false, bool skipExisting = false)
     {
         Directory.CreateDirectory(dest);
         foreach (var f in Directory.GetFiles(src))
-            File.Copy(f, Path.Combine(dest, Path.GetFileName(f)), overwrite: true);
+        {
+            var target = Path.Combine(dest, Path.GetFileName(f));
+            if (skipExisting && File.Exists(target)) continue;
+            File.Copy(f, target, overwrite: true);
+        }
         foreach (var d in Directory.GetDirectories(src))
-            CopyDirectoryContents(d, Path.Combine(dest, Path.GetFileName(d)));
+        {
+            var name = Path.GetFileName(d);
+            if (skipTrash && (name.Equals("junigrid_trash", StringComparison.OrdinalIgnoreCase)
+                           || name.Equals(".junigrid_trash", StringComparison.OrdinalIgnoreCase))) continue;
+            CopyDirectoryContents(d, Path.Combine(dest, name), skipTrash, skipExisting);
+        }
     }
 
     /// <summary>
@@ -1123,7 +1566,7 @@ public sealed class ModService
     /// 失败即整体失败，绝不出现"删一半"）。命名沿用 Uninstall 的时间戳+序号兜底规则。
     /// 返回 staging 路径；被占用等改名失败直接抛异常，由调用方决定放弃或回滚。
     /// </summary>
-    private static string StageExistingToTrash(string gamePath, string existingDir)
+    internal static string StageExistingToTrash(string gamePath, string existingDir)
     {
         var trash = EnsureTrashReady(gamePath);
         var baseName = Path.GetFileName(existingDir).TrimStart('.');
@@ -1436,4 +1879,210 @@ public sealed class ModEntry
     public bool HasManifest { get; set; } = true;   // false = 该文件夹没有有效 manifest（用文件夹名兜底）
     /// <summary>v0.45.0：分类标签（仿 PCL2），在列表行简介前显示。代码 Mod / 内容包 / 代码·内容包；都不是则为空。</summary>
     public string Category { get; set; } = "";
+
+    /// <summary>
+    /// JuniGrid 把 Portraiture 裸 PNG 转成的 CP 包（UID = JuniGrid.PortraitPack.*）。
+    /// manifest Version 固定 1.0.0，NexusModId 只是原素材包的来源边车 ——
+    /// 绝不能拿 N 网原包版本号去比本地 1.0.0，否则永远显示「可更新」。
+    /// </summary>
+    public bool IsConvertedPortraitPack =>
+        !string.IsNullOrEmpty(UniqueID)
+        && UniqueID.StartsWith("JuniGrid.PortraitPack.", StringComparison.OrdinalIgnoreCase);
+}
+
+/// <summary>
+/// N 网更新「装得上、装完不粘」问题的判定与落盘。
+/// 权威口径 = 最新 MAIN 文件的 FileId/Version，不是包内 manifest.Version。
+/// </summary>
+public static class NexusUpdateTruth
+{
+    public static string StampKey(ModEntry m) =>
+        string.IsNullOrEmpty(m.UniqueID) ? m.Folder : m.UniqueID;
+
+    public static NexusInstallRecord? GetInstallRecord(JuniGridConfig cfg, ModEntry m)
+    {
+        var key = StampKey(m);
+        if (cfg.ModNexusInstalls.TryGetValue(key, out var r) && r is not null) return r;
+        if (cfg.ModNexusInstalls.TryGetValue(m.Folder, out var r2) && r2 is not null) return r2;
+        return null;
+    }
+
+    /// <summary>安装成功后：记住 N 网 fileId/文件版本；若与 manifest 不一致则回写 Version。</summary>
+    public static void RecordInstall(JuniGridConfig cfg, ModEntry m, long fileId, string remoteVersion,
+        string gamePath)
+    {
+        if (string.IsNullOrWhiteSpace(remoteVersion) && fileId == 0) return;
+        var rec = new NexusInstallRecord
+        {
+            NexusModId = m.NexusModId ?? 0,
+            FileId = fileId,
+            RemoteVersion = remoteVersion ?? "",
+            InstalledAtUtc = DateTime.UtcNow,
+        };
+        var key = StampKey(m);
+        cfg.ModNexusInstalls[key] = rec;
+        if (!string.IsNullOrEmpty(m.Folder) && !string.Equals(m.Folder, key, StringComparison.OrdinalIgnoreCase))
+            cfg.ModNexusInstalls[m.Folder] = rec;
+        if (!string.IsNullOrWhiteSpace(remoteVersion))
+            TrySetManifestVersion(Path.Combine(gamePath, "Mods", m.Folder), remoteVersion);
+    }
+
+    public static void RecordInstallByModId(JuniGridConfig cfg, string gamePath, string folderOrUid,
+        int nexusModId, long fileId, string remoteVersion)
+    {
+        var rec = new NexusInstallRecord
+        {
+            NexusModId = nexusModId,
+            FileId = fileId,
+            RemoteVersion = remoteVersion ?? "",
+            InstalledAtUtc = DateTime.UtcNow,
+        };
+        cfg.ModNexusInstalls[folderOrUid] = rec;
+        if (!string.IsNullOrWhiteSpace(remoteVersion))
+            TrySetManifestVersion(Path.Combine(gamePath, "Mods", folderOrUid), remoteVersion);
+    }
+
+    /// <summary>只改 manifest 里的 Version 字段（保留 // 注释与其它键），避免作者包被整文件重写。</summary>
+    public static bool TrySetManifestVersion(string modDir, string newVersion)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(newVersion)) return false;
+            var path = Path.Combine(modDir, "manifest.json");
+            if (!File.Exists(path)) return false;
+            var text = File.ReadAllText(path);
+            var pattern = new System.Text.RegularExpressions.Regex(
+                "(\"Version\"\\s*:\\s*\")([^\"]+)(\")",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            var m = pattern.Match(text);
+            if (!m.Success) return false;
+            var old = m.Groups[2].Value;
+            if (string.Equals(old, newVersion, StringComparison.OrdinalIgnoreCase)) return false;
+            var replaced = pattern.Replace(text, "${1}" + newVersion + "${3}", 1);
+            var tmp = path + ".junigrid.tmp";
+            File.WriteAllText(tmp, replaced);
+            File.Move(tmp, path, true);
+            AppLog.Warn("Mods", $"[更新] manifest.Version {old} → {newVersion}（{modDir}）");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warn("Mods", "回写 manifest Version 失败: " + ex.Message);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// 列表/详情展示用的本地有效版本：若启动器装过 N 网文件且其版本比 manifest 新，
+    /// 以安装记录为准 —— 用户看到的就是「装到的那一版」，不会一直显示 0.0.1。
+    /// </summary>
+    public static string EffectiveLocalVersion(JuniGridConfig cfg, ModEntry m)
+    {
+        var rec = GetInstallRecord(cfg, m);
+        if (rec is not null && !string.IsNullOrWhiteSpace(rec.RemoteVersion))
+        {
+            if (string.IsNullOrWhiteSpace(m.Version)) return rec.RemoteVersion;
+            if (VersionUtil.IsNewer(rec.RemoteVersion, m.Version)) return rec.RemoteVersion;
+        }
+        return m.Version;
+    }
+
+    /// <summary>本地是否已装上「当前这条 N 网 MAIN 文件」（fileId 或文件版本一致）。</summary>
+    public static bool AlreadyHasRemoteFile(JuniGridConfig cfg, ModEntry m, string? remoteVersion, long? remoteFileId)
+    {
+        var rec = GetInstallRecord(cfg, m);
+        if (rec is not null)
+        {
+            if (remoteFileId is long fid && fid != 0 && rec.FileId != 0 && rec.FileId == fid) return true;
+            if (!string.IsNullOrWhiteSpace(remoteVersion)
+                && !string.IsNullOrWhiteSpace(rec.RemoteVersion)
+                && string.Equals(rec.RemoteVersion, remoteVersion, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        // 启动器历史上下载过「这一条」MAIN 文件（ModFileLastDownload[fileId]），
+        // 即使当时没写安装快照/没回写 manifest，也视为已拥有该文件
+        if (remoteFileId is long dfid && dfid != 0
+            && cfg.ModFileLastDownload.ContainsKey(dfid.ToString()))
+            return true;
+        // 捆绑包装一次往往只给某个子包写了记录（SevenDeadlySins 的 PFM/FTM 各算一条）。
+        // 全局按 fileId 认领：任一子包装过这一版 MAIN 文件 ⇒ 整包都算已装。
+        if (remoteFileId is long gfid && gfid != 0)
+        {
+            foreach (var r in cfg.ModNexusInstalls.Values)
+                if (r is not null && r.FileId == gfid) return true;
+        }
+        // 历史修复：修复前 .nxm 一键安装根本不写下载/安装记录（InstallService 那条路径漏了），
+        // 所以「早就装好最新」的 mod 会一直亮 ⇧。判据用下载产物本身：
+        // 本地留着 nxm-<modId>-<当前远端fileId>.zip ⇒ 玩家下的就是这条文件。
+        // 只匹配「当前远端 fileId」，所以下了旧包、下了没装都不算，不会把真更新吞掉。
+        if (remoteFileId is long rf && rf != 0 && m.NexusModId is int mid && mid > 0)
+        {
+            var zip = Path.Combine(StoragePaths.DownloadsDir, $"nxm-{mid}-{rf}.zip");
+            if (File.Exists(zip))
+            {
+                AppLog.Warn("Updates", $"按本地下载包认领为已装：{zip}（{m.Folder}）"
+                    + " —— 若其实没装上，点一次「更新」即可纠正");
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// 用「启动器曾下载过该 fileId」自动校准：补写安装快照 + 回写 manifest.Version，
+    /// 让列表立刻与 N 网一致，无需用户再点一次更新（作者忘改 manifest 时的死循环）。
+    /// 返回 true = 已是该文件/已校准成功。
+    /// </summary>
+    public static bool TryHealFromPriorDownload(JuniGridConfig cfg, ModEntry m,
+        long fileId, string? remoteVersion, string gamePath)
+    {
+        if (m.IsConvertedPortraitPack) return false;
+        if (AlreadyHasRemoteFile(cfg, m, remoteVersion, fileId))
+        {
+            // 有历史下载但缺快照 → 补齐，避免下次再误判
+            if (GetInstallRecord(cfg, m) is null && fileId != 0 && !string.IsNullOrWhiteSpace(remoteVersion))
+            {
+                RecordInstall(cfg, m, fileId, remoteVersion!, gamePath);
+                if (!string.Equals(m.Version, remoteVersion, StringComparison.OrdinalIgnoreCase))
+                    m.Version = remoteVersion!;
+            }
+            return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// 是否应显示「可更新」：转换包永不比；已装上当前 N 网 MAIN 文件 → 否；
+    /// 否则用有效本地版本与远端文件版本做语义化比较。
+    /// </summary>
+    public static bool ShouldShowUpdate(JuniGridConfig cfg, ModEntry m, string? remoteVersion, long? remoteFileId)
+    {
+        if (m.IsConvertedPortraitPack) return false;
+        if (string.IsNullOrWhiteSpace(remoteVersion)) return false;
+        if (AlreadyHasRemoteFile(cfg, m, remoteVersion, remoteFileId)) return false;
+        var local = EffectiveLocalVersion(cfg, m);
+        if (string.IsNullOrWhiteSpace(local)) return true;
+        // 结构性误判护栏：远端版本号只有一段数字（作者把 N 网「文件版本」栏填成 1）、
+        // 而本地是多段（0.0.1）—— 两边根本不是同一套编号体系，比大小没意义
+        // （实测 Haley 动漫肖像包恒显示 0.0.1 ⇧ 1，怎么更新都消不掉）。
+        // 反向（本地单段、远端多段）是正常情形，不拦。
+        if (NumericSegments(remoteVersion) == 1 && NumericSegments(local) >= 2)
+        {
+            AppLog.Warn("Updates", $"跳过不可比较的版本号：本地 {local} vs 远端 {remoteVersion}"
+                + $"（{m.Folder}）—— 远端只有一段数字，判定为不同编号体系");
+            return false;
+        }
+        return VersionUtil.IsNewer(remoteVersion, local);
+    }
+
+    /// <summary>版本号里数字段的个数（剥掉 v 前缀与 -beta/+build 后缀后按点切）。</summary>
+    private static int NumericSegments(string? version)
+    {
+        if (string.IsNullOrWhiteSpace(version)) return 0;
+        var v = version.Trim().TrimStart('v', 'V');
+        var cut = v.IndexOfAny(new[] { '-', '+', ' ' });
+        if (cut >= 0) v = v[..cut];
+        return v.Split('.', StringSplitOptions.RemoveEmptyEntries)
+                .Count(seg => seg.Length > 0 && seg.All(char.IsDigit));
+    }
 }

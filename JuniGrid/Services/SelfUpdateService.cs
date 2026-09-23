@@ -91,8 +91,10 @@ public sealed class SelfUpdateService
         SelfUpdateService.CacheBusy = true;
         try
         {
+            // v1.6.2：setup.exe 下载同样挂镜像候选（直连 GitHub 在国内经常超时）
             await ResumableDownload.RunAsync(DownloadHttp, info.SetupUrl, dest,
-                (msg, pct, _) => progress?.Invoke(msg, pct), ct: ct);
+                (msg, pct, _) => progress?.Invoke(msg, pct),
+                fallbackUrls: UpdateService.GithubUrls(info.SetupUrl).Skip(1), ct: ct);
 
             // 下载完整结束才写 .done 标记；取消/中断留下的半截文件靠续传接着写
             File.WriteAllText(dest + ".done", info.LatestVersion);
@@ -142,28 +144,29 @@ public sealed class SelfUpdateService
         }
     }
 
-    // 通道 1：GitHub API（信息全，但有限流）
+    // 通道 1：GitHub API（信息全，但有限流；直连不通依次换镜像 —— gh-proxy 可代理 API）
     private async Task<SelfUpdateInfo?> TryCheckViaApiAsync()
     {
-        try
+        foreach (var api in UpdateService.GithubUrls(AppInfo.LatestApiUrl))
         {
-            using var resp = await Http.GetAsync(AppInfo.LatestApiUrl);
-            if (!resp.IsSuccessStatusCode)
+            try
             {
-                AppLog.Warn("SelfUpdate", $"API 通道失败：HTTP {(int)resp.StatusCode}，改走 HTML 回落");
-                return null;
+                using var resp = await Http.GetAsync(api);
+                if (!resp.IsSuccessStatusCode)
+                {
+                    AppLog.Warn("SelfUpdate", $"API 通道失败：HTTP {(int)resp.StatusCode}（{new Uri(api).Host}），换下一通道");
+                    continue;
+                }
+                using var doc = JsonDocument.Parse(await resp.Content.ReadAsStreamAsync());
+                var tag = doc.RootElement.TryGetProperty("tag_name", out var t) ? t.GetString() ?? "" : "";
+                return Build(tag);
             }
-            using var doc = JsonDocument.Parse(await resp.Content.ReadAsStreamAsync());
-            var root = doc.RootElement;
-
-            var tag = root.TryGetProperty("tag_name", out var t) ? t.GetString() ?? "" : "";
-            return Build(tag);
+            catch (Exception ex)
+            {
+                AppLog.Warn("SelfUpdate", $"API 通道异常：{ex.Message}，换下一通道");
+            }
         }
-        catch (Exception ex)
-        {
-            AppLog.Warn("SelfUpdate", $"API 通道异常：{ex.Message}，改走 HTML 回落");
-            return null;
-        }
+        return null;
     }
 
     // 通道 2：releases/latest 页面 302 重定向里抠 tag（SMAPI 检查同款方案，无配额限制）

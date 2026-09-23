@@ -1,0 +1,663 @@
+@namespace JuniGrid.Components
+@implements IDisposable
+@* ─── 游戏版本管理：历史版本下载/切换；官方本体走 Steam。
+   SMAPI 走共享池，切版本一般不用重装。 *@
+@using JuniGrid.Services
+@inject DepotDownloaderService Depot
+@inject VersionDownloadService VerDl
+@inject ConfigService Cfg
+@inject UpdateService Updater
+@inject LauncherService Launcher
+@inject TaskCenterService Center
+@inject PageRefreshService PageRefresh
+@inject IJSRuntime JS
+
+@if (Open)
+{
+    <div class="jg-modal-overlay" @onclick="Close">
+        <div class="jg-modal jg-ver-modal" @onclick:stopPropagation>
+
+            <div class="jg-ver-head">
+                <div class="jg-ver-title">游戏版本管理</div>
+                <div class="jg-ver-head-meta">
+                    <span class="jg-ver-lockchip @(_manifestLocked ? "on" : "")" @onclick="ToggleLock">
+                        @(_manifestLocked ? "已锁定" : "未锁定")
+                    </span>
+                    <button type="button" class="jg-ver-x" @onclick="Close" title="关闭">
+                        <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                            <path d="M2 2l10 10M12 2L2 12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+
+            <div class="jg-ver-current">
+                <div class="jg-ver-cur-num">
+                    @if (UpdateService.DisplayGameVersion(_gameVersion, Cfg.Current.LastHistoricalLabel, Cfg.Current.LastHistoricalInternalVersion) is { Length: > 0 } curVer)
+                    {
+                        @curVer
+                    }
+                    else
+                    {
+                        <span class="jg-shimmer jg-shimmer-line" style="width:4.5em;height:.95em;display:inline-block"></span>
+                    }
+                </div>
+                <div class="jg-ver-cur-meta">
+                    <span>@CurrentSourceLabel</span>
+                </div>
+            </div>
+
+            <div class="jg-ver-sec" style="display:flex;align-items:center;justify-content:space-between;gap:10px">
+                <span>版本列表</span>
+                @* 国内连不上 Steam CM 时，历史版本可能怎么试都下不来 —— 只要包在本地（别的机器 /
+                   U盘 / 网盘拷来的）就该有路：认领进缓存后点它离线切换，全程不连 Steam。 *@
+                <button type="button" class="jg-ver-mini" disabled="@SwitchBlocked"
+                        title="认领从别的机器 / U盘拷来的版本包，之后离线切换不连 Steam"
+                        @onclick="ImportLocal">导入本地包</button>
+            </div>
+            <div class="jg-ver-vlist">
+            @* @key：行元素会被 GSAP 写上 inline transform，列表重排（下载完置顶）时
+               没有 key 就是按位置复用 DOM —— 上一行划开的位移会串到另一行身上。 *@
+            @foreach (var k in _ordered)
+            {
+                var staged = _staged.FirstOrDefault(s => s.ManifestId == k.ManifestId);
+                @* rail（删除面板）在 surface 下面，靠 JS 跟着 surface 右边缘滑出；不划开就完全不露 *@
+                <div class="swipe-row @(staged is not null ? "has-drawer" : "")" @key="@($"{k.ManifestId}|{k.DisplayName}")">
+                    <div class="swipe-row__clip">
+                        @if (staged is not null)
+                        {
+                            <div class="swipe-row__rail">
+                                <button type="button" class="swipe-row__action"
+                                        title="删除本地缓存"
+                                        disabled="@(SwitchBlocked || IsDownloading(k))"
+                                        @onclick="() => AskDelete(k.DisplayName, staged)">
+                                    <span class="swipe-row__glyph">
+                                        <span class="swipe-row__icon">
+                                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg>
+                                        </span>
+                                        <span>删除</span>
+                                    </span>
+                                </button>
+                            </div>
+                        }
+                        <div class="swipe-row__surface">
+                            <button type="button" class="jg-ver-vbtn @(IsInstalled(k) ? "cur" : "")"
+                                    disabled="@(SwitchBlocked || IsDownloading(k) || IsInstalled(k))"
+                                    @onclick="() => OnVersionClicked(k)">
+                                <span class="jg-ver-vname">@k.DisplayName</span>
+                                <span class="jg-ver-item-meta">@StatusTag(k)</span>
+                            </button>
+                            @if (k.HasManifest && !IsInstalled(k) && (staged is null || !staged.Complete))
+                            {
+                                <button type="button" class="jg-ver-mini"
+                                        title="@(staged is null ? "只下载到这个版本的缓存，不切换（可与其它版本一起排队）" : "这个包没确认下完，缺的文件会让游戏进档时闪退；点一下按清单补齐缺的文件")"
+                                        disabled="@IsDownloading(k)"
+                                        @onclick="() => OnDownloadClicked(k)">@(IsDownloading(k) ? (IsQueued(k) ? "排队中" : "下载中") : (staged is null ? "下载" : "校验补齐"))</button>
+                            }
+                        </div>
+                    </div>
+                </div>
+            }
+            </div>
+
+            @if (_busy)
+            {
+                <div class="jg-ver-progress">
+                    <div class="jg-ver-state">@_stateText</div>
+                    @* 取消按钮只在真能取消时渲染（下载/排队阶段）。本地应用=搬游戏目录，中途停手会留
+                       半换的 Mods/本体，这段本就没有取消语义 —— 摆一个灰按钮写"不可取消"是死 UI，
+                       不如不渲染；下载阶段它会出现且真生效。 *@
+                    @if (!DepotDownloaderService.IsApplyInProgress)
+                    {
+                        <button class="jg-ver-btn ghost" @onclick="CancelSwitch">取消</button>
+                    }
+                </div>
+            }
+            else
+            {
+                @if (_error is not null)
+                {
+                    <div class="jg-ver-note @(_error == "已取消" ? "" : "danger")" style="margin-top:8px">@_error</div>
+                }
+                @if (_done)
+                {
+                    <div class="jg-ver-note ok" style="margin-top:8px">@_doneText</div>
+                }
+            }
+        </div>
+    </div>
+
+    @* 删除确认走全站共享的对话框结构（Mods / Settings / Logs 同一套 .jg-modal-*）。
+       挂在版本弹窗的「同级」而不是它内部：版本弹窗那层遮罩带 @onclick="Close"，
+       嵌在里面点一下空白会冒上去把整个版本弹窗一起关掉 —— 所以这里两道 stopPropagation 都要。 *@
+    @if (_pendingDeleteId is not null)
+    {
+        <div class="jg-modal-overlay" @onclick="CancelDelete" @onclick:stopPropagation>
+            <div class="jg-modal" @onclick:stopPropagation>
+                <div class="jg-modal-title">删除本地缓存</div>
+                <div class="jg-modal-body">@_pendingDeleteText</div>
+                <div class="jg-modal-actions">
+                    <button type="button" class="jg-pill-ghost" data-modal-close @onclick="CancelDelete">取消</button>
+                    <button type="button" class="jg-pill-danger" @onclick="DoDeleteStaged">确认删除</button>
+                </div>
+            </div>
+        </div>
+    }
+}
+
+@code {
+    [Parameter] public bool Open { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+    [Parameter] public EventCallback OnVersionChanged { get; set; }
+
+    private string? _gameVersion;
+    private string? _manifestPath;
+    private bool _manifestLocked;
+    private bool _gameRunning;
+
+    private List<DepotDownloaderService.KnownVersion> _known = new();
+    private List<DepotDownloaderService.StagedPackage> _staged = new();
+
+    private DepotDownloaderService.StagedPackage? _selectedStaged;
+    private List<DepotDownloaderService.KnownVersion> _ordered = new();
+    private string _doneText = "";
+    private bool _busy;
+    private bool _done;
+    private string? _error;
+    private string _stateText = "";
+    private CancellationTokenSource? _switchCts;
+    private bool _wasOpen;
+
+    private string CurrentSourceLabel
+    {
+        get
+        {
+            var cfg = Cfg.Current;
+            if (IsHistoricalRecordActive(cfg))
+                return "已切换 " + cfg.LastHistoricalLabel;
+            return _gameVersion is null
+                ? "正在识别游戏目录…"
+                : "Steam 安装目录本体";
+        }
+    }
+
+    /// <summary>
+    /// 上次历史切换记录是否仍对应「当前磁盘上的本体」。
+    /// Steam 校验/自动更新把游戏写回官方版后，内部号会变，记录失效 ——
+    /// 此时绝不能再用 LastHistoricalManifest/Label 去点亮列表（否则 1.0 与 1.6.15 双高亮）。
+    /// </summary>
+    private bool IsHistoricalRecordActive(JuniGridConfig cfg) =>
+        !string.IsNullOrWhiteSpace(_gameVersion)
+        && !string.IsNullOrWhiteSpace(cfg.LastHistoricalInternalVersion)
+        && string.Equals(cfg.LastHistoricalInternalVersion, _gameVersion, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>当前本体已不是历史切换记录 → 清空，避免列表/首页/启动器继续按旧记录误判。</summary>
+    private void ClearStaleHistoricalRecord()
+    {
+        var cfg = Cfg.Current;
+        if (string.IsNullOrWhiteSpace(_gameVersion)) return;
+        if (string.IsNullOrWhiteSpace(cfg.LastHistoricalInternalVersion)) return;
+        if (IsHistoricalRecordActive(cfg)) return;
+        cfg.LastHistoricalManifest = "";
+        cfg.LastHistoricalLabel = "";
+        cfg.LastHistoricalInternalVersion = "";
+        try { Cfg.Save(cfg); } catch { }
+        AppLog.Warn("GameVersion", $"历史版本记录已失效（当前 {_gameVersion}），已清空 LastHistorical*");
+    }
+
+    protected override void OnParametersSet()
+    {
+        if (Open && !_wasOpen && !_busy)
+        {
+            _selectedStaged = null;
+            _done = false;
+            _error = null;
+            CancelDelete();
+            _ = LoadAsync();
+            Center.OnChanged += OnCenterChanged;
+        }
+        else if (!Open && _wasOpen)
+        {
+            Center.OnChanged -= OnCenterChanged;
+        }
+        _wasOpen = Open;
+    }
+
+    // FLIP 入场：DOM 就绪后从 Home 版本卡（#jgVerCard）放大到弹窗
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (Open && !_flipInPlayed)
+        {
+            _flipInPlayed = true;
+            try { await JS.InvokeVoidAsync("junigridJs.flipModal", "jgVerCard", true); } catch { }
+        }
+        if (Open)
+        {
+            try { await JS.InvokeVoidAsync("junigridJs.swipeRowsInit", ".jg-ver-vlist"); } catch { }
+        }
+    }
+
+    private bool _flipInPlayed;
+
+    private void OnCenterChanged()
+    {
+        if (!Open) return;
+        _ = InvokeAsync(() =>
+        {
+            var running = Center.Snapshot().Any(t => t.Kind == "gameversion" && t.Status == "running");
+            if (!running)
+            {
+                RefreshLibrary();
+                StateHasChanged();
+            }
+        });
+    }
+
+    public void Dispose() => Center.OnChanged -= OnCenterChanged;
+
+    /// <summary>P0-1：本地切换中 / Depot 正在写游戏目录 → 禁止再点版本行。
+    /// 后台下载不在此列（它只写自己的缓存抽屉），所以下载别的版本不用等它。</summary>
+    private bool SwitchBlocked => _busy || DepotDownloaderService.IsApplyInProgress;
+
+    private bool IsInstalled(DepotDownloaderService.KnownVersion k)
+    {
+        if (string.IsNullOrEmpty(k.Version)) return false;
+        var cfg = Cfg.Current;
+
+        // ① 当前本体的 FileVersion/展示号与列表项一致（Steam 官方 1.6.15 → 1.6.15）
+        if (string.Equals(k.Version, _gameVersion, StringComparison.OrdinalIgnoreCase)) return true;
+
+        // ② 仅当仍处在那次历史切换（内部号与记录一致）时，才用 Label/Manifest 点亮。
+        //    Steam 校验回官方版后记录失效：Manifest 仍指向 1.0，但游戏已是 1.6.15 ——
+        //    再按 ManifestId 点亮会导致 1.0 与 1.6.15 同时显示「当前」，且点 1.0 被
+        //    误判成「当前已是该版本」无法切换。
+        if (!IsHistoricalRecordActive(cfg)) return false;
+
+        if (!string.IsNullOrWhiteSpace(cfg.LastHistoricalLabel)
+            && string.Equals(k.Version, cfg.LastHistoricalLabel, StringComparison.OrdinalIgnoreCase))
+            return true;
+        if (!string.IsNullOrWhiteSpace(k.ManifestId)
+            && string.Equals(k.ManifestId, cfg.LastHistoricalManifest, StringComparison.Ordinal))
+            return true;
+        var display = UpdateService.DisplayGameVersion(_gameVersion, cfg.LastHistoricalLabel, cfg.LastHistoricalInternalVersion);
+        return string.Equals(k.Version, display, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>这一版有没有「确认下完」的包（半截包不算 —— 缺角色贴图时进档会闪退）。</summary>
+    private DepotDownloaderService.StagedPackage? StagedOf(DepotDownloaderService.KnownVersion k)
+        => _staged.FirstOrDefault(s => s.ManifestId == k.ManifestId);
+
+    private string StatusTag(DepotDownloaderService.KnownVersion k)
+    {
+        if (IsInstalled(k)) return "当前";
+        var pkg = StagedOf(k);
+        if (pkg is not null) return pkg.Complete ? "已下载 · 点击切换" : "未确认下完 · 需校验补齐";
+        if (IsDownloading(k)) return IsQueued(k) ? "排队中" : "下载中";
+        return k.HasManifest ? "未下载" : "缺 Manifest";
+    }
+
+    /// <summary>这一版的下载任务（running/paused，按标题里的 manifest 认）。</summary>
+    private TaskItem? VerTask(DepotDownloaderService.KnownVersion k) =>
+        Center.Snapshot().FirstOrDefault(t => t.Kind == "gameversion"
+            && t.Status is "running" or "paused"
+            && t.Title.Contains(k.ManifestId, StringComparison.Ordinal));
+
+    /// <summary>这一版还在下载（没下完不能切它）。</summary>
+    private bool IsDownloading(DepotDownloaderService.KnownVersion k) => VerTask(k) is not null;
+
+    /// <summary>这一版还没轮到（同账号一次只走一路，多个下载排队依次下）。</summary>
+    private bool IsQueued(DepotDownloaderService.KnownVersion k) =>
+        VerTask(k) is { } t && VerDl.IsQueued(t);
+
+    /// <summary>「下载」按钮：只把这个版本拉进缓存抽屉，绝不碰游戏目录；下完之后
+    /// 那行才会亮起可点的切换（点版本号）。旧行为是点一下就直接下载并覆盖游戏目录。</summary>
+    private void OnDownloadClicked(DepotDownloaderService.KnownVersion k)
+    {
+        if (_gameRunning)
+        {
+            _ = JS.InvokeVoidAsync("junigridJs.toast", "游戏正在运行 — 请先退出后再下载", "err");
+            return;
+        }
+        if (!k.HasManifest)
+        {
+            _ = JS.InvokeVoidAsync("junigridJs.toast", "该版本缺少 Manifest ID，无法下载", "err");
+            return;
+        }
+        if (!VerDl.IsAuthorized)
+        {
+            _ = JS.InvokeVoidAsync("junigridJs.toast", "请先在设置里完成 Steam 扫码授权", "err");
+            return;
+        }
+        try
+        {
+            VerDl.StartDownload(k.DisplayName, k.ManifestId, k.Version, applyToGame: false);
+            _ = JS.InvokeVoidAsync("junigridJs.toast", $"已开始下载 {k.DisplayName}（进度见右下角任务中心）");
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            _ = JS.InvokeVoidAsync("junigridJs.toast", ex.Message, "err");
+        }
+    }
+
+    /// <summary>版本比较键：1.6.15 → 001.006.015，便于按新→旧排。</summary>
+    private static (int, int, int, int) VersionKey(DepotDownloaderService.KnownVersion k)
+    {
+        var s = !string.IsNullOrWhiteSpace(k.Version) ? k.Version! : k.Label;
+        var parts = s.Split('.', StringSplitOptions.RemoveEmptyEntries);
+        int P(int i) => parts.Length > i && int.TryParse(parts[i], out var v) ? v : 0;
+        // 更长的 patch 号排在同 major.minor 的前面（1.6.15 > 1.6.9）
+        return (P(0), P(1), P(2), parts.Length > 3 && int.TryParse(parts[3], out var p) ? p : 0);
+    }
+
+    /// <summary>版本号排序键：1.6.15 → 1_006_015，保证字典序也能按数字比。</summary>
+    private static long ParseVer(string? s)
+    {
+        if (string.IsNullOrWhiteSpace(s)) return 0;
+        var parts = s.Split('.');
+        long v = 0;
+        for (var i = 0; i < 3; i++)
+        {
+            var n = 0;
+            if (i < parts.Length)
+            {
+                var digits = new string(parts[i].TakeWhile(char.IsDigit).ToArray());
+                int.TryParse(digits, out n);
+            }
+            v = v * 10000 + Math.Min(n, 9999);
+        }
+        return v;
+    }
+
+    private async Task LoadAsync()
+    {
+        // 打开那一下先别摸盘：列 52 个缓存包、读版本资源、枚举进程全是内核调用，
+        // 压在 UI 线程上就是"点版本管理卡一下"。弹窗先画出来，数据在后台取完再刷。
+        await Task.Run(LoadLibraryData);
+        ReorderVersions();
+        await InvokeAsync(StateHasChanged);
+    }
+
+    /// <summary>磁盘/进程侧读取，可以甩到后台线程。</summary>
+    private void LoadLibraryData()
+    {
+        var cfg = Cfg.Current;
+        _known = Depot.GetMergedVersions(cfg.SteamAppId, cfg.CustomHistoricalVersions);
+        _staged = Depot.ListStagedPackages();
+        _gameRunning = Launcher.IsGameRunning;
+        _gameVersion = Updater.GetGameVersion(cfg.GamePath);
+        _manifestPath = SteamService.FindAppManifest(cfg.GamePath, cfg.SteamAppId);
+        _manifestLocked = SteamService.IsGameVersionLocked(_manifestPath);
+    }
+
+    /// <summary>把读到的数据排成界面用的顺序（纯内存 + 清一次失效记录）。</summary>
+    private void ReorderVersions()
+    {
+        // 本体已被 Steam 写回官方版 → 失效的历史切换记录立刻清掉，列表只亮真正当前项
+        ClearStaleHistoricalRecord();
+
+        var stagedIds = _staged.Select(s => s.ManifestId).ToHashSet(StringComparer.Ordinal);
+        var downloaded = new List<DepotDownloaderService.KnownVersion>();
+        foreach (var k in _known)
+        {
+            if (stagedIds.Contains(k.ManifestId) && !downloaded.Any(x => x.ManifestId == k.ManifestId))
+                downloaded.Add(k);
+        }
+        foreach (var s in _staged)
+        {
+            if (downloaded.Any(x => x.ManifestId == s.ManifestId)) continue;
+            downloaded.Add(new DepotDownloaderService.KnownVersion(s.Label, s.ManifestId, s.Label));
+        }
+
+        // 已下载置顶，顺序认内置版本表里的位置 —— 那张表本身就是发行顺序（新→旧）。
+        // 不能按数值排：1.02 数值上大于 1.1，可它发行上早半年，按数值就会把 1.02 顶到 1.1 上面。
+        // 表里没有的（Steam 又更新了、导入的包、自定义版本）按数值插进该在的位置。
+        double RankOf(DepotDownloaderService.KnownVersion k)
+        {
+            for (var i = 0; i < _known.Count; i++)
+                if (string.Equals(_known[i].ManifestId, k.ManifestId, StringComparison.Ordinal)) return i;
+            var v = ParseVer(k.Version ?? k.DisplayName);
+            for (var i = 0; i < _known.Count; i++)
+                if (v > ParseVer(_known[i].Version ?? _known[i].DisplayName)) return i - 0.5;
+            return _known.Count;
+        }
+        downloaded.Sort((a, b) => RankOf(a).CompareTo(RankOf(b)));
+
+        var rest = _known.Where(k => !stagedIds.Contains(k.ManifestId)).ToList();
+        _ordered = downloaded.Concat(rest).ToList();
+
+        if (_selectedStaged is not null)
+            _selectedStaged = _staged.FirstOrDefault(s => s.ManifestId == _selectedStaged.ManifestId);
+    }
+
+    /// <summary>重读 + 重排：用在"刚切完版本 / 刚删包 / 刚导入"这些必须立刻看到新状态的场合。
+    /// 弹窗打开走 LoadAsync（把重读挪到后台），别在这里摸盘。</summary>
+    private void RefreshLibrary()
+    {
+        LoadLibraryData();
+        ReorderVersions();
+    }
+
+    private void OnVersionClicked(DepotDownloaderService.KnownVersion k)
+    {
+        if (_gameRunning)
+        {
+            _ = JS.InvokeVoidAsync("junigridJs.toast", "游戏正在运行 — 请先退出后再下载或切换版本", "err");
+            return;
+        }
+        if (_busy)
+        {
+            _ = JS.InvokeVoidAsync("junigridJs.toast", "正在切换版本，请稍候", "err");
+            return;
+        }
+        if (DepotDownloaderService.IsApplyInProgress)
+        {
+            _ = JS.InvokeVoidAsync("junigridJs.toast", "正在切换版本，请等它完成", "err");
+            return;
+        }
+        if (!k.HasManifest)
+        {
+            _ = JS.InvokeVoidAsync("junigridJs.toast", "该版本缺少 Manifest ID，无法下载", "err");
+            return;
+        }
+        if (IsInstalled(k))
+        {
+            _ = JS.InvokeVoidAsync("junigridJs.toast", "当前已是该版本");
+            return;
+        }
+        if (IsDownloading(k))
+        {
+            _ = JS.InvokeVoidAsync("junigridJs.toast",
+                IsQueued(k) ? $"{k.DisplayName} 还在排队，轮到它下载完才能切"
+                            : $"{k.DisplayName} 正在下载，下完才能切", "err");
+            return;
+        }
+
+        var staged = _staged.FirstOrDefault(s => s.ManifestId == k.ManifestId);
+        if (staged is not null)
+        {
+            // 半截包不铺：缺的是某个角色的贴图时，游戏在 loadForNewGame 构造 NPC 那里直接
+            // 空引用闪退（09-22 00:04 WER 实录），现场比不切还糟。
+            if (!staged.Complete)
+            {
+                _ = JS.InvokeVoidAsync("junigridJs.toast",
+                    $"{k.DisplayName} 没确认下完 —— 先点右边的「校验补齐」，补完再切（缺文件的包进档会闪退）", "err");
+                return;
+            }
+            _selectedStaged = staged;
+            _done = false;
+            _error = null;
+            ApplySelectedStaged();
+            return;
+        }
+        // 没下载过的版本不再"点一下就顺手把游戏目录换掉"：要先按「下载」，下完才允许切
+        _ = JS.InvokeVoidAsync("junigridJs.toast",
+            $"{k.DisplayName} 还没下载 —— 先点右边的「下载」，下完再点版本号切换", "err");
+    }
+
+    private void ApplySelectedStaged() => _ = ApplyStagedAsync();
+
+    private async Task ApplyStagedAsync()
+    {
+        if (_selectedStaged is not { } st || _manifestPath is null) return;
+        if (_gameRunning)
+        {
+            _error = "游戏正在运行 — 请先退出后再切换版本";
+            await InvokeAsync(StateHasChanged);
+            return;
+        }
+        if (DepotDownloaderService.IsApplyInProgress)
+        {
+            _error = "正在切换版本，请等它完成";
+            await InvokeAsync(StateHasChanged);
+            return;
+        }
+        _busy = true;
+        _done = false;
+        _error = null;
+        _stateText = "使用本地缓存，直接应用…";
+        _switchCts = new CancellationTokenSource();
+        await InvokeAsync(StateHasChanged);
+
+        try
+        {
+            var cfg = Cfg.Current;
+            var uiProg = new Progress<DepotDownloaderService.Progress>(p =>
+                _ = InvokeAsync(() => { _stateText = p.State; StateHasChanged(); }));
+
+            await Task.Run(() =>
+            {
+                if (!Depot.TryApplyStaged(cfg.GamePath, cfg.SteamAppId, "413151", st.ManifestId, uiProg, currentGameVersion: _gameVersion))
+                    throw new DepotDownloaderService.DepotException("本地缓存不完整，请重新下载");
+            }, _switchCts.Token);
+
+            // 部署的是最新官方正式版时不锁（v1.6.8）：锁了只会把 Steam 换分支/更新
+            // 卡成磁盘写入错误；真历史降级才需要防 Steam 覆盖
+            if (!_manifestLocked && !DepotDownloaderService.IsLatestOfficialManifest(cfg.SteamAppId, st.ManifestId))
+            {
+                var (ok, _) = SteamService.SetGameVersionLock(_manifestPath, true);
+                if (ok) { _manifestLocked = true; cfg.LockGameVersion = true; }
+            }
+            cfg.LastHistoricalManifest = st.ManifestId;
+            cfg.LastHistoricalLabel = st.Label;
+            _gameVersion = Updater.GetGameVersion(cfg.GamePath);
+            cfg.LastHistoricalInternalVersion = _gameVersion ?? "";
+            Cfg.Save(cfg);
+            RefreshLibrary();
+            _ = JS.InvokeVoidAsync("junigridJs.toast", $"已切换到 {st.Label}", "ok");
+            // P0-1/P0-3：Mods 整包替换 + 立绘扫描数据失效 —— 广播已打开的页面重扫
+            PageRefresh.Request("mods");
+            PageRefresh.Request("portraits");
+            // 首页与侧栏的版本号/ SMAPI 状态都是按磁盘本体算的，不重读会停在切换中途那次空值
+            PageRefresh.Request("version");
+            await OnVersionChanged.InvokeAsync();
+        }
+        catch (OperationCanceledException)
+        {
+            _error = "已取消";
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _busy = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private void CancelSwitch() => _switchCts?.Cancel();
+
+    private void ToggleLock()
+    {
+        if (_manifestPath is null) return;
+        var want = !_manifestLocked;
+        var (ok, err) = SteamService.SetGameVersionLock(_manifestPath, want);
+        if (!ok)
+        {
+            _ = JS.InvokeVoidAsync("junigridJs.toast", err, "err");
+            return;
+        }
+        _manifestLocked = want;
+        var cfg = Cfg.Current;
+        cfg.LockGameVersion = want;
+        Cfg.Save(cfg);
+        _ = JS.InvokeVoidAsync("junigridJs.toast", want ? "已锁定游戏版本" : "已解除锁定");
+        StateHasChanged();
+    }
+
+    // 删除走 Depot.DeleteStagedPackage → Directory.Delete，硬删、不进回收站；一个包又是几 GB
+    // 且要重下才能回来。所以点「删除」先只记下目标，把大小和后果写在按钮上方再问一句。
+    private string? _pendingDeleteId;
+    private string? _pendingDeleteText;
+
+    private void AskDelete(string label, DepotDownloaderService.StagedPackage pkg)
+    {
+        _pendingDeleteId = pkg.ManifestId;
+        // 文案口径收在服务层：设置页那个「删除」按钮删的是同一个目录，两处必须报同一句话
+        _pendingDeleteText = DepotDownloaderService.DeletePackConfirmText(pkg);
+        StateHasChanged();
+    }
+
+    private void CancelDelete() { _pendingDeleteId = null; _pendingDeleteText = null; }
+
+    /// <summary>认领一个本地版本包（别的机器 / U盘 / 网盘拷来的）。校验、补元数据、必要时搬进
+    /// 统一缓存目录，之后点它就能离线切换 —— Steam CM 连不上时这是唯一的路。</summary>
+    private async Task ImportLocal()
+    {
+        // 导入是往 depot-staging 里那个版本的目录写；那正是下载中的目录的话，
+        // 半成品和整包会混在一个抽屉里（切它时锚点校验会拦，但包已经坏了）。
+        if (Center.Snapshot().Any(t => t.Kind == "gameversion" && t.Status is "running" or "paused"))
+        {
+            _ = JS.InvokeVoidAsync("junigridJs.toast", "有版本正在下载或排队，等它结束再导入本地包", "err");
+            return;
+        }
+        var dlg = new Microsoft.Win32.OpenFolderDialog
+        { Title = "选择版本包文件夹（里面有 Stardew Valley.dll 或 Stardew Valley.exe）" };
+        if (dlg.ShowDialog() != true) return;
+        try
+        {
+            var label = Depot.ImportLocalPackage(dlg.FolderName);
+            RefreshLibrary();
+            StateHasChanged();
+            _ = JS.InvokeVoidAsync("junigridJs.toast", $"已认领本地版本包 {label}，点它即可离线切换");
+        }
+        catch (Exception ex)
+        {
+            _ = JS.InvokeVoidAsync("junigridJs.toast",
+                ex is DepotDownloaderService.DepotException ? ex.Message : "导入失败：" + ex.Message, "err");
+        }
+    }
+
+    private void DoDeleteStaged()
+    {
+        var manifestId = _pendingDeleteId!;
+        CancelDelete();
+        if (!Depot.DeleteStagedPackage(manifestId))
+        {
+            _ = JS.InvokeVoidAsync("junigridJs.toast", "删除失败（文件可能被占用）", "err");
+            return;
+        }
+        if (_selectedStaged?.ManifestId == manifestId) _selectedStaged = null;
+        RefreshLibrary();
+        StateHasChanged();
+        _ = JS.InvokeVoidAsync("junigridJs.toast", "已删除本地缓存", "ok");
+    }
+
+    private async Task Close()
+    {
+        // v1.1.7：本地应用进行中允许关闭 —— 取消本次切换，后台历史版本下载不受影响
+        if (_busy)
+        {
+            try { _switchCts?.Cancel(); } catch { }
+            _busy = false;
+            _error = "已取消";
+        }
+        // App Store 卡片收回：先 FLIP 缩回版本卡，再卸弹窗
+        try { await JS.InvokeVoidAsync("junigridJs.flipModal", "jgVerCard", false); } catch { }
+        await Task.Delay(320);
+        _flipInPlayed = false;
+        await OnClose.InvokeAsync();
+    }
+}

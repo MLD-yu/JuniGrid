@@ -1,0 +1,36 @@
+@namespace JuniGrid.Components
+@using JuniGrid.Services
+@* v1.09：自 Nexus.razor 三处逐字相同的 jg-modcard2 卡片 markup 收敛而来（行为不变） *@
+<div class="jg-modcard2" @onclick="() => OnOpen.InvokeAsync(Mod.Id)">
+    <div class="jg-modcard2-cover-wrap">
+        @if (!string.IsNullOrEmpty(Mod.ThumbnailUrl) || !string.IsNullOrEmpty(Mod.PictureUrl))
+        {
+            <img class="jg-modcard2-cover" src="@(Mod.ThumbnailUrl ?? Mod.PictureUrl)" loading="lazy" alt="" />
+        }
+        else
+        {
+            <div class="jg-modcard2-cover jg-modcard2-fb">@(Mod.Name.Length>0 ? Mod.Name[..1].ToUpperInvariant() : "?")</div>
+        }
+        @if (Installed)
+        {
+            <span class="jg-modcard2-badge">已安装</span>
+        }
+    </div>
+    <div class="jg-modcard2-body">
+        @* ─── v1.04.0：官网紧凑排列 —— 封面/标题/分类chip/两行简介 ─── *@
+        <div class="jg-modcard2-title">@Mod.Name</div>
+        @if (!string.IsNullOrEmpty(Mod.Category))
+        {
+            <span class="jg-modcard2-cat-chip">@Mod.Category</span>
+        }
+        @if (!string.IsNullOrWhiteSpace(Mod.Summary))
+        {
+            <div class="jg-modcard2-summary">@(Mod.Summary.Length > 90 ? Mod.Summary[..90] + "…" : Mod.Summary)</div>
+        }
+    </div>
+</div>
+@code {
+    [Parameter, EditorRequired] public NexusModListEntry Mod { get; set; } = null!;
+    [Parameter] public bool Installed { get; set; }
+    [Parameter, EditorRequired] public EventCallback<int> OnOpen { get; set; }
+}

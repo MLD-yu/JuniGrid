@@ -9,6 +9,11 @@ obj/
 $null
 NVIDIA Corporation/
 *.bak
+jh/
+jh2/
+vectrus/
+_revert-backup-*/
+index.html
 
 # installer payload & build output (generated from publish/sc)
 installer/JuniGridInstaller/payload.lz
@@ -17,8 +22,15 @@ installer/publish/
 
 # build outputs & local artifacts
 dist-tmp/
+objversioncheck-tmp/
 publish/
 .workbuddy/
 
+# runtime logs
+JuniGrid/run.log
+
 # test docs (local only)
 TestDocs/
+
+# test harness run outputs
+test-harness/*.txt

@@ -1,0 +1,715 @@
+@namespace JuniGrid.Components.Pages
+@page "/portraits"
+@inject ConfigService Cfg
+@inject PortraitSkinService PortraitSkin
+@inject PageRefreshService PageRefresh
+@inject IJSRuntime JS
+@inject NavigationManager Nav
+@implements IDisposable
+
+<div class="jg-page">
+    <div style="display:flex;justify-content:space-between;align-items:flex-end;flex-wrap:wrap;gap:8px">
+        <div>
+            <div style="display:flex;align-items:center;gap:14px">
+                <h1 style="margin-top:0;margin-bottom:4px">立绘</h1>
+            </div>
+            <div style="opacity:.7;font-size:13px">
+                @if (_scanning)
+                {
+                    <span>正在扫描已装的肖像/皮肤 mod…</span>
+                }
+                else if (_characters is null)
+                {
+                    <span>还没有设置游戏目录 —— 先到「设置」页选择</span>
+                }
+                else
+                {
+                    <text>@VisibleCharacters.Count() 个角色</text>
+                }
+            </div>
+        </div>
+    </div>
+
+    @* ── 工具行：页签（全部/原版/马 + 各 mod 的角色页签）+ 搜索 ── *@
+    <div class="jg-mods-toolbar" style="margin-top:10px">
+        <div class="jg-chips" role="group">
+            @foreach (var tab in Tabs)
+            {
+                <button class="jg-chip @(_tab == tab.Key ? "active" : "")" @onclick='() => SetTab(tab.Key)'>@tab.Label</button>
+            }
+        </div>
+        <div class="jg-search-x @(_searchOpen ? "open" : "")">
+            <button class="jg-search-btn" @onclick="ToggleSearch">
+                <img src="assets/search.svg" alt="搜索" style="width:18px;height:18px;display:block" />
+            </button>
+            <div class="jg-search-field">
+                <input class="jg-search-input" placeholder="搜角色名" @bind="SearchText" @bind:event="oninput" />
+                <button class="jg-search-clear" @onclick="ClearSearchAndClose">✕</button>
+            </div>
+        </div>
+    </div>
+
+    @* ── 角色网格：底色透明，封面=当前生效真实大头照（像素风放大）── *@
+    @if (_scanning)
+    {
+        @* v1.6.8：扫描中 shimmer 骨架卡（复用 Mods 页同款微光原语，不再白屏干等） *@
+        <div class="jg-pt-grid jg-pt-skelgrid">
+            @for (var i = 0; i < 12; i++)
+            {
+                <div class="jg-pt-card jg-pt-skelcard">
+                    <span class="jg-shimmer jg-pt-skelcover"></span>
+                    <span class="jg-shimmer jg-pt-skelname"></span>
+                </div>
+            }
+        </div>
+    }
+    else if (_characters is not null && VisibleCharacters.Any())
+    {
+        <div class="jg-pt-grid">
+            @foreach (var ch in VisibleCharacters)
+            {
+                var chLocal = ch;
+                var selected = SelectedFolder(chLocal);
+                var skinCount = chLocal.Skins.Count(s => !s.IsNative);
+                <button class="jg-pt-card" @onclick="() => OpenModal(chLocal)" aria-label="@chLocal.DisplayName">
+                    @if (skinCount > 0)
+                    {
+                        <span class="jg-pt-badge" data-tip="有 @skinCount 个可选皮肤">@skinCount</span>
+                    }
+                    <span class="jg-pt-cover">
+                        @{
+                            var cover = PortraitSkin.GetCharacterCover(GamePath, chLocal, selected);
+                        }
+                        @if (cover is not null)
+                        {
+                            <img src="@cover" alt="" draggable="false" />
+                        }
+                        else
+                        {
+                            <span class="jg-pt-cover-empty"></span>
+                        }
+                    </span>
+                    <span class="jg-pt-name">@chLocal.DisplayName</span>
+                </button>
+            }
+        </div>
+    }
+    else if (_characters is not null && !_scanning)
+    {
+        <div class="jg-card" style="margin-top:12px">
+            @(string.IsNullOrWhiteSpace(SearchText) && _tab == "all"
+                ? "没有找到任何角色 —— 确认游戏目录指向的是星露谷本体，或先装一个肖像 mod 试试。"
+                : "没有符合筛选条件的角色。")
+        </div>
+    }
+
+    @* ── 皮肤选择弹窗（v2 单列表：默认行置顶，全部是大头照格子）── *@
+    @if (_modalChar is not null)
+    {
+        <div class="jg-modal-overlay" @onclick="CloseModal">
+            <div class="jg-modal jg-pt-modal" @onclick:stopPropagation>
+                @{
+                    // v1.3.9：季节激活时的"生效皮肤" = 该季分配的皮肤（右键固定的），
+                    // 没分配才回落全局选择 —— 高亮/标题/预览全部按它来，
+                    // 否则"右键固定了第二张卡、高亮还停在第一张"（用户实测）
+                    var effSeasonSkins = PortraitSkinService.GetSeasonSkins(Cfg.Current, _modalChar.Id);
+                    PortraitSkinOption? EffectiveOption()
+                    {
+                        if (_season is not null && effSeasonSkins.TryGetValue(_season, out var pk))
+                        {
+                            var hit = _modalChar.AllOptions.FirstOrDefault(o =>
+                                string.Equals(o.PackFolder ?? "", pk ?? "", StringComparison.OrdinalIgnoreCase));
+                            if (hit is not null) return hit;
+                        }
+                        return ActiveOption(_modalChar);
+                    }
+                    var ptActive = EffectiveOption();
+                    var seasonPortraitFiles = PortraitSkinService.GetSeasonFiles(ptActive?.SourceFile);
+                }
+                <div style="display:flex;align-items:baseline;gap:10px">
+                    <div class="jg-modal-title" style="margin-bottom:2px">@_modalChar.DisplayName</div>
+                    <span style="font-size:12px;opacity:.55">@(_modalChar.Members.Count > 1
+                        ? string.Join(" · ", _modalChar.Members) : _modalChar.Id)</span>
+                    @* 当前生效的皮肤（悬停某张卡时临时变成灰色的那个皮肤名，离开恢复）。
+                       v1.3.9：mod 名可点 → 直接进该 mod 的详情页 *@
+                    <span class="jg-pt-active jg-pt-packlink @(_hoverLabel is not null ? "hovering" : "")"
+                          @onclick="@(() => GoPackDetail(_modalChar))">@(_hoverLabel ?? (ptActive?.PackName ?? ""))</span>
+                </div>
+                @if (_modalChar.Members.Count > 1)
+                {
+                    @* 同一个人的几份 NPC 数据并成了一张卡（SVE 为剧情多开的条目，连显示名
+                       都写的是本尊的）—— 说清楚点一次会同时改哪几个，免得以为漏了 *@
+                    <div class="jg-pt-members">
+                        这张卡同时管游戏里的 @_modalChar.Members.Count 份 NPC 数据（@string.Join("、", _modalChar.Members)），点任何一张皮肤它们一起换。
+                    </div>
+                }
+
+                <div class="jg-pt-body">
+                    <div class="jg-pt-left">
+                        @* 季节行：点选后左侧所有皮肤格与右侧小人一起切换到该季变体；
+                           某皮肤没有该季变体就保持它自己的当前图（用户要求）。 *@
+                        <div class="jg-pt-seasons">
+                            @foreach (var (sKey, sLabel) in new[] { ("spring", "春"), ("summer", "夏"), ("fall", "秋"), ("winter", "冬") })
+                            {
+                                var k = sKey;
+                                <button type="button"
+                                        class="jg-pt-season @(_season == k ? "active" : "")"
+                                        title="@(seasonPortraitFiles.ContainsKey(k) ? $"预览{sLabel}季外观" : $"当前皮肤没有{sLabel}季变体，点击显示当前外观")"
+                                        @onclick="() => ToggleSeason(k)">@sLabel</button>
+                            }
+                        </div>
+                        <div class="jg-pt-skinbox">
+                            @foreach (var opt in _modalChar.AllOptions.ToList())
+                            {
+                                var optLocal = opt;
+                                // 高亮 = EffectiveOption（季节分配命中才用它，否则回落全局选择）。
+                                // 不能直接比 effSeasonSkins[_season]：分配指向已卸载/已折叠包时
+                                // 没有任何卡能匹配，春天会整排无选中框（Emily+Seasonal Baechu 实测）
+                                var isSel = ptActive is not null
+                                    && string.Equals(optLocal.PackFolder ?? "", ptActive.PackFolder ?? "", StringComparison.OrdinalIgnoreCase)
+                                    && optLocal.IsVanilla == ptActive.IsVanilla
+                                    && optLocal.IsNative == ptActive.IsNative;
+                                var unavailable = !optLocal.IsVanilla && !optLocal.IsNative && optLocal.SourceFile is null;
+                                // 同画面的其它包（作者 CP 版 + 我们转换的素材包 + 手放进 Portraiture 的同一批画）
+                                // 已经并到这一条上：卡右上角标 ×N，卡底铺来源名，悬停看没截断的全名。
+                                // 近似同款（整张差 ≤5%）另算一批，标 ≈ 让人知道不是同一份文件。
+                                var merged = optLocal.Dupes.Count + optLocal.NearDupes.Count;
+                                var dupeTip = merged > 0
+                                    ? (optLocal.Dupes.Count > 0
+                                        ? $"\n另有 {optLocal.Dupes.Count} 个相同画面来源：" + string.Join(" / ", optLocal.Dupes) : "")
+                                      + (optLocal.NearDupes.Count > 0
+                                        ? $"\n≈ 另有 {optLocal.NearDupes.Count} 个近似来源（整张画面差 ≤5%）："
+                                          + string.Join(" / ", optLocal.NearDupes) : "")
+                                    : "";
+                                // 选了季节 → 该皮肤格显示它自己的该季变体（没有就保持默认图）
+                                var seasonCardSrc = _season is not null
+                                    && PortraitSkinService.GetSeasonFilesForChar(optLocal.SourceFile, _modalChar.Id).TryGetValue(_season, out var osf)
+                                        ? osf : optLocal.SourceFile;
+                                <div class="jg-pt-skin @(isSel ? "selected" : "") @(unavailable ? "unavailable" : "") @(_busy ? "busy" : "")"
+                                     title="@((unavailable ? "这个皮肤包未找到可用立绘文件，不能切换，避免游戏中出现透明头像。" : _busy ? "正在切换皮肤，请稍候…" : _season is not null ? $"单击 = 换成这个皮肤；右键 = 只给{_season switch { "spring" => "春", "summer" => "夏", "fall" => "秋", _ => "冬" }}季固定这个皮肤" : "单击 = 换成这个皮肤") + dupeTip)"
+                                     @onclick="() => OnSkinClick(_modalChar, optLocal)"
+                                     @oncontextmenu:preventDefault
+                                     @oncontextmenu="() => AssignSeasonSkin(_modalChar, optLocal)"
+                                     @onmouseenter="() => _hoverLabel = optLocal.PackName"
+                                     @onmouseleave="() => _hoverLabel = null">
+                                    @{
+                                        var thumb = PortraitSkin.GetPortraitThumbByPath(seasonCardSrc);
+                                    }
+                                    @if (thumb is not null)
+                                    {
+                                        <img src="@thumb" alt="" draggable="false" />
+                                    }
+                                    else
+                                    {
+                                        <span class="jg-pt-cover-empty"></span>
+                                    }
+                                    @if (merged > 0)
+                                    {
+                                        <span class="jg-pt-dupes">×@(merged + 1)</span>
+                                        <span class="jg-pt-dupenames">@DupesLine(optLocal)</span>
+                                    }
+                                    @* v1.3.8：皮肤卡 ✕ 删除按钮取消（用户要求）—— 点删会把整个
+                                       mod 包移进回收站，误触代价太大；卸载 mod 请走「Mod 管理」页。 *@
+                                </div>
+                            }
+                        </div>
+                    </div>
+
+                    @* 右侧：当前选中皮肤对应的精灵图（走动小人整表），随季节一起切换。
+                       所选皮肤没带精灵图（纯立绘包）→ 显示原版样貌；解码失败继续尝试
+                       默认/mod 默认精灵图，不能留空白面板。 *@
+                    @{
+                        var seasonSpriteFile = _season is not null
+                            && ptActive?.SpriteFile is not null
+                            && PortraitSkinService.GetSeasonFiles(ptActive.SpriteFile).TryGetValue(_season, out var ssf)
+                                ? ssf : null;
+                        var spriteCandidates = new[]
+                        {
+                            ptActive, _modalChar.Vanilla, _modalChar.Native
+                        }.Where(o => o?.SpriteFile is not null)
+                         .Select(o => o!)
+                         // 娘家没精灵时兜底到皮肤包自带的精灵（LittleGruff 实测：精灵在
+                         // East Scarp: Locations 包里）
+                         .Concat(_modalChar.Skins.Where(s => s.SpriteFile is not null))
+                         .DistinctBy(o => o!.SpriteFile, StringComparer.OrdinalIgnoreCase)
+                         .ToList();
+                        var spriteThumb = seasonSpriteFile is not null
+                            ? PortraitSkin.GetSpriteThumbByPath(seasonSpriteFile)
+                            : spriteCandidates
+                                .Select(o => PortraitSkin.GetSpriteThumbByPath(o!.SpriteFile))
+                                .FirstOrDefault(t => t is not null);
+                    }
+                    <div class="jg-pt-spritepane">
+                        @if (spriteThumb is not null)
+                        {
+                            <img src="@spriteThumb" alt="" draggable="false" />
+                        }
+                    </div>
+                </div>
+            </div>
+        </div>
+    }
+
+    @if (_toast is not null)
+    {
+        <div class="jg-pt-toast">@_toast</div>
+    }
+</div>
+
+@code {
+    private string GamePath => Cfg.Current.GamePath ?? "";
+
+    private List<PortraitCharacter>? _characters;
+    private bool _scanning;
+
+    // ── 筛选 ──
+    private string _tab = "all";        // all | vanilla | horse | mod:<娘家包 Folder>
+    private string SearchText { get; set; } = "";
+    private bool _searchOpen;
+
+    /// <summary>页签：全部 / 原版 / 马 + 每个有角色的 mod 一个页签（显示 mod 名）。
+    /// 「全部来源」下拉已按用户要求删除，mod 过滤直接上页签。</summary>
+    private IEnumerable<(string Key, string Label)> Tabs
+    {
+        get
+        {
+            yield return ("all", "全部");
+            yield return ("vanilla", "原版");
+            if (_characters is not null)
+            {
+                // 一张卡可能贡献多个页签（本尊 + mod 变体），所以按 TabKeys 摊平去重
+                foreach (var k in _characters.Where(c => !c.Hidden)
+                             .SelectMany(c => c.IsVanilla && c.Members.Count <= 1
+                                 ? Array.Empty<string>() : c.TabKeys)
+                             .Where(k => k != "mod")
+                             .Distinct(StringComparer.OrdinalIgnoreCase)
+                             .OrderBy(k => k, StringComparer.OrdinalIgnoreCase))
+                {
+                    // "mod" 是无娘家无皮肤的兜底键：这些角色只会在「全部」里出现，不单独成页签
+                    var name = _scan is not null && _scan.NativePackNames.TryGetValue(k, out var n) ? n : k;
+                    yield return ("mod:" + k, CleanPackName(name));
+                }
+            }
+        }
+    }
+
+    /// <summary>卡面上的「同画面来源」一行：名字先按页签那套洗干净（剥 [CP] 等前后缀），
+    /// 每段截断后用 / 连接 —— 用户要求合并了哪几个包要直接看得见，不能只藏在悬停里。
+    /// 近似同款（整张画面差 ≤5%）带一个 ≈ 前缀，跟「完全相同」区分开。</summary>
+    private static string DupesLine(PortraitSkinOption o) =>
+        string.Join(" / ", new[] { o.PackName }
+            .Concat(o.Dupes)
+            .Concat(o.NearDupes.Select(n => "≈" + n))
+            .Select(ClipPackName));
+
+    private static string ClipPackName(string name)
+    {
+        var n = CleanPackName(name);
+        return n.Length <= 10 ? n : n[..10] + "…";
+    }
+
+    /// <summary>页签只显示干净的 mod 名：剥开头 "[CP] " 标记前缀、结尾 " [Content Patcher
+    /// component]" 组件后缀，以及 "Seven.Deadly.Sins-CP" 这类点分/带 CP 尾缀的 manifest 写法。</summary>
+    private static string CleanPackName(string name)
+    {
+        var n = name.Trim();
+        while (n.StartsWith("["))
+        {
+            var close = n.IndexOf(']');
+            if (close < 0) break;
+            n = n[(close + 1)..].Trim();
+        }
+        while (n.EndsWith("]"))
+        {
+            var open = n.LastIndexOf('[');
+            if (open < 0) break;
+            n = n[..open].Trim();
+        }
+        if (!n.Contains(' ') && n.Contains('.'))
+            n = n.Replace('.', ' ');
+        n = System.Text.RegularExpressions.Regex.Replace(
+            n, @"[\s\-_]+CP$", "", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        return n.Length > 0 ? n : name;
+    }
+
+    private IEnumerable<PortraitCharacter> VisibleCharacters
+    {
+        get
+        {
+            if (_characters is null) yield break;
+            foreach (var ch in _characters)
+            {
+                if (ch.Hidden) continue;   // 已并进本尊那张卡的别名条目
+                // 「原版」含马
+                if (_tab == "vanilla" && !ch.IsVanilla) continue;
+                if (_tab.StartsWith("mod:", StringComparison.Ordinal))
+                {
+                    var owner = _tab["mod:".Length..];
+                    // 合并卡可以既在「原版」又在该 mod 页签（本尊是原版村民、变体是 mod 多开的）
+                    if (ch.IsVanilla && ch.Members.Count <= 1) continue;
+                    if (!ch.TabKeys.Any(k => string.Equals(k, owner, StringComparison.OrdinalIgnoreCase))) continue;
+                }
+                if (SearchText.Length > 0 && !MatchesSearch(ch)) continue;
+                yield return ch;
+            }
+        }
+    }
+
+    /// <summary>搜索同时认显示名、本尊 id 和并进来的别名 id（搜 "ScarlettFake" 也要出斯嘉丽）。</summary>
+    private bool MatchesSearch(PortraitCharacter ch)
+    {
+        if (ch.DisplayName.Contains(SearchText, StringComparison.OrdinalIgnoreCase) ||
+            ch.Id.Contains(SearchText, StringComparison.OrdinalIgnoreCase)) return true;
+        return ch.Members.Any(m => m.Contains(SearchText, StringComparison.OrdinalIgnoreCase));
+    }
+
+    // ── 弹窗状态 ──
+    private PortraitCharacter? _modalChar;
+    private bool _busy;
+    /// <summary>悬停皮肤格时临时显示那个皮肤名（标题旁标签变灰），离开恢复当前生效名。</summary>
+    private string? _hoverLabel;
+    // v1.3.9：整体替换功能已按用户要求移除（内容扩展包会被误认成皮肤包）。
+
+    // ── 提示（「下次启动游戏生效」/ Portraiture 按 P 提示）──
+    private string? _toast;
+    private System.Threading.Timer? _toastTimer;
+
+    protected override void OnInitialized()
+    {
+        PortraitSkin.Changed += OnThumbsChanged;
+        PageRefresh.OnRefresh += OnPageRefresh;
+        if (string.IsNullOrWhiteSpace(GamePath)) return;
+        _scanning = true;
+        _ = Task.Run(() =>
+        {
+            PortraitScanResult scan;
+            try { scan = PortraitSkin.Scan(GamePath); }
+            catch (Exception ex)
+            {
+                AppLog.Error("Portraits", "扫描失败: " + ex.Message);
+                scan = new PortraitScanResult();
+            }
+            return InvokeAsync(() =>
+            {
+                _characters = scan.Characters;
+                _scan = scan;
+                RepairUnavailableSelections(scan);
+                _scanning = false;
+                StateHasChanged();
+                // 后台预热全部缩略图：打开弹窗时格子即时有图
+                _ = Task.Run(() => PortraitSkin.PrewarmThumbs(GamePath, scan));
+            });
+        });
+    }
+
+    private PortraitScanResult? _scan;
+
+    public void Dispose()
+    {
+        PortraitSkin.Changed -= OnThumbsChanged;
+        PageRefresh.OnRefresh -= OnPageRefresh;
+        _toastTimer?.Dispose();
+    }
+
+    private void OnThumbsChanged()
+    {
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    private void OnPageRefresh(string key)
+    {
+        if (key != "portraits") return;
+        Rescan();
+    }
+
+    private void Rescan()
+    {
+        if (string.IsNullOrWhiteSpace(GamePath)) return;
+        _scanning = true;
+        _ = Task.Run(() =>
+        {
+            PortraitScanResult scan;
+            try { scan = PortraitSkin.Scan(GamePath); }
+            catch { scan = new PortraitScanResult(); }
+            return InvokeAsync(() =>
+            {
+                _characters = scan.Characters;
+                _scan = scan;
+                RepairUnavailableSelections(scan);
+                _scanning = false;
+                // 弹窗里的角色引用可能已失效（包被删）→ 关掉最稳
+                _modalChar = null;
+                StateHasChanged();
+                _ = Task.Run(() => PortraitSkin.PrewarmThumbs(GamePath, scan));
+                // 自愈：按当前配置刷新覆盖包（幂等；防配置与覆盖包内容脱节）
+                _ = Task.Run(() =>
+                {
+                    try { PortraitSkin.SyncToDisk(GamePath, scan); }
+                    catch { /* 覆盖包写入失败只影响下次启动游戏的效果 */ }
+                });
+            });
+        });
+    }
+
+    // ── 选择状态 ──
+    private string? SelectedFolder(PortraitCharacter ch) =>
+        Cfg.Current.PortraitSkins.TryGetValue(ch.Id, out var f) ? f : null;
+
+    /// <summary>切换皮肤后同步会改名启用/禁用包（.X ↔ X），内存里扫到的绝对路径随之失效。
+    /// 重新扫描刷新路径；与 Rescan 不同 —— 弹窗按 id 重映射保持打开，不打断用户。</summary>
+    private void RefreshAfterSync()
+    {
+        if (string.IsNullOrWhiteSpace(GamePath)) return;
+        // v1.6.8：弹窗开着时延迟背景刷新 —— 立即刷新会让背后整页角色卡重新
+        // diff/渲染（WebView 大 DOM），正是切换皮肤"卡一下"的来源。弹窗里
+        // 已通过 StateHasChanged 即时反映新选择，关弹窗时统一补刷背景。
+        if (_modalChar is not null) { _pendingRefresh = true; return; }
+        var modalId = _modalChar?.Id;
+        _ = Task.Run(() =>
+        {
+            PortraitScanResult scan;
+            try { scan = PortraitSkin.Scan(GamePath); }
+            catch { return; }
+            _ = InvokeAsync(() =>
+            {
+                _scan = scan;
+                _characters = scan.Characters;
+                RepairUnavailableSelections(scan);
+                _modalChar = modalId is null
+                    ? null
+                    : scan.Characters.FirstOrDefault(c => c.Id == modalId);
+                StateHasChanged();
+                _ = Task.Run(() => PortraitSkin.PrewarmThumbs(GamePath, scan));
+            });
+        });
+    }
+
+    private bool IsSelected(PortraitCharacter ch, PortraitSkinOption opt)
+    {
+        var sel = SelectedFolder(ch);
+        // 无选择 = 默认外观（原版角色高亮官方皮肤行、mod 角色高亮默认外观行）
+        if (sel is null) return opt.IsVanilla || opt.IsNative;
+        return !opt.IsVanilla && string.Equals(sel, opt.PackFolder, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private async Task PickSkin(PortraitSkinOption opt)
+    {
+        if (_modalChar is null || _busy || _scan is null) return;
+        // 动态路径无法解析的包没有可确认的完整立绘；不写入选择，避免 Content Patcher
+        // 载入错误素材后把游戏里的肖像变成透明。
+        if (!opt.IsVanilla && !opt.IsNative && opt.SourceFile is null)
+        {
+            ShowToast("这个皮肤包未找到可用立绘文件，已阻止切换以避免透明头像");
+            return;
+        }
+        _busy = true;
+        var ch = _modalChar;
+        // 默认行（官方/mod 默认外观）与「已选中的再点一次」都 = 回到默认（不写选择）
+        var folder = (opt.IsVanilla || opt.IsNative || IsSelected(ch, opt)) ? null : opt.PackFolder;
+        // v1.6.8：点选瞬间先在后台预热目标立绘/季节变体的缩略图 —— 切换落盘完成时
+        // 图已就绪，弹窗渲染零等待（否则新图要在渲染线程当场解码+裁剪+缩放，卡一下）
+        _ = PortraitSkin.GetSkinThumb(ch, opt);
+        PortraitSkin.PrewarmSeasonThumbs(ch);
+        try
+        {
+            await Task.Run(() => PortraitSkin.SelectSkin(GamePath, _scan, ch.Id, folder));
+            if (opt.IsPortraiture && folder is not null)
+                ShowToast("已切换");
+            else if (folder is null && ch.Skins.Any(s => s.IsPortraiture))
+                ShowToast("已切换回默认");
+            else
+                ShowToast("已切换");
+            // 同步会改名启用/禁用包 —— 内存扫描里的绝对路径随之失效，缩略图会变空占位
+            //（实机：选一个禁用中的皮肤，启用改名后卡面立刻变棋盘格）。重扫刷新路径
+            RefreshAfterSync();
+        }
+        catch (Exception ex)
+        {
+            ShowToast("写入失败：" + ex.Message);
+        }
+        finally
+        {
+            _busy = false;
+            StateHasChanged();
+        }
+    }
+
+    /// <summary>旧版本已把“找不到实际立绘文件”的包写入选择时，主动回到默认。
+    /// 这类选择只会让 Content Patcher 加载空素材，游戏里表现为透明肖像。
+    /// v1.6.7：Mods 按版本隔离、选择是全局的 —— 当前版本扫不到来源 ≠ 包没了
+    ///（可能只是躺在别的版本的 staging 里）。只有整个磁盘（游戏目录 + 全部
+    /// 版本 staging）都没有这个包时才回默认，否则版本往返会永久误清选择。</summary>
+    private void RepairUnavailableSelections(PortraitScanResult scan)
+    {
+        var invalidChars = scan.Characters.Where(ch =>
+        {
+            var selected = SelectedFolder(ch);
+            if (selected is null) return false;
+            var opt = ch.AllOptions.FirstOrDefault(o =>
+                !o.IsVanilla && string.Equals(o.PackFolder, selected, StringComparison.OrdinalIgnoreCase));
+            return opt is not null
+                && opt.SourceFile is null
+                && !PackExistsAnywhere(selected);
+        }).ToList();
+
+        foreach (var ch in invalidChars)
+            PortraitSkin.SelectSkin(GamePath, scan, ch.Id, null);
+
+        if (invalidChars.Count > 0)
+            ShowToast("已切换回默认");
+    }
+
+    /// <summary>包目录在游戏 Mods 或任一版本 staging 的 Mods 里是否存在。</summary>
+    private bool PackExistsAnywhere(string packFolder)
+    {
+        var rel = packFolder.Replace('/', Path.DirectorySeparatorChar);
+        if (Directory.Exists(Path.Combine(GamePath, "Mods", rel))) return true;
+        try
+        {
+            var stagingRoot = StoragePaths.DepotStagingDir;
+            if (!Directory.Exists(stagingRoot)) return false;
+            foreach (var st in Directory.EnumerateDirectories(stagingRoot))
+            {
+                if (Path.GetFileName(st).StartsWith('_')) continue;   // 共享池等内部目录
+                if (Directory.Exists(Path.Combine(st, "Mods", rel))) return true;
+            }
+        }
+        catch { }
+        return false;
+    }
+
+
+    // ── 弹窗交互 ──
+    // 弹窗季节预览：默认停在春季（用户要求）；spring/summer/fall/winter
+    private string? _season = "spring";
+
+    // v1.3.9：关闭后的短暂保护窗 —— 双击/快速连点关闭时，第二下会点到弹窗底下
+    // 压着的角色卡，弹窗立刻重开（用户实测"关闭后有时重新打开"）
+    private DateTime _modalClosedAt = DateTime.MinValue;
+    // v1.6.8：弹窗开着时延迟的背景刷新标记（关弹窗统一补刷）
+    private bool _pendingRefresh;
+
+    private void OpenModal(PortraitCharacter ch)
+    {
+        // Windows 双击间隔设置最长 500ms，保护窗必须盖过它
+        if ((DateTime.Now - _modalClosedAt).TotalMilliseconds < 650) return;
+        _modalChar = ch;
+        _season = "spring";
+        // 预生成该角色全部皮肤的四季缩略图（后台），点季节按钮零等待
+        PortraitSkin.PrewarmSeasonThumbs(ch);
+    }
+
+    private void CloseModal()
+    {
+        _modalChar = null;
+        _modalClosedAt = DateTime.Now;
+        // v1.6.8：补刷弹窗期间延迟的背景刷新
+        if (_pendingRefresh)
+        {
+            _pendingRefresh = false;
+            RefreshAfterSync();
+        }
+    }
+
+    /// <summary>切换季节预览（默认即春季，点谁切谁）。</summary>
+    private void ToggleSeason(string s)
+    {
+        _season = s;
+    }
+
+    /// <summary>皮肤卡点击：季节激活时 = 给该季指定皮肤（每季节独立肖像）；
+    /// 否则 = 全局换肤。</summary>
+    /// <summary>单击皮肤卡 = 全局换肤（任何时候都换）；右键 = 只固定到当前选中季节。</summary>
+    private async Task OnSkinClick(PortraitCharacter ch, PortraitSkinOption opt)
+    {
+        if (_busy) return;   // v1.6.8：切换进行中禁点其它选项（卡片已置灰，双保险）
+        try
+        {
+            var gamePath = Cfg.Current.GamePath ?? "";
+            if (gamePath.Length == 0 || _scan is null) return;
+            await PickSkin(opt);
+            StateHasChanged();
+        }
+        catch (Exception ex) { ShowToast("操作失败: " + ex.Message); }
+        await Task.CompletedTask;
+    }
+
+    /// <summary>右键皮肤卡 = 只给当前选中季节固定这个皮肤（每季节独立肖像）。
+    /// 默认/娘家行也可以选（比如小羊夏天用娘家默认样、冬天用 Locations 包）。</summary>
+    private async Task AssignSeasonSkin(PortraitCharacter ch, PortraitSkinOption opt)
+    {
+        if (_season is null)
+        {
+            ShowToast("先点一个季节按钮，再右键皮肤卡即可只固定那一季");
+            return;
+        }
+        try
+        {
+            var gamePath = Cfg.Current.GamePath ?? "";
+            if (gamePath.Length == 0 || _scan is null) return;
+            // 已固定同一张卡再右键 = 解除该季固定（回落全局选择）。
+            // ⚠ 不能用 GetValueOrDefault：未分配时返回 null → ""，
+            // 会和默认行的 PackFolder="" 比成相等，右键「默认」永远写不进去（Emily 冬季实测）。
+            var seasonSkins = PortraitSkinService.GetSeasonSkins(Cfg.Current, ch.Id);
+            var already = seasonSkins.TryGetValue(_season, out var curPk)
+                && string.Equals(curPk ?? "", opt.PackFolder ?? "", StringComparison.OrdinalIgnoreCase);
+            if (already)
+            {
+                PortraitSkin.SetSeasonSkin(gamePath, _scan, ch.Id, _season, null);
+                ShowToast($"{ch.DisplayName} 的{_season switch { "spring" => "春", "summer" => "夏", "fall" => "秋", _ => "冬" }}季已解除固定（回落全局选择，重启游戏生效）");
+            }
+            else
+            {
+                PortraitSkin.SetSeasonSkin(gamePath, _scan, ch.Id, _season, opt.PackFolder);
+                ShowToast($"{ch.DisplayName} 的{_season switch { "spring" => "春", "summer" => "夏", "fall" => "秋", _ => "冬" }}季已固定使用「{opt.PackName}」（重启游戏生效）");
+            }
+            StateHasChanged();
+        }
+        catch (Exception ex) { ShowToast("操作失败: " + ex.Message); }
+        await Task.CompletedTask;
+    }
+
+    /// <summary>mod 名点击 → 该 mod 的详情页（经包目录 .junigrid.json 里的 nexusModId）。</summary>
+    private void GoPackDetail(PortraitCharacter ch)
+    {
+        var opt = ActiveOption(ch);
+        if (opt?.PackFolder is null) return;
+        var nid = PortraitSkinService.GetNexusModId(Cfg.Current.GamePath ?? "", opt.PackFolder);
+        if (nid is int id) Nav.NavigateTo("/mod/" + id);
+        else ShowToast("这个皮肤包不是从 Nexus 安装的，没有详情页");
+    }
+
+
+    /// <summary>当前生效的皮肤选项（无选择 = 官方/mod 默认行）。</summary>
+    private PortraitSkinOption? ActiveOption(PortraitCharacter ch)
+    {
+        foreach (var o in ch.AllOptions)
+            if (IsSelected(ch, o)) return o;
+        return ch.Vanilla ?? ch.Native;
+    }
+
+    // ── 工具行交互（搜索岛与 Mod 管理页同款）──
+    private void SetTab(string t) => _tab = t;
+
+    private async Task ToggleSearch()
+    {
+        _searchOpen = !_searchOpen;
+        try { await JS.InvokeVoidAsync("junigridJs.searchToggle", ".jg-search-x", _searchOpen); } catch { }
+    }
+
+    private async Task ClearSearchAndClose()
+    {
+        SearchText = "";
+        _searchOpen = false;
+        try { await JS.InvokeVoidAsync("junigridJs.searchToggle", ".jg-search-x", false); } catch { }
+    }
+
+    private void ShowToast(string msg)
+    {
+        _toast = msg;
+        _toastTimer?.Dispose();
+        _toastTimer = new System.Threading.Timer(_ =>
+            _ = InvokeAsync(() => { _toast = null; StateHasChanged(); }),
+            null, 3200, System.Threading.Timeout.Infinite);
+    }
+}

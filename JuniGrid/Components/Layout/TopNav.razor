@@ -2,7 +2,6 @@
 @inject NavigationManager Nav
 @inject PageRefreshService PageRefresh
 @inject IJSRuntime JS
-@inject ConfigService Cfg
 @implements IDisposable
 
 <nav class="jg-topnav">
@@ -32,6 +31,7 @@
     {
         new("",         "首页",       "assets/nav/home.svg",     NavLinkMatch.All,   "assets/nav/home-on-dark.svg"),
         new("mods",     "Mod 管理",   "assets/nav/mods.svg",     NavLinkMatch.Prefix, "assets/nav/mods-on-dark.svg"),
+        new("portraits","立绘",       "assets/nav/portraits.svg",NavLinkMatch.Prefix, "assets/nav/portraits-on-dark.svg"),
         new("nexus",    "NEXUS MODS", "assets/nav/nexus.svg",    NavLinkMatch.Prefix),
         new("logs",     "SMAPI 日志", "assets/nav/smapi.svg",    NavLinkMatch.Prefix),
         new("settings", "设置",       "assets/nav/settings.svg", NavLinkMatch.Prefix, "assets/nav/settings-on-dark.svg"),
@@ -48,8 +48,9 @@
 
     private async void OnLocationChanged(object? sender, LocationChangedEventArgs e)
     {
+        // 只触发重渲染；placeNavThumb 由 OnAfterRenderAsync 在 .active 就位后调一次
+        // （这里再调会和渲染回调打两趟 JS，每次切页都多一拍）
         try { await InvokeAsync(StateHasChanged); } catch { }
-        try { await JS.InvokeVoidAsync("junigridJs.placeNavThumb"); } catch { }
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -58,12 +59,12 @@
         try { await JS.InvokeVoidAsync("junigridJs.placeNavThumb"); } catch { }
     }
 
-    // v1.06.7：只有点击「当前已停留页面」的图标（mods/nexus）才发刷新信号，
+    // v1.06.7：只有点击「当前已停留页面」的图标（mods/portraits/nexus）才发刷新信号，
     // 页面订阅后重新扫描/拉取/检查更新；从其它页点图标 = 正常导航（组件重建自然加载，
     // 不额外发请求）。旧的 forceLoad:true 整站重载已废弃。
     private void OnIconClick(NavItem item)
     {
-        if (item.Href is not ("mods" or "nexus")) return;
+        if (item.Href is not ("mods" or "portraits" or "nexus")) return;
         var path = Nav.ToAbsoluteUri(Nav.Uri).AbsolutePath.TrimEnd('/');
         if (path.EndsWith(item.Href, StringComparison.OrdinalIgnoreCase))
             PageRefresh.Request(item.Href);
