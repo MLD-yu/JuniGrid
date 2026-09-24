@@ -2,6 +2,7 @@
 @inject ConfigService Cfg
 @inject GameService Game
 @inject LauncherService Launcher
+@inject ModService ModSvc
 @inject SteamService Steam
 @inject UpdateService Updater
 @inject PageRefreshService PageRefresh
@@ -105,6 +106,20 @@
     </div>
 }
 
+@* 覆盖包被禁用时的启动前提醒：点「启动」自动启用并进游戏；点「取消」不启用但照样进游戏 *@
+@if (_showOverridePrompt)
+{
+    <div class="jg-dlg-overlay" @onclick="LaunchWithoutEnableOverride">
+        <div class="jg-dialog" @onclick:stopPropagation>
+            <div class="jg-dialog-body">请启用JuniGrid Portrait Overrides 否则肖像不生效</div>
+            <div class="jg-dialog-actions">
+                <button type="button" class="jg-pill-ghost" @onclick="LaunchWithoutEnableOverride">取消</button>
+                <button type="button" class="jg-pill-dark" @onclick="EnableOverrideAndLaunch">启动</button>
+            </div>
+        </div>
+    </div>
+}
+
 @code {
 
     private JuniGridConfig _cfg = new();
@@ -115,6 +130,10 @@
     private bool _showConfirm;
     /// <summary>启动前闸门拦下来时要整段显示的说明（null = 没有待处理的闸门）。</summary>
     private string? _gateText;
+    /// <summary>JuniGrid Portrait Overrides 被禁用时的启动提示。</summary>
+    private bool _showOverridePrompt;
+    /// <summary>用户点「取消」= 本次不自动启用覆盖包，直接继续启动。</summary>
+    private bool _skipOverrideCheck;
     private readonly CancellationTokenSource _cts = new();
 
     private bool _busy => _launching;
@@ -255,6 +274,16 @@
 
     private async Task Launch()
     {
+        // SMAPI 模式：覆盖包被禁用时先弹提示（肖像/换肤不生效）
+        if (_cfg.LaunchMode == "smapi" && !_skipOverrideCheck && OverridePackDisabled(_cfg.GamePath))
+        {
+            _showOverridePrompt = true;
+            _launching = false;
+            StateHasChanged();
+            return;
+        }
+        _skipOverrideCheck = false;
+
         // v1.3.1：点启动时重探本地版本 —— AccountPanel 常驻 MainLayout，游戏在启动器
         // 外被 Steam 更新/降级后按钮仍显示旧快照（用户报告"按钮显示 1.6.8 游戏里
         // 是 1.6.15"就是这个）。启动前对齐一次，显示与真实版本绝不打架。
@@ -482,6 +511,59 @@
         // v0.43.1：报错 → 红底白字 toast，同时落日志
         AppLog.Error("AccountPanel", text);
         _ = JS.InvokeVoidAsync("junigridJs.toast", text, "err");
+    }
+
+    /// <summary>覆盖包是否被禁用（目录带 . 前缀）。不存在 = 还没生成过，不弹。</summary>
+    private static bool OverridePackDisabled(string? gamePath)
+    {
+        if (string.IsNullOrWhiteSpace(gamePath)) return false;
+        var mods = Path.Combine(gamePath, "Mods");
+        if (!Directory.Exists(mods)) return false;
+        foreach (var name in new[]
+        {
+            PortraitSkinService.OverrideFolder,
+            PortraitSkinService.LegacyOverrideFolder
+        })
+        {
+            var enabled = Directory.Exists(Path.Combine(mods, name));
+            if (enabled) return false;
+            if (Directory.Exists(Path.Combine(mods, "." + name))) return true;
+        }
+        return false;
+    }
+
+    /// <summary>对话框「启动」：先自动启用覆盖包，再走正常启动。</summary>
+    private async Task EnableOverrideAndLaunch()
+    {
+        _showOverridePrompt = false;
+        try
+        {
+            var gp = _cfg.GamePath ?? "";
+            if (gp.Length > 0)
+            {
+                foreach (var name in new[]
+                {
+                    PortraitSkinService.OverrideFolder,
+                    PortraitSkinService.LegacyOverrideFolder
+                })
+                {
+                    if (Directory.Exists(Path.Combine(gp, "Mods", "." + name)))
+                        ModSvc.SetDisabled(gp, name, false);
+                }
+            }
+        }
+        catch (Exception ex) { AppLog.Warn("AccountPanel", "启用覆盖包失败: " + ex.Message); }
+        StateHasChanged();
+        await Launch();
+    }
+
+    /// <summary>对话框「取消」：不启用覆盖包，继续启动（用户明确要求）。</summary>
+    private async Task LaunchWithoutEnableOverride()
+    {
+        _showOverridePrompt = false;
+        _skipOverrideCheck = true;
+        StateHasChanged();
+        await Launch();
     }
 
     /// <summary>

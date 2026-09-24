@@ -839,8 +839,33 @@ if (unitOnly)
         "ok=" + pOk + " ‖ ./=" + pDot + " ‖ ../=" + pUp + " ‖ abs=" + pAbs);
 
     Check("U5 版本号与发行一致：AppInfo.Version = csproj Version（Nexus AUP 头同源）",
-        AppInfo.Version == "1.2.0",
-        "AppInfo.Version=" + AppInfo.Version + "（期望 1.2.0，由 JuniGrid.csproj <Version> 注入）");
+        AppInfo.Version == "1.2.1",
+        "AppInfo.Version=" + AppInfo.Version + "（期望 1.2.1，由 JuniGrid.csproj <Version> 注入）");
+
+    // 回归：旧 PascalCase 配置不得在 CamelCase 策略下被静默读成空（封面/合集清零事故）
+    {
+        var optsIns = new System.Text.Json.JsonSerializerOptions
+        {
+            PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase,
+            PropertyNameCaseInsensitive = true
+        };
+        var optsStrict = new System.Text.Json.JsonSerializerOptions
+        {
+            PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase
+        };
+        var pascal = "{\"ModCovers\":{\"ModA\":\"http://cover\"},\"ModProfiles\":[{\"Name\":\"合集A\",\"EnabledModUids\":[\"uid1\"]}]}";
+        var camel = "{\"modCovers\":{\"ModA\":\"http://cover\"},\"modProfiles\":[{\"Name\":\"合集A\",\"EnabledModUids\":[\"uid1\"]}]}";
+        var a = System.Text.Json.JsonSerializer.Deserialize<JuniGridConfig>(pascal, optsIns)!;
+        var b = System.Text.Json.JsonSerializer.Deserialize<JuniGridConfig>(camel, optsIns)!;
+        var lost = System.Text.Json.JsonSerializer.Deserialize<JuniGridConfig>(pascal, optsStrict)!;
+        Check("U6 配置反序列化兼容 PascalCase（旧文件不得静默丢封面/合集）",
+            a.ModCovers.Count == 1 && a.ModProfiles.Count == 1
+            && b.ModCovers.Count == 1 && b.ModProfiles.Count == 1
+            && lost.ModCovers.Count == 0,   // 钉住事故根因：不加 ignore-case 就是 0
+            $"ignore-case Pascal covers={a.ModCovers.Count}/profiles={a.ModProfiles.Count}"
+            + " ‖ camel covers=" + b.ModCovers.Count
+            + " ‖ 严格模式 Pascal covers=" + lost.ModCovers.Count + "（应为 0=旧 bug）");
+    }
 
     Console.WriteLine($"\n════════ 总计：{pass} PASS / {fail} FAIL ════════");
     Environment.Exit(fail == 0 ? 0 : 1);

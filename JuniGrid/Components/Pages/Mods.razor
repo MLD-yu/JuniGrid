@@ -1970,6 +1970,19 @@
             : Updater.CheckSmapiAsync(_smapiVersion);
         // v0.68.3：进入 Mod 页时完全由「设置」页「自动安装更新」开关（EnableAutoInstall）判定，不再弹窗询问。
         _ = InvokeAsync(async () => { await AutoUpdateOnEnterAsync(); await InvokeAsync(StateHasChanged); });
+        // v1.2.1：封面缓存被清空时进页即补（免 key GraphQL），不等用户点「检查更新」
+        _ = InvokeAsync(async () =>
+        {
+            try
+            {
+                var missing = _mods.Any(m => m.NexusModId is not null
+                    && string.IsNullOrEmpty(GetState(m.Folder).PictureUrl)
+                    && !Cfg.Current.ModCovers.ContainsKey(m.Folder)
+                    && !Cfg.Current.ModCovers.ContainsKey(NormCoverKey(m.Folder)));
+                if (missing) await BackfillCoversAsync();
+            }
+            catch { }
+        });
 
         // Q4: 监听 Mods 文件夹变化，用户直接扔进去的 mod 也能立刻出现。
         // 建/放/重建的完整生命周期在 EnsureModsWatcher / ReleaseModsWatcher —— 版本切换期间
@@ -2737,35 +2750,65 @@
                             && !Cfg.Current.ModCovers.ContainsKey(NormCoverKey(m.Folder)))
                 .ToList();
             if (need.Count == 0) return;
-            // AUP 二审：封面回填原 12 路并发过高；2 与集中 ApiGate 对齐
-            var semaphore = new SemaphoreSlim(2);
-            await Task.WhenAll(need.Select(async m =>
+
+            // v1.2.1：优先走免 API Key 的 GraphQL 批量指纹（自带 pictureUrl）——
+            // 配置被清零后用户往往没登录/无 key，旧逻辑只在有 key 时回填，封面永远回不来
+            var still = new List<ModEntry>();
+            try
             {
-                await semaphore.WaitAsync();
-                try
+                var ids = need.Where(m => m.NexusModId is not null).Select(m => m.NexusModId!.Value).ToList();
+                var batch = await Nexus.GetModFingerprintsBatchAsync(ids);
+                if (batch is not null)
                 {
-                    var info = await Nexus.GetModAsync(_apiKey, m.NexusModId!.Value);
-                    if (info is not null && !string.IsNullOrEmpty(info.PictureUrl))
+                    foreach (var m in need)
                     {
-                        GetState(m.Folder).PictureUrl = info.PictureUrl;
-                        Cfg.Current.ModCovers[m.Folder] = info.PictureUrl;
-                        _coversDirty = true;
-                    }
-                    // v0.46.0：顺手缓存官网分类（category_id → 名称经 NexusCategories 表）
-                    if (info?.CategoryId is int cid)
-                    {
-                        GetState(m.Folder).CategoryId = cid;
-                        if (Cfg.Current.NexusCategories.TryGetValue(cid, out var cname))
-                            Cfg.Current.ModCategories[m.Folder] = cname;
+                        if (m.NexusModId is int id && batch.TryGetValue(id, out var fp)
+                            && !string.IsNullOrEmpty(fp.PictureUrl))
+                        {
+                            GetState(m.Folder).PictureUrl = fp.PictureUrl;
+                            Cfg.Current.ModCovers[m.Folder] = fp.PictureUrl;
+                            _coversDirty = true;
+                        }
+                        else still.Add(m);
                     }
                 }
-                catch (Exception ex) { AppLog.Warn("Mods", "封面回填失败(" + m.Folder + "): " + ex.Message); }
-                finally { semaphore.Release(); }
-            }));
+                else still.AddRange(need);
+            }
+            catch (Exception ex) { AppLog.Warn("Mods", "封面批量回填失败: " + ex.Message); still.AddRange(need); }
+
+            // 剩下的才走需要 key 的单查（没 key 就跳过）
+            if (still.Count > 0 && !string.IsNullOrEmpty(_apiKey))
+            {
+                var semaphore = new SemaphoreSlim(2);
+                await Task.WhenAll(still.Select(async m =>
+                {
+                    await semaphore.WaitAsync();
+                    try
+                    {
+                        var info = await Nexus.GetModAsync(_apiKey, m.NexusModId!.Value);
+                        if (info is not null && !string.IsNullOrEmpty(info.PictureUrl))
+                        {
+                            GetState(m.Folder).PictureUrl = info.PictureUrl;
+                            Cfg.Current.ModCovers[m.Folder] = info.PictureUrl;
+                            _coversDirty = true;
+                        }
+                        if (info?.CategoryId is int cid)
+                        {
+                            GetState(m.Folder).CategoryId = cid;
+                            if (Cfg.Current.NexusCategories.TryGetValue(cid, out var cname))
+                                Cfg.Current.ModCategories[m.Folder] = cname;
+                        }
+                    }
+                    catch (Exception ex) { AppLog.Warn("Mods", "封面回填失败(" + m.Folder + "): " + ex.Message); }
+                    finally { semaphore.Release(); }
+                }));
+            }
+
             if (_coversDirty)
             {
                 Cfg.Save(Cfg.Current);
                 _coversDirty = false;
+                AppLog.Warn("Mods", "封面回填完成，ModCovers=" + Cfg.Current.ModCovers.Count);
             }
             await InvokeAsync(StateHasChanged);
         }
@@ -2837,8 +2880,8 @@
         // v0.68.0：检查走「只检测」流水线（CheckOnlyOne 不下载不安装），
         // 安装只能由用户确认后走 RunUpdatePipeline。
         await RunCheckPipeline(targets);
-        if (!string.IsNullOrEmpty(_apiKey))
-            _ = BackfillCoversAsync();
+        // 封面回填不依赖 API Key（GraphQL 免 key）——配置清零后这里必须能跑
+        _ = BackfillCoversAsync();
     }
 
     /// <summary>v0.68.0：只检测版本、绝不下载安装的并行流水线。

@@ -14,7 +14,10 @@ public sealed class ConfigService
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
         WriteIndented = true,
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        // 必须：旧配置可能是 PascalCase。只开 CamelCase 时 Deserialize 会静默丢字段
+        //（ModCovers/ModProfiles 变空 → 封面全没、合集消失），随后 Save 再把空配置写回盘。
+        PropertyNameCaseInsensitive = true
     };
 
     public JuniGridConfig Current { get; private set; } = new();
@@ -40,7 +43,13 @@ public sealed class ConfigService
                     if (loaded is not null)
                     {
                         Current = loaded;
-                        try { File.Copy(ConfigPath, ConfigBackupPath, overwrite: true); } catch { }
+                        // 只在「读进来的不是空壳」时覆盖 .bak —— 防止用清零后的配置顶掉好备份
+                        if (Current.ModCovers.Count + Current.ModProfiles.Count + Current.ModRemarks.Count > 0
+                            || Current.TotalLaunchCount > 0
+                            || !string.IsNullOrEmpty(Current.GamePath))
+                        {
+                            try { File.Copy(ConfigPath, ConfigBackupPath, overwrite: true); } catch { }
+                        }
                     }
                 }
                 else if (File.Exists(ConfigBackupPath))

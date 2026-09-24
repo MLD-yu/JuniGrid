@@ -2797,14 +2797,39 @@ public sealed class PortraitSkinService
                             var lopt = ch.AllOptions.FirstOrDefault(o =>
                                 !o.IsVanilla && string.Equals(o.PackFolder, sel, StringComparison.OrdinalIgnoreCase));
                             spriteSrc = lopt?.SpriteFile;
-                            // 精灵也尽量钉到同季（没有就整表默认）
-                            if (spriteSrc is not null && lockInfo.Season is not null
-                                && GetSeasonFiles(spriteSrc).TryGetValue(lockInfo.Season, out var ls))
-                                spriteSrc = ls;
+                            // 精灵必须钉到与锁定季一致的那张（Sam_Winter 等）。
+                            // 用 GetSeasonFilesForChar：支持每角色文件夹与 <id>_Winter 命名
+                            //（旧的 GetSeasonFiles 只认源文件同名 stem，精灵找不到冬装 → 锁冬像仍是春精灵）
+                            if (spriteSrc is not null && lockInfo.Season is not null)
+                            {
+                                var seasons = GetSeasonFilesForChar(spriteSrc, ch.Id);
+                                if (seasons.TryGetValue(lockInfo.Season, out var ls))
+                                    spriteSrc = ls;
+                            }
+                            // 精灵没季变体时，再看 PinFile 同目录有没有 <id>_Winter 等精灵
+                            if (lockInfo.Season is not null
+                                && (spriteSrc is null || !GetSeasonFilesForChar(spriteSrc, ch.Id).ContainsKey(lockInfo.Season)))
+                            {
+                                var nearPin = GetSeasonFilesForChar(lockInfo.PinFile, ch.Id);
+                                if (nearPin.TryGetValue(lockInfo.Season, out var np)
+                                    && !string.Equals(np, lockInfo.PinFile, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    // 同目录的才是精灵表（宽≠立绘 64）；拿它当精灵
+                                    spriteSrc = np;
+                                }
+                            }
                         }
                         else
                         {
                             spriteSrc = ch.IsVanilla ? VanillaSpriteXnb(gamePath, ch.Id) : ch.Native?.SpriteFile;
+                            // 原版锁定也要跟季：Characters/Sam.xnb → Characters/Sam_Winter.xnb
+                            //（本体就有这套 xnb；旧逻辑钉基础表 → 大头照冬装、精灵仍随季变）
+                            if (spriteSrc is not null && lockInfo.Season is not null)
+                            {
+                                var vs = GetSeasonFilesForChar(spriteSrc, ch.Id);
+                                if (vs.TryGetValue(lockInfo.Season, out var wl))
+                                    spriteSrc = wl;
+                            }
                         }
                     }
                     else if (sel is not null)
@@ -2813,11 +2838,21 @@ public sealed class PortraitSkinService
                             !o.IsVanilla && string.Equals(o.PackFolder, sel, StringComparison.OrdinalIgnoreCase));
                         portraitSrc = lopt?.SourceFile;
                         spriteSrc = lopt?.SpriteFile;
+                        if (spriteSrc is not null && lockInfo.Season is not null)
+                        {
+                            var ls = GetSeasonFilesForChar(spriteSrc, ch.Id);
+                            if (ls.TryGetValue(lockInfo.Season, out var sw)) spriteSrc = sw;
+                        }
                     }
                     else
                     {
                         portraitSrc = ch.IsVanilla ? VanillaPortraitXnb(gamePath, ch.Id) : ch.Native?.SourceFile;
                         spriteSrc = ch.IsVanilla ? VanillaSpriteXnb(gamePath, ch.Id) : ch.Native?.SpriteFile;
+                        if (spriteSrc is not null && lockInfo.Season is not null)
+                        {
+                            var ls = GetSeasonFilesForChar(spriteSrc, ch.Id);
+                            if (ls.TryGetValue(lockInfo.Season, out var sw)) spriteSrc = sw;
+                        }
                     }
                     // 锁定路径：不收集季节变体（selectedSeasonFiles 保持 null → 单文件钉入）
                 }
@@ -2917,39 +2952,68 @@ public sealed class PortraitSkinService
                 // 选中皮肤 → 用该包登记的变体文件；显式默认 → 全部钉到原版，不让引用悬空。
                 // v1.7 锁定中：变体也全部钉到 PinFile（同一张图），Appearance 按季切换时
                 // 看到的仍是锁定图 —— 这就是「不管什么季节都是这个肖像」的落盘点。
-                var variants = lockInfo is not null
-                    ? (lockInfo.PackFolder.Length == 0
-                        ? scan.VariantAssets
+                IEnumerable<(string Kind, string VariantId, string? File)> variants;
+                if (lockInfo is not null)
+                {
+                    bool hasPin = lockInfo.PinFile is not null && File.Exists(lockInfo.PinFile);
+                    if (lockInfo.PackFolder.Length == 0)
+                    {
+                        variants = scan.VariantAssets
                             .Where(v => string.Equals(v.BaseId, ch.Id, StringComparison.OrdinalIgnoreCase))
                             .GroupBy(v => (v.Kind, v.VariantId))
-                            .Select(g => (g.Key.Kind, g.Key.VariantId,
-                                File: lockInfo.PinFile is not null && File.Exists(lockInfo.PinFile)
+                            .Select(g =>
+                            {
+                                string? file = hasPin
                                     ? lockInfo.PinFile
                                     : ResolveSeasonalVariantFile(
-                                        g.Key.Kind == "Portraits" ? portraitSrc : spriteSrc, g.Key.VariantId)))
-                        : scan.VariantAssets
+                                        g.Key.Kind == "Portraits" ? portraitSrc : spriteSrc, g.Key.VariantId);
+                                return (g.Key.Kind, g.Key.VariantId, file);
+                            });
+                    }
+                    else
+                    {
+                        // Characters 变体（Sam_Winter 等）必须用「锁定季精灵」：
+                        // 旧逻辑一律拷基础精灵表 → 冬天 Appearance 切到
+                        // Characters/Sam_Winter 仍是春装（实机山姆）
+                        variants = scan.VariantAssets
                             .Where(v => string.Equals(v.BaseId, ch.Id, StringComparison.OrdinalIgnoreCase))
-                            .Select(v => (v.Kind, v.VariantId,
-                                File: (string?)(lockInfo.PinFile is not null && File.Exists(lockInfo.PinFile) && v.Kind == "Portraits"
-                                    ? lockInfo.PinFile
-                                    : v.Kind == "Portraits" ? portraitSrc
-                                    : (spriteSrc ?? v.File)))))
-                    : sel is not null
-                    ? scan.VariantAssets
+                            .Select(v =>
+                            {
+                                string? file;
+                                if (v.Kind == "Portraits")
+                                    file = hasPin ? lockInfo.PinFile : portraitSrc;
+                                else
+                                    file = spriteSrc ?? ResolveSeasonalVariantFile(v.File, v.VariantId);
+                                return (v.Kind, v.VariantId, file);
+                            });
+                    }
+                }
+                else if (sel is not null)
+                {
+                    variants = scan.VariantAssets
                         .Where(v => string.Equals(v.Pack, sel, StringComparison.OrdinalIgnoreCase)
                                     && string.Equals(v.BaseId, ch.Id, StringComparison.OrdinalIgnoreCase))
-                        .Select(v => (v.Kind, v.VariantId, File: (string?)v.File))
-                    : vanillaDefault
-                        ? scan.VariantAssets
-                            .Where(v => string.Equals(v.BaseId, ch.Id, StringComparison.OrdinalIgnoreCase))
-                            .GroupBy(v => (v.Kind, v.VariantId))
-                            // 显式默认：季节变体（Emily_Winter / Emily_Winter_Indoor）必须钉
-                            // 该季的原版文件，不能整族钉成基础肖像 —— Baechu 的 Appearance
-                            // 会引用 Emily_Winter_Indoor，钉成春装后冬天就永远不换冬衣（Emily 实测）
-                            .Select(g => (g.Key.Kind, g.Key.VariantId,
-                                File: ResolveSeasonalVariantFile(
-                                    g.Key.Kind == "Portraits" ? portraitSrc : spriteSrc, g.Key.VariantId)))
-                    : Enumerable.Empty<(string Kind, string VariantId, string? File)>();
+                        .Select(v => (v.Kind, v.VariantId, File: (string?)v.File));
+                }
+                else if (vanillaDefault)
+                {
+                    // 显式默认：季节变体（Emily_Winter / Emily_Winter_Indoor）必须钉
+                    // 该季的原版文件，不能整族钉成基础肖像 —— Baechu 的 Appearance
+                    // 会引用 Emily_Winter_Indoor，钉成春装后冬天就永远不换冬衣（Emily 实测）
+                    variants = scan.VariantAssets
+                        .Where(v => string.Equals(v.BaseId, ch.Id, StringComparison.OrdinalIgnoreCase))
+                        .GroupBy(v => (v.Kind, v.VariantId))
+                        .Select(g =>
+                        {
+                            string? file = ResolveSeasonalVariantFile(
+                                g.Key.Kind == "Portraits" ? portraitSrc : spriteSrc, g.Key.VariantId);
+                            return (g.Key.Kind, g.Key.VariantId, file);
+                        });
+                }
+                else
+                {
+                    variants = Enumerable.Empty<(string Kind, string VariantId, string? File)>();
+                }
                 foreach (var v in variants)
                 {
                     if (v.File is null) continue;
@@ -2964,6 +3028,8 @@ public sealed class PortraitSkinService
                 // v1.3.9：每季节独立皮肤 —— 用户给某季指定了包 → 把该季变体资产钉成
                 // 那个包的对应文件（借 scan.VariantAssets 拿到 mod 用的确切变体资产名）。
                 // v1.7 锁定中跳过：四季统一 PinFile，不再按季覆盖。
+                // v1.2.1：必须【强制】覆盖 —— 全局包已把 Sam_Winter 钉进 written，
+                // 旧逻辑 written.Add 失败就跳过，单季指定永远不生效（实机）。
                 if (lockInfo is null && _cfg.Current.PortraitSeasonSkins.TryGetValue(ch.Id, out var ssRaw))
                 {
                     var ss = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -2974,7 +3040,6 @@ public sealed class PortraitSkinService
                     }
                     foreach (var (season, pack) in ss)
                     {
-                        if (string.Equals(pack, sel, StringComparison.OrdinalIgnoreCase)) continue;   // 与全局一致，无需钉
                         var cap = char.ToUpperInvariant(season[0]) + season[1..].ToLowerInvariant();
                         // pack 为空串 = 原版默认行（用户可把某一季固定回原版样）
                         var opt = pack is { Length: 0 }
@@ -2982,14 +3047,13 @@ public sealed class PortraitSkinService
                             : ch.AllOptions.FirstOrDefault(o =>
                                 string.Equals(o.PackFolder, pack, StringComparison.OrdinalIgnoreCase));
                         if (opt?.SourceFile is null) continue;
-                        var seasonP = GetSeasonFiles(opt.SourceFile).TryGetValue(season, out var sp)
+                        // 必须 GetSeasonFilesForChar：支持 <id>_Winter / 每角色文件夹
+                        var seasonP = GetSeasonFilesForChar(opt.SourceFile, ch.Id).TryGetValue(season, out var sp)
                             ? sp : opt.SourceFile;
                         var seasonS = opt.SpriteFile is not null
-                            ? GetSeasonFiles(opt.SpriteFile).TryGetValue(season, out var ss2) ? ss2 : opt.SpriteFile
+                            ? GetSeasonFilesForChar(opt.SpriteFile, ch.Id).TryGetValue(season, out var ss2) ? ss2 : opt.SpriteFile
                             : null;
-                        // 覆盖包按变体资产名落盘（Portraits/<id>_<Spring> 等），与 mod 的挂载对齐。
-                        // 冬变体还有 Emily_Winter_Indoor/_Outdoor（Baechu Appearance 引用），
-                        // 只 EndsWith("Winter") 会漏掉 → 冬天仍显示非冬装（Emily 实测）
+                        // 变体资产（Portraits/Sam_Winter、含 Indoor/Outdoor）强制钉入
                         foreach (var v in scan.VariantAssets)
                         {
                             if (!string.Equals(v.BaseId, ch.Id, StringComparison.OrdinalIgnoreCase)) continue;
@@ -2998,12 +3062,29 @@ public sealed class PortraitSkinService
                                 continue;
                             var file = v.Kind == "Portraits" ? seasonP : seasonS;
                             if (file is null) continue;
-                            if (written.Add(v.Kind + "/" + v.VariantId)
-                                && CopyAsPng(file, Path.Combine(assets, v.Kind, v.VariantId + ".png")))
+                            var key = v.Kind + "/" + v.VariantId;
+                            var dest = Path.Combine(assets, v.Kind, v.VariantId + ".png");
+                            if (!CopyAsPng(file, dest)) continue;
+                            // 强制：即使全局已钉过同名变体也要再钉一条（后写者在 CP 里赢）
+                            written.Add(key);
+                            changes.Add(new { Action = "EditImage", Target = key,
+                                FromFile = $"assets/{v.Kind}/{v.VariantId}.png", PatchMode = "Replace" });
+                        }
+                        // 基础资产的 When Season 也要跟着覆盖（游戏按 Season 条件解析时）
+                        foreach (var kind in new[] { "Portraits", "Characters" })
+                        {
+                            var file = kind == "Portraits" ? seasonP : seasonS;
+                            if (file is null) continue;
+                            var img = $"{assetId}_{season}.png";
+                            if (!CopyAsPng(file, Path.Combine(assets, kind, img))) continue;
+                            changes.Add(new
                             {
-                                changes.Add(new { Action = "EditImage", Target = v.Kind + "/" + v.VariantId,
-                                    FromFile = $"assets/{v.Kind}/{v.VariantId}.png", PatchMode = "Replace" });
-                            }
+                                Action = "EditImage",
+                                Target = kind + "/" + assetId,
+                                FromFile = $"assets/{kind}/{img}",
+                                PatchMode = "Replace",
+                                When = new Dictionary<string, string> { ["Season"] = season }
+                            });
                         }
                     }
                 }
@@ -3042,6 +3123,17 @@ public sealed class PortraitSkinService
                 catch { contentArr = new JArray(); }
             }
             var skippedGhosts = 0;
+            // 同一 Target + 同一 When.Season 只留最后一条（单季覆盖必须赢过全局包）。
+            // 旧逻辑无去重：全局钉了 Sam_Winter，单季指定又加一条，CP 行为不确定。
+            var slots = new Dictionary<string, JObject>(StringComparer.OrdinalIgnoreCase);
+            static string SlotKey(JObject jo)
+            {
+                var t = jo["Target"]?.ToString() ?? "";
+                var w = jo["When"]?["Season"]?.ToString() ?? "";
+                return t + "␟" + w.ToLowerInvariant();
+            }
+            foreach (var item in contentArr)
+                if (item is JObject prevJo) slots[SlotKey(prevJo)] = prevJo;
             foreach (var c in changes)
             {
                 var jo = JObject.FromObject(c);
@@ -3057,8 +3149,9 @@ public sealed class PortraitSkinService
                     AppLog.Warn("Portraits", $"[覆盖包] 跳过幽灵补丁 {jo["Target"]} ← {from}（文件不存在）");
                     continue;
                 }
-                contentArr.Add(jo);
+                slots[SlotKey(jo)] = jo;
             }
+            contentArr = new JArray(slots.Values);
             var content = new JObject(
                 new JProperty("Format", "2.0.0"),
                 new JProperty("Changes", contentArr));

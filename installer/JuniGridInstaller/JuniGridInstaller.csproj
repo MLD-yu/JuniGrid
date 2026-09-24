@@ -9,7 +9,7 @@
     <RootNamespace>JuniGridInstaller</RootNamespace>
     <AssemblyName>JuniGridSetup</AssemblyName>
     <!-- 与 JuniGrid\Services\AppInfo.cs 保持一致；build-installer.ps1 会用 AppInfo.cs 里的版本号覆盖它 -->
-    <Version>1.2.0</Version>
+    <Version>1.2.1</Version>
     <ApplicationIcon>..\..\JuniGrid\Assets\junigrid-logo.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>

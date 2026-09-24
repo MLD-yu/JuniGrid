@@ -153,7 +153,14 @@
                         return ActiveOption(_modalChar);
                     }
                     var ptActive = EffectiveOption();
-                    var seasonPortraitFiles = PortraitSkinService.GetSeasonFiles(ptActive?.SourceFile);
+                    var seasonPortraitFiles = PortraitSkinService.GetSeasonFilesForChar(ptActive?.SourceFile, _modalChar.Id);
+                    // 锁定中：大图/卡片直接用 PinFile（锁定瞬间那张，含冬装）
+                    var lockPreview = charLocked
+                        ? PortraitSkinService.GetLock(Cfg.Current, _modalChar.Id)
+                            ?? _modalChar.Members
+                                .Select(m => PortraitSkinService.GetLock(Cfg.Current, m))
+                                .FirstOrDefault(l => l is not null)
+                        : null;
                 }
                 <button type="button"
                         class="jg-pt-lockbtn @(charLocked ? "on" : "")"
@@ -194,9 +201,9 @@
                             @foreach (var (sKey, sLabel) in new[] { ("spring", "春"), ("summer", "夏"), ("fall", "秋"), ("winter", "冬") })
                             {
                                 var k = sKey;
+                                @* 锁定时仍可点季节做预览（只是不能改皮肤），打开默认停在锁定季 *@
                                 <button type="button"
                                         class="jg-pt-season @(_season == k ? "active" : "")"
-                                        disabled="@charLocked"
                                         title="@(seasonPortraitFiles.ContainsKey(k) ? $"预览{sLabel}季外观；长按皮肤格可固定到{sLabel}季" : $"当前皮肤没有{sLabel}季变体，点击显示当前外观")"
                                         @onclick="() => ToggleSeason(k)">@sLabel</button>
                             }
@@ -226,7 +233,10 @@
                                           + string.Join(" / ", optLocal.NearDupes) : "")
                                     : "";
                                 // 选了季节 → 该皮肤格显示它自己的该季变体（没有就保持默认图）
-                                var seasonCardSrc = _season is not null
+                                var seasonCardSrc = lockPreview?.PinFile is not null && File.Exists(lockPreview.PinFile)
+                                        && string.Equals(optLocal.PackFolder ?? "", lockPreview.PackFolder ?? "", StringComparison.OrdinalIgnoreCase)
+                                    ? lockPreview.PinFile
+                                    : _season is not null
                                     && PortraitSkinService.GetSeasonFilesForChar(optLocal.SourceFile, _modalChar.Id).TryGetValue(_season, out var osf)
                                         ? osf : optLocal.SourceFile;
                                 var skinKey = (optLocal.IsVanilla ? "V|" : optLocal.IsNative ? "N|" : "S|") + (optLocal.PackFolder ?? "");
@@ -267,7 +277,7 @@
                     @{
                         var seasonSpriteFile = _season is not null
                             && ptActive?.SpriteFile is not null
-                            && PortraitSkinService.GetSeasonFiles(ptActive.SpriteFile).TryGetValue(_season, out var ssf)
+                            && PortraitSkinService.GetSeasonFilesForChar(ptActive.SpriteFile, _modalChar.Id).TryGetValue(_season, out var ssf)
                                 ? ssf : null;
                         var spriteCandidates = new[]
                         {
@@ -794,6 +804,16 @@
         if ((DateTime.Now - _modalClosedAt).TotalMilliseconds < 650) return;
         _modalChar = ch;
         _season = "spring";
+        // 锁定时预览停在锁定的那一季（锁了冬天，打开就该是冬天，而不是死在春季）
+        var lk = PortraitSkinService.GetLock(Cfg.Current, ch.Id);
+        if (lk is null)
+            foreach (var m in ch.Members)
+            {
+                lk = PortraitSkinService.GetLock(Cfg.Current, m);
+                if (lk is not null) break;
+            }
+        if (lk?.Season is { Length: > 0 } lockSeason)
+            _season = lockSeason;
         // 预生成该角色全部皮肤的四季缩略图（后台），点季节按钮零等待
         PortraitSkin.PrewarmSeasonThumbs(ch);
     }

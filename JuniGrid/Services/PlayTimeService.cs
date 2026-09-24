@@ -18,7 +18,8 @@ public sealed class PlayTimeService : IDisposable
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
         WriteIndented = false,
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        PropertyNameCaseInsensitive = true
     };
 
     private readonly LauncherService _launcher;
