@@ -14,13 +14,19 @@
 
     var clamp = function (v, lo, hi) { return Math.min(hi, Math.max(lo, v)); };
     var rows = new Map();   // .jg-switch 元素 -> 状态
+    // 宿主 = 承载 .on 状态、并且点击要落到它身上的那一层：
+    // 设置页是整行（.jg-switch-row），Mod 列表是开关自己那颗按钮（.jg-squish-host）。
+    var HOST_SEL = '.jg-switch-row, .jg-squish-host';
+    function hostOf(sw) { return sw.closest(HOST_SEL); }
+    function trackOf(host) { return host.querySelector('.jg-switch') || (host.classList.contains('jg-switch') ? host : null); }
 
     function stateOf(sw) {
         var st = rows.get(sw);
         if (!st) {
             var knob = sw.querySelector('.jg-switch-knob');
             if (!knob) return null;
-            st = { sw: sw, knob: knob, row: sw.closest('.jg-switch-row'), x: 0, v: 0, flow: 0, target: 0, travel: 0, half: 0, raf: 0, drag: null, swallow: false };
+            st = { sw: sw, knob: knob, row: hostOf(sw), x: 0, v: 0, flow: 0, target: 0, travel: 0, half: 0, raf: 0, drag: null, swallow: false };
+            if (!st.row) return null;
             rows.set(sw, st);
         }
         return st;
@@ -81,10 +87,10 @@
 
     document.addEventListener('pointerdown', function (e) {
         if (e.button !== 0) return;
-        var row = e.target.closest('.jg-switch-row');
+        var row = e.target.closest(HOST_SEL);
         if (!row || row.classList.contains('disabled')) return;
-        var sw = row.querySelector('.jg-switch');
-        var st = stateOf(sw);
+        var sw = trackOf(row);
+        var st = sw ? stateOf(sw) : null;
         if (!st) return;
         measure(st);
         // 按在整行任意处都给挤压；只有按在开关上才可以拖着走

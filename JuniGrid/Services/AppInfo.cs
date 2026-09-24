@@ -7,7 +7,8 @@ namespace JuniGrid.Services;
 /// </summary>
 public static class AppInfo
 {
-    /// <summary>当前应用版本（不带 v 前缀），取自程序集 InformationalVersion。</summary>
+    /// <summary>当前应用版本（不带 v 前缀），取自程序集版本（csproj 的 Version）。
+    /// Nexus Application-Version 头 / User-Agent / 关于页 / 自更新比较全部用它。</summary>
     public static string Version =>
         typeof(AppInfo).Assembly.GetName().Version?.ToString(3)
         ?? "0.0.0";

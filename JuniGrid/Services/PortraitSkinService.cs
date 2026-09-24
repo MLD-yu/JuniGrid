@@ -29,6 +29,13 @@ public sealed record PortraitSkinOption(
     public IReadOnlyList<string> NearDupes { get; init; } = Array.Empty<string>();
 }
 
+/// <summary>
+/// v1.7 肖像锁定条目：锁定后游戏内该 NPC 四季一律显示 PinFile 那一张图。
+/// PackFolder 空串 = 默认/原版行；PinFile 为锁定瞬间预览用的绝对路径（可能失效，
+/// 失效时回落 PackFolder 的 SourceFile / 原版 xnb）。
+/// </summary>
+public sealed record PortraitLockInfo(string PackFolder, string? PinFile, string? Season);
+
 /// <summary>网格里的一个角色卡片。</summary>
 public sealed record PortraitCharacter(
     string Id,
@@ -248,16 +255,21 @@ public sealed class PortraitSkinService
     }
 
     /// <summary>扫描 Mods 全目录，产出角色卡片数据。纯磁盘读取，可在后台线程调用。
-    /// v1.3.9：扫描快照 —— 结果序列化到 LocalAppData，键 = Mods 目录签名（顶层目录数 +
-    /// 各包 manifest/content.json/config.json 的 mtime 指纹）。签名未变 → 直接反序列化
-    /// 秒回（低配机 + 大型 mod 阵容从 4 秒降到 0.1 秒）；变了才真正重扫并覆写快照。</summary>
+    /// v1.3.9：扫描快照 —— 结果序列化到 LocalAppData，键 = Mods 目录签名。
+    /// v1.7.2：进程内再加一层内存快照 —— 从立绘页切走再切回时直接命中，
+    /// 不再闪骨架、不再反序列化几百 KB 的 JSON。</summary>
     public PortraitScanResult Scan(string gamePath)
     {
+        // 内存快照：同一次启动内 Mods 签名没变就直接用
+        var mem = TryGetMemoryScan(gamePath);
+        if (mem is not null) return mem;
+
         using var lease = ReadLease();
         var cached = TryLoadScanCache(gamePath, out var sig);
         if (cached is not null)
         {
             RememberScannedCharIds(gamePath, cached.Characters.Select(c => c.Id));
+            StoreMemoryScan(gamePath, cached, sig);
             return cached;
         }
 
@@ -962,7 +974,47 @@ public sealed class PortraitSkinService
         RememberScannedCharIds(gamePath, characters.Select(c => c.Id));
         SaveProbePersist();   // 本轮新判定统一落盘一次
         SaveScanCache(gamePath, result, sig);
+        StoreMemoryScan(gamePath, result, sig);
         return result;
+    }
+
+    // ══════════════════ v1.7.2 进程内扫描快照 ══════════════════
+
+    private PortraitScanResult? _memScan;
+    private string? _memScanGame;
+    private string? _memScanSig;
+    private long _memScanAt;
+
+    /// <summary>内存里有、且 Mods 签名未变的扫描结果；否则 null。UI 进页时先吃这个，零等待。</summary>
+    public PortraitScanResult? TryGetMemoryScan(string gamePath)
+    {
+        if (_memScan is null || _memScanGame is null) return null;
+        if (!string.Equals(_memScanGame, gamePath, StringComparison.OrdinalIgnoreCase)) return null;
+        // 15 秒内直接信任（切页来回点）；超过则核对签名（一次目录 stat，仍远快于重扫）
+        if (Environment.TickCount64 - _memScanAt < 15_000) return _memScan;
+        try
+        {
+            var sig = ModsSignature(Path.Combine(gamePath, "Mods"));
+            if (!string.Equals(sig, _memScanSig, StringComparison.Ordinal)) return null;
+            _memScanAt = Environment.TickCount64;
+            return _memScan;
+        }
+        catch { return _memScan; }
+    }
+
+    private void StoreMemoryScan(string gamePath, PortraitScanResult scan, string? sig)
+    {
+        _memScan = scan;
+        _memScanGame = gamePath;
+        _memScanSig = sig;
+        _memScanAt = Environment.TickCount64;
+    }
+
+    /// <summary>显式作废内存快照（Mod 启停/安装/卸载后调用，强制下次重扫）。</summary>
+    public void InvalidateMemoryScan()
+    {
+        _memScan = null;
+        _prewarmedSig = null;
     }
 
     /// <summary>
@@ -1226,13 +1278,24 @@ public sealed class PortraitSkinService
     {
         try
         {
-            var parts = new List<string> { "scan-algo:assets-v3" };
+            var parts = new List<string> { "scan-algo:assets-v5-artkey" };
+            static bool SkipPath(string path)
+            {
+                return path.Contains(".junigrid_trash", StringComparison.OrdinalIgnoreCase)
+                    || path.Contains("junigrid_trash", StringComparison.OrdinalIgnoreCase)
+                    // 自己写的覆盖包/遗留包绝不能进签名 —— 换肤落盘会改它的 PNG/config，
+                    // 签名跟着变 → 每次进页都判缓存失效、全量重扫（实测：进立绘必转圈）
+                    || path.Contains(OverrideFolder, StringComparison.OrdinalIgnoreCase)
+                    || path.Contains(LegacyOverrideFolder, StringComparison.OrdinalIgnoreCase);
+            }
             foreach (var e in Directory.EnumerateFileSystemEntries(modsDir))
+            {
+                if (SkipPath(e)) continue;
                 parts.Add("T:" + Path.GetFileName(e));
+            }
             foreach (var f in new DirectoryInfo(modsDir).EnumerateFiles("*", SearchOption.AllDirectories))
             {
-                if (f.FullName.Contains(".junigrid_trash", StringComparison.OrdinalIgnoreCase)
-                    || f.FullName.Contains("junigrid_trash", StringComparison.OrdinalIgnoreCase)) continue;
+                if (SkipPath(f.FullName)) continue;
                 var rel = Path.GetRelativePath(modsDir, f.FullName);
                 var name = f.Name;
                 if (name.Equals("manifest.json", StringComparison.OrdinalIgnoreCase)
@@ -2091,13 +2154,13 @@ public sealed class PortraitSkinService
         => a.Length == b.Length && a.OrderBy(x => x, StringComparer.Ordinal)
                .SequenceEqual(b.OrderBy(x => x, StringComparer.Ordinal), StringComparer.Ordinal);
 
-    // 立绘 + 精灵表两张都一致才算同一份画面：只比立绘会把「同立绘、不同走动小人」的包错并
+    // 立绘逐像素一致就并成一条（用户拍板：肖像完全相同不该出现两份）。
+    // 精灵表不再参与判键 —— 否则「同脸、走动小人微差/一方没有」会漏并，看起来就是没去重。
+    // 幸存者优先：当前选中 > 有精灵表 > 先出现。
     private static string? ArtKey(PortraitSkinOption o)
     {
         var a = ArtHash(o.SourceFile);
-        var b = ArtHash(o.SpriteFile);
-        if (a is null && b is null) return null;
-        return (a ?? "-") + "|" + (b ?? "-");
+        return a;   // null = 解不动，不参与去重
     }
 
     /// <summary>
@@ -2157,10 +2220,6 @@ public sealed class PortraitSkinService
         {
             var key = ArtKey(s);
             if (key is null) { slots.Add((s, new(), new())); continue; }
-            // 同画面但 config.json 开关不同 ⇒ 不算可互换：选中时要写的键不一样，
-            // 并掉就等于让用户再也开不了那个包的按角色开关。
-            if (byKey.TryGetValue(key, out var same) && !SameConfigKeys(slots[same].Opt.ConfigKeys, s.ConfigKeys))
-                key = key + "#" + s.PackFolder;
             if (!byKey.TryGetValue(key, out var at))
             {
                 byKey[key] = slots.Count;
@@ -2168,8 +2227,12 @@ public sealed class PortraitSkinService
                 continue;
             }
             var cur = slots[at];
-            var keepNew = string.Equals(s.PackFolder, selectedPack, StringComparison.OrdinalIgnoreCase)
-                && !string.Equals(cur.Opt.PackFolder, selectedPack, StringComparison.OrdinalIgnoreCase);
+            // 幸存者优先：当前选中 > 带精灵表 > 先到的那条
+            var keepNew =
+                (string.Equals(s.PackFolder, selectedPack, StringComparison.OrdinalIgnoreCase)
+                 && !string.Equals(cur.Opt.PackFolder, selectedPack, StringComparison.OrdinalIgnoreCase))
+                || (cur.Opt.SpriteFile is null && s.SpriteFile is not null
+                    && !string.Equals(cur.Opt.PackFolder, selectedPack, StringComparison.OrdinalIgnoreCase));
             if (keepNew)
             {
                 cur.Dupes.Add(cur.Opt.PackName);
@@ -2189,7 +2252,9 @@ public sealed class PortraitSkinService
             {
                 var a = slots[i];
                 var b = slots[j];
-                if (!SameConfigKeys(a.Opt.ConfigKeys, b.Opt.ConfigKeys)) continue;
+                if (!SameConfigKeys(a.Opt.ConfigKeys, b.Opt.ConfigKeys)
+                    && a.Opt.ConfigKeys.Length + b.Opt.ConfigKeys.Length > 0
+                    && !(a.Opt.ConfigKeys.Length == 0 || b.Opt.ConfigKeys.Length == 0)) continue;
                 if (!NearSameArt(a.Opt, b.Opt, pxCache)) continue;
                 // 用户当前选中的那份永远当幸存者 —— 换掉会让选中框消失，还可能被配置自愈清掉选择
                 var aSel = string.Equals(a.Opt.PackFolder, selectedPack, StringComparison.OrdinalIgnoreCase);
@@ -2297,7 +2362,8 @@ public sealed class PortraitSkinService
     // ══════════════════════ 选择 → 磁盘同步 ══════════════════════
 
     /// <summary>选择皮肤（packFolder=null = 回官方/mod 默认）。写配置并同步磁盘。
-    /// 变更提示由 UI 负责（「下次启动游戏生效」）。</summary>
+    /// 变更提示由 UI 负责（「下次启动游戏生效」）。锁定中的角色拒绝切换。
+    /// v1.7.1：只增量更新该角色的覆盖包条目（不再全量重建），换肤从秒级降到亚秒级。</summary>
     public void SelectSkin(string gamePath, PortraitScanResult scan, string charId, string? packFolder)
     {
         var cfg = _cfg.Current;
@@ -2306,7 +2372,19 @@ public sealed class PortraitSkinService
         // 合并卡（同一个人的几份 NPC 数据）逐成员落配置：游戏里那几个条目才会一起换脸。
         foreach (var id in MemberIds(scan, charId))
         {
+            if (IsLocked(cfg, id))
+            {
+                // 锁定中：把选择钉回锁定快照，拒绝外部/并发改写
+                var lk0 = GetLock(cfg, id);
+                if (lk0 is not null)
+                {
+                    if (lk0.PackFolder.Length == 0) cfg.PortraitSkins.Remove(id);
+                    else cfg.PortraitSkins[id] = lk0.PackFolder;
+                }
+                continue;
+            }
             cfg.PortraitSeasonSkins.Remove(id);
+            cfg.PortraitTrueVanilla.Remove(id);
             if (packFolder is null)
             {
                 cfg.PortraitSkins.Remove(id);
@@ -2320,9 +2398,177 @@ public sealed class PortraitSkinService
                 cfg.PortraitVanillaDefaults.Remove(id);
             }
         }
+        SyncToDisk(gamePath, scan, MemberIds(scan, charId));
+        SyncPortraitureActive(gamePath, scan);
+        _cfg.Save(cfg);
+    }
+
+    // ══════════════════════ v1.7 锁定 / 一键恢复 / 一键应用 ══════════════════════
+
+    /// <summary>解析锁定条目（损坏 JSON 返回 null，当作未锁定）。</summary>
+    public static PortraitLockInfo? ParseLock(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return null;
+        try
+        {
+            var j = Newtonsoft.Json.Linq.JObject.Parse(raw);
+            return new PortraitLockInfo(
+                j["pack"]?.ToString() ?? "",
+                j["pin"]?.ToString() is { Length: > 0 } p ? p : null,
+                j["season"]?.ToString() is { Length: > 0 } s ? s : null);
+        }
+        catch { return null; }
+    }
+
+    public static string SerializeLock(PortraitLockInfo info) =>
+        new Newtonsoft.Json.Linq.JObject(
+            new Newtonsoft.Json.Linq.JProperty("pack", info.PackFolder ?? ""),
+            new Newtonsoft.Json.Linq.JProperty("pin", info.PinFile ?? ""),
+            new Newtonsoft.Json.Linq.JProperty("season", info.Season ?? "")
+        ).ToString(Newtonsoft.Json.Formatting.None);
+
+    /// <summary>该 NPC 条目是否处于锁定（合并卡任一成员锁定即视为锁定 —— 写盘按成员走）。</summary>
+    public static bool IsLocked(JuniGridConfig cfg, string charId) =>
+        cfg.PortraitLocks.ContainsKey(charId);
+
+    /// <summary>取锁定信息；未锁定或解析失败返回 null。</summary>
+    public static PortraitLockInfo? GetLock(JuniGridConfig cfg, string charId) =>
+        cfg.PortraitLocks.TryGetValue(charId, out var raw) ? ParseLock(raw) : null;
+
+    /// <summary>
+    /// 锁定/解锁当前生效肖像。locked=true 时把「当前生效选项 + 当前预览季的那张图」
+    /// 钉死：游戏内四季不再轮换。解锁只删锁定标记，保留皮肤选择。
+    /// </summary>
+    public void SetLocked(string gamePath, PortraitScanResult scan, string charId, bool locked,
+        PortraitSkinOption? opt, string? pinFile, string? season)
+    {
+        var cfg = _cfg.Current;
+        foreach (var id in MemberIds(scan, charId))
+        {
+            if (locked)
+            {
+                var pack = opt?.PackFolder ?? "";
+                // 锁定瞬间清掉逐季分配，否则 WriteOverridePack 仍会按季钉变体
+                cfg.PortraitSeasonSkins.Remove(id);
+                cfg.PortraitLocks[id] = SerializeLock(new PortraitLockInfo(pack, pinFile, season));
+                // 锁到默认行时同时进原版默认名单（覆盖包要压住其它启用包）
+                if (pack.Length == 0)
+                {
+                    if (!cfg.PortraitVanillaDefaults.Contains(id)) cfg.PortraitVanillaDefaults.Add(id);
+                    cfg.PortraitSkins.Remove(id);
+                }
+                else
+                {
+                    cfg.PortraitSkins[id] = pack;
+                    cfg.PortraitVanillaDefaults.Remove(id);
+                }
+            }
+            else
+            {
+                cfg.PortraitLocks.Remove(id);
+            }
+        }
+        SyncToDisk(gamePath, scan, MemberIds(scan, charId));
+        SyncPortraitureActive(gamePath, scan);
+        _cfg.Save(cfg);
+    }
+
+    /// <summary>
+    /// 一键恢复默认：清掉全部皮肤选择 / 季节分配 / 锁定；原版角色强制钉【原版 xnb】
+    ///（冈瑟/马龙/法师这类 SVE 也重绘了默认的，统一回原版而不是扩展包默认像）。
+    /// 范围是全局字典 —— 用户点「一键」就是要所有角色，不止当前扫描到的那批。
+    /// </summary>
+    public void RestoreAllDefaults(string gamePath, PortraitScanResult scan)
+    {
+        var cfg = _cfg.Current;
+        cfg.PortraitSkins.Clear();
+        cfg.PortraitSeasonSkins.Clear();
+        cfg.PortraitLocks.Clear();
+        cfg.PortraitTrueVanilla.Clear();
+        cfg.PortraitVanillaDefaults.Clear();
+        foreach (var ch in scan.Characters)
+        {
+            if (ch.Hidden) continue;
+            if (!ch.IsVanilla) continue;
+            foreach (var id in MemberIds(scan, ch.Id))
+            {
+                if (!cfg.PortraitVanillaDefaults.Contains(id)) cfg.PortraitVanillaDefaults.Add(id);
+                if (!cfg.PortraitTrueVanilla.Contains(id)) cfg.PortraitTrueVanilla.Add(id);
+            }
+        }
         SyncToDisk(gamePath, scan);
         SyncPortraitureActive(gamePath, scan);
         _cfg.Save(cfg);
+    }
+
+    /// <summary>
+    /// 一键应用：把指定皮肤包套到「所有拥有该包皮肤选项」的 NPC 上。
+    /// 已锁定的 NPC 跳过（整卡禁用，不允许被批量改写）。返回 (成功数, 跳过锁定数)。
+    /// 批量写配置、单次 SyncToDisk —— 逐角色 SelectSkin 会触发 N 次全量覆盖包重建。
+    /// </summary>
+    public (int Applied, int SkippedLocked) ApplyPackToAll(
+        string gamePath, PortraitScanResult scan, string packFolder)
+    {
+        var cfg = _cfg.Current;
+        var applied = 0;
+        var skipped = 0;
+        foreach (var ch in scan.Characters)
+        {
+            if (ch.Hidden) continue;
+            // 该角色是否有这个包的可选皮肤（默认/娘家行不算「有这个包的皮肤」——
+            // 批量应用的是第三方肖像包，不是把所有人打回默认）
+            var has = ch.Skins.Any(s =>
+                string.Equals(s.PackFolder ?? "", packFolder, StringComparison.OrdinalIgnoreCase)
+                && s.SourceFile is not null);
+            if (!has) continue;
+            var members = MemberIds(scan, ch.Id);
+            if (members.Any(id => IsLocked(cfg, id)))
+            {
+                skipped++;
+                continue;
+            }
+            foreach (var id in members)
+            {
+                cfg.PortraitSeasonSkins.Remove(id);
+                cfg.PortraitTrueVanilla.Remove(id);
+                cfg.PortraitSkins[id] = packFolder;
+                cfg.PortraitVanillaDefaults.Remove(id);
+            }
+            applied++;
+        }
+        if (applied > 0)
+        {
+            SyncToDisk(gamePath, scan);
+            SyncPortraitureActive(gamePath, scan);
+            _cfg.Save(cfg);
+        }
+        return (applied, skipped);
+    }
+
+    /// <summary>列出可一键应用的皮肤包（有 ≥1 个角色可选皮肤的包，按显示名排序）。
+    /// SampleSource = 该包给某角色的一张立绘，列表封面用。</summary>
+    public static List<(string PackFolder, string PackName, int CharCount, string? SampleSource)> ListAppliablePacks(
+        PortraitScanResult scan)
+    {
+        var map = new Dictionary<string, (string Name, HashSet<string> Chars, string? Sample)>(
+            StringComparer.OrdinalIgnoreCase);
+        foreach (var ch in scan.Characters)
+        {
+            if (ch.Hidden) continue;
+            foreach (var s in ch.Skins)
+            {
+                if (string.IsNullOrWhiteSpace(s.PackFolder) || s.SourceFile is null) continue;
+                if (!map.TryGetValue(s.PackFolder, out var e))
+                    map[s.PackFolder] = e = (s.PackName, new HashSet<string>(StringComparer.OrdinalIgnoreCase), s.SourceFile);
+                e.Chars.Add(ch.Id);
+                if (e.Sample is null) e = (e.Name, e.Chars, s.SourceFile);
+            }
+        }
+        return map
+            .Select(kv => (kv.Key, kv.Value.Name, kv.Value.Chars.Count, kv.Value.Sample))
+            .OrderByDescending(x => x.Item3)
+            .ThenBy(x => x.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
     }
 
     /// <summary>这张卡管着的真实 NPC 条目 id（未合并时就是它自己）。传进来的若是被并入的
@@ -2392,7 +2638,9 @@ public sealed class PortraitSkinService
     /// Load+EditImage 被选中角色的立绘/精灵表），**不再启停任何 mod** ——
     /// "没选中的包禁用"会连功能性 mod 一起废掉（Childhood Sweetheart 还有对话/事件，
     /// 实机用户反馈）。mod 本体的启停完全归 Mods 页管。</summary>
-    public void SyncToDisk(string gamePath, PortraitScanResult scan)
+    /// <summary>配置→磁盘单向同步（幂等）：生成/更新 JuniGrid 覆盖包。
+    /// onlyIds 非空时只增量重建这些 NPC 的条目（换肤热路径）；null = 全量。</summary>
+    public void SyncToDisk(string gamePath, PortraitScanResult scan, IReadOnlyList<string>? onlyIds = null)
     {
         var cfg = _cfg.Current;
         var skins = cfg.PortraitSkins;
@@ -2406,16 +2654,15 @@ public sealed class PortraitSkinService
         }
 
         // ── 覆盖包：换肤的唯一落盘手段 ──
-        WriteOverridePack(gamePath, scan, skins, cfg.PortraitVanillaDefaults);
+        WriteOverridePack(gamePath, scan, skins, cfg.PortraitVanillaDefaults, onlyIds);
 
         // 选中包的 per-char config 开关照写（config.json 是用户设置，不算改 mod 内容）。
-        // v1.3.9c：只右键固定了季节、没有全局选中包的角色也要把对应包开关打开 ——
-        // Baechu 这类靠 ConfigSchema 按角色 Include 的季节包，开关 false 时
-        // Appearance/季节资产整段不生效，覆盖包钉了 Emily_Spring 也没人引用（Emily 实测）。
+        // 增量模式下只碰该角色相关的包，避免每次换肤遍历全部 ConfigKeys。
         var modsDir = Path.Combine(gamePath, "Mods");
         var seasonEnabled = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
         foreach (var (chId, raw) in cfg.PortraitSeasonSkins)
         {
+            if (onlyIds is not null && !onlyIds.Contains(chId, StringComparer.OrdinalIgnoreCase)) continue;
             foreach (var seg in raw.Split('␟'))
             {
                 var i = seg.IndexOf(':');
@@ -2427,8 +2674,16 @@ public sealed class PortraitSkinService
                 set.Add(chId);
             }
         }
-        var selectedPacks = skins.Values.Concat(seasonEnabled.Keys)
-            .Where(f => f.Length > 0 && !f.StartsWith("Portraiture/", StringComparison.OrdinalIgnoreCase))
+        IEnumerable<string> packCandidates = skins
+            .Where(kv => onlyIds is null || onlyIds.Contains(kv.Key, StringComparer.OrdinalIgnoreCase))
+            .Select(kv => kv.Value)
+            .Concat(seasonEnabled.Keys)
+            .Where(f => f.Length > 0 && !f.StartsWith("Portraiture/", StringComparison.OrdinalIgnoreCase));
+        // 全量时仍要处理所有选中包（批量应用/恢复默认）；增量时只处理本次角色用到的包
+        if (onlyIds is null)
+            packCandidates = skins.Values.Concat(seasonEnabled.Keys)
+                .Where(f => f.Length > 0 && !f.StartsWith("Portraiture/", StringComparison.OrdinalIgnoreCase));
+        var selectedPacks = packCandidates
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         foreach (var pack in selectedPacks)
@@ -2449,8 +2704,12 @@ public sealed class PortraitSkinService
     /// assets 并以最高优先级 Load+EditImage 压过其它启用包的同名补丁（含 Nyapu 这类
     /// 无参 EditImage 整表替换）；显式回默认的角色拷原版立绘。拷贝失败的项直接跳过 ——
     /// 绝不写引用不存在文件的补丁（CP 会报错）。</summary>
+    /// <summary>生成/更新覆盖包：对每个「显式选择」的角色，把对应立绘（和精灵表）拷进
+    /// assets 并以最高优先级 EditImage 压过其它启用包的同名补丁。
+    /// onlyIds 非空 = 增量：只重建这些角色的条目，其余保留旧 content.json 内容。</summary>
     private void WriteOverridePack(string gamePath, PortraitScanResult scan,
-        Dictionary<string, string> skins, List<string> vanillaDefaults)
+        Dictionary<string, string> skins, List<string> vanillaDefaults,
+        IReadOnlyList<string>? onlyIds = null)
     {
         try
         {
@@ -2458,33 +2717,35 @@ public sealed class PortraitSkinService
             var root = Path.Combine(modsDir, OverrideFolder);
             var assets = Path.Combine(root, "assets");
             Directory.CreateDirectory(assets);
+            var vanillaSet = new HashSet<string>(vanillaDefaults, StringComparer.OrdinalIgnoreCase);
 
-            // ── 清理历史遗留的无 `~` / 点前缀覆盖包 ──
-            // 旧版目录仍会被 SMAPI 加载；content.json 引用已删 PNG 时 CP 把资产置 null，
-            // 绘制循环 ContentLoadException 直接崩（SMAPI-crash.txt 实测）。
-            foreach (var legacyName in new[] { LegacyOverrideFolder, "." + LegacyOverrideFolder })
+            // 历史遗留清理只在全量时做（增量热路径不碰回收站）
+            if (onlyIds is null)
             {
-                var legacy = Path.Combine(modsDir, legacyName);
-                if (!Directory.Exists(legacy)) continue;
-                try
+                foreach (var legacyName in new[] { LegacyOverrideFolder, "." + LegacyOverrideFolder })
                 {
-                    ModService.StageExistingToTrash(gamePath, legacy);
-                    AppLog.Warn("Portraits", $"[覆盖包] 已回收历史遗留目录 {legacyName}");
+                    var legacy = Path.Combine(modsDir, legacyName);
+                    if (!Directory.Exists(legacy)) continue;
+                    try
+                    {
+                        ModService.StageExistingToTrash(gamePath, legacy);
+                        AppLog.Warn("Portraits", $"[覆盖包] 已回收历史遗留目录 {legacyName}");
+                    }
+                    catch (Exception lex)
+                    {
+                        AppLog.Warn("Portraits", $"[覆盖包] 清理遗留目录失败 {legacyName}: {lex.Message}");
+                    }
                 }
-                catch (Exception lex)
-                {
-                    AppLog.Warn("Portraits", $"[覆盖包] 清理遗留目录失败 {legacyName}: {lex.Message}");
-                }
-            }
 
-            // manifest 只写一次
-            var mf = Path.Combine(root, "manifest.json");
-            if (!File.Exists(mf))
-                File.WriteAllText(mf,
-                    "{\"Name\":\"JuniGrid Portrait Overrides\",\"Author\":\"JuniGrid\",\"Version\":\"1.0.0\"," +
-                    "\"Description\":\"Portrait overrides managed by JuniGrid. Regenerated automatically.\"," +
-                    "\"UniqueID\":\"" + OverrideUid + "\"," +
-                    "\"ContentPackFor\":{\"UniqueID\":\"Pathoschild.ContentPatcher\"}}");
+                // manifest 只写一次
+                var mf = Path.Combine(root, "manifest.json");
+                if (!File.Exists(mf))
+                    File.WriteAllText(mf,
+                        "{\"Name\":\"JuniGrid Portrait Overrides\",\"Author\":\"JuniGrid\",\"Version\":\"1.0.0\"," +
+                        "\"Description\":\"Portrait overrides managed by JuniGrid. Regenerated automatically.\"," +
+                        "\"UniqueID\":\"" + OverrideUid + "\"," +
+                        "\"ContentPackFor\":{\"UniqueID\":\"Pathoschild.ContentPatcher\"}}");
+            }
 
             // v1.3.9b：不再「整目录删除重建」—— 游戏运行时 SMAPI/CP 占着覆盖包文件句柄，
             // Directory.Delete 直接抛 IOException 被 catch 吞掉，覆盖包从此再也不更新，
@@ -2511,11 +2772,56 @@ public sealed class PortraitSkinService
             var written = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var ch in scan.Characters)
             {
+                // 增量模式：只处理本次变更的角色（含合并卡隐藏成员）
+                if (onlyIds is not null
+                    && !onlyIds.Contains(ch.Id, StringComparer.OrdinalIgnoreCase)
+                    && !ch.Members.Any(m => onlyIds.Contains(m, StringComparer.OrdinalIgnoreCase))
+                    && !(ch.AliasOf is { Length: > 0 } ao && onlyIds.Contains(ao, StringComparer.OrdinalIgnoreCase)))
+                    continue;
                 string? sel = null, portraitSrc = null, spriteSrc = null;
                 PortraitSkinOption? selectedOpt = null;
                 Dictionary<string, string>? selectedSeasonFiles = null;
                 var vanillaDefault = false;
-                if (skins.TryGetValue(ch.Id, out var s)
+                // v1.7 锁定：四季一律钉锁定瞬间那张图，跳过季节变体轮换
+                var lockInfo = GetLock(_cfg.Current, ch.Id);
+                if (lockInfo is not null)
+                {
+                    sel = lockInfo.PackFolder.Length == 0 ? null : lockInfo.PackFolder;
+                    vanillaDefault = lockInfo.PackFolder.Length == 0;
+                    // PinFile 优先（锁定时预览的那张，含夏季变体）；失效则回落包默认/原版
+                    if (lockInfo.PinFile is not null && File.Exists(lockInfo.PinFile))
+                    {
+                        portraitSrc = lockInfo.PinFile;
+                        if (sel is not null)
+                        {
+                            var lopt = ch.AllOptions.FirstOrDefault(o =>
+                                !o.IsVanilla && string.Equals(o.PackFolder, sel, StringComparison.OrdinalIgnoreCase));
+                            spriteSrc = lopt?.SpriteFile;
+                            // 精灵也尽量钉到同季（没有就整表默认）
+                            if (spriteSrc is not null && lockInfo.Season is not null
+                                && GetSeasonFiles(spriteSrc).TryGetValue(lockInfo.Season, out var ls))
+                                spriteSrc = ls;
+                        }
+                        else
+                        {
+                            spriteSrc = ch.IsVanilla ? VanillaSpriteXnb(gamePath, ch.Id) : ch.Native?.SpriteFile;
+                        }
+                    }
+                    else if (sel is not null)
+                    {
+                        var lopt = ch.AllOptions.FirstOrDefault(o =>
+                            !o.IsVanilla && string.Equals(o.PackFolder, sel, StringComparison.OrdinalIgnoreCase));
+                        portraitSrc = lopt?.SourceFile;
+                        spriteSrc = lopt?.SpriteFile;
+                    }
+                    else
+                    {
+                        portraitSrc = ch.IsVanilla ? VanillaPortraitXnb(gamePath, ch.Id) : ch.Native?.SourceFile;
+                        spriteSrc = ch.IsVanilla ? VanillaSpriteXnb(gamePath, ch.Id) : ch.Native?.SpriteFile;
+                    }
+                    // 锁定路径：不收集季节变体（selectedSeasonFiles 保持 null → 单文件钉入）
+                }
+                else if (skins.TryGetValue(ch.Id, out var s)
                     && !s.StartsWith("Portraiture/", StringComparison.OrdinalIgnoreCase))
                 {
                     sel = s;
@@ -2547,17 +2853,29 @@ public sealed class PortraitSkinService
                             portraitSrc = springP;
                     }
                 }
-                else if (vanillaDefaults.Contains(ch.Id, StringComparer.OrdinalIgnoreCase))
+                else if (vanillaSet.Contains(ch.Id))
                 {
                     // 显式回默认：拷「默认行」当前来源 —— 原版角色若被扩展包增强
                     // （马龙/法师/冈瑟…），默认行指向扩展包文件（=游戏实际显示）；
                     // 卸载扩展包后重新扫描，默认行回落原版 xnb，恢复原版肖像。
                     // mod 角色拷娘家默认外观。
+                    // v1.7「一键恢复默认」：PortraitTrueVanilla 里的角色强制走原版 xnb
+                    //（用户拍板：冈瑟这种原版/SVE 双默认的统一用原版）。
                     vanillaDefault = true;
-                    portraitSrc = ch.Vanilla?.SourceFile
-                        ?? (ch.IsVanilla ? VanillaPortraitXnb(gamePath, ch.Id) : ch.Native?.SourceFile);
-                    spriteSrc = ch.Vanilla?.SpriteFile
-                        ?? (ch.IsVanilla ? VanillaSpriteXnb(gamePath, ch.Id) : ch.Native?.SpriteFile);
+                    var forceTrue = _cfg.Current.PortraitTrueVanilla
+                        .Contains(ch.Id, StringComparer.OrdinalIgnoreCase);
+                    if (forceTrue && ch.IsVanilla)
+                    {
+                        portraitSrc = VanillaPortraitXnb(gamePath, ch.Id);
+                        spriteSrc = VanillaSpriteXnb(gamePath, ch.Id);
+                    }
+                    else
+                    {
+                        portraitSrc = ch.Vanilla?.SourceFile
+                            ?? (ch.IsVanilla ? VanillaPortraitXnb(gamePath, ch.Id) : ch.Native?.SourceFile);
+                        spriteSrc = ch.Vanilla?.SpriteFile
+                            ?? (ch.IsVanilla ? VanillaSpriteXnb(gamePath, ch.Id) : ch.Native?.SpriteFile);
+                    }
                 }
                 if (portraitSrc is null) continue;
 
@@ -2596,8 +2914,27 @@ public sealed class PortraitSkinService
                 // 变体资产整族钉住（季节外观等）：Baechu 法师走 1.6 Appearance 引用
                 // Portraits/Wizard_Spring 等变体资产，而它的变体 Load 被"装 SVE 不生效"
                 // 门槛挡掉 → 不补齐，游戏按季节解析外观就指向缺失 → 立绘空白（实机）。
-                // 选中皮肤 → 用该包登记的变体文件；显式默认 → 全部钉到原版，不让引用悬空
-                var variants = sel is not null
+                // 选中皮肤 → 用该包登记的变体文件；显式默认 → 全部钉到原版，不让引用悬空。
+                // v1.7 锁定中：变体也全部钉到 PinFile（同一张图），Appearance 按季切换时
+                // 看到的仍是锁定图 —— 这就是「不管什么季节都是这个肖像」的落盘点。
+                var variants = lockInfo is not null
+                    ? (lockInfo.PackFolder.Length == 0
+                        ? scan.VariantAssets
+                            .Where(v => string.Equals(v.BaseId, ch.Id, StringComparison.OrdinalIgnoreCase))
+                            .GroupBy(v => (v.Kind, v.VariantId))
+                            .Select(g => (g.Key.Kind, g.Key.VariantId,
+                                File: lockInfo.PinFile is not null && File.Exists(lockInfo.PinFile)
+                                    ? lockInfo.PinFile
+                                    : ResolveSeasonalVariantFile(
+                                        g.Key.Kind == "Portraits" ? portraitSrc : spriteSrc, g.Key.VariantId)))
+                        : scan.VariantAssets
+                            .Where(v => string.Equals(v.BaseId, ch.Id, StringComparison.OrdinalIgnoreCase))
+                            .Select(v => (v.Kind, v.VariantId,
+                                File: (string?)(lockInfo.PinFile is not null && File.Exists(lockInfo.PinFile) && v.Kind == "Portraits"
+                                    ? lockInfo.PinFile
+                                    : v.Kind == "Portraits" ? portraitSrc
+                                    : (spriteSrc ?? v.File)))))
+                    : sel is not null
                     ? scan.VariantAssets
                         .Where(v => string.Equals(v.Pack, sel, StringComparison.OrdinalIgnoreCase)
                                     && string.Equals(v.BaseId, ch.Id, StringComparison.OrdinalIgnoreCase))
@@ -2626,7 +2963,8 @@ public sealed class PortraitSkinService
 
                 // v1.3.9：每季节独立皮肤 —— 用户给某季指定了包 → 把该季变体资产钉成
                 // 那个包的对应文件（借 scan.VariantAssets 拿到 mod 用的确切变体资产名）。
-                if (_cfg.Current.PortraitSeasonSkins.TryGetValue(ch.Id, out var ssRaw))
+                // v1.7 锁定中跳过：四季统一 PinFile，不再按季覆盖。
+                if (lockInfo is null && _cfg.Current.PortraitSeasonSkins.TryGetValue(ch.Id, out var ssRaw))
                 {
                     var ss = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                     foreach (var seg in ssRaw.Split('␟'))
@@ -2671,7 +3009,38 @@ public sealed class PortraitSkinService
                 }
             }
 
-            var contentArr = new JArray();
+            var contentPath = Path.Combine(root, "content.json");
+            JArray contentArr;
+            if (onlyIds is null)
+            {
+                contentArr = new JArray();
+            }
+            else
+            {
+                // 增量：保留其它角色的旧条目，只替换本次角色相关 Target
+                contentArr = new JArray();
+                try
+                {
+                    if (File.Exists(contentPath))
+                    {
+                        var old = JObject.Parse(File.ReadAllText(contentPath));
+                        if (old["Changes"] is JArray prev)
+                        {
+                            foreach (var item in prev)
+                            {
+                                var t = item?["Target"]?.ToString() ?? "";
+                                var hit = onlyIds.Any(id =>
+                                    t.Equals("Portraits/" + GameAssetId(id), StringComparison.OrdinalIgnoreCase)
+                                    || t.Equals("Characters/" + GameAssetId(id), StringComparison.OrdinalIgnoreCase)
+                                    || t.StartsWith("Portraits/" + GameAssetId(id) + "_", StringComparison.OrdinalIgnoreCase)
+                                    || t.StartsWith("Characters/" + GameAssetId(id) + "_", StringComparison.OrdinalIgnoreCase));
+                                if (!hit) contentArr.Add(item);
+                            }
+                        }
+                    }
+                }
+                catch { contentArr = new JArray(); }
+            }
             var skippedGhosts = 0;
             foreach (var c in changes)
             {
@@ -2694,12 +3063,12 @@ public sealed class PortraitSkinService
                 new JProperty("Format", "2.0.0"),
                 new JProperty("Changes", contentArr));
             // 先写临时文件再替换，避免写一半留下半截 content.json
-            var contentPath = Path.Combine(root, "content.json");
             var tmpContent = contentPath + ".junigrid.tmp";
-            File.WriteAllText(tmpContent, content.ToString(Newtonsoft.Json.Formatting.Indented));
+            File.WriteAllText(tmpContent, content.ToString(Newtonsoft.Json.Formatting.None));
             File.Move(tmpContent, contentPath, true);
-            AppLog.Warn("Portraits", $"[覆盖包] 已重建：{contentArr.Count} 条补丁" +
-                (skippedGhosts > 0 ? $"（跳过 {skippedGhosts} 条幽灵引用）" : ""));
+            if (onlyIds is null)
+                AppLog.Warn("Portraits", $"[覆盖包] 已重建：{contentArr.Count} 条补丁" +
+                    (skippedGhosts > 0 ? $"（跳过 {skippedGhosts} 条幽灵引用）" : ""));
 
             // 覆盖包自身必须启用（用户在 Mods 页禁了它换肤就全体失效 —— 拉回来）
             _mods.SetDisabled(gamePath, OverrideFolder, false);
@@ -2784,11 +3153,26 @@ public sealed class PortraitSkinService
             if (src.EndsWith(".xnb", StringComparison.OrdinalIgnoreCase))
             {
                 var tex = XnbDecoder.TryDecode(src);
-                if (tex is null) return false;
-                File.WriteAllBytes(dest,
-                    PixelKit.CropScalePng(tex, 0, 0, tex.Width, tex.Height, tex.Width, tex.Height));
-                File.SetLastWriteTimeUtc(dest, File.GetLastWriteTimeUtc(src));
-                return true;
+                if (tex is not null)
+                {
+                    File.WriteAllBytes(dest,
+                        PixelKit.CropScalePng(tex, 0, 0, tex.Width, tex.Height, tex.Width, tex.Height));
+                    File.SetLastWriteTimeUtc(dest, File.GetLastWriteTimeUtc(src));
+                    return true;
+                }
+                // 兜底：扩展名是 .xnb 但内容其实是 PNG（测试夹具/用户手改）→ 按 PNG 原样拷
+                var head = new byte[8];
+                using (var fs = File.OpenRead(src))
+                {
+                    if (fs.Read(head, 0, 8) < 8) return false;
+                }
+                if (head[0] == 0x89 && head[1] == (byte)'P' && head[2] == (byte)'N' && head[3] == (byte)'G')
+                {
+                    File.Copy(src, dest, overwrite: true);
+                    File.SetLastWriteTimeUtc(dest, File.GetLastWriteTimeUtc(src));
+                    return true;
+                }
+                return false;
             }
             try
             {
@@ -2884,30 +3268,66 @@ public sealed class PortraitSkinService
 
     /// <summary>缓存键 = 版本 + 种类 + 源路径 + mtime + size（源文件更新自动失效）。
     /// ⚠ 不含"卡片/弹窗"这类范围——同一来源文件渲染结果相同，必须共享缓存，
-    /// 否则打开弹窗时每个格子都要重新生成，先出一片占位图（实机用户反馈）。</summary>
+    /// 否则打开弹窗时每个格子都要重新生成，先出一片占位图（实机用户反馈）。
+    /// v1.7.1：stat 结果也缓存 —— 渲染每帧对每个缩略图 FileInfo，OneDrive/冷盘上是热点。</summary>
+    private static readonly ConcurrentDictionary<string, string> SrcStatCache = new(StringComparer.OrdinalIgnoreCase);
+
     private static string CoverKey(ThumbKind kind, string? src)
     {
         string srcPart;
         try
         {
-            srcPart = src is null ? "none"
-                : $"{File.GetLastWriteTimeUtc(src):yyyyMMddHHmmss}-{new FileInfo(src).Length}";
+            if (src is null) srcPart = "none";
+            else
+            {
+                srcPart = SrcStatCache.GetOrAdd(src, s =>
+                {
+                    try { return $"{File.GetLastWriteTimeUtc(s):yyyyMMddHHmmss}-{new FileInfo(s).Length}"; }
+                    catch { return "err"; }
+                });
+                if (srcPart == "err")
+                {
+                    // 之前失败过，重试一次（文件可能刚生成）
+                    try
+                    {
+                        srcPart = $"{File.GetLastWriteTimeUtc(src):yyyyMMddHHmmss}-{new FileInfo(src).Length}";
+                        SrcStatCache[src] = srcPart;
+                    }
+                    catch { }
+                }
+            }
         }
         catch { srcPart = "err"; }
         return $"{CacheVersion}|{kind}|{srcPart}";
     }
 
-    /// <summary>角色卡片封面 = 当前生效大头照（选中包 → 原版 xnb → 娘家包）。未就绪返回 null。</summary>
+    /// <summary>角色卡片封面 = 当前生效大头照（选中包 → 原版 xnb → 娘家包）。未就绪返回 null。
+    /// 锁定中优先显示 PinFile；一键恢复默认的原版角色强制原版 xnb。</summary>
     public string? GetCharacterCover(string gamePath, PortraitCharacter ch, string? selectedPackFolder)
     {
         string? src = null;
-        if (selectedPackFolder is not null)
+        var lk = GetLock(_cfg.Current, ch.Id);
+        if (lk?.PinFile is not null && File.Exists(lk.PinFile))
+            src = lk.PinFile;
+        if (src is null && selectedPackFolder is not null)
         {
             var opt = ch.AllOptions.FirstOrDefault(o =>
                 string.Equals(o.PackFolder, selectedPackFolder, StringComparison.OrdinalIgnoreCase) && !o.IsVanilla);
             if (opt is not null) src = opt.SourceFile;
         }
-        if (src is null && ch.IsVanilla) src = VanillaPortraitXnb(gamePath, ch.Id);
+        if (src is null && ch.IsVanilla)
+        {
+            var trueVanilla = _cfg.Current.PortraitTrueVanilla
+                .Contains(ch.Id, StringComparer.OrdinalIgnoreCase);
+            // 一键恢复默认（PortraitTrueVanilla）→ 必须原版 xnb；
+            // 否则无选择时封面跟随「默认行」（扩展包增强像 = 游戏实际显示）
+            var xnb = VanillaPortraitXnb(gamePath, ch.Id);
+            if (trueVanilla || selectedPackFolder is not null
+                || _cfg.Current.PortraitSkins.ContainsKey(ch.Id))
+                src = xnb;
+            else
+                src = ch.Vanilla?.SourceFile ?? xnb;
+        }
         if (src is null) src = ch.Native?.SourceFile;
         // 娘家检测没中（注册形式没解析到）但有皮肤来源的 mod 角色：用皮肤来源兜底
         if (src is null) src = ch.Skins.Select(s => s.SourceFile).FirstOrDefault(s => s is not null);
@@ -2956,12 +3376,14 @@ public sealed class PortraitSkinService
         return null;
     }
 
-    /// <summary>设置某季节的独立皮肤（packFolder=null 清除该季，回全局选择）。写盘重建覆盖包。</summary>
+    /// <summary>设置某季节的独立皮肤（packFolder=null 清除该季，回全局选择）。写盘重建覆盖包。
+    /// 锁定中的角色拒绝写入。</summary>
     public void SetSeasonSkin(string gamePath, PortraitScanResult scan, string charId, string season, string? packFolder)
     {
         // 与 SelectSkin 同理：合并卡的一季选择要落到这个人的全部 NPC 条目上
         foreach (var id in MemberIds(scan, charId))
         {
+            if (IsLocked(_cfg.Current, id)) continue;
             var cur = _cfg.Current.PortraitSeasonSkins.TryGetValue(id, out var v) ? v : "";
             var parts = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             foreach (var seg in cur.Split('␟'))
@@ -2975,7 +3397,7 @@ public sealed class PortraitSkinService
             else _cfg.Current.PortraitSeasonSkins[id] = string.Join("␟", parts.Select(kv => kv.Key + ":" + kv.Value));
         }
         _cfg.Save(_cfg.Current);
-        SyncToDisk(gamePath, scan);
+        SyncToDisk(gamePath, scan, MemberIds(scan, charId));
     }
 
     /// <summary>解析角色的每季皮肤表（␟ 分隔串 → 季节→包）。
@@ -3048,65 +3470,76 @@ public sealed class PortraitSkinService
     /// assets/Portraits/Sophia_Spring.png 与 Sunberry 的 assets/Portraits/&lt;id&gt;/&lt;id&gt;_spring.png，
     /// 都是「同目录 + _季节后缀」。来源文件本身是变体（Sophia_Spring）时先剥回基准名。
     /// 没有的季节无键 —— UI 切换到缺失季节时保持当前图（用户要求）。</summary>
+    /// <summary>探测立绘/精灵来源文件的春夏秋冬变体。结果按源路径缓存 ——
+    /// 换肤渲染会对每张卡反复探测，磁盘 IO 是弹窗卡顿来源之一。</summary>
+    private static readonly ConcurrentDictionary<string, Dictionary<string, string>> SeasonFileCache =
+        new(StringComparer.OrdinalIgnoreCase);
+
     public static Dictionary<string, string> GetSeasonFiles(string? sourceFile)
     {
-        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        if (string.IsNullOrWhiteSpace(sourceFile)) return result;
-        try
+        if (string.IsNullOrWhiteSpace(sourceFile))
+            return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        // 返回副本：调用方（GetSeasonFilesForChar）会在其上继续填键
+        var cached = SeasonFileCache.GetOrAdd(sourceFile, static src =>
         {
-            var dir = Path.GetDirectoryName(sourceFile);
-            if (dir is null || !Directory.Exists(dir)) return result;
-            var stem = Path.GetFileNameWithoutExtension(sourceFile);
-            foreach (var suffix in new[] { "_Spring", "_Summer", "_Fall", "_Winter" })
-                if (stem.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
-                { stem = stem[..^suffix.Length]; break; }
-            foreach (var (key, suffix) in new[]
-                     { ("spring", "_Spring"), ("summer", "_Summer"), ("fall", "_Fall"), ("winter", "_Winter") })
+            var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            try
             {
-                // mod 布局：同目录 png（Sunberry：assets/Portraits/<id>/<id>_spring.png；
-                // SCCC 子文件夹：assets/Portraits/Sophia/Sophia_Spring.png）
-                var p = Path.Combine(dir, stem + suffix + ".png");
-                if (File.Exists(p)) { result[key] = p; continue; }
-                var sub = Path.Combine(dir, stem, stem + suffix + ".png");
-                if (File.Exists(sub)) { result[key] = sub; continue; }
-                // 原版布局：Content/Portraits|Characters/<id>_Winter.xnb —— 原版 1.6 给
-                // 30 个村民只做了冬季变体（用户实测：原版艾米丽点冬季没反应）
-                var xnb = Path.Combine(dir, stem + suffix + ".xnb");
-                if (File.Exists(xnb)) result[key] = xnb;
-            }
-            // v1.6.8：每角色文件夹布局（Baechu：assets/Portraits/<id>/<id>_<季>[_场景].png）
-            // 的冬季拆成了 Indoor/Outdoor 两张、没有 <id>_Winter.png —— 补上：
-            // 冬季优先 Indoor（对话多数在室内），Outdoor 由场景 Appearance 走变体资产。
-            if (sourceFile is not null && !result.ContainsKey("winter"))
-            {
-                var ownDir = Path.GetDirectoryName(sourceFile);
-                if (ownDir is not null
-                    && Path.GetFileName(ownDir).Equals(stem, StringComparison.OrdinalIgnoreCase))
+                var dir = Path.GetDirectoryName(src);
+                if (dir is null || !Directory.Exists(dir)) return result;
+                var stem = Path.GetFileNameWithoutExtension(src);
+                foreach (var suffix in new[] { "_Spring", "_Summer", "_Fall", "_Winter" })
+                    if (stem.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
+                    { stem = stem[..^suffix.Length]; break; }
+                foreach (var (key, suffix) in new[]
+                         { ("spring", "_Spring"), ("summer", "_Summer"), ("fall", "_Fall"), ("winter", "_Winter") })
                 {
-                    var indoor = Path.Combine(ownDir, stem + "_Winter_Indoor.png");
-                    var outdoor = Path.Combine(ownDir, stem + "_Winter_Outdoor.png");
-                    if (File.Exists(indoor)) result["winter"] = indoor;
-                    else if (File.Exists(outdoor)) result["winter"] = outdoor;
+                    var p = Path.Combine(dir, stem + suffix + ".png");
+                    if (File.Exists(p)) { result[key] = p; continue; }
+                    var sub = Path.Combine(dir, stem, stem + suffix + ".png");
+                    if (File.Exists(sub)) { result[key] = sub; continue; }
+                    var xnb = Path.Combine(dir, stem + suffix + ".xnb");
+                    if (File.Exists(xnb)) result[key] = xnb;
+                }
+                if (!result.ContainsKey("winter"))
+                {
+                    var ownDir = Path.GetDirectoryName(src);
+                    if (ownDir is not null
+                        && Path.GetFileName(ownDir).Equals(stem, StringComparison.OrdinalIgnoreCase))
+                    {
+                        var indoor = Path.Combine(ownDir, stem + "_Winter_Indoor.png");
+                        var outdoor = Path.Combine(ownDir, stem + "_Winter_Outdoor.png");
+                        if (File.Exists(indoor)) result["winter"] = indoor;
+                        else if (File.Exists(outdoor)) result["winter"] = outdoor;
+                    }
                 }
             }
-        }
-        catch { }
-        return result;
+            catch { }
+            return result;
+        });
+        return new Dictionary<string, string>(cached, StringComparer.OrdinalIgnoreCase);
     }
 
     /// <summary>
-    /// v1.6.8：按「角色 id + 来源文件」收集季节文件 —— 在 GetSeasonFiles（同目录兄弟
-    /// 文件）之上，支持共享目录里以 &lt;角色id&gt;_&lt;季&gt; 命名的文件（不限所在目录名），
-    /// 以及冬季 Indoor/Outdoor 拆分（Baechu/Childhood Sweetheart 两种布局实测）。
-    /// 肖像页弹窗季节预览与覆盖包逐季钉入都走这里，保证预览与游戏内一致。
-    /// 角色 id 与资产别名（Leo/ParrotBoy）都扫一遍 —— Nyapu 的季节图叫 ParrotBoy_Winter。
+    /// v1.6.8：按「角色 id + 来源文件」收集季节文件。结果缓存（源路径+角色 id）。
     /// </summary>
+    private static readonly ConcurrentDictionary<string, Dictionary<string, string>> SeasonForCharCache =
+        new(StringComparer.OrdinalIgnoreCase);
+
     public static Dictionary<string, string> GetSeasonFilesForChar(string? sourceFile, string charId)
+    {
+        if (string.IsNullOrWhiteSpace(sourceFile) || string.IsNullOrWhiteSpace(charId))
+            return GetSeasonFiles(sourceFile);
+        var cacheKey = sourceFile + "\u241F" + charId;
+        var cached = SeasonForCharCache.GetOrAdd(cacheKey, _ => BuildSeasonFilesForChar(sourceFile, charId));
+        return new Dictionary<string, string>(cached, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static Dictionary<string, string> BuildSeasonFilesForChar(string sourceFile, string charId)
     {
         var result = GetSeasonFiles(sourceFile);
         try
         {
-            if (string.IsNullOrWhiteSpace(sourceFile) || string.IsNullOrWhiteSpace(charId)) return result;
             var dir = Path.GetDirectoryName(sourceFile);
             if (dir is null || !Directory.Exists(dir)) return result;
 
@@ -3123,8 +3556,6 @@ public sealed class PortraitSkinService
                     if (File.Exists(p2)) { result[key] = p2; break; }
                 }
             }
-            // 冬季 Indoor/Outdoor 拆分（Baechu/Childhood Sweetheart 布局）：
-            // 优先 Indoor（对话多数在室内），Outdoor 由场景 Appearance 走变体资产
             if (!result.ContainsKey("winter"))
             {
                 foreach (var id in idCandidates)
@@ -3141,12 +3572,18 @@ public sealed class PortraitSkinService
     }
 
     /// <summary>预热：把扫描结果里所有角色的全部皮肤缩略图生成一遍（后台、去重）。
-    /// 页面扫描完成后调用一次，打开弹窗时图已就绪。</summary>
+    /// 同一次扫描签名只跑一遍 —— 每次进立绘页都全量预热是「肖像全在重载」的元凶。</summary>
+    private static string _prewarmedSig;
+
     public void PrewarmThumbs(string gamePath, PortraitScanResult scan)
     {
+        var sig = _memScanSig;
+        if (sig is not null && string.Equals(sig, _prewarmedSig, StringComparison.Ordinal))
+            return;
+        _prewarmedSig = sig ?? "";
         foreach (var ch in scan.Characters)
         {
-            if (ch.Hidden) continue;   // 别名卡不上屏，缩略图没人看
+            if (ch.Hidden) continue;
             if (ch.IsVanilla)
             {
                 var coverSrc = ch.Vanilla?.SourceFile;
@@ -3158,7 +3595,6 @@ public sealed class PortraitSkinService
                 _ = GetSkinThumb(ch, opt);
                 _ = GetSpriteThumb(opt);
             }
-            // 角色当前生效的封面（选中包/娘家包来源可能与任何格子不同）
             _ = GetCharacterCover(gamePath, ch, null);
         }
     }

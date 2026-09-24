@@ -297,21 +297,21 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
     /* v0.42.0：去掉常驻 will-change: transform —— 它会把 position:fixed 的后代
        （批量栏）变成相对 .jg-main 定位，导致批量栏跟着页面滚动 */
 }.jg-page-enter {
-    animation: jg-page-in 380ms cubic-bezier(.22, 1, .36, 1) both;
+    /* v1.1.8 性能：去掉 blur（WebView2 合成路径上 filter 是切页发卡主因之一）；
+       时长 380→260ms，体感更快但仍有入场感 */
+    animation: jg-page-in 260ms cubic-bezier(.22, 1, .36, 1) both;
 }
 @keyframes jg-page-in {from {
         opacity: 0;
-        transform: translateY(14px);
-        filter: blur(3px);
+        transform: translateY(10px);
     }to {
         opacity: 1;
         transform: translateY(0);
-        filter: blur(0);
     }
-}/* 内部一级块 —— 用 stagger 让页面元素依次浮上来，PCL 那种"活起来"的感觉 */
+}/* 内部一级块 —— stagger 收紧到 20ms 步进，总错峰从 290ms 降到 100ms */
 .jg-page-enter > * {
-    animation: jg-child-in 420ms cubic-bezier(.22, 1, .36, 1) both;
-}.jg-page-enter > *:nth-child(1) { animation-delay: 40ms; }.jg-page-enter > *:nth-child(2) { animation-delay: 90ms; }.jg-page-enter > *:nth-child(3) { animation-delay: 140ms; }.jg-page-enter > *:nth-child(4) { animation-delay: 190ms; }.jg-page-enter > *:nth-child(5) { animation-delay: 240ms; }.jg-page-enter > *:nth-child(6) { animation-delay: 290ms; }
+    animation: jg-child-in 300ms cubic-bezier(.22, 1, .36, 1) both;
+}.jg-page-enter > *:nth-child(1) { animation-delay: 20ms; }.jg-page-enter > *:nth-child(2) { animation-delay: 40ms; }.jg-page-enter > *:nth-child(3) { animation-delay: 60ms; }.jg-page-enter > *:nth-child(4) { animation-delay: 80ms; }.jg-page-enter > *:nth-child(5) { animation-delay: 100ms; }.jg-page-enter > *:nth-child(6) { animation-delay: 120ms; }
 @keyframes jg-child-in {from { opacity: 0; transform: translateY(10px); }to   { opacity: 1; transform: translateY(0); }
 }/* ── v0.32.0：Mod 管理工具条（chips + 排序下拉 + 展开式搜索） ── */
 .jg-mods-toolbar {
@@ -483,10 +483,10 @@ html[data-theme="dark"] .jg-tl { --tl-black: #e8eaee; --tl-onblack: #1a1a1a; }/*
 
 /* ─── v1.5：行尾操作区 —— 启用开关直管 + … 菜单收纳全部操作（玩家动力式）─── */
 .jg-modrow-end { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
-.jg-modrow-switch { position: relative; width: 40px; height: 22px; border-radius: 999px; border: none; padding: 0; background: var(--jg-track); cursor: pointer; transition: background .18s ease; flex-shrink: 0; }
-.jg-modrow-switch .knob { position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%; background: var(--jg-on-thumb, #fff); box-shadow: 0 1px 3px rgba(0, 0, 0, .25); transition: left .18s ease; }
-.jg-modrow-switch.on { background: var(--jg-pill-thumb); }
-.jg-modrow-switch.on .knob { left: 20px; }
+/* v1.1.8：这颗开关换成设置页那颗挤压回弹的 —— 轨道/旋钮的视觉全在 misc.css 的
+   .jg-switch / .jg-switch-knob 里，这里只留一个不画东西的宿主按钮。
+   开关仍是 40×22，行尾布局跟旧版一致，不会因为换样式而挪位。 */
+.jg-modrow-switch { display: flex; border: none; background: none; padding: 0; margin: 0; cursor: pointer; flex-shrink: 0; }
 /* v1.5.2：菜单打开时锚点从按钮切到整行 —— 按钮在行内居中，锚在按钮上菜单顶部
    总会探进行内 ~10px，第一项被自己的行卡挡住。行 :has() 已是 relative，把打开状态
    的 wrapper 置 static，菜单改为锚定行底边 +6px，右侧留 12px 对齐按钮。 */

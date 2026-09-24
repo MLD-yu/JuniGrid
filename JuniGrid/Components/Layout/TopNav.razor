@@ -48,16 +48,20 @@
 
     private async void OnLocationChanged(object? sender, LocationChangedEventArgs e)
     {
-        // 只触发重渲染；placeNavThumb 由 OnAfterRenderAsync 在 .active 就位后调一次
-        // （这里再调会和渲染回调打两趟 JS，每次切页都多一拍）
+        _navDirty = true;
         try { await InvokeAsync(StateHasChanged); } catch { }
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        // 每次渲染后都重定位（双 rAF 内部保证等 .active 就位），Mod 强制刷新跳动一并覆盖
+        // 只在首次渲染和路由变化后定位滑块 —— 以前每帧都 placeNavThumb，
+        // 任意页面 StateHasChanged 都会带一趟双 rAF + 布局测量，切页明显发卡
+        if (!firstRender && !_navDirty) return;
+        _navDirty = false;
         try { await JS.InvokeVoidAsync("junigridJs.placeNavThumb"); } catch { }
     }
+
+    private bool _navDirty = true;
 
     // v1.06.7：只有点击「当前已停留页面」的图标（mods/portraits/nexus）才发刷新信号，
     // 页面订阅后重新扫描/拉取/检查更新；从其它页点图标 = 正常导航（组件重建自然加载，

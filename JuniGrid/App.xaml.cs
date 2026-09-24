@@ -125,12 +125,42 @@ public partial class App : Application
         return false;
     }
 
+    /// <summary>
+    /// v1.1.8：用安装包自带的 WebView2 Evergreen 引导补装运行时。
+    /// 返回 true = 引导已跑完且退出码成功（0 / 已装更高版本）。
+    /// </summary>
+    private static bool TryInstallBundledWebView2()
+    {
+        try
+        {
+            var setup = Path.Combine(AppContext.BaseDirectory, "tools", "WebView2", "MicrosoftEdgeWebView2Setup.exe");
+            if (!File.Exists(setup)) return false;
+            LogInfo("正在用内置引导安装 WebView2 运行时…");
+            using var p = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = setup,
+                // /silent /install：静默装 Evergreen（约 1–2 分钟，按网络情况）
+                Arguments = "/silent /install",
+                UseShellExecute = true,
+            });
+            if (p is null) return false;
+            if (!p.WaitForExit(5 * 60 * 1000)) return false;
+            return p.ExitCode is 0 or 3010 or 1638;
+        }
+        catch (Exception ex)
+        {
+            LogInfo("WebView2 内置引导失败: " + ex.Message);
+            return false;
+        }
+    }
+
     /// <summary>Startup 事件占位 —— 真正的 splash → main 编排放在这里。</summary>
     private void OnAppStartup(object sender, StartupEventArgs e)
     {
         // v1.1.2：WebView2 运行时前置检测 —— 正常 Win10/11 预装，但 Windows 沙盒、
-        // LTSC/精简系统可能没有。缺失时裸异常是一屏英文堆栈（界面永远出不来），
-        // 这里弹中文提示告诉用户装一下再启动。
+        // LTSC/精简系统可能没有。缺失时裸异常是一屏英文堆栈（界面永远出不来）。
+        // v1.1.8：安装包自带 tools\WebView2\MicrosoftEdgeWebView2Setup.exe，缺运行时
+        // 自动补装（新机免手动装依赖）；引导也不在时才退回提示用户去官网装。
         try
         {
             _ = Microsoft.Web.WebView2.Core.CoreWebView2Environment.GetAvailableBrowserVersionString();
@@ -138,6 +168,30 @@ public partial class App : Application
         catch (Exception ex)
         {
             LogInfo("WebView2 运行时缺失: " + ex.Message);
+            if (TryInstallBundledWebView2())
+            {
+                // 引导装完后本进程的浏览器环境句柄已失效，提示用户重启（或直接拉起自己）
+                LogInfo("WebView2 运行库已通过内置引导安装完成");
+                var relaunch = System.Windows.MessageBox.Show(
+                    "缺少的 Microsoft WebView2 运行时已安装完成。\n\n是否立即重新启动 JuniGrid？",
+                    "JuniGrid",
+                    System.Windows.MessageBoxButton.YesNo,
+                    System.Windows.MessageBoxImage.Information);
+                if (relaunch == System.Windows.MessageBoxResult.Yes)
+                {
+                    try
+                    {
+                        System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                        {
+                            FileName = Environment.ProcessPath ?? "JuniGrid.exe",
+                            UseShellExecute = true,
+                        });
+                    }
+                    catch { }
+                }
+                Shutdown();
+                return;
+            }
             System.Windows.MessageBox.Show(
                 "检测到系统缺少 Microsoft WebView2 运行时，JuniGrid 的界面依赖它。\n\n" +
                 "请下载并安装一次（装完重新启动本程序）：\n" +

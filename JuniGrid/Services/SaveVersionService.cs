@@ -17,7 +17,10 @@ namespace JuniGrid.Services;
 ///    这一步只读 Saves、往缓存里写，开着云存档也安全。
 /// ② 启动器「用这份档玩」自动切到能读它的版本，并用 <see cref="FocusHideExcept"/> 聚焦：
 ///    游戏里只显示选中的那一份，老版本列表分不清高版本档、点错行闪退的问题从根上没了。
-///    玩完 <see cref="RestoreHidden"/> 放回，云眼里的 Saves 始终是完整的。
+///    玩完 <see cref="RestoreHidden"/> 放回。<b>但"云眼里的 Saves 始终完整"这句已经不成立</b>：
+///    开着云时收起 = 本地文件消失，Steam 会在<b>退出同步</b>时把这些它不再看得见的文件
+///    「Removing from cloud」掉（实测 cloud_log 2026-09-24 12:12:52 一次移除 34 个文件，
+///    09-23 也发生 4 次）。⇒ 抽屉与隔离区里的份就是<b>唯一副本</b>，绝不能当缓存清理。
 ///
 /// 判「读不了」只认档里写着的 &lt;gameVersion&gt;：1.0–1.2 的存档没有这个字段，判不准就一律不动它。
 /// </summary>
@@ -25,7 +28,8 @@ public static class SaveVersionService
 {
     /// <summary>Saves 下一个目录 = 一份存档槽位（联机时同一槽位有多个成员文件）。</summary>
     public sealed record Slot(string Name, string Dir, string? FarmerName, string? FarmName,
-        string? GameVersion, long SizeBytes, DateTime WrittenAt, bool MetaComplete = true);
+        string? GameVersion, long SizeBytes, DateTime WrittenAt, bool MetaComplete = true,
+        bool ModernMeta = false);
 
     /// <summary>一份留底。<see cref="At"/> 是留底时间，<see cref="SourceWritten"/> 用来判「内容没变过」。</summary>
     public sealed record Stamp(string Dir, string SaveName, DateTime At, DateTime SourceWritten,
@@ -78,7 +82,12 @@ public static class SaveVersionService
         if (version is null) return true;
         if (!s.MetaComplete)
             return CompareVersions(version, "1.3") >= 0;
-        if (s.GameVersion is null) return true;
+        if (s.GameVersion is null)
+        {
+            // 无 gameVersion：1.0–1.2 老格式（SaveGameInfo 根）才是旧版可进；
+            // 1.3+ 是 <Farmer> 根，缺版本号也当现代档 —— 否则 1.0 列表会多出进不去的行
+            return !s.ModernMeta || CompareVersions(version, "1.3") >= 0;
+        }
         return CompareVersions(s.GameVersion, version) <= 0;
     }
 
@@ -165,6 +174,7 @@ public static class SaveVersionService
 
         string? farmer = null, farm = null, ver = null;
         var metaOk = false;
+        var modern = false;
         try
         {
             var info = Path.Combine(dir, "SaveGameInfo");
@@ -172,6 +182,9 @@ public static class SaveVersionService
             {
                 metaOk = true;
                 var txt = File.ReadAllText(info);
+                modern = txt.Contains("<Farmer", StringComparison.OrdinalIgnoreCase)
+                    || txt.Contains("<isEmoting>", StringComparison.OrdinalIgnoreCase)
+                    || txt.Contains("<daysPlayed>", StringComparison.OrdinalIgnoreCase);
                 farm = Tag(txt, "farmName");
                 ver = Tag(txt, "gameVersion");
                 farmer = Tag(txt, "playerName") ?? Inside(txt, "player", "name") ?? Tag(txt, "name");
@@ -180,7 +193,7 @@ public static class SaveVersionService
         catch { /* 名字读不出来不影响留底和挪走，只是界面上少一列 */ }
 
         return new Slot(Path.GetFileName(dir.TrimEnd(Path.DirectorySeparatorChar, '/')), dir,
-            farmer, farm, ver, bytes, newest, metaOk);
+            farmer, farm, ver, bytes, newest, metaOk, modern);
     }
 
     private static string? Tag(string xml, string tag)
@@ -743,7 +756,7 @@ public static class SaveVersionService
     }
 
     /// <summary>版本包抽屉收不动时的兜底：挪进聚焦抽屉（同一套放回逻辑）。</summary>
-    private static bool ForceHideToFocus(Slot s, Action<string>? log)
+    public static bool ForceHideToFocus(Slot s, Action<string>? log)
     {
         try
         {
@@ -820,6 +833,33 @@ public static class SaveVersionService
             var lh = LegacyHiddenRootOf(d);
             if (Directory.Exists(lh)) yield return lh;
         }
+        // 人工隔离区（<staging>\_quarantine\<批次>）：去重/腾地方这类手工动作把整批档挪到这儿，
+        // 以前放回逻辑只认抽屉，隔离区里的档界面看不见、切版本也永远回不来
+        // （2026-09-22 那 16 份 / 438 MB 就是这么"消失"的，玩家视角等于丢档）。
+        foreach (var b in QuarantineSaveBatches()) yield return b;
+    }
+
+    /// <summary>人工隔离区根（去重/腾地方的批次落点）。</summary>
+    public static string QuarantineRoot => Path.Combine(DepotDownloaderService.StagingRoot, "_quarantine");
+
+    /// <summary>隔离区里按<b>结构</b>认出的存档批次（子目录里有 SaveGameInfo 才算）——
+    /// 不猜目录名，免得把 <c>1.0-stray-mods-…</c> 这类 mod 批次当存档搬进 Saves。
+    /// 存储页统计占用与「放回」按钮共用这个判据。</summary>
+    public static List<string> QuarantineSaveBatches()
+    {
+        var hits = new List<string>();
+        string[] batches;
+        try { batches = Directory.GetDirectories(QuarantineRoot); } catch { return hits; }
+        foreach (var b in batches)
+        {
+            try
+            {
+                if (Directory.EnumerateDirectories(b).Any(s => File.Exists(Path.Combine(s, "SaveGameInfo"))))
+                    hits.Add(b);
+            }
+            catch { }
+        }
+        return hits;
     }
 
     private static void TryDeleteIfEmpty(string dir)

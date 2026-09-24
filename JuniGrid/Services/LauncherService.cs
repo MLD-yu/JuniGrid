@@ -542,7 +542,15 @@ public sealed class LauncherService
             // 只认这一次会话写的日志。SMAPI 起不来时 latest.txt 还是上一局的，
             // 拿上局的报错解释这局的退出就是张冠李戴。
             if (File.GetLastWriteTime(logPath) < startedAt.AddSeconds(-5)) return;
-            var lines = File.ReadAllLines(logPath);
+            // v1.1.8：SMAPI 可能仍持有写句柄 —— File.ReadAllLines 默认 FileShare.Read 会炸
+            string[] lines;
+            try
+            {
+                using var fs = new FileStream(logPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                using var sr = new StreamReader(fs, System.Text.Encoding.UTF8);
+                lines = sr.ReadToEnd().Split('\n').Select(l => l.TrimEnd('\r')).ToArray();
+            }
+            catch { return; }
             var errors = lines
                 .Where(l => l.Contains("ERROR", StringComparison.OrdinalIgnoreCase)
                             || l.Contains("Press any key", StringComparison.OrdinalIgnoreCase)
@@ -577,7 +585,6 @@ public sealed class LauncherService
             await Task.Delay(3000);
         }
         // 聚焦启动暂存的档在这时放回，游戏列表恢复完整
-        try { SaveVersionService.RestoreHidden(m => AppLog.Warn("存档", m)); } catch { }
         OnGameExit();
     }
 

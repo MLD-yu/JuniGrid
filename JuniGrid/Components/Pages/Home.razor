@@ -13,15 +13,36 @@
     <div class="jg-grid-4">
         <div class="jg-card">
             <div class="jg-stat-label">已装 Mod</div>
-            <div class="jg-stat-num">@_totalModCount</div>
-            <div class="jg-stat-sub">@_activeModCount 启用 · @(_totalModCount - _activeModCount) 禁用</div>
+            <div class="jg-stat-num">
+                @if (_statsReady)
+                {
+                    @_totalModCount
+                }
+                else
+                {
+                    <span class="jg-shimmer jg-shimmer-line" style="width:1.2em;height:.95em;display:inline-block"></span>
+                }
+            </div>
+            <div class="jg-stat-sub">
+                @(_statsReady ? $"{_activeModCount} 启用 · {_totalModCount - _activeModCount} 禁用" : "正在扫描…")
+            </div>
         </div>
 
         <div class="jg-card">
             <div class="jg-stat-label">SMAPI</div>
-            <div class="jg-stat-num">@(_smapiVersion is null ? "未安装" : _smapiVersion)</div>
+            <div class="jg-stat-num">
+                @if (!_statsReady)
+                {
+                    <span class="jg-shimmer jg-shimmer-line" style="width:4em;height:.95em;display:inline-block"></span>
+                }
+                else
+                {
+                    @(_smapiVersion is null ? "未安装" : _smapiVersion)
+                }
+            </div>
             <div class="jg-stat-sub">
-                @(_smapiVersion is null ? "仅支持 Steam 官方启动" : "Mod 加载器就绪")
+                @(!_statsReady ? "正在检测…"
+                    : _smapiVersion is null ? "仅支持 Steam 官方启动" : "Mod 加载器就绪")
             </div>
         </div>
 
@@ -154,35 +175,70 @@
     private string? _gameVersion;
     private int _totalModCount;
     private int _activeModCount;
+    /// <summary>三项后台探测（版本/SMAPI/Mod）是否全部回来。回来前画 shimmer，
+    /// 不许先按 0 /「未安装」当最终值 —— 那是用户看到「基本信息都不显示」的直接原因。</summary>
+    private bool _statsReady;
 
     // ─── v1.4：版本管理入口 ───
     private bool _verOpen;
 
     private void OpenVersionMgr() => _verOpen = true;
 
+    /// <summary>三项探测互相独立：任一失败/变慢不拖死另外两项；每完成一项就刷一帧。</summary>
     private void RefreshVersions()
     {
         var cfg = Cfg.Current;
         _cfg = cfg;
+        _statsReady = false;
         StateHasChanged();
-        // 全挪到后台：ProbeSmapiVersion(freshRead) 会把 SMAPI exe **拷一份到临时目录**再读版本
-        // （绕开 Windows 的版本资源缓存），加上本体版本探测和整棵 Mods 重扫 —— 原来这些
-        // 全在 UI 线程上跑，就是"关闭版本管理卡一下"。现在先画旧值，探完再补。
+        LoadStatsAsync(cfg.GamePath);
+    }
+
+    private void LoadStatsAsync(string? gamePath)
+    {
+        // 先画缓存的上次结果（秒开），后台再对齐磁盘真相
+        if (!string.IsNullOrWhiteSpace(_cfg.CachedGameVersion))
+            _gameVersion = _cfg.CachedGameVersion;
+        if (!string.IsNullOrWhiteSpace(_cfg.CachedSmapiVersion))
+            _smapiVersion = _cfg.CachedSmapiVersion;
+        if (_cfg.CachedModCount > 0)
+        {
+            _totalModCount = _cfg.CachedModCount;
+            _activeModCount = _cfg.CachedModCount - _cfg.CachedDisabledModCount;
+        }
+
         _ = Task.Run(() =>
         {
-            var gv = Updater.GetGameVersion(cfg.GamePath);
-            var sv = Game.ProbeSmapiVersion(cfg.GamePath, freshRead: true);
-            // 1.0/1.1 等无适配 SMAPI：磁盘上若还残留 1.6 的 4.x，不要显示成「就绪」
-            if (UpdateService.IsSmapiUnsupported(gv)) sv = null;
-            var mods = Mods.Scan(cfg.GamePath);
-            _ = InvokeAsync(() =>
+            try { _gameVersion = Updater.GetGameVersion(gamePath); }
+            catch (Exception ex) { AppLog.Warn("Home", "读游戏版本失败: " + ex.Message); _gameVersion = null; }
+            try
             {
-                _gameVersion = gv;
+                var sv = Game.ProbeSmapiVersion(gamePath, freshRead: true);
+                if (UpdateService.IsSmapiUnsupported(_gameVersion)) sv = null;
                 _smapiVersion = sv;
+            }
+            catch (Exception ex) { AppLog.Warn("Home", "探测 SMAPI 失败: " + ex.Message); _smapiVersion = null; }
+            try
+            {
+                var mods = Mods.Scan(gamePath ?? "");
                 _totalModCount = mods.Count;
                 _activeModCount = mods.Count(m => !m.Disabled);
-                StateHasChanged();
-            });
+            }
+            catch (Exception ex)
+            {
+                AppLog.Warn("Home", "扫描 Mods 失败: " + ex.Message);
+            }
+            try
+            {
+                _cfg.CachedGameVersion = _gameVersion ?? "";
+                _cfg.CachedSmapiVersion = _smapiVersion ?? "";
+                _cfg.CachedModCount = _totalModCount;
+                _cfg.CachedDisabledModCount = Math.Max(0, _totalModCount - _activeModCount);
+                Cfg.Save(_cfg);
+            }
+            catch { /* 缓存写失败不影响界面 */ }
+            _statsReady = true;
+            return InvokeAsync(StateHasChanged);
         });
     }
 
@@ -227,22 +283,8 @@
         }
 
         // v1.4.6：版本探测（读 exe FileVersion + SMAPI freshRead 拷贝）也丢后台 ——
-        // 同步跑会把「点首页」卡成半天，和 Scan 一起回来再刷一帧
-        _ = Task.Run(() =>
-        {
-            var gv = Updater.GetGameVersion(_cfg.GamePath);
-            var sv = Game.ProbeSmapiVersion(_cfg.GamePath, freshRead: true);
-            if (UpdateService.IsSmapiUnsupported(gv)) sv = null;
-            var mods = Mods.Scan(_cfg.GamePath);
-            return InvokeAsync(() =>
-            {
-                _gameVersion = gv;
-                _smapiVersion = sv;
-                _totalModCount = mods.Count;
-                _activeModCount = mods.Count(m => !m.Disabled);
-                StateHasChanged();
-            });
-        });
+        // 同步跑会把「点首页」卡成半天。三项独立、失败各自兜底，不让一项拖死全家。
+        LoadStatsAsync(_cfg.GamePath);
 
         // v1.1.5：时长数据每 30s 可能被后台累计，订阅变化实时刷新热力图
         PlayTime.OnChanged += OnPlayChanged;

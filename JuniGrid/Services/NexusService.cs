@@ -25,9 +25,9 @@ public sealed class NexusService
     private static HttpClient CreateClient()
     {
         var h = new HttpClient();
-        h.DefaultRequestHeaders.UserAgent.ParseAdd("JuniGrid-Launcher");
-        // Nexus AUP 要求的应用标识头 —— 版本必须与真实发行版本一致，
-        // 取自 AppInfo 单一版本源，不再写死字面量（旧值 0.2.0 早已过期）
+        // AUP：Application-Name / Application-Version / UA 版本都必须与发行版本一致
+        // —— 全部从 AppInfo 单一版本源读，不再写死字面量（旧值 0.2.0 早已过期）
+        h.DefaultRequestHeaders.UserAgent.ParseAdd($"JuniGrid/{AppInfo.Version}");
         h.DefaultRequestHeaders.TryAddWithoutValidation("Application-Name", "JuniGrid");
         h.DefaultRequestHeaders.TryAddWithoutValidation("Application-Version", AppInfo.Version);
         h.DefaultRequestHeaders.Accept.ParseAdd("application/json");
@@ -767,7 +767,7 @@ public sealed class NexusService
     private static HttpClient CreateDownloadClient()
     {
         var h = new HttpClient();
-        h.DefaultRequestHeaders.UserAgent.ParseAdd("JuniGrid-Launcher");
+        h.DefaultRequestHeaders.UserAgent.ParseAdd($"JuniGrid/{AppInfo.Version}");
         h.Timeout = TimeSpan.FromMinutes(30);
         return h;
     }

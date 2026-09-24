@@ -133,7 +133,7 @@
     user-select: none;
     -webkit-user-select: none;
 }
-.jg-switch-row.on .jg-switch { background: var(--jg-ink); }
+.jg-switch-row.on .jg-switch, .jg-squish-host.on .jg-switch { background: var(--jg-ink); }
 .jg-switch-knob {
     position: absolute;
     top: 2px;
@@ -149,7 +149,7 @@
 }
 /* 位移和挤压分成两个变量：交互中由 junigrid.switch.js 逐帧写 --sw-x，落定就撤，
    静止位置始终归这条 CSS —— 状态从别处被改（键盘、代码里翻）旋钮也不会钉在旧位置。 */
-.jg-switch-row.on .jg-switch-knob { --sw-x: var(--sw-travel, 18px); }/* v0.2.2：设置页年龄验证弹窗（不设 z-index —— 同名规则 v1.1.x 已定为 99998，
+.jg-switch-row.on .jg-switch-knob, .jg-squish-host.on .jg-switch-knob { --sw-x: var(--sw-travel, 18px); }/* v0.2.2：设置页年龄验证弹窗（不设 z-index —— 同名规则 v1.1.x 已定为 99998，
    此处再写低值会把删除确认遮罩一起拉低，被排序/存档下拉 9500 压住） */
 .jg-modal-overlay {
     position: fixed;

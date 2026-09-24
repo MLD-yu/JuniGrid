@@ -23,12 +23,73 @@ public partial class MainWindow : Window
         catch { }
     }
 
+    /// <summary>
+    /// Blazor WebView 的 StaticWebAssetsLoader 会给清单里每个 ContentRoot 建
+    /// PhysicalFileProvider，目录不存在就 DirectoryNotFoundException（启动即崩）。
+    /// Debug 下清单会登记 IntermediateOutputPath\scopedcss\bundle、jsmodules\ 等
+    /// 中间目录 —— 无对应产物时 SDK 不一定创建它们。这里扫清单 + SDK 约定路径，
+    /// 缺哪个建哪个。
+    /// </summary>
+    private static void EnsureStaticWebAssetContentRoots()
+    {
+        try
+        {
+            var created = new System.Collections.Generic.List<string>();
+            void Touch(string? root)
+            {
+                if (string.IsNullOrWhiteSpace(root)) return;
+                try
+                {
+                    if (!Directory.Exists(root))
+                    {
+                        Directory.CreateDirectory(root);
+                        created.Add(root);
+                    }
+                }
+                catch { }
+            }
+
+            // ① 清单里登记的全部 ContentRoot
+            foreach (var manifest in Directory.EnumerateFiles(AppContext.BaseDirectory, "*staticwebassets*.json"))
+            {
+                try
+                {
+                    using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(manifest));
+                    if (doc.RootElement.TryGetProperty("ContentRoots", out var roots)
+                        && roots.ValueKind == System.Text.Json.JsonValueKind.Array)
+                    {
+                        foreach (var r in roots.EnumerateArray())
+                            Touch(r.GetString());
+                    }
+                }
+                catch { }
+            }
+
+            // ② SDK 约定的中间目录（与 Microsoft.NET.Sdk.StaticWebAssets.JSModules.targets 等对齐）
+            // BaseDirectory = <proj>\bin\<cfg>\<tfm>\  →  Intermediate = <proj>\obj\<cfg>\<tfm>\
+            var tfm = Path.GetFileName(AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar, '/'));
+            var cfg = Path.GetFileName(Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..")));
+            var projectRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", ".."));
+            var intermediate = Path.Combine(projectRoot, "obj", cfg, tfm);
+            Touch(Path.Combine(intermediate, "scopedcss", "bundle"));
+            Touch(Path.Combine(intermediate, "scopedcss", "projectbundle"));
+            Touch(Path.Combine(intermediate, "jsmodules"));
+
+            if (created.Count > 0)
+                Log("StaticWebAsset ContentRoots 已补齐: " + string.Join(" | ", created));
+        }
+        catch (Exception ex) { Log("EnsureStaticWebAssetContentRoots: " + ex.Message); }
+    }
+
     public MainWindow()
     {
         try
         {
             Log("=== JuniGrid boot ===");
             Log($"BaseDir = {AppContext.BaseDirectory}");
+            // 必须在 BlazorWebView 测量/Show 之前：静态资源清单里的 ContentRoot
+            // 缺目录会让 PhysicalFileProvider 直接抛 DirectoryNotFoundException
+            EnsureStaticWebAssetContentRoots();
             var wwwrootPath = Path.Combine(AppContext.BaseDirectory, "wwwroot", "index.html");
             Log($"wwwroot/index.html exists? {File.Exists(wwwrootPath)} @ {wwwrootPath}");
 

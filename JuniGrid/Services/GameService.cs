@@ -66,6 +66,7 @@ public sealed class GameService
                     return parts.Length >= 3 ? string.Join('.', parts.Take(3)) : raw;
                 }
             }
+            catch (Exception vex) { AppLog.Warn("GameService", "读 SMAPI 版本资源失败: " + vex.Message); }
             finally
             {
                 if (freshRead) { try { File.Delete(probePath); } catch { } }

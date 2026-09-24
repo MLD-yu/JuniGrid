@@ -202,12 +202,19 @@ public sealed class ModService
     /// 端走（含 unique 子包）——跨捆绑包共享公共库/内容包场景实测误删。
     /// 返回移入回收站的目录数。调用方随后需要重扫。
     /// </summary>
+    /// <summary>v1.1.8：*.tmp 清扫的闸门 —— 那是一次整棵 Mods 树的递归遍历
+    /// （实测 12500 个文件 / 358ms，占掉一次重扫的七成）。它清的是"进程被硬杀时
+    /// 原子写 manifest 留下的半截临时文件"，一个进程开头扫一次就够；每次启禁用、
+    /// 每次文件事件都再遍历一遍，就是把磁盘白烧在用户最等结果的那一下上。</summary>
+    private static int sTmpSwept;
+
     public int CleanupDuplicateCopies(string gamePath)
     {
         if (string.IsNullOrWhiteSpace(gamePath)) return 0;
         // v1.1.5：顺带清扫孤儿 .tmp —— 原子写 manifest 的临时文件在进程被硬杀时
         // 会残留（finally 来不及执行）。正规 mod 不会携带 .tmp 文件，24 小时阈值
         // 兜底绝不误删"正在写一半"的临时文件。
+        if (Interlocked.Exchange(ref sTmpSwept, 1) == 0)
         try
         {
             var tmpCutoff = DateTime.UtcNow.AddHours(-24);

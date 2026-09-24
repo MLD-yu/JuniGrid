@@ -29,20 +29,71 @@ public sealed class TaskCenterService
         _saveTimer = new Timer(_ => SaveNow(), null, Timeout.Infinite, Timeout.Infinite);
     }
 
+    private static string PersistBackupPath => PersistPath + ".bak";
+
     private void Load()
     {
         try
         {
-            if (!File.Exists(PersistPath)) return;
-            var list = JsonSerializer.Deserialize<List<TaskItem>>(File.ReadAllText(PersistPath));
-            if (list is null) return;
-            foreach (var t in list)
+            if (File.Exists(PersistPath))
             {
-                t.Status = RestoreStatus(t.Kind, t.Status);
-                Items.Add(t);
+                var raw = File.ReadAllText(PersistPath);
+                var list = JsonSerializer.Deserialize<List<TaskItem>>(raw);
+                if (list is null) return;
+                foreach (var t in list)
+                {
+                    t.Status = RestoreStatus(t.Kind, t.Status);
+                    Items.Add(t);
+                }
+                if (list.Count > 0)
+                {
+                    try { File.Copy(PersistPath, PersistBackupPath, overwrite: true); } catch { }
+                }
+                return;
+            }
+            // 主文件没了 → .bak 救回
+            if (File.Exists(PersistBackupPath))
+            {
+                var list = JsonSerializer.Deserialize<List<TaskItem>>(File.ReadAllText(PersistBackupPath));
+                if (list is { Count: > 0 })
+                {
+                    foreach (var t in list)
+                    {
+                        t.Status = RestoreStatus(t.Kind, t.Status);
+                        Items.Add(t);
+                    }
+                    AppLog.Warn("TaskCenter", $"tasks.json 缺失，已从 .bak 恢复 {list.Count} 条任务");
+                    SaveNow();
+                }
             }
         }
-        catch (Exception ex) { AppLog.Warn("TaskCenter", "任务恢复失败: " + ex.Message); }
+        catch (Exception ex)
+        {
+            AppLog.Warn("TaskCenter", "任务恢复失败: " + ex.Message);
+            try
+            {
+                if (File.Exists(PersistPath))
+                    File.Copy(PersistPath, PersistPath + ".corrupt-" + DateTime.Now.ToString("yyyyMMdd_HHmmss"), true);
+            }
+            catch { }
+            try
+            {
+                if (File.Exists(PersistBackupPath))
+                {
+                    var list = JsonSerializer.Deserialize<List<TaskItem>>(File.ReadAllText(PersistBackupPath));
+                    if (list is { Count: > 0 })
+                    {
+                        foreach (var t in list)
+                        {
+                            t.Status = RestoreStatus(t.Kind, t.Status);
+                            Items.Add(t);
+                        }
+                        AppLog.Warn("TaskCenter", "已从 .bak 恢复任务列表");
+                    }
+                }
+            }
+            catch { }
+        }
     }
 
     /// <summary>落盘恢复时"上次退出还在跑"的任务该标成什么：
@@ -63,7 +114,35 @@ public sealed class TaskCenterService
             // 会撞出「集合已修改」把该次落盘整个丢掉；tasks.json 很小（≤几百 KB）且 800ms
             // 防抖才写一次，锁内完成拷贝+写盘的代价可忽略
             lock (_lock)
-                AtomicFile.WriteAllText(PersistPath, JsonSerializer.Serialize(Items.ToList()));
+            {
+                var snapshot = Items.ToList();
+                // 防呆：内存空、磁盘上还有任务 → 不许用 [] 盖掉（与 playtime 同款）
+                if (snapshot.Count == 0 && File.Exists(PersistPath))
+                {
+                    try
+                    {
+                        var onDisk = JsonSerializer.Deserialize<List<TaskItem>>(File.ReadAllText(PersistPath));
+                        if (onDisk is { Count: > 0 })
+                        {
+                            AppLog.Warn("TaskCenter", "拒绝用空列表覆盖 tasks.json（磁盘上仍有 " + onDisk.Count + " 条）");
+                            return;
+                        }
+                    }
+                    catch
+                    {
+                        try
+                        {
+                            if (new FileInfo(PersistPath).Length > 4)
+                            {
+                                AppLog.Warn("TaskCenter", "tasks.json 暂不可读且非空，拒绝用空列表覆盖");
+                                return;
+                            }
+                        }
+                        catch { }
+                    }
+                }
+                AtomicFile.WriteAllText(PersistPath, JsonSerializer.Serialize(snapshot));
+            }
         }
         catch (Exception ex) { AppLog.Warn("TaskCenter", "任务落盘失败: " + ex.Message); }
     }

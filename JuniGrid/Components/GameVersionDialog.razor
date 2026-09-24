@@ -104,10 +104,8 @@
             {
                 <div class="jg-ver-progress">
                     <div class="jg-ver-state">@_stateText</div>
-                    @* 取消按钮只在真能取消时渲染（下载/排队阶段）。本地应用=搬游戏目录，中途停手会留
-                       半换的 Mods/本体，这段本就没有取消语义 —— 摆一个灰按钮写"不可取消"是死 UI，
-                       不如不渲染；下载阶段它会出现且真生效。 *@
-                    @if (!DepotDownloaderService.IsApplyInProgress)
+                    @* 取消只在下载/排队时出现；应用本体时没有安全的中途取消 *@
+                    @if (_canCancelSwitch)
                     {
                         <button class="jg-ver-btn ghost" @onclick="CancelSwitch">取消</button>
                     }
@@ -166,6 +164,7 @@
     private string? _error;
     private string _stateText = "";
     private CancellationTokenSource? _switchCts;
+    private bool _canCancelSwitch;
     private bool _wasOpen;
 
     private string CurrentSourceLabel
@@ -515,6 +514,7 @@
         _busy = true;
         _done = false;
         _error = null;
+        _canCancelSwitch = false;
         _stateText = "使用本地缓存，直接应用…";
         _switchCts = new CancellationTokenSource();
         await InvokeAsync(StateHasChanged);

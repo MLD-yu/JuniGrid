@@ -218,6 +218,8 @@ public sealed class DepotDownloaderService
             var back = SaveVersionService.RestoreHidden(Log, target);
             // 不做升级前留底：用高版本存盘后回不去，后果用户自担
             var hidden = SaveVersionService.HideUnreadable(target, staging, Log);
+            foreach (var left in SaveVersionService.UnreadableBy(target))
+                SaveVersionService.ForceHideToFocus(left, Log);
             // 不上屏：收起是常态动作、对玩家无操作价值，弹一行只是噪音（用户 2026-09-23 明确要求去掉）。
             // 每份的「已收起」和这条汇总都进日志，要查的人去日志看。
             if (hidden > 0)

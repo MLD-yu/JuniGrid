@@ -26,41 +26,89 @@ public sealed class ConfigService
         System.AppDomain.CurrentDomain.ProcessExit += (_, _) => Flush();
     }
 
+        private static string ConfigBackupPath => ConfigPath + ".bak";
+
         public void Load()
         {
+            var restoredFromBak = false;
             try
             {
                 if (File.Exists(ConfigPath))
                 {
                     var loaded = JsonSerializer.Deserialize<JuniGridConfig>(
                         File.ReadAllText(ConfigPath), JsonOpts);
-                    if (loaded is not null) Current = loaded;
+                    if (loaded is not null)
+                    {
+                        Current = loaded;
+                        try { File.Copy(ConfigPath, ConfigBackupPath, overwrite: true); } catch { }
+                    }
+                }
+                else if (File.Exists(ConfigBackupPath))
+                {
+                    // 主文件没了：从 .bak 救（与 playtime 同款防呆）
+                    var loaded = JsonSerializer.Deserialize<JuniGridConfig>(
+                        File.ReadAllText(ConfigBackupPath), JsonOpts);
+                    if (loaded is not null)
+                    {
+                        Current = loaded;
+                        restoredFromBak = true;
+                        AppLog.Warn("Config", "junigrid.config.json 缺失，已从 .bak 恢复");
+                        try { AtomicFile.WriteAllText(ConfigPath, JsonSerializer.Serialize(Current, JsonOpts)); } catch { }
+                    }
                 }
             }
             catch
             {
-                // v1.1.2：损坏现场先留档再重置 —— 之前静默重置，用户游戏路径/登录态全丢且无法诊断；
-                // 备份带时间戳，可手工抢救关键字段，也便于定位损坏原因
+                // v1.1.2：损坏现场先留档 —— 之后再试 .bak，最后才退回默认
                 try
                 {
                     if (File.Exists(ConfigPath))
                     {
                         var backup = ConfigPath + ".corrupt-" + DateTime.Now.ToString("yyyyMMdd_HHmmss");
                         File.Copy(ConfigPath, backup, true);
-                        AppLog.Error("Config", "配置文件解析失败，已备份为 " + Path.GetFileName(backup) + "，本次启动使用默认配置");
+                        AppLog.Error("Config", "配置文件解析失败，已备份为 " + Path.GetFileName(backup));
                     }
                 }
                 catch { }
                 Current = new JuniGridConfig();
+                try
+                {
+                    if (File.Exists(ConfigBackupPath))
+                    {
+                        var bak = JsonSerializer.Deserialize<JuniGridConfig>(
+                            File.ReadAllText(ConfigBackupPath), JsonOpts);
+                        if (bak is not null)
+                        {
+                            Current = bak;
+                            restoredFromBak = true;
+                            AppLog.Warn("Config", "已从 .bak 恢复配置（主文件损坏）");
+                        }
+                    }
+                }
+                catch { /* .bak 也不行才用默认 */ }
             }
             SyncAdultFilter();
             SyncStoragePaths();
             // v1.1.5：首次使用日期只补写一次（老用户从本次升级后开始起算）
+            // 仅当「本来就没有配置」或「从备份恢复出的旧配置缺该字段」时补写；
+            // 解析失败后的全新默认对象不许在这里立刻 Save 盖掉现场
             if (Current.FirstRunDate is null)
             {
                 Current.FirstRunDate = DateTime.Now.ToString("O");
-                Save(Current);
+                if (!File.Exists(ConfigPath) || restoredFromBak || ConfigLooksIntact())
+                    Save(Current);
             }
+        }
+
+        /// <summary>主配置存在且能解析 = 现场完好，允许补写 FirstRunDate。</summary>
+        private static bool ConfigLooksIntact()
+        {
+            try
+            {
+                return File.Exists(ConfigPath)
+                    && JsonSerializer.Deserialize<JuniGridConfig>(File.ReadAllText(ConfigPath), JsonOpts) is not null;
+            }
+            catch { return false; }
         }
 
     /// <summary>把「显示成人内容」单一开关同步到 NexusService 的静态查询开关
@@ -381,6 +429,27 @@ public sealed class JuniGridConfig
     /// 原版立绘拷进去以最高优先级 Load，压过其它启用包的同名补丁；不在名单里的角色
     /// = 从未碰过，游戏里按 mod 自己的默认走。</summary>
     public List<string> PortraitVanillaDefaults { get; set; } = new();
+
+    /// <summary>
+    /// v1.7 肖像锁定：角色 id → 锁定条目（JSON 字符串，见 PortraitLockInfo）。
+    /// 锁定后 UI 整卡禁用，游戏内该 NPC 四季一律显示锁定时选中的那一张图
+    /// （不再跟季节变体轮换）。合并卡按成员 id 各写一条。
+    /// </summary>
+    public Dictionary<string, string> PortraitLocks { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// v1.7「一键恢复默认」：强制走【原版 xnb】的角色 id（冈瑟/马龙/法师这类
+    /// 原版有默认、SVE 也重绘了默认的，统一回原版而不是扩展包默认像）。
+    /// 用户之后再手动选皮肤时由 SelectSkin 移出本名单。
+    /// </summary>
+    public List<string> PortraitTrueVanilla { get; set; } = new();
+
+    /// <summary>首页统计缓存：上次探测到的游戏版本 / SMAPI / Mod 数。
+    /// 冷启动先画缓存再后台对齐，避免「0 / 未安装 / 空白」假象。</summary>
+    public string CachedGameVersion { get; set; } = "";
+    public string CachedSmapiVersion { get; set; } = "";
+    public int CachedModCount { get; set; }
+    public int CachedDisabledModCount { get; set; }
 
     /// <summary>v0.2.1：统一缓存目录（null = 各类缓存走历史默认位置）。
     /// 设置后下载/安装临时、SMAPI 安装包、WebView2 数据、Mods 备份都迁到该目录下的子目录。</summary>

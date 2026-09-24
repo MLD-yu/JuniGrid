@@ -198,12 +198,27 @@ public sealed class StorageService
 
         // 版本收起的存档抽屉：用户档被暂时从 Saves 挪进来（避免低版本点错闪退）。
         // 绝不可清理 —— 那是玩家的真存档，只是当前版本读不了才收起来的。
+        // 占用还要算上人工隔离区里的存档批次：09-22 那次去重把 16 份 / 438 MB 挪进 _quarantine，
+        // 这一行看不见它，玩家视角就是"存档凭空少了 438 MB"。
         var savesHidden = StoragePaths.SavesHiddenDir;
-        list.Add(new("saveshidden", "版本收起的存档", "当前游戏版本读不了、暂时从存档列表收起的档", savesHidden,
-            new[] { savesHidden }, Array.Empty<string>(), Cleanable: false, Movable: false,
-            Tip: "切到读不了它们的版本时 自动把那些档从存档列表收进这里 防止点错闪退 切回能读的版本会自动放回 千万不要手动删 这是你的存档本体"));
+        var qzBatches = SaveVersionService.QuarantineSaveBatches();
+        list.Add(new("saveshidden", "版本收起的存档", "当前游戏版本读不了、暂时从存档列表收起的档（含人工隔离批次）", savesHidden,
+            new[] { savesHidden }.Concat(qzBatches).ToArray(), Array.Empty<string>(), Cleanable: false, Movable: false,
+            Tip: "切到读不了它们的版本时 自动把那些档从存档列表收进这里 防止点错闪退 切回能读的版本会自动放回 千万不要手动删 这是你的存档本体 开着 Steam 云时收档会让云端在退出同步时跟着删掉这些文件 所以这里可能就是唯一一份"));
 
         return list;
+    }
+
+    /// <summary>把收起的存档放回 Saves：抽屉 + 人工隔离批次一起扫，走的正是切版本/启动时那条
+    /// <see cref="SaveVersionService.RestoreHidden"/>，差集口径也一致（只放回当前版本读得了的）。
+    /// 收进去的东西界面必须能拿回来 —— 这一行以前只有占用，没有任何出口。</summary>
+    public async Task<string> RestoreHiddenSavesAsync()
+    {
+        var gamePath = _cfg.Current.GamePath;
+        var n = await Task.Run(() => SaveVersionService.RestoreHidden(
+            m => AppLog.Warn("Storage", m), UpdateService.ResolveCurrentVersion(gamePath)));
+        RefreshAll(true);
+        return n > 0 ? $"已放回 {n} 份存档" : "没有需要放回的存档（当前版本读得了的都在列表里）";
     }
 
     /// <summary>刷新全部占用（30 秒内已刷过则跳过，除非 force）。不关心结果的地方用。</summary>

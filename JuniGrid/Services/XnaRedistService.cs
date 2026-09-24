@@ -78,20 +78,30 @@ public static class XnaRedistService
         try
         {
             var msi = Path.Combine(Path.GetTempPath(), "junigrid-xnafx40_redist.msi");
-            foreach (var url in new[] { MsiUrl, MsiUrlFallback })
+            // v1.1.8：优先用安装包自带的 MSI（新机免联网也能补 XNA）
+            var bundled = Path.Combine(AppContext.BaseDirectory, "tools", "XnaRedist", "xnafx40_redist.msi");
+            if (File.Exists(bundled) && new FileInfo(bundled).Length > 1024 * 1024)
             {
-                try
+                progress?.Invoke("正在使用安装包自带的 XNA 运行库…", 50);
+                File.Copy(bundled, msi, true);
+            }
+            else
+            {
+                foreach (var url in new[] { MsiUrl, MsiUrlFallback })
                 {
-                    progress?.Invoke("正在下载 XNA 运行库（老版本游戏依赖，约 7MB）…", 0);
-                    await ResumableDownload.RunAsync(Http, url, msi,
-                        (m, p, _) => progress?.Invoke(m, p), ct: ct);
-                    break;
-                }
-                catch (OperationCanceledException) { throw; }
-                catch (Exception ex)
-                {
-                    AppLog.Warn("XNA", $"下载失败 {url}：{ex.Message}");
-                    try { File.Delete(msi); } catch { }   // 半截包不能给下一个源续传
+                    try
+                    {
+                        progress?.Invoke("正在下载 XNA 运行库（老版本游戏依赖，约 7MB）…", 0);
+                        await ResumableDownload.RunAsync(Http, url, msi,
+                            (m, p, _) => progress?.Invoke(m, p), ct: ct);
+                        break;
+                    }
+                    catch (OperationCanceledException) { throw; }
+                    catch (Exception ex)
+                    {
+                        AppLog.Warn("XNA", $"下载失败 {url}：{ex.Message}");
+                        try { File.Delete(msi); } catch { }   // 半截包不能给下一个源续传
+                    }
                 }
             }
 

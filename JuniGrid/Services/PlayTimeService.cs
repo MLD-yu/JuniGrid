@@ -61,15 +61,52 @@ public sealed class PlayTimeService : IDisposable
         catch { /* 统计失败不影响主流程，下个 tick 再试 */ }
     }
 
+    private static string BackupPath => FilePath + ".bak";
+
     private void Load()
     {
         try
         {
             if (File.Exists(FilePath))
-                _seconds = JsonSerializer.Deserialize<Dictionary<string, long>>(File.ReadAllText(FilePath), JsonOpts)
+            {
+                var text = File.ReadAllText(FilePath);
+                _seconds = JsonSerializer.Deserialize<Dictionary<string, long>>(text, JsonOpts)
                            ?? new Dictionary<string, long>();
+                // 成功读入后留一份 .bak —— 主文件被误清/损坏时可救
+                if (_seconds.Count > 0)
+                {
+                    try { File.Copy(FilePath, BackupPath, overwrite: true); } catch { }
+                }
+                return;
+            }
+            // 主文件没了：用 .bak 救回（曾出现 playtime.json 被写成 {} 导致热力图清零）
+            if (File.Exists(BackupPath))
+            {
+                _seconds = JsonSerializer.Deserialize<Dictionary<string, long>>(File.ReadAllText(BackupPath), JsonOpts)
+                           ?? new Dictionary<string, long>();
+                if (_seconds.Count > 0)
+                {
+                    AppLog.Warn("PlayTime", $"playtime.json 缺失，已从 .bak 恢复 {_seconds.Count} 天记录");
+                    AtomicFile.WriteAllText(FilePath, JsonSerializer.Serialize(_seconds, JsonOpts));
+                }
+                return;
+            }
+            _seconds = new();
         }
-        catch (Exception ex) { AppLog.Warn("PlayTime", ex.Message); _seconds = new(); }
+        catch (Exception ex)
+        {
+            AppLog.Warn("PlayTime", ex.Message);
+            // 解析失败绝不直接清零写回 —— 先把现场留档，再尽量从 .bak 读
+            try { if (File.Exists(FilePath)) File.Copy(FilePath, FilePath + ".corrupt-" + DateTime.Now.ToString("yyyyMMdd_HHmmss"), true); } catch { }
+            _seconds = new();
+            try
+            {
+                if (File.Exists(BackupPath))
+                    _seconds = JsonSerializer.Deserialize<Dictionary<string, long>>(File.ReadAllText(BackupPath), JsonOpts)
+                               ?? new Dictionary<string, long>();
+            }
+            catch { _seconds = new(); }
+        }
     }
 
     private void Save()
@@ -77,7 +114,36 @@ public sealed class PlayTimeService : IDisposable
         try
         {
             lock (_gate)
+            {
+                // 防呆：内存是空、磁盘上还有数据 → 绝不拿 {} 盖掉（误清/异常后的最后一道闸）
+                if (_seconds.Count == 0 && File.Exists(FilePath))
+                {
+                    try
+                    {
+                        var raw = File.ReadAllText(FilePath);
+                        var onDisk = JsonSerializer.Deserialize<Dictionary<string, long>>(raw, JsonOpts);
+                        if (onDisk is { Count: > 0 })
+                        {
+                            AppLog.Warn("PlayTime", "拒绝用空数据覆盖 playtime.json（磁盘上仍有 " + onDisk.Count + " 天）");
+                            return;
+                        }
+                    }
+                    catch
+                    {
+                        // 文件存在但读不动（占用/半截）：只要不是空壳就不许写 {}
+                        try
+                        {
+                            if (new FileInfo(FilePath).Length > 4)
+                            {
+                                AppLog.Warn("PlayTime", "playtime.json 暂不可读且非空，拒绝用空数据覆盖");
+                                return;
+                            }
+                        }
+                        catch { }
+                    }
+                }
                 AtomicFile.WriteAllText(FilePath, JsonSerializer.Serialize(_seconds, JsonOpts));
+            }
         }
         catch (Exception ex) { AppLog.Warn("PlayTime", ex.Message); }
     }

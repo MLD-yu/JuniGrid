@@ -161,19 +161,24 @@ window.junigridJs = {
     },
 
     // v0.31.0: PCL 式页面入场 —— 给 <main.jg-main> 打上 .jg-page-enter，触发 CSS 关键帧
+    // v1.1.8 性能：不用 void offsetWidth 强制回流（同步布局是切页发卡源），
+    // 改用 rAF 两帧后加回 class 重启动画；清理定时器从 900ms 收到 480ms（与 CSS 对齐）
     playPageEnter() {
         const el = document.querySelector('.jg-main');
         if (!el) return;
         el.classList.remove('jg-page-enter');
-        // 强制回流一次，再加回来，才能重新触发动画
-        // eslint-disable-next-line no-unused-expressions
-        void el.offsetWidth;
-        el.classList.add('jg-page-enter');
+        if (el.__peRaf) cancelAnimationFrame(el.__peRaf);
+        el.__peRaf = requestAnimationFrame(() => {
+            el.__peRaf = requestAnimationFrame(() => {
+                el.__peRaf = 0;
+                el.classList.add('jg-page-enter');
+            });
+        });
         // v1.1.2：切页后刷新返回顶部按钮的显隐（路由变了，滚动位置也变了）
         if (window.junigridJs.backTopRefresh) window.junigridJs.backTopRefresh();
-        // 900ms 后清掉，避免与后续交互动画冲突（子项最长 delay 290 + duration 420 ≈ 710）
+        // 480ms 后清掉（子项最长 delay 120 + duration 300 = 420）
         clearTimeout(el.__peTimer);
-        el.__peTimer = setTimeout(() => el.classList.remove('jg-page-enter'), 900);
+        el.__peTimer = setTimeout(() => el.classList.remove('jg-page-enter'), 480);
     },
     scrollToBottom(selector, force) {
         const el = document.querySelector(selector);
@@ -345,8 +350,8 @@ window.junigridJs.placeNavThumb = function (opts) {
         } else {
             if (thumb.__tl) thumb.__tl.kill();
             thumb.__tl = gsap.to(thumb, {
-                left: left, width: width, duration: 0.5,
-                ease: 'back.out(1.6)', overwrite: 'auto',
+                left: left, width: width, duration: 0.28,
+                ease: 'back.out(1.4)', overwrite: 'auto',
                 onComplete: function () { thumb.__tl = null; }
             });
         }

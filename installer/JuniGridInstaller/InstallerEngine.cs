@@ -146,7 +146,56 @@ public sealed class InstallerEngine
         CreateShortcuts(targetDir, desktopShortcut);
         WriteUninstallRegistry(targetDir);
 
+        // v1.1.8：新机免装依赖 —— 缺 WebView2 运行时就用 payload 里的引导补装一次
+        TryEnsureWebView2(targetDir, progress);
+
         progress.Report(new InstallProgress("安装完成", 1.0, totalBytes, totalBytes));
+    }
+
+    /// <summary>
+    /// 缺 WebView2 时跑安装包自带的 Evergreen 引导（targetDir\tools\WebView2\…）。
+    /// 不引用 WebView2 SDK：安装器只做「文件在不在 + 注册表/版本目录探测」，保持零额外依赖。
+    /// </summary>
+    private static void TryEnsureWebView2(string targetDir, IProgress<InstallProgress> progress)
+    {
+        if (WebView2Present()) return;
+        try
+        {
+            var setup = Path.Combine(targetDir, "tools", "WebView2", "MicrosoftEdgeWebView2Setup.exe");
+            if (!File.Exists(setup)) return;
+            progress.Report(new InstallProgress("正在安装 WebView2 运行时（界面依赖，约 1 分钟）…", 0.99));
+            using var p = Process.Start(new ProcessStartInfo
+            {
+                FileName = setup,
+                Arguments = "/silent /install",
+                UseShellExecute = true,
+            });
+            p?.WaitForExit(5 * 60 * 1000);
+        }
+        catch { /* 补装失败不阻塞安装；应用启动时还有一次自检 */ }
+    }
+
+    /// <summary>探测本机是否已有 WebView2 Evergreen 运行时（不依赖 WebView2 SDK）。</summary>
+    private static bool WebView2Present()
+    {
+        try
+        {
+            // ① 注册表（x64 / WOW6432Node 两处）
+            foreach (var view in new[] { RegistryView.Registry64, RegistryView.Registry32 })
+            {
+                using var baseKey = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, view);
+                using var k = baseKey.OpenSubKey(@"SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}")
+                          ?? baseKey.OpenSubKey(@"SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}");
+                if (k?.GetValue("pv") is string pv && pv.Length > 1 && pv != "0.0.0.0") return true;
+            }
+            // ② 用户级安装痕迹
+            var local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            if (Directory.Exists(Path.Combine(local, "Microsoft", "EdgeWebView"))) return true;
+            var pf = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+            if (Directory.Exists(Path.Combine(pf, "Microsoft", "EdgeWebView"))) return true;
+        }
+        catch { }
+        return false;
     }
 
     private static Stream OpenResource()

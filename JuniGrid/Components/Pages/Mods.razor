@@ -313,13 +313,17 @@
                 </div>
             }
 
-            @foreach (var (m, mi) in group.Items.Select((x, i) => (x, i)))
+            @foreach (var m in group.Items)
             {
                     var st = GetState(m.Folder);
                     var cover = GetCover(m);
                     var missing = MissingDeps(m);
+                    @* v1.1.8：@key 换成"启禁用不会变"的身份键（UID，没 UID 的散装文件夹退回 folder）。
+                       旧 key 是 Folder#序号 —— 启禁用就是把 Folder 改名（X ↔ .X），于是每次点开关
+                       这一行都被销毁重建：封面重新解码闪一下、正在跑的开关动画被掐断、
+                       列表位置一变还会连带重建别的好几行。两种键各加前缀，互不撞（同名 UID/folder 也不会串）。 *@
                     <div class="jg-modrow @(_selected.Contains(m.Folder) ? "selected" : "")"
-                         @key="@($"{m.Folder}#{mi}")"
+                         @key="@(string.IsNullOrEmpty(m.UniqueID) ? "f:" + m.Folder : "u:" + m.UniqueID)"
                          data-al
                          @onclick="() => ToggleSelect(m.Folder)">
 
@@ -383,11 +387,13 @@
                            详情/更新/依赖/备注/打开/删除全部收进 … 菜单。
                            整块 stopPropagation：点这里不算选中行。 ── *@
                         <div class="jg-modrow-end" @onclick:stopPropagation>
-                            <button class="jg-modrow-switch @(m.Disabled ? "" : "on")" role="switch"
+                            @* v1.1.8：换成设置页那颗挤压回弹开关（.jg-switch + junigrid.switch.js）；
+                               .jg-squish-host = 这条开关自己就是拖拽宿主（设置页那边宿主是整行） *@
+                            <button class="jg-modrow-switch jg-squish-host @(m.Disabled ? "" : "on")" role="switch"
                                     aria-checked="@(!m.Disabled)" data-tip="@(m.Disabled ? "启用" : "禁用")"
                                     aria-label="@(m.Disabled ? "启用" : "禁用")"
                                     @onclick="() => SetDisabled(m, !m.Disabled)">
-                                <span class="knob"></span>
+                                <span class="jg-switch"><span class="jg-switch-knob"></span></span>
                             </button>
 
                             <div class="jg-sort-dd jg-modmenu @(_menuFolder == m.Folder ? "open" : "") @(_menuClosingFolder == m.Folder ? "closing" : "")" data-dd="modmenu">
@@ -422,7 +428,7 @@
                                     }
                                     @if (m.NexusModId is not null)
                                     {
-                                        <button class="jg-sort-item" @onclick="() => MenuAct(() => OpenDetail(m))">mod 详情</button>
+                                        <button class="jg-sort-item" @onclick="() => MenuAct(() => _ = OpenDetail(m))">mod 详情</button>
                                     }
                                     @if (LoosePortraitCandidate(m))
                                     {
@@ -1115,14 +1121,11 @@
                 var top = m.Folder.Split('/')[0];
                 if (errTops.Contains(top)) continue;   // 该顶层目录改名失败，跳过其所有子条目
                 var disable = !shouldEnable;
+                // 切存档是整个顶层改名（Top/Sub → .Top/Sub），不是子包级末段改名
                 var newFolder = disable
                     ? (m.Folder.StartsWith('.') ? m.Folder : "." + m.Folder)
                     : m.Folder.TrimStart('.');
-                if (newFolder != m.Folder)
-                {
-                    MigrateFolderCaches(m.Folder, disable);
-                    m.Folder = newFolder;
-                }
+                MigrateFolderCaches(m.Folder, newFolder);   // 内部把条目 folder 一并改掉
                 m.Disabled = disable;
             }
         }
@@ -2003,19 +2006,29 @@
             while (true)
             {
                 _bgRescanQueued = false;
+                // v1.1.8：这一轮在后台线程跑，不冻窗口，但它也要记账 —— 点完开关之后
+                // 那段"还在转"的时间全在这里头（磁盘忙完才 StateHasChanged）。
+                var __t = System.Diagnostics.Stopwatch.GetTimestamp();
+                double __cleanup = 0, __convert = 0, __rehome = 0;
                 var scanned = await Task.Run(() =>
                 {
                     try { ModSvc.CleanupDuplicateCopies(Cfg.Current.GamePath); }
                     catch (Exception ex) { AppLog.Warn("Mods", "多副本清理失败: " + ex.Message); }
+                    __cleanup = ElapsedMs(__t);
                     // 手工丢进 Mods 的裸图目录自动转成 CP 包（判定与手动入口同一个；失败只记日志）。
                     // 转完目录本身带 manifest 了，下一轮判定自然不再命中，watcher 回环会自己收敛。
                     try { ModSvc.AutoConvertLoosePortraits(Cfg.Current.GamePath); }
                     catch (Exception ex) { AppLog.Warn("Mods", "裸肖像目录自动转换失败: " + ex.Message); }
+                    __convert = ElapsedMs(__t);
                     // 孤儿区自动归位：判得出唯一归属才搬，判不出的一律留在收件箱；全程只移动不删除
                     try { DepotQr.RehomeOrphanMods(Cfg.Current.GamePath); }
                     catch (Exception ex) { AppLog.Warn("Mods", "孤儿 Mods 归位失败: " + ex.Message); }
+                    __rehome = ElapsedMs(__t);
                     return ModSvc.Scan(Cfg.Current.GamePath);
                 });
+                ModsPerf($"后台重扫一轮",
+                    ("判重清理", __cleanup), ("裸肖像转换", __convert - __cleanup),
+                    ("孤儿归位", __rehome - __convert), ("磁盘扫描", ElapsedMs(__t) - __rehome));
                 if (_disposed || DepotDownloaderService.IsApplyInProgress) return;
                 Rescan(scanned);
                 StateHasChanged();
@@ -2033,17 +2046,24 @@
     {
         // v1.1.4：同 UniqueID 多副本物理清理 —— SMAPI 直接读磁盘，UI 隐藏不够
         //（多余副本会让整包 Skipped）。基于原始扫描结果，先清理再正式扫描。
+        var __t = System.Diagnostics.Stopwatch.GetTimestamp();
+        double __cleanupMs = 0, __scanMs = 0;
         if (preScanned is null)
         {
             try { ModSvc.CleanupDuplicateCopies(Cfg.Current.GamePath); }
             catch (Exception __ex) { AppLog.Warn("Mods", "多副本清理失败: " + __ex.Message); }
+            __cleanupMs = ElapsedMs(__t);
+            var __t2 = System.Diagnostics.Stopwatch.GetTimestamp();
             _mods = ModSvc.Scan(Cfg.Current.GamePath);
+            __scanMs = ElapsedMs(__t2);
         }
         else
         {
             _mods = preScanned;
         }
         ReindexMods();
+        ModsPerf($"重扫 {preScanned?.Count ?? _mods.Count} 项",
+            ("判重清理", __cleanupMs), ("磁盘扫描", __scanMs), ("建索引", ElapsedMs(__t) - __cleanupMs - __scanMs));
         // v1.1.2：备注对账 —— mod 更新会重置 manifest Name，这里补写备注（游戏未运行时）
         if (Cfg.Current.ModRemarks.Count > 0)
             _ = Task.Run(() => ModSvc.SyncAllRemarks(Cfg.Current.GamePath, Cfg));
@@ -2428,28 +2448,59 @@
     // ------------------------------------------------------------------
     // 单个 启用 / 禁用 / 删除
     // ------------------------------------------------------------------
+    /// <summary>v1.1.8：启禁用耗时账本 —— 每次启禁用一行 INF，把各段拆开。
+    /// 用 Info 不用 Warn：耗时是常态数据，混进 WRN 会把真告警淹掉（AppLog 里就是这么约定的）。</summary>
+    private static double ElapsedMs(long fromTimestamp)
+        => (System.Diagnostics.Stopwatch.GetTimestamp() - fromTimestamp) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+
+    private static void ModsPerf(string what, params (string Phase, double Ms)[] phases)
+        => AppLog.Info("ModsPerf", $"{what} | " + string.Join(" ", phases.Select(p => $"{p.Phase}={p.Ms:F0}ms"))
+            + $" | 合计 {phases.Sum(p => p.Ms):F0}ms");
+
     private void SetDisabled(ModEntry m, bool disabled)
     {
+        // v1.1.8：改名/联动跑在 Blazor 的同步事件处理器里 = 占着 WPF 的 UI 调度线程，
+        // 这一段多长窗口就冻多长（点一下没反应、悬停动画全停）。所以先记账，再决定挪哪段。
+        var oldFolder = m.Folder;
+        var __t = System.Diagnostics.Stopwatch.GetTimestamp();
         var err = ModSvc.SetDisabled(Cfg.Current.GamePath, m.Folder, disabled);
+        var __renameMs = ElapsedMs(__t);
         if (err is not null) ShowNotice("err", err);
         else
         {
             // v0.46.0：依赖联动（仿 Stardrop）——
             // 禁用：把依赖它的已启用 mod 也禁用；启用：把它依赖的已禁用 mod 也启用
+            __t = System.Diagnostics.Stopwatch.GetTimestamp();
             var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            if (disabled) DisableDependents(m.UniqueID, visited, x => SetDisabledDirect(x, true));
-            else EnableDependencies(m, visited, x => SetDisabledDirect(x, false));
+            var renamed = new List<string> { oldFolder };
+            if (disabled) DisableDependents(m.UniqueID, visited, x => { renamed.Add(x.Folder); SetDisabledDirect(x, true); });
+            else EnableDependencies(m, visited, x => { renamed.Add(x.Folder); SetDisabledDirect(x, false); });
+            var __cascadeMs = ElapsedMs(__t);
             ShowNotice("ok", $"已{(disabled ? "禁用" : "启用")} {m.Name}");
             // v0.42.0：重命名 .X <-> X 后把 update state + 封面缓存迁移到新名字，
             // 否则 GetCover 按新 folder 名查不到缓存会落回首字母占位块
-            MigrateFolderCaches(m.Folder, disabled);
+            __t = System.Diagnostics.Stopwatch.GetTimestamp();
+            MigrateFolderCaches(oldFolder, DisabledName(oldFolder, disabled));
+            // 就地改名后立刻重建索引：后台那轮重扫要到几百毫秒之后，这期间
+            // _modsByFolder 若还握着旧名，选中/查找都会对不上（_selected 会被误清）。
+            ReindexMods();
+            var __migrateMs = ElapsedMs(__t);
+            ModsPerf($"单{(disabled ? "禁" : "启")} {oldFolder}",
+                ("改名", __renameMs), ("联动", __cascadeMs), ("缓存迁移+内存改名", __migrateMs));
+            // v1.1.8：权威核对那一轮不再无条件排 —— 顶层改名 watcher 一定会收到事件
+            // （120ms 合并后自己扫一次），再自己排一轮就是同一份盘扫两遍（实测每次
+            // 多烧 0.5~1.3s 磁盘）。只有它看不见的才需要自己补：子包级改名（监听没开
+            // IncludeSubdirectories）和 watcher 根本没建起来的情况。
+            if (_modsWatcher is null || renamed.Any(f => f.Contains('/')))
+                RescanAndRestate();
         }
-        Rescan();
+        __t = System.Diagnostics.Stopwatch.GetTimestamp();
         // v1.6.8：启禁用改变肖像页内容 → 实时重扫
         PageRefresh.Request("portraits");
         // v0.49.0：状态变化后立即写回当前存档
         PersistCurrentToActive();
         Cfg.Save(Cfg.Current);
+        ModsPerf("　↳ 收尾", ("肖像刷新+存档+配置", ElapsedMs(__t)));
     }
 
     private void Uninstall(ModEntry m, bool toTrash)
@@ -2470,21 +2521,52 @@
     {
         var err = ModSvc.SetDisabled(Cfg.Current.GamePath, m.Folder, disabled);
         if (err is not null) { AppLog.Warn("Mods", $"联动{(disabled ? "禁用" : "启用")} {m.Folder} 失败：{err}"); return; }
-        MigrateFolderCaches(m.Folder, disabled);
+        MigrateFolderCaches(m.Folder, DisabledName(m.Folder, disabled));
     }
 
-    /// <summary>禁用/启用后把 update state + 封面/分类缓存迁移到新 folder 名（.X ↔ X）。</summary>
-    private void MigrateFolderCaches(string folder, bool disabled)
+    /// <summary>启禁用的改名落到磁盘后，把这条改名同步到内存与缓存里：
+    /// 列表条目的 folder/启禁态、update state、封面与分类缓存的 key。
+    /// newFolder 由调用方给 —— 单条启禁改的是路径末段（Top/Sub ↔ Top/.Sub），
+    /// 切存档改的是整条顶层（Top/Sub ↔ .Top/Sub），两种都不是一个 bool 能表达清楚的。
+    /// 只做字符串改写，不碰磁盘 —— 所以可以在事件处理器里同步跑（微秒级）。</summary>
+    private void MigrateFolderCaches(string folder, string newFolder)
     {
-        var newFolder = disabled
-            ? (folder.StartsWith('.') ? folder : "." + folder)
-            : folder.TrimStart('.');
         if (newFolder == folder) return;
+        ApplyRenameInMemory(folder, newFolder);
         if (_states.TryGetValue(folder, out var st)) { _states[newFolder] = st; _states.Remove(folder); }
         MigrateDictKey(Cfg.Current.ModCovers, folder, newFolder);
         MigrateDictKey(Cfg.Current.ModCategories, folder, newFolder);
         _coversDirty = true;
         Cfg.Save(Cfg.Current);
+    }
+
+    /// <summary>改名只落在路径最后一段（v1.1.5 的子包级启禁：Top/Sub ↔ Top/.Sub），
+    /// 与 ModService.SetDisabled 同一个约定。旧写法用 TrimStart/StartsWith 判整条路径，
+    /// 子包那种 "Top/.Sub" 算出来还是原样 → 缓存 key 一直不迁移。</summary>
+    private static string DisabledName(string folder, bool disabled)
+    {
+        var cut = folder.LastIndexOf('/');
+        var name = cut < 0 ? folder : folder[(cut + 1)..];
+        var target = disabled
+            ? (name.StartsWith('.') ? name : "." + name)
+            : name.TrimStart('.');
+        return cut < 0 ? target : folder[..(cut + 1)] + target;
+    }
+
+    /// <summary>把一次 folder 改名同步进内存列表：顶层改名会波及它下面所有子包条目，按前缀整片改。
+    /// 与切存档那条增量更新路径同一个做法，让开关立刻翻，不必等全盘重扫。</summary>
+    private void ApplyRenameInMemory(string oldFolder, string newFolder)
+    {
+        var prefix = oldFolder + '/';
+        foreach (var e in _mods)
+        {
+            var rest = string.Equals(e.Folder, oldFolder, StringComparison.OrdinalIgnoreCase) ? ""
+                : e.Folder.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) ? e.Folder[oldFolder.Length..]
+                : null;
+            if (rest is null) continue;
+            e.Folder = newFolder + rest;
+            e.Disabled = e.Folder.StartsWith('.') || e.Folder.Contains("/.");
+        }
     }
 
     private static void MigrateDictKey(Dictionary<string, string> dict, string oldKey, string newKey)
@@ -2505,15 +2587,15 @@
         var selCount = _selected.Count;
 
         if (_modsWatcher is not null) _modsWatcher.EnableRaisingEvents = false;
-        int failed;
+        List<string> failedTops;
         try
         {
-            failed = await Task.Run(() =>
+            failedTops = await Task.Run(() =>
             {
-                var f = 0;
+                var f = new List<string>();
                 foreach (var top in topLevels)
                     if (ModSvc.SetDisabled(gamePath, top, disabled) is not null)
-                        f++;
+                        f.Add(top);
                 return f;
             });
         }
@@ -2521,6 +2603,7 @@
         {
             if (_modsWatcher is not null) _modsWatcher.EnableRaisingEvents = true;
         }
+        var failed = failedTops.Count;
 
         ShowNotice(failed == 0 ? "ok" : "err",
             failed == 0
@@ -2533,10 +2616,19 @@
         // v0.72.9：批量改名后统一迁移封面/分类缓存 —— v0.72.7 把 MigrateFolderCaches
         // 从批量路径里漏掉了，导致改名后 _states/ModCovers/ModCategories 的 key 还是
         // 旧 folder 名，GetCover/GetNexusCategory 查不到 → 封面消失、分类落回"代码 Mod"。
+        // v1.1.8：改名没成功的那些不能迁（磁盘还是旧名，内存跟着改就走样了）
+        var __t = System.Diagnostics.Stopwatch.GetTimestamp();
+        var failedSet = new HashSet<string>(failedTops, StringComparer.OrdinalIgnoreCase);
         foreach (var top in topLevels)
-            MigrateFolderCaches(top, disabled);
+            if (!failedSet.Contains(top))
+                MigrateFolderCaches(top, DisabledName(top, disabled));
+        ReindexMods();
+        ModsPerf($"批量{(disabled ? "禁" : "启")} {topLevels.Count} 个顶层",
+            ("内存改名+缓存迁移", ElapsedMs(__t)));
 
-        Rescan();
+        // v1.1.8：批量启禁期间 watcher 是关着的，不会有文件事件来补这一轮，
+        // 所以这里必须显式排一次后台重扫（原来是同步 Rescan()，148 项实测冻 481ms）。
+        RescanAndRestate();
         // v0.72.9：显式触发一次封面回填（带并发闸门，不会叠加）——批量改名后 folder 变了，
         // 需要重新拉取新 key 下的封面。
         if (!string.IsNullOrWhiteSpace(_apiKey)) _ = BackfillCoversAsync();

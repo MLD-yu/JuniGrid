@@ -10,13 +10,18 @@
     <AssemblyName>JuniGrid</AssemblyName>
     <!-- 唯一版本源：发版只改这里。AppInfo.Version 在运行时从程序集版本读取，
          保证 Nexus Application-Version 头与发行构建永远一致（AUP 要求） -->
-    <Version>1.1.7</Version>
+    <Version>1.2.0</Version>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Assets\junigrid-logo.ico</ApplicationIcon>
     <!-- 只保留中英文卫星资源：自包含发布里 40+ 语言的 WPF/FluentUI 资源 dll 占 8MB+，
          中文应用用不到（cs/de/es/fr/... 每个语言一套 PresentationFramework.resources.dll） -->
     <SatelliteResourceLanguages>en;zh-Hans</SatelliteResourceLanguages>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 白盒单测（test-harness）需要碰 internal 工具类 -->
+    <InternalsVisibleTo Include="JuniGridTestHarness" />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.Components.WebView.Wpf" Version="10.0.*" />
@@ -44,5 +49,24 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
   </ItemGroup>
+
+  <!--
+    Blazor Hybrid Debug 会把 IntermediateOutputPath 下的若干目录（scopedcss\bundle、
+    jsmodules\ 等）当作静态资源 ContentRoot 交给 PhysicalFileProvider。目录不存在时
+    直接 DirectoryNotFoundException（2026-09-24 实测：先缺 scopedcss\bundle，补后又缺
+    jsmodules\）。这里统一：构建结束时把清单里所有落在 IntermediateOutputPath 下的
+    ContentRoot 都建出来，外加两个 SDK 约定目录兜底。
+  -->
+  <Target Name="EnsureStaticWebAssetContentRoots"
+          AfterTargets="ResolveScopedCssOutputs;ResolveJSModuleStaticWebAssets;GenerateStaticWebAssetsManifest;Build">
+    <MakeDir Directories="$(IntermediateOutputPath)scopedcss\bundle" />
+    <MakeDir Directories="$(IntermediateOutputPath)scopedcss\projectbundle" />
+    <MakeDir Directories="$(IntermediateOutputPath)jsmodules" />
+    <ItemGroup>
+      <_SwaIntermediateRoots Include="@(StaticWebAsset->'%(ContentRoot)')"
+                             Condition="'%(ContentRoot)' != ''" />
+    </ItemGroup>
+    <MakeDir Directories="@(_SwaIntermediateRoots->Distinct())" />
+  </Target>
 
 </Project>

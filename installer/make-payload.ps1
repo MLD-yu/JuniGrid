@@ -1,4 +1,4 @@
-# 把 publish\sc（主程序 self-contained 输出）压成安装器内嵌的 payload.lz
+﻿# 把 publish\sc（主程序 self-contained 输出）压成安装器内嵌的 payload.lz
 # （JGP1 容器 + 单流 LZMA 固实压缩，比逐文件 Deflate 的旧 payload.zip 小 25~30%）
 $ErrorActionPreference = 'Stop'
 $installerDir = $PSScriptRoot

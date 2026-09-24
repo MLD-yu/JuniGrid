@@ -376,6 +376,12 @@
                     {
                         <button type="button" class="jg-mini-btn" @onclick='() => AskClean(c.Id)'>清理</button>
                     }
+                    @* 收起来的档必须有出口：只给占用不给「放回」，玩家就只能看着它凭空消失 *@
+                    @if (c.Id == "saveshidden")
+                    {
+                        <button type="button" class="jg-mini-btn" disabled="@_restoringSaves"
+                                @onclick="RestoreSaves">@(_restoringSaves ? "放回中…" : "放回")</button>
+                    }
                     <button type="button" class="jg-mini-btn" @onclick='() => OpenCatFolder(c)'>打开</button>
                 </div>
             }
@@ -987,6 +993,21 @@
         var msg = await Storage.CleanCategoryAsync(id);
         _cats = Storage.GetCategories();
         await JS.InvokeVoidAsync("junigridJs.toast", msg);
+    }
+
+    private bool _restoringSaves;
+
+    private async Task RestoreSaves()
+    {
+        if (_restoringSaves) return;
+        _restoringSaves = true;
+        try
+        {
+            var msg = await Storage.RestoreHiddenSavesAsync();
+            _cats = Storage.GetCategories();
+            await JS.InvokeVoidAsync("junigridJs.toast", msg);
+        }
+        finally { _restoringSaves = false; }
     }
 
     // ─── 确认弹窗：单项清理、一键清理、删某个版本缓存共用同一个框 ───

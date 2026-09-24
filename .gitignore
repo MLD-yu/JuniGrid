@@ -20,6 +20,10 @@ installer/JuniGridInstaller/payload.lz
 installer/JuniGridInstaller/payload.zip
 installer/publish/
 
+# 打包用的离线依赖二进制（约 50MB）— 不进源码库；build-installer.ps1 会从
+# installer/deps 读取，缺失时运行时再从官方源下载。Release 资产里已内嵌。
+installer/deps/
+
 # build outputs & local artifacts
 dist-tmp/
 objversioncheck-tmp/
