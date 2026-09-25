@@ -3,6 +3,12 @@
 一个面向 **星露谷物语** 的桌面 Mod 管理器与启动器，基于 .NET（WPF + Blazor WebView2）构建。
 本仓库为中文原版；英文版见 [JuniGrid-en](https://github.com/MLD-yu/JuniGrid-en)。
 
+如果你喜欢 JuniGrid，可以请作者喝杯咖啡吗
+
+<img src="https://raw.githubusercontent.com/MLD-yu/JuniGrid/main/JuniGrid/wwwroot/assets/sponsor-cards.png" alt="赞助收款码" width="640" />
+
+<sub>MLD/MLD（\*禺）——扫码前请确定收款人信息</sub>
+
 ## 安全说明
 
 - 源码中不内嵌任何 API Key / 密钥。Nexus 凭据由用户在登录时输入，仅保存在本机当前用户的本地配置文件中。
@@ -41,17 +47,10 @@ dotnet publish JuniGrid/JuniGrid.csproj -c Release
 2. Windows SmartScreen 弹出蓝色拦截窗口时，点`更多信息`，再点`仍要运行`。
 3. 如果杀毒软件明确显示木马、高危或已经隔离，不要强行运行;删除该文件后重新从官方 GitHub Release 下载，仍然异常请带截图向作者反馈
 
-
-
 ## 支持赞助
 
-如果你喜欢JuniGrid，可以请作者喝杯咖啡吗
-
-<img src="https://raw.githubusercontent.com/MLD-yu/JuniGrid/wwwroot/assets/sponsor-cards.png" alt="赞助收款码" width="640" />
-
-<sub>MLD/MLD（\*禺）——扫码前请确定收款人信息</sub>
+赞助收款码见 README 首屏（支付宝 / 微信）。
 
 ## 许可
 
 保留所有权利。本项目同时作为 Nexus Mods API 团队注册审核的源码材料。
-
