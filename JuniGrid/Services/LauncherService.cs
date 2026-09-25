@@ -316,6 +316,7 @@ public sealed class LauncherService
     /// </summary>
     public void KillGame()
     {
+        _killedByUser = true;
         // 优先温和关闭所持有的 SMAPI 子进程
         if (_smapiProcess is { HasExited: false })
         {
@@ -424,6 +425,9 @@ public sealed class LauncherService
     // ------------------------------------------------------------------
     /// <summary>无窗口模式启动失败时，带控制台重试一次的机会（每次启动只给一次）。</summary>
     private bool _relaunchWithConsoleTried;
+    /// <summary>用户点了「取消启动/关闭游戏」——我们自己杀的进程，不是崩溃，
+    /// 禁止再走「带控制台自动重拉」（会和清场看门狗对打，弹 0x800700E8 管道已关闭）。</summary>
+    private volatile bool _killedByUser;
 
     /// <summary>
     /// v1.6.10：默认**不显示 SMAPI 控制台窗口** —— 日志页（尾随 SMAPI-latest.txt）+ 命令输入框
@@ -433,6 +437,7 @@ public sealed class LauncherService
     public LaunchResult LaunchSmapi(string gamePath)
     {
         _relaunchWithConsoleTried = false;
+        _killedByUser = false;
         return LaunchSmapiCore(gamePath, showConsole: false);
     }
 
@@ -499,7 +504,10 @@ public sealed class LauncherService
                     if (_logTailGen == gen) StopLogTail();
                 });
 
-                if (!showConsole && code is not 0 && !_relaunchWithConsoleTried)
+                // 用户主动取消/关游戏 = 我们自己 Kill 的，绝不能当启动失败再拉一次：
+                // 重拉会和清场看门狗对打，Process.Start/写 stdin 撞上已关闭的管道
+                //（0x800700E8 ERROR_NO_DATA「管道正在被关闭」）弹窗吓人。
+                if (!showConsole && code is not 0 && !_relaunchWithConsoleTried && !_killedByUser)
                 {
                     _relaunchWithConsoleTried = true;
                     RaiseLog("[JuniGrid] 启动异常，正在带控制台窗口重试一次 —— 真实报错会显示在那个窗口里");

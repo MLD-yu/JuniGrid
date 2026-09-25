@@ -709,12 +709,14 @@
             ShowToast("已锁定，先点右上角锁解锁再改");
             return;
         }
-        _busy = true;
         var ch = _modalChar;
         // 默认行（官方/mod 默认外观）= 回到默认（不写选择）。
         // 「已选中的再点一次」以前也当回默认 —— 用户 09-24 明确要求改掉：再点同一张应该啥也不发生，
         // 想回默认有点「默认」那一行走，不该拿误触当命令。
+        // ⚠ 这条 return 必须在 _busy=true 之前：旧写法先置 _busy 再 return，
+        //   finally 不会跑 → 全部皮肤格保持 .busy（pointer-events:none），点什么都没反应。
         if (!opt.IsVanilla && !opt.IsNative && IsSelected(ch, opt)) return;
+        _busy = true;
         var folder = (opt.IsVanilla || opt.IsNative) ? null : opt.PackFolder;
         // v1.6.8：点选瞬间先在后台预热目标立绘/季节变体的缩略图 —— 切换落盘完成时
         // 图已就绪，弹窗渲染零等待（否则新图要在渲染线程当场解码+裁剪+缩放，卡一下）

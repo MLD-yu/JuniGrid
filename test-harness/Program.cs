@@ -839,8 +839,8 @@ if (unitOnly)
         "ok=" + pOk + " ‖ ./=" + pDot + " ‖ ../=" + pUp + " ‖ abs=" + pAbs);
 
     Check("U5 版本号与发行一致：AppInfo.Version = csproj Version（Nexus AUP 头同源）",
-        AppInfo.Version == "1.2.1",
-        "AppInfo.Version=" + AppInfo.Version + "（期望 1.2.1，由 JuniGrid.csproj <Version> 注入）");
+        AppInfo.Version == "1.2.2",
+        "AppInfo.Version=" + AppInfo.Version + "（期望 1.2.2，由 JuniGrid.csproj <Version> 注入）");
 
     // 回归：旧 PascalCase 配置不得在 CamelCase 策略下被静默读成空（封面/合集清零事故）
     {

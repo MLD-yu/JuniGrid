@@ -3,6 +3,7 @@
 @inject GameService Game
 @inject LauncherService Launcher
 @inject ModService ModSvc
+@inject PortraitSkinService PortraitSkin
 @inject SteamService Steam
 @inject UpdateService Updater
 @inject PageRefreshService PageRefresh
@@ -283,6 +284,22 @@
             return;
         }
         _skipOverrideCheck = false;
+
+        // v1.2.2：启动前强制自检覆盖包 —— 有清单、已启用、补丁完整；
+        // 不完整就全量重建。保证「肖像页设置过」下次启动一定生效。
+        if (_cfg.LaunchMode == "smapi" && !string.IsNullOrWhiteSpace(_cfg.GamePath))
+        {
+            try
+            {
+                var gp = _cfg.GamePath!;
+                await Task.Run(() =>
+                {
+                    var scan = PortraitSkin.Scan(gp);
+                    PortraitSkin.EnsureOverridePackHealthy(gp, scan);
+                });
+            }
+            catch (Exception ex) { AppLog.Warn("AccountPanel", "覆盖包启动自检: " + ex.Message); }
+        }
 
         // v1.3.1：点启动时重探本地版本 —— AccountPanel 常驻 MainLayout，游戏在启动器
         // 外被 Steam 更新/降级后按钮仍显示旧快照（用户报告"按钮显示 1.6.8 游戏里

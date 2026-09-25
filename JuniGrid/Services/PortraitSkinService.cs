@@ -2698,6 +2698,68 @@ public sealed class PortraitSkinService
         }
     }
 
+    /// <summary>
+    /// 启动游戏前的最后一道保险：保证覆盖包「有清单、已启用、content.json 可解析且含已选角色」。
+    /// 任一不满足就全量重建 —— 用户要求：肖像页设置过 + 覆盖包启用 ⇒ 下次启动必须生效。
+    /// </summary>
+    public void EnsureOverridePackHealthy(string gamePath, PortraitScanResult scan)
+    {
+        try
+        {
+            var modsDir = Path.Combine(gamePath, "Mods");
+            var root = Path.Combine(modsDir, OverrideFolder);
+            var mf = Path.Combine(root, "manifest.json");
+            var cj = Path.Combine(root, "content.json");
+            var needFull = false;
+
+            if (!File.Exists(mf) || !File.Exists(cj)) needFull = true;
+            else
+            {
+                try
+                {
+                    var doc = JObject.Parse(File.ReadAllText(cj));
+                    if (doc["Changes"] is not JArray arr || arr.Count == 0) needFull = true;
+                    else
+                    {
+                        // 已选角色必须在补丁里（Target 前缀命中）
+                        foreach (var id in _cfg.Current.PortraitSkins.Keys
+                                     .Concat(_cfg.Current.PortraitLocks.Keys))
+                        {
+                            var asset = GameAssetId(id);
+                            var hit = arr.Any(x =>
+                            {
+                                var t = x?["Target"]?.ToString() ?? "";
+                                return t.StartsWith("Portraits/" + asset, StringComparison.OrdinalIgnoreCase)
+                                    || t.StartsWith("Characters/" + asset, StringComparison.OrdinalIgnoreCase);
+                            });
+                            if (!hit) { needFull = true; break; }
+                        }
+                    }
+                }
+                catch { needFull = true; }
+            }
+
+            if (needFull)
+            {
+                AppLog.Warn("Portraits", "[覆盖包] 启动前检测到不完整，全量重建");
+                WriteOverridePack(gamePath, scan, _cfg.Current.PortraitSkins,
+                    _cfg.Current.PortraitVanillaDefaults, onlyIds: null);
+            }
+            // 无条件保证：清单 + 启用
+            if (!File.Exists(mf))
+                File.WriteAllText(mf,
+                    "{\"Name\":\"JuniGrid Portrait Overrides\",\"Author\":\"JuniGrid\",\"Version\":\"1.0.0\"," +
+                    "\"Description\":\"Portrait overrides managed by JuniGrid. Regenerated automatically.\"," +
+                    "\"UniqueID\":\"" + OverrideUid + "\"," +
+                    "\"ContentPackFor\":{\"UniqueID\":\"Pathoschild.ContentPatcher\"}}");
+            _mods.SetDisabled(gamePath, OverrideFolder, false);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warn("Portraits", "启动前覆盖包自检失败: " + ex.Message);
+        }
+    }
+
     // ══════════════════════ 立绘覆盖包 ══════════════════════
 
     /// <summary>生成/更新覆盖包：对每个「显式选择」的角色，把对应立绘（和精灵表）拷进
@@ -2719,6 +2781,16 @@ public sealed class PortraitSkinService
             Directory.CreateDirectory(assets);
             var vanillaSet = new HashSet<string>(vanillaDefaults, StringComparer.OrdinalIgnoreCase);
 
+            // manifest 必须每次都在 —— 旧逻辑「只在全量时写一次」，换肤走增量 never 创建，
+            // SMAPI 直接 Skipped（no manifest.json），Mods 页显示「无清单」，肖像全体失效。
+            var mf = Path.Combine(root, "manifest.json");
+            if (!File.Exists(mf))
+                File.WriteAllText(mf,
+                    "{\"Name\":\"JuniGrid Portrait Overrides\",\"Author\":\"JuniGrid\",\"Version\":\"1.0.0\"," +
+                    "\"Description\":\"Portrait overrides managed by JuniGrid. Regenerated automatically.\"," +
+                    "\"UniqueID\":\"" + OverrideUid + "\"," +
+                    "\"ContentPackFor\":{\"UniqueID\":\"Pathoschild.ContentPatcher\"}}");
+
             // 历史遗留清理只在全量时做（增量热路径不碰回收站）
             if (onlyIds is null)
             {
@@ -2736,15 +2808,6 @@ public sealed class PortraitSkinService
                         AppLog.Warn("Portraits", $"[覆盖包] 清理遗留目录失败 {legacyName}: {lex.Message}");
                     }
                 }
-
-                // manifest 只写一次
-                var mf = Path.Combine(root, "manifest.json");
-                if (!File.Exists(mf))
-                    File.WriteAllText(mf,
-                        "{\"Name\":\"JuniGrid Portrait Overrides\",\"Author\":\"JuniGrid\",\"Version\":\"1.0.0\"," +
-                        "\"Description\":\"Portrait overrides managed by JuniGrid. Regenerated automatically.\"," +
-                        "\"UniqueID\":\"" + OverrideUid + "\"," +
-                        "\"ContentPackFor\":{\"UniqueID\":\"Pathoschild.ContentPatcher\"}}");
             }
 
             // v1.3.9b：不再「整目录删除重建」—— 游戏运行时 SMAPI/CP 占着覆盖包文件句柄，
@@ -3053,14 +3116,22 @@ public sealed class PortraitSkinService
                         var seasonS = opt.SpriteFile is not null
                             ? GetSeasonFilesForChar(opt.SpriteFile, ch.Id).TryGetValue(season, out var ss2) ? ss2 : opt.SpriteFile
                             : null;
-                        // 变体资产（Portraits/Sam_Winter、含 Indoor/Outdoor）强制钉入
+                        // 变体资产（Portraits/Elliott_Winter_Indoor 等）强制钉入。
+                        // 优先用【本季所选包】登记的那张变体文件 —— Baechu 是
+                        // Appearance + Elliott_Winter_Indoor/_Outdoor，不能拿一张
+                        // seasonS 糊到所有冬变体上（精灵四季全一样就是这么来的）。
                         foreach (var v in scan.VariantAssets)
                         {
                             if (!string.Equals(v.BaseId, ch.Id, StringComparison.OrdinalIgnoreCase)) continue;
                             if (!v.VariantId.EndsWith(cap, StringComparison.OrdinalIgnoreCase)
                                 && !v.VariantId.Contains("_" + cap, StringComparison.OrdinalIgnoreCase))
                                 continue;
-                            var file = v.Kind == "Portraits" ? seasonP : seasonS;
+                            string? file = null;
+                            if (!string.IsNullOrEmpty(v.File)
+                                && string.Equals(v.Pack, pack, StringComparison.OrdinalIgnoreCase)
+                                && File.Exists(v.File))
+                                file = v.File;
+                            file ??= v.Kind == "Portraits" ? seasonP : seasonS;
                             if (file is null) continue;
                             var key = v.Kind + "/" + v.VariantId;
                             var dest = Path.Combine(assets, v.Kind, v.VariantId + ".png");
@@ -3100,6 +3171,7 @@ public sealed class PortraitSkinService
             {
                 // 增量：保留其它角色的旧条目，只替换本次角色相关 Target
                 contentArr = new JArray();
+                var mergeOk = true;
                 try
                 {
                     if (File.Exists(contentPath))
@@ -3120,7 +3192,17 @@ public sealed class PortraitSkinService
                         }
                     }
                 }
-                catch { contentArr = new JArray(); }
+                catch
+                {
+                    // content.json 读坏 → 空表继续增量会把其它角色全清掉（「设完不生效要再设」）。
+                    mergeOk = false;
+                }
+                if (!mergeOk)
+                {
+                    AppLog.Warn("Portraits", "[覆盖包] content.json 合并失败，改为全量重建");
+                    WriteOverridePack(gamePath, scan, skins, vanillaDefaults, onlyIds: null);
+                    return;
+                }
             }
             var skippedGhosts = 0;
             // 同一 Target + 同一 When.Season 只留最后一条（单季覆盖必须赢过全局包）。
@@ -3155,10 +3237,44 @@ public sealed class PortraitSkinService
             var content = new JObject(
                 new JProperty("Format", "2.0.0"),
                 new JProperty("Changes", contentArr));
-            // 先写临时文件再替换，避免写一半留下半截 content.json
+            // 先写临时文件再替换，避免写一半留下半截 content.json。
+            // 游戏/SMAPI 可能占着 content.json → 重试几次，仍失败就整体全量重建兜底。
             var tmpContent = contentPath + ".junigrid.tmp";
-            File.WriteAllText(tmpContent, content.ToString(Newtonsoft.Json.Formatting.None));
-            File.Move(tmpContent, contentPath, true);
+            var writtenOk = false;
+            for (var wtry = 1; wtry <= 4 && !writtenOk; wtry++)
+            {
+                try
+                {
+                    File.WriteAllText(tmpContent, content.ToString(Newtonsoft.Json.Formatting.None));
+                    File.Move(tmpContent, contentPath, true);
+                    writtenOk = true;
+                }
+                catch (Exception wex)
+                {
+                    AppLog.Warn("Portraits", $"[覆盖包] 写 content.json 失败（{wtry}/4）: {wex.Message}");
+                    Thread.Sleep(80 * wtry);
+                }
+            }
+            if (!writtenOk)
+            {
+                if (onlyIds is not null)
+                {
+                    WriteOverridePack(gamePath, scan, skins, vanillaDefaults, onlyIds: null);
+                    return;
+                }
+                AppLog.Error("Portraits", "[覆盖包] content.json 多次写入失败，本次换肤可能未生效");
+            }
+            // 终检：写完立刻回读，确保文件可解析且条目非空（有选择时）
+            try
+            {
+                var verify = JObject.Parse(File.ReadAllText(contentPath));
+                if (verify["Changes"] is not JArray va || va.Count == 0)
+                    AppLog.Warn("Portraits", "[覆盖包] content.json 写入后为空，下次启动前会自动全量重建");
+            }
+            catch (Exception vex)
+            {
+                AppLog.Warn("Portraits", "[覆盖包] content.json 写入后无法解析: " + vex.Message);
+            }
             if (onlyIds is null)
                 AppLog.Warn("Portraits", $"[覆盖包] 已重建：{contentArr.Count} 条补丁" +
                     (skippedGhosts > 0 ? $"（跳过 {skippedGhosts} 条幽灵引用）" : ""));

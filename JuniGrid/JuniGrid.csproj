@@ -10,7 +10,7 @@
     <AssemblyName>JuniGrid</AssemblyName>
     <!-- 唯一版本源：发版只改这里。AppInfo.Version 在运行时从程序集版本读取，
          保证 Nexus Application-Version 头与发行构建永远一致（AUP 要求） -->
-    <Version>1.2.1</Version>
+    <Version>1.2.2</Version>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Assets\junigrid-logo.ico</ApplicationIcon>
     <!-- 只保留中英文卫星资源：自包含发布里 40+ 语言的 WPF/FluentUI 资源 dll 占 8MB+，
