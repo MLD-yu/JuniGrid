@@ -3,6 +3,8 @@
 一个面向 **星露谷物语** 的桌面 Mod 管理器与启动器，基于 .NET（WPF + Blazor WebView2）构建。
 本仓库为中文原版；英文版见 [JuniGrid-en](https://github.com/MLD-yu/JuniGrid-en)。
 
+## 支持赞助
+
 如果你喜欢 JuniGrid，可以请作者喝杯咖啡吗
 
 <img src="https://raw.githubusercontent.com/MLD-yu/JuniGrid/main/JuniGrid/wwwroot/assets/sponsor-cards.png" alt="赞助收款码" width="640" />
@@ -39,6 +41,7 @@ dotnet run --project JuniGrid/JuniGrid.csproj
 # 发布版（输出位于 JuniGrid/bin/Release/net10.0-windows10.0.17763.0/）
 dotnet publish JuniGrid/JuniGrid.csproj -c Release
 ```
+
 ## 下载或安装被拦截怎么办
 
 小众桌面软件、未签名安装包有时会被浏览器、Windows Defender 或 SmartScreen 提示风险。请确认安装包来自官方 GitHub Release，文件名是JuniGrid-cn-v1.1.0-setup.exe。
@@ -46,10 +49,6 @@ dotnet publish JuniGrid/JuniGrid.csproj -c Release
 1. 浏览器下载栏提示风险时，打开下载列表，点这条下载右侧的`···`三个点，选择`保留` / `仍要保留` / `显示更多` 后继续保留。
 2. Windows SmartScreen 弹出蓝色拦截窗口时，点`更多信息`，再点`仍要运行`。
 3. 如果杀毒软件明确显示木马、高危或已经隔离，不要强行运行;删除该文件后重新从官方 GitHub Release 下载，仍然异常请带截图向作者反馈
-
-## 支持赞助
-
-赞助收款码见 README 首屏（支付宝 / 微信）。
 
 ## 许可
 
