@@ -500,6 +500,9 @@ public sealed class ModUpdateFingerprintEntry
 {
     public string UpdatedAt { get; set; } = "";
     public string LatestFileVersion { get; set; } = "";
+    /// <summary>这一版对应的 N 网 fileId。缺了它就只能拿版本号比对，而「已装这一条文件」的
+    /// 主要判据（下载/安装记录）都是按 fileId 记的 —— 缓存复用时必须一起带上。</summary>
+    public long LatestFileId { get; set; }
     public DateTime CheckedAtUtc { get; set; } = DateTime.UtcNow;
 }
 

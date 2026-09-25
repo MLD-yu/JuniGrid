@@ -87,7 +87,7 @@
                 var skinCount = chLocal.Skins.Count(s => !s.IsNative);
                 var locked = IsCharLocked(chLocal);
                 <div class="jg-pt-slot">
-                    <button class="jg-pt-card @(locked ? "locked-card" : "")" @onclick="() => OpenModal(chLocal)" aria-label="@chLocal.DisplayName">
+                    <button class="jg-pt-card @(locked ? "locked-card" : "")" @onclick="e => OpenModal(chLocal, e)" aria-label="@chLocal.DisplayName">
                     @* 磁吸/倾斜只作用在这一层：按钮自己的盒子一旦 transform，它的命中区就跟着挪走，
                        边缘那几像素的点会落到外层槽上 —— Blazor 挂在按钮上的 @onclick 收不到，
                        表现成"有些角色要点两遍才进弹窗"（用户 09-24 反馈）。 *@
@@ -135,7 +135,7 @@
     @if (_modalChar is not null)
     {
         var charLocked = IsCharLocked(_modalChar);
-        <div class="jg-modal-overlay" @onclick="CloseModal">
+        <div class="jg-modal-overlay" @onclick="OnOverlayClose">
             <div class="jg-modal jg-pt-modal @(charLocked ? "is-locked" : "")" @onclick:stopPropagation>
                 @{
                     // v1.3.9：季节激活时的"生效皮肤" = 该季分配的皮肤（右键固定的），
@@ -272,21 +272,34 @@
                     </div>
 
                     @* 右侧：当前选中皮肤对应的精灵图（走动小人整表），随季节一起切换。
-                       所选皮肤没带精灵图（纯立绘包）→ 显示原版样貌；解码失败继续尝试
-                       默认/mod 默认精灵图，不能留空白面板。 *@
+                       包里只有大头照、没有精灵 → 用默认皮肤的精灵，且季节也跟默认皮肤走
+                      （用户明确要求）；误把头像当精灵的一律过滤掉。 *@
                     @{
-                        var seasonSpriteFile = _season is not null
-                            && ptActive?.SpriteFile is not null
-                            && PortraitSkinService.GetSeasonFilesForChar(ptActive.SpriteFile, _modalChar.Id).TryGetValue(_season, out var ssf)
-                                ? ssf : null;
+                        string? PickSeasonSprite(string? file)
+                        {
+                            if (file is null || !PortraitSkinService.LooksLikeSprite(file)
+                                || PortraitSkinService.IsNonWalkSprite(file)) return null;
+                            if (_season is null) return file;
+                            var map = PortraitSkinService.GetSeasonFilesForChar(file, _modalChar.Id);
+                            return map.TryGetValue(_season, out var sf)
+                                && PortraitSkinService.LooksLikeSprite(sf)
+                                && !PortraitSkinService.IsNonWalkSprite(sf)
+                                ? sf : file;
+                        }
+                        var seasonSpriteFile = PickSeasonSprite(ptActive?.SpriteFile)
+                            ?? PickSeasonSprite(_modalChar.Vanilla?.SpriteFile)
+                            ?? PickSeasonSprite(_modalChar.Native?.SpriteFile);
+                        // 皮肤自带精灵 → 默认皮肤精灵（带季节）→ 其它皮肤精灵
                         var spriteCandidates = new[]
                         {
                             ptActive, _modalChar.Vanilla, _modalChar.Native
-                        }.Where(o => o?.SpriteFile is not null)
+                        }.Where(o => o?.SpriteFile is not null
+                                 && PortraitSkinService.LooksLikeSprite(o!.SpriteFile)
+                                 && !PortraitSkinService.IsNonWalkSprite(o!.SpriteFile))
                          .Select(o => o!)
-                         // 娘家没精灵时兜底到皮肤包自带的精灵（LittleGruff 实测：精灵在
-                         // East Scarp: Locations 包里）
-                         .Concat(_modalChar.Skins.Where(s => s.SpriteFile is not null))
+                         .Concat(_modalChar.Skins.Where(s => s.SpriteFile is not null
+                                 && PortraitSkinService.LooksLikeSprite(s.SpriteFile)
+                                 && !PortraitSkinService.IsNonWalkSprite(s.SpriteFile)))
                          .DistinctBy(o => o!.SpriteFile, StringComparer.OrdinalIgnoreCase)
                          .ToList();
                         var spriteThumb = seasonSpriteFile is not null
@@ -575,7 +588,7 @@
     {
         if (_applyOpen) { _applyOpen = false; StateHasChanged(); return; }
         if (_restoreOpen) { _restoreOpen = false; StateHasChanged(); return; }
-        if (_modalChar is not null) { CloseModal(); StateHasChanged(); }
+        if (_modalChar is not null) { _closeClickHasPos = false; CloseModal(); StateHasChanged(); }
     }
 
     private static PortraitSkinOption? ResolveSkinById(PortraitCharacter ch, string skinId)
@@ -719,9 +732,10 @@
         _busy = true;
         var folder = (opt.IsVanilla || opt.IsNative) ? null : opt.PackFolder;
         // v1.6.8：点选瞬间先在后台预热目标立绘/季节变体的缩略图 —— 切换落盘完成时
-        // 图已就绪，弹窗渲染零等待（否则新图要在渲染线程当场解码+裁剪+缩放，卡一下）
-        _ = PortraitSkin.GetSkinThumb(ch, opt);
-        PortraitSkin.PrewarmSeasonThumbs(ch);
+        // 图已就绪，弹窗渲染零等待（否则新图要在渲染线程当场解码+裁剪+缩放，卡一下）。
+        // 同样甩后台：GetSkinThumb / PrewarmSeasonThumbs 走 RequestThumb 异步路径会 _thumbGate.Wait()，
+        // 同步调等于把渲染线程卡在闸上（与 OpenModal 同一根因）。
+        _ = Task.Run(() => { PortraitSkin.GetSkinThumb(ch, opt); PortraitSkin.PrewarmSeasonThumbs(ch); });
         try
         {
             await Task.Run(() => PortraitSkin.SelectSkin(GamePath, _scan, ch.Id, folder));
@@ -797,13 +811,32 @@
     // v1.3.9：关闭后的短暂保护窗 —— 双击/快速连点关闭时，第二下会点到弹窗底下
     // 压着的角色卡，弹窗立刻重开（用户实测"关闭后有时重新打开"）
     private DateTime _modalClosedAt = DateTime.MinValue;
+    // 关闭落点（仅"点遮罩关闭"时记录）：用来把"双击穿透的第二下"和"刻意点下一个角色"区分开。
+    // ESC 关闭不记落点（_closeClickHasPos=false），因为 ESC 不存在穿透问题，关完应立即可点。
+    private double _closeClickX, _closeClickY;
+    private bool _closeClickHasPos;
     // v1.6.8：弹窗开着时延迟的背景刷新标记（关弹窗统一补刷）
     private bool _pendingRefresh;
 
-    private void OpenModal(PortraitCharacter ch)
+    private void OpenModal(PortraitCharacter ch, Microsoft.AspNetCore.Components.Web.MouseEventArgs e)
     {
-        // Windows 双击间隔设置最长 500ms，保护窗必须盖过它
-        if ((DateTime.Now - _modalClosedAt).TotalMilliseconds < 650) return;
+        // 关闭后的防双击穿透，只该拦【同一个位置】的连点：点遮罩关闭时，双击的第二下会落到遮罩
+        // 消失后露出的角色卡上把弹窗重开（用户 09-24 实测）。旧写法 650ms 内吞掉【所有】点击，
+        // 日志实测被吞的全是关闭后 200~500ms 的正常连点 —— 表现成"关掉马上点下一个没反应、
+        // 等一两秒再点才行"。现在只在"距上次关闭<650ms 且落点≈关闭落点"时才吞（那才是穿透的第二下），
+        // 点别的角色卡（落点不同）立即放行。
+        var sinceCloseMs = (DateTime.Now - _modalClosedAt).TotalMilliseconds;
+        if (sinceCloseMs < 650 && _closeClickHasPos)
+        {
+            var dx = e.ClientX - _closeClickX;
+            var dy = e.ClientY - _closeClickY;
+            if (dx * dx + dy * dy < 48 * 48)
+            {
+                AppLog.Info("Portraits", $"[diag] OpenModal 吞穿透点击 char={ch.Id} 距关闭 {sinceCloseMs:F0}ms 偏移 {Math.Sqrt(dx * dx + dy * dy):F0}px");
+                return;
+            }
+        }
+        AppLog.Info("Portraits", $"[diag] OpenModal 放行 char={ch.Id} 距上次关闭 {sinceCloseMs:F0}ms");
         _modalChar = ch;
         _season = "spring";
         // 锁定时预览停在锁定的那一季（锁了冬天，打开就该是冬天，而不是死在春季）
@@ -816,8 +849,21 @@
             }
         if (lk?.Season is { Length: > 0 } lockSeason)
             _season = lockSeason;
-        // 预生成该角色全部皮肤的四季缩略图（后台），点季节按钮零等待
-        PortraitSkin.PrewarmSeasonThumbs(ch);
+        // 预生成该角色全部皮肤的四季缩略图（后台），点季节按钮零等待。
+        // ⚠ 必须 Task.Run 甩后台：PrewarmSeasonThumbs 内部对每张未缓存图走 RequestThumb 异步路径，
+        //   会在【调用线程】上 _thumbGate.Wait() 抢那 4 路并发闸。直接在这儿同步调 = 在 Blazor 渲染线程上等闸。
+        //   开 A 时派发的预热任务关弹窗后并不取消，闸还被占着；紧接着开 B 就卡在 Wait() 上，
+        //   弹窗要等闸位释放才渲染 —— 即「关掉一个再开第二个，点了没反应、过一会儿才弹出来」。
+        _ = Task.Run(() => PortraitSkin.PrewarmSeasonThumbs(ch));
+    }
+
+    /// <summary>点遮罩关闭：记下关闭落点，供 OpenModal 识别"双击穿透的第二下"。</summary>
+    private void OnOverlayClose(Microsoft.AspNetCore.Components.Web.MouseEventArgs e)
+    {
+        _closeClickX = e.ClientX;
+        _closeClickY = e.ClientY;
+        _closeClickHasPos = true;
+        CloseModal();
     }
 
     private void CloseModal()

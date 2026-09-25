@@ -16,6 +16,11 @@ namespace JuniGrid.Services;
 public static class ResumableDownload
 {
     private const int MaxAttempts = 5;
+    // v1.1.8：读流停滞看门狗。HttpClient.Timeout 在 ResponseHeadersRead 之后
+    // 并不覆盖 body 流读取；半开 TCP 会让 ReadAsync 永久阻塞，进度永远停在
+    // 最后一帧（实测界面卡在「91% · 3.1 M/s」假死）。45 秒收不到任何字节就
+    // 掐断本连接，走已有的 Range 续传重试。
+    private static readonly TimeSpan StallTimeout = TimeSpan.FromSeconds(45);
 
     public static async Task RunAsync(HttpClient http, string url, string destPath,
         Action<string, double?, double?> report, CancellationToken ct = default,
@@ -82,9 +87,20 @@ public static class ResumableDownload
                 var buffer = new byte[81920];
                 var lastReport = DateTime.UtcNow;
                 var lastWritten = written;
+                // 每次成功读到字节就重置；超时抛 OCE 且外层 ct 未取消 → 当作连接停滞
+                using var stallCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 while (true)
                 {
-                    int read = await src.ReadAsync(buffer, ct);
+                    stallCts.CancelAfter(StallTimeout);
+                    int read;
+                    try
+                    {
+                        read = await src.ReadAsync(buffer, stallCts.Token);
+                    }
+                    catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                    {
+                        throw new IOException($"下载连接停滞（{StallTimeout.TotalSeconds:0} 秒无数据）");
+                    }
                     if (read == 0) break;
                     await dst.WriteAsync(buffer.AsMemory(0, read), ct);
                     written += read;

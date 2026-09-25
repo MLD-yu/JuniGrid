@@ -445,7 +445,7 @@
                 {
                     // v0.72.0：拉最新 MAIN 文件做可更新判定（与一键直装同源）。失败静默。
                     NexusFileInfo? latest = null;
-                    try { latest = await NexusApi.GetLatestMainFileAsync(_key, ModId, patient: true); }
+                    try { latest = await NexusApi.GetLatestMainFileAsync(_key, ModId, patient: true, installedFolder: _installedFolder); }
                     catch { latest = null; }
                     hit = (mod, latest, DateTime.UtcNow);
                     RememberDetail(ModId, hit);

@@ -135,6 +135,9 @@ public sealed class InstallService
                 }
 
                 // v1.3.4：安装段 —— 写入 Mods 全局串行（下载阶段已完成，多任务在此依次写入）
+                // v1.1.8：InstallNew 是同步重活（解压/肖像校验/CP 转换，实测可达 50s+）。
+                // 若 await 之后续体落在 Blazor UI 线程，整个界面会冻住、任务胶囊停在
+                // 最后一帧进度（「91% · 3.1 M/s」假死）。强制丢到线程池执行。
                 string? err;
                 string? modName = null;
                 await EnterInstallGateAsync(Step, 95);
@@ -145,8 +148,8 @@ public sealed class InstallService
                     // v1.6.5：Portraiture 素材包（无 manifest+PNG）在 ModService 内直接转换成
                     // CP 肖像包，不再依赖/安装 Portraiture 框架。包名用任务标题（可能被翻译
                     // 服务机翻，仅作目录名/展示，无碍功能）。
-                    err = _mods.InstallNew(cfg.GamePath, zip, out modName, modId,
-                        portraiturePackName: taskTitle);
+                    err = await Task.Run(() => _mods.InstallNew(cfg.GamePath, zip, out modName, modId,
+                        portraiturePackName: taskTitle), ct);
                 }
                 finally { ExitInstallGate(); }
                 if (err is not null)
@@ -160,7 +163,8 @@ public sealed class InstallService
                 if (!string.IsNullOrWhiteSpace(modName) || modId > 0)
                 {
                     var folderGuess = modName ?? "";
-                    var entry = _mods.Scan(cfg.GamePath)
+                    // Scan 是磁盘全量扫描，同样别落在 UI 线程
+                    var entry = (await Task.Run(() => _mods.Scan(cfg.GamePath), ct))
                         .FirstOrDefault(x => x.NexusModId == modId
                             || (!string.IsNullOrEmpty(folderGuess)
                                 && string.Equals(x.Folder, folderGuess, StringComparison.OrdinalIgnoreCase)));
@@ -208,8 +212,8 @@ public sealed class InstallService
             }
         }
 
-        _center.RegisterResume(task, ct => RunAsync(ct));
-        return await RunAsync(task.Cts.Token);
+        _center.RegisterResume(task, ct => Task.Run(() => RunAsync(ct), CancellationToken.None));
+        return await Task.Run(() => RunAsync(task.Cts.Token));
     }
 
     /// <summary>SMAPI 在 Nexus 上的 mod ID（nexusmods.com/stardewvalley/mods/2400）。</summary>
@@ -356,8 +360,8 @@ public sealed class InstallService
             }
         }
 
-        _center.RegisterResume(task, ct => RunAsync(ct));
-        return await RunAsync(task.Cts.Token);
+        _center.RegisterResume(task, ct => Task.Run(() => RunAsync(ct), CancellationToken.None));
+        return await Task.Run(() => RunAsync(task.Cts.Token));
     }
 
     public async Task HandleNxmLinkAsync(string link)
@@ -448,8 +452,9 @@ public sealed class InstallService
                     Step("正在安装到 Mods…", 95);
                     var nxmTitle = task.Title.StartsWith("下载并安装 ") ? task.Title["下载并安装 ".Length..] : null;
                     // v1.6.5：Portraiture 素材包直接转换成 CP 肖像包（不再装框架）
-                    nxmErr = _mods.InstallNew(cfg.GamePath, zip, out modName, modId,
-                        portraiturePackName: nxmTitle);
+                    // v1.1.8：同直装路径，InstallNew 丢线程池，避免冻住 UI
+                    nxmErr = await Task.Run(() => _mods.InstallNew(cfg.GamePath, zip, out modName, modId,
+                        portraiturePackName: nxmTitle), ct);
                 }
                 finally { ExitInstallGate(); }
                 if (nxmErr is null)
@@ -467,18 +472,22 @@ public sealed class InstallService
                     {
                         cfg.ModLastDownload[modId.ToString()] = DateTime.Now.ToString("yyyy-MM-dd");
                         cfg.ModFileLastDownload[fileId.ToString()] = DateTime.Now.ToString("yyyy-MM-dd");
+                        // 版本号必须一起记：留空 ⇒ 快道（smapi.io 只给版本号、不给 fileId）那条路
+                        // 再没有任何判据能认出「这一版我已经装过了」，⇧ 装上就消不掉
+                        var nxmVer = (await _nexus.GetFileByIdAsync(cfg.NexusApiKey, modId, fileId))?.Version ?? "";
                         var guess = modName ?? "";
-                        var entry = _mods.Scan(cfg.GamePath).FirstOrDefault(x => x.NexusModId == modId
-                            || (!string.IsNullOrEmpty(guess)
-                                && string.Equals(x.Folder, guess, StringComparison.OrdinalIgnoreCase)));
+                        var entry = (await Task.Run(() => _mods.Scan(cfg.GamePath), ct))
+                            .FirstOrDefault(x => x.NexusModId == modId
+                                || (!string.IsNullOrEmpty(guess)
+                                    && string.Equals(x.Folder, guess, StringComparison.OrdinalIgnoreCase)));
                         if (entry is not null)
                         {
                             entry.NexusModId ??= modId;
-                            NexusUpdateTruth.RecordInstall(cfg, entry, fileId, "", cfg.GamePath ?? "");
+                            NexusUpdateTruth.RecordInstall(cfg, entry, fileId, nxmVer, cfg.GamePath ?? "");
                         }
                         else
                             NexusUpdateTruth.RecordInstallByModId(cfg, cfg.GamePath ?? "",
-                                guess.Length > 0 ? guess : modId.ToString(), modId, fileId, "");
+                                guess.Length > 0 ? guess : modId.ToString(), modId, fileId, nxmVer);
                         _cfg.Save(cfg);
                     }
                     catch (Exception rex) { AppLog.Warn("Install", ".nxm 安装后写下载/安装记录失败: " + rex.Message); }
@@ -507,8 +516,8 @@ public sealed class InstallService
             }
         }
 
-        _center.RegisterResume(task, ct => RunAsync(ct));
-        await RunAsync(task.Cts.Token);
+        _center.RegisterResume(task, ct => Task.Run(() => RunAsync(ct), CancellationToken.None));
+        await Task.Run(() => RunAsync(task.Cts.Token));
     }
 
     private void Notify() => OnChanged?.Invoke();
@@ -670,8 +679,9 @@ public sealed class InstallService
                                     return task.Status == "paused" ? "已暂停" : "已取消";
 
                                 Step($"({idx}/{total}) 正在安装 {c.Name}…", Math.Round(idx * 95.0 / (total + 1), 1));
-                                var err = _mods.InstallNew(cfg.GamePath, zipPath, out var modName, c.Id,
-                                    requireUniqueId: dep);
+                                string? modName = null;
+                                var err = await Task.Run(() => _mods.InstallNew(cfg.GamePath, zipPath, out modName, c.Id,
+                                    requireUniqueId: dep), task.Cts.Token);
                                 if (err == ModService.UidMismatchError)
                                 { lastErr = $"候选「{c.Name}」不含 {dep}，换下一个"; continue; }
                                 if (err is not null) { lastErr = err; continue; }

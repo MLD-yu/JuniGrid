@@ -2494,6 +2494,9 @@
             // 否则 GetCover 按新 folder 名查不到缓存会落回首字母占位块
             __t = System.Diagnostics.Stopwatch.GetTimestamp();
             MigrateFolderCaches(oldFolder, DisabledName(oldFolder, disabled));
+            // v1.7.1：启用时祖先目录可能被一并解点（.SVE/Sub → SVE/Sub），
+            // 同级其它子包的路径也要跟着走，否则内存里还握着 .SVE/... 的旧名
+            if (!disabled) MigrateAncestorRenames(oldFolder);
             // 就地改名后立刻重建索引：后台那轮重扫要到几百毫秒之后，这期间
             // _modsByFolder 若还握着旧名，选中/查找都会对不上（_selected 会被误清）。
             ReindexMods();
@@ -2535,6 +2538,23 @@
         var err = ModSvc.SetDisabled(Cfg.Current.GamePath, m.Folder, disabled);
         if (err is not null) { AppLog.Warn("Mods", $"联动{(disabled ? "禁用" : "启用")} {m.Folder} 失败：{err}"); return; }
         MigrateFolderCaches(m.Folder, DisabledName(m.Folder, disabled));
+        if (!disabled) MigrateAncestorRenames(m.Folder);
+    }
+
+    /// <summary>启用时 ModService.SetDisabled 会解开被禁用的祖先目录（.SVE → SVE）。
+    /// 这里把内存里所有挂在这条祖先下的条目路径一并改写，否则同级子包仍握着旧名。</summary>
+    private void MigrateAncestorRenames(string folder)
+    {
+        var segs = folder.Replace('\\', '/').Split('/');
+        for (var i = 0; i < segs.Length - 1; i++)
+        {
+            if (!segs[i].StartsWith('.')) continue;
+            var ancOld = string.Join('/', segs.Take(i + 1));
+            var ancNew = string.Join('/', segs.Take(i + 1).Select(s => s.TrimStart('.')));
+            ApplyRenameInMemory(ancOld, ancNew);
+            MigrateDictKey(Cfg.Current.ModCovers, ancOld, ancNew);
+            MigrateDictKey(Cfg.Current.ModCategories, ancOld, ancNew);
+        }
     }
 
     /// <summary>启禁用的改名落到磁盘后，把这条改名同步到内存与缓存里：
@@ -2555,15 +2575,24 @@
 
     /// <summary>改名只落在路径最后一段（v1.1.5 的子包级启禁：Top/Sub ↔ Top/.Sub），
     /// 与 ModService.SetDisabled 同一个约定。旧写法用 TrimStart/StartsWith 判整条路径，
-    /// 子包那种 "Top/.Sub" 算出来还是原样 → 缓存 key 一直不迁移。</summary>
+    /// 子包那种 "Top/.Sub" 算出来还是原样 → 缓存 key 一直不迁移。
+    /// v1.7.1：启用时同步剥掉祖先段的 . 前缀 —— ModService.SetDisabled 会解开被禁用的
+    /// 父目录（.SVE/Sub → SVE/Sub），这里不跟着改就会把缓存迁到旧路径上。</summary>
     private static string DisabledName(string folder, bool disabled)
     {
-        var cut = folder.LastIndexOf('/');
-        var name = cut < 0 ? folder : folder[(cut + 1)..];
-        var target = disabled
-            ? (name.StartsWith('.') ? name : "." + name)
-            : name.TrimStart('.');
-        return cut < 0 ? target : folder[..(cut + 1)] + target;
+        var parts = folder.Replace('\\', '/').Split('/');
+        if (disabled)
+        {
+            var name = parts[^1];
+            var target = name.StartsWith('.') ? name : "." + name;
+            parts[^1] = target;
+        }
+        else
+        {
+            for (var i = 0; i < parts.Length; i++)
+                parts[i] = parts[i].TrimStart('.');
+        }
+        return string.Join('/', parts);
     }
 
     /// <summary>把一次 folder 改名同步进内存列表：顶层改名会波及它下面所有子包条目，按前缀整片改。
@@ -3078,12 +3107,14 @@
                                 && DateTime.UtcNow - cached.CheckedAtUtc < FingerprintMaxAge)
                             {
                                 // 指纹一致 → 远端文件列表没变 → 上次精查的文件版本直接复用
-                                var show = NexusUpdateTruth.ShouldShowUpdate(Cfg.Current, m, cached.LatestFileVersion, null);
+                                var cachedFid = cached.LatestFileId != 0 ? cached.LatestFileId : (long?)null;
+                                var show = NexusUpdateTruth.ShouldShowUpdate(Cfg.Current, m, cached.LatestFileVersion, cachedFid);
                                 RememberRemoteVersion(m.Folder, cached.LatestFileVersion);
                                 _states[m.Folder] = new ModUpdateState
                                 {
                                     Status = show ? "available" : "latest",
                                     RemoteVersion = cached.LatestFileVersion,
+                                    RemoteFileId = cachedFid,
                                 };
                                 continue;
                             }
@@ -3193,16 +3224,26 @@
                         st.RemoteUrl = _smapiPrecheckUrl is not null
                             && _smapiPrecheckUrl.TryGetValue(m.Folder, out var preUrl) ? preUrl : null;
                         RememberRemoteVersion(m.Folder, preVer, st.RemoteUrl);
-                        st.Status = NexusUpdateTruth.ShouldShowUpdate(Cfg.Current, m, preVer, null)
-                            ? "available" : "latest";
+                        var showPre = NexusUpdateTruth.ShouldShowUpdate(Cfg.Current, m, preVer, null);
+                        // 快道只给版本号、不给 fileId，所以「这条文件我装过了」的四条判据里
+                        // 靠 fileId 的三条全部无从下手 —— 判成「有更新」时不能就此收工，
+                        // 让 N 网精查（拿得到 fileId）复核一次，否则 .nxm 刚装完的最新版
+                        // 永远亮着 ⇧（实测 mod 30482 装完 15 分钟后仍提示 1.4.0）。
+                        // 精查没给出结论时，末尾仍按快道的版本号收口（没 key 的用户不受影响）。
+                        if (!(showPre && m.NexusModId is not null && !string.IsNullOrEmpty(_apiKey)))
+                        {
+                            st.Status = showPre ? "available" : "latest";
+                            NotifyCheckProgress();
+                            return;
+                        }
                     }
                     else
                     {
                         st.RemoteVersion = null;
                         st.Status = "latest";
+                        NotifyCheckProgress();
+                        return;
                     }
-                    NotifyCheckProgress();
-                    return;
                 }
             }
 
@@ -3218,9 +3259,9 @@
                 NexusFileInfo? file;
                 if (sharedFetch is not null)
                     file = await sharedFetch.GetOrAdd(m.NexusModId!.Value,
-                        k => Nexus.GetLatestMainFileAsync(_apiKey, k));
+                        k => Nexus.GetLatestMainFileAsync(_apiKey, k, installedFolder: m.Folder));
                 else
-                    file = await Nexus.GetLatestMainFileAsync(_apiKey, m.NexusModId!.Value);
+                    file = await Nexus.GetLatestMainFileAsync(_apiKey, m.NexusModId!.Value, installedFolder: m.Folder);
                 var remoteVer = string.IsNullOrWhiteSpace(file?.Version) ? null : file!.Version;
                 if (remoteVer is null)
                 {
@@ -3258,6 +3299,7 @@
                         {
                             UpdatedAt = ua,
                             LatestFileVersion = remoteVer,
+                            LatestFileId = file?.FileId ?? 0,
                             CheckedAtUtc = DateTime.UtcNow,
                         };
                         _fpDirty = true;
@@ -3282,7 +3324,7 @@
             }
 
             if (st.Status is "checking")
-                st.Status = st.RemoteVersion is not null && VersionUtil.IsNewer(st.RemoteVersion, m.Version)
+                st.Status = NexusUpdateTruth.ShouldShowUpdate(Cfg.Current, m, st.RemoteVersion, st.RemoteFileId)
                     ? "available" : "latest";
         }
         catch (Exception ex)
@@ -3391,7 +3433,7 @@
                 // v0.72.0：先解析「最新 MAIN 文件」，检测与安装共用这一个权威源。
                 // 旧逻辑检测用 mods/{id}.json 顶层 version、安装才查 files.json 主文件，
                 // 两处版本号对不上时出现「说没更新、一点更新却装出更高版」。
-                var file = await Nexus.GetLatestMainFileAsync(_apiKey, m.NexusModId!.Value);
+                var file = await Nexus.GetLatestMainFileAsync(_apiKey, m.NexusModId!.Value, installedFolder: m.Folder);
                 var remoteVer = string.IsNullOrWhiteSpace(file?.Version) ? null : file!.Version;
                 if (remoteVer is null)
                 {

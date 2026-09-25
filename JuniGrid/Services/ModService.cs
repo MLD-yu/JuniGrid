@@ -302,7 +302,10 @@ public sealed class ModService
     /// <summary>Disabling = prefixing the folder with a dot (SMAPI skips those).
     /// v1.1.5：子包级启禁 —— "Top/Sub" 只改末段（Top/Sub ↔ Top/.Sub）。SMAPI 跳过
     /// 任意层级的 . 前缀目录（与顶层 .X 同一约定），Scan 的 Disabled 判定本来就包含
-    /// Contains("/.")。独立 mod（无子路径）行为不变：整层改名，不会劈目录、不会残留空壳。</summary>
+    /// Contains("/.")。独立 mod（无子路径）行为不变：整层改名，不会劈目录、不会残留空壳。
+    /// v1.7.1：启用时把被禁用的祖先目录一并解开 —— 父级 ".SVE" 下的子包末段本来就没点，
+    /// 只改末段等于空操作（toast 报成功、列表仍显示已禁用）。只有批量「选中全部→启用」
+    /// 走的是顶层改名才碰巧成功。禁用只点当前段，不动祖先。</summary>
     public string? SetDisabled(string gamePath, string folderName, bool disabled)
     {
         try
@@ -322,6 +325,50 @@ public sealed class ModService
                 if (Directory.Exists(alt)) { name = "." + name; src = alt; }
             }
             if (!Directory.Exists(src)) return "找不到 Mod 文件夹";
+
+            // 启用时先解开被禁用的祖先（.Stardew Valley Expanded/X → Stardew Valley Expanded/X）。
+            // 逐段从顶往下改名；任一祖先失败则中止，避免半开状态让 SMAPI 仍整棵跳过。
+            if (!disabled)
+            {
+                for (var i = 0; i < parts.Length - 1; i++)
+                {
+                    if (!parts[i].StartsWith('.')) continue;
+                    var ancParent = i == 0
+                        ? modsDir
+                        : Path.Combine(modsDir, string.Join(Path.DirectorySeparatorChar, parts, 0, i));
+                    var ancSrc = Path.Combine(ancParent, parts[i]);
+                    var ancDest = Path.Combine(ancParent, parts[i].TrimStart('.'));
+                    if (!Directory.Exists(ancSrc)) continue;
+                    if (Directory.Exists(ancDest))
+                    {
+                        // 目标已存在 = 启用态副本与禁用态并存，旧的挪回收站再改名
+                        var trash = EnsureTrashReady(gamePath);
+                        var grave = Path.Combine(trash,
+                            parts[i].TrimStart('.') + "-" + DateTime.Now.ToString("yyyyMMdd_HHmmss"));
+                        Directory.Move(ancDest, grave);
+                        AppLog.Warn("Mods", $"[判重清理] 祖先重复副本 {ancDest} 已移入回收站");
+                    }
+                    for (var attempt = 1; ; attempt++)
+                    {
+                        try { Directory.Move(ancSrc, ancDest); break; }
+                        catch (IOException) when (attempt < 4) { Thread.Sleep(150 * attempt); }
+                        catch (UnauthorizedAccessException) when (attempt < 4) { Thread.Sleep(150 * attempt); }
+                    }
+                    parts[i] = parts[i].TrimStart('.');
+                    AppLog.Info("Mods", $"[祖先启用] {ancSrc} → {ancDest}");
+                }
+                // 祖先改名后父路径变了，重算 src
+                parent = parts.Length == 1
+                    ? modsDir
+                    : Path.Combine(modsDir, string.Join(Path.DirectorySeparatorChar, parts, 0, parts.Length - 1));
+                src = Path.Combine(parent, name);
+                if (!Directory.Exists(src) && !name.StartsWith('.'))
+                {
+                    var alt = Path.Combine(parent, "." + name);
+                    if (Directory.Exists(alt)) { name = "." + name; src = alt; }
+                }
+                if (!Directory.Exists(src)) return "找不到 Mod 文件夹";
+            }
 
             var targetName = disabled
                 ? (name.StartsWith('.') ? name : "." + name)
@@ -1059,8 +1106,13 @@ public sealed class ModService
             }
 
             // ① 收集素材 → assets/：PNG 直接拷；XNB（老式编译素材，图在 xnb 里）解码转成
-            // PNG。说明图（Usage/安装方式/readme…）只落盘不登记
-            var registered = new List<(string Id, string AssetRel)>();
+            // PNG。说明图（Usage/安装方式/readme…）只落盘不登记。
+            // v1.7.1：立绘/精灵分账登记 —— 同名 basename 在 Characters/ 与 Portraits/
+            // 各有一份时（SCC 形态的季节包），旧写法按路径序先到先得，Characters/ 的
+            // 走路精灵表（64x480）抢走 id，真立绘（128x256）被当重复丢掉，随后精灵表
+            // 又过不了「宽高为 64 的倍数」的立绘体检 → 整包被拒（Rasmodia 实测）。
+            var registeredPortraits = new List<(string Id, string AssetRel)>();
+            var registeredSprites = new List<(string Id, string AssetRel)>();
             var files = Directory.EnumerateFiles(extractedDir, "*", SearchOption.AllDirectories)
                 .Where(f =>
                 {
@@ -1082,6 +1134,25 @@ public sealed class ModService
                 if (segs.Any(s => s == ".." || s.Length == 0)) continue;   // 防穿越
                 var id = Path.GetFileNameWithoutExtension(rel);
                 if (id.Length == 0) continue;
+                // v1.7.3：类别判定要认「Characters.png / Portraits.png」这种带后缀的目录名
+                //（Female Wizard 的 zip 把 XNB 解出来的文件夹就叫 Characters.png/）。
+                // 旧写法 s.Equals("Characters") 对不上 → 精灵表被当成 Portraits/Wizard 打进
+                // 覆盖包，游戏里法师头像变成一张大红脸（实测）。
+                static bool KindSeg(string s, string kind) =>
+                    s.Equals(kind, StringComparison.OrdinalIgnoreCase)
+                    || s.StartsWith(kind + ".", StringComparison.OrdinalIgnoreCase)
+                    || s.StartsWith(kind + "_", StringComparison.OrdinalIgnoreCase);
+                var isSprite = segs.Any(s => KindSeg(s, "Characters"))
+                    || id.Contains("Sprite", StringComparison.OrdinalIgnoreCase);
+                var isPortrait = segs.Any(s => KindSeg(s, "Portraits"));
+                // 尺寸兜底：立绘近方形（宽高都 ≥64）；精灵表宽窄高长（走路图 64×192+）
+                if (!isSprite && !isPortrait)
+                {
+                    // 读宽高太慢，只对 png 做文件名启发式：Sprite / Walk / 行走
+                    if (id.Contains("Walk", StringComparison.OrdinalIgnoreCase)
+                        || id.Contains("行走", StringComparison.OrdinalIgnoreCase))
+                        isSprite = true;
+                }
 
                 string assetRel;
                 if (rel.EndsWith(".xnb", StringComparison.OrdinalIgnoreCase))
@@ -1115,10 +1186,11 @@ public sealed class ModService
                     || low.StartsWith("how") || id.Contains("安装方式") || id.Contains("说明"))
                     continue;
 
-                if (!registered.Any(r => r.Id.Equals(id, StringComparison.OrdinalIgnoreCase)))
-                    registered.Add((id, assetRel));
+                var bucket = isSprite ? registeredSprites : registeredPortraits;
+                if (!bucket.Any(r => r.Id.Equals(id, StringComparison.OrdinalIgnoreCase)))
+                    bucket.Add((id, assetRel));
             }
-            if (registered.Count == 0)
+            if (registeredPortraits.Count == 0 && registeredSprites.Count == 0)
             {
                 TryDelete(dest);
                 return xnbDecodeFail > 0 && xnbDecodeOk == 0
@@ -1126,46 +1198,63 @@ public sealed class ModService
                     : "压缩包里只有说明文件、没有可用肖像素材，已放弃安装";
             }
 
-            // ①b 安装时自动体检（v1.6.8）：逐张校验 可解码 / 尺寸合法（宽高为 64 的
-            // 倍数）/ 非全透明 —— 有问题的素材剔除出包并记日志，从源头拦住"进游戏
-            // 才发现显示错误"；全部不可用则拒绝安装。
-            var valid = new List<(string Id, string AssetRel)>();
-            foreach (var (id, assetRel) in registered)
+            // ①b 安装时自动体检（v1.6.8）：逐张校验 可解码 / 尺寸合法 / 非全透明 ——
+            // 有问题的素材剔除出包并记日志。立绘要求宽高为 64 的倍数（含 2x HD 128x256）；
+            // 精灵表是 16xN 帧网格（64x480 = 4 向 × 15 行），只要求可解码 + 非空白，
+            // 不套立绘的 64 倍数门槛（否则季节包的精灵表会把整包拖死）。
+            static string? ValidateAsset(string p, bool asSprite)
             {
-                var p = Path.Combine(dest, assetRel.Replace('/', Path.DirectorySeparatorChar));
-                string? problem = null;
                 try
                 {
                     var tex = PixelKit.DecodePng(p);
-                    if (tex is null) problem = "无法解码";
+                    if (tex is null) return "无法解码";
+                    if (asSprite)
+                    {
+                        if (tex.Width < 16 || tex.Height < 32)
+                            return $"尺寸 {tex.Width}x{tex.Height} 非法（精灵表过小）";
+                    }
                     else if (tex.Width < 64 || tex.Height < 64
                         || tex.Width % 64 != 0 || tex.Height % 64 != 0)
-                        problem = $"尺寸 {tex.Width}x{tex.Height} 非法（宽高应为 64 的倍数）";
-                    else
-                    {
-                        var blankPx = true;
-                        for (var i = 3; i < tex.PixelsRgba.Length; i += 4)
-                            if (tex.PixelsRgba[i] > 16) { blankPx = false; break; }
-                        if (blankPx) problem = "全透明空白图";
-                    }
+                        return $"尺寸 {tex.Width}x{tex.Height} 非法（宽高应为 64 的倍数）";
+                    var blankPx = true;
+                    for (var i = 3; i < tex.PixelsRgba.Length; i += 4)
+                        if (tex.PixelsRgba[i] > 16) { blankPx = false; break; }
+                    return blankPx ? "全透明空白图" : null;
                 }
-                catch { problem = "解码异常"; }
-                if (problem is null) valid.Add((id, assetRel));
+                catch { return "解码异常"; }
+            }
+
+            var validPortraits = new List<(string Id, string AssetRel)>();
+            foreach (var (id, assetRel) in registeredPortraits)
+            {
+                var p = Path.Combine(dest, assetRel.Replace('/', Path.DirectorySeparatorChar));
+                var problem = ValidateAsset(p, asSprite: false);
+                if (problem is null) validPortraits.Add((id, assetRel));
                 else AppLog.Warn("Portraits", $"[素材校验] {Path.GetFileName(dest)}/{id}: {problem}，已从包中剔除");
             }
-            if (valid.Count == 0)
+            var validSprites = new List<(string Id, string AssetRel)>();
+            foreach (var (id, assetRel) in registeredSprites)
+            {
+                var p = Path.Combine(dest, assetRel.Replace('/', Path.DirectorySeparatorChar));
+                var problem = ValidateAsset(p, asSprite: true);
+                if (problem is null) validSprites.Add((id, assetRel));
+                else AppLog.Warn("Portraits", $"[素材校验] {Path.GetFileName(dest)}/{id}（精灵）: {problem}，已从包中剔除");
+            }
+            if (validPortraits.Count == 0 && validSprites.Count == 0)
             { TryDelete(dest); return "压缩包里的肖像素材全部未通过校验（无法解码/空白/尺寸非法），已放弃安装"; }
-            registered = valid;
+            registeredPortraits = validPortraits;
+            registeredSprites = validSprites;
 
-            // ② 按基础 id 分组生成 EditImage
+            // ② 按基础 id 分组生成 EditImage —— 立绘钉 Portraits/，精灵表钉 Characters/
+            //（旧版只出 Portraits/，且两类共用一个 id 列表，精灵表会顶掉真立绘）。
             var changes = new List<Dictionary<string, object?>>();
             Dictionary<string, object?> NewEdit(
-                string target, string fromFile, Dictionary<string, string?>? when = null)
+                string targetPrefix, string target, string fromFile, Dictionary<string, string?>? when = null)
             {
                 var ch = new Dictionary<string, object?>
                 {
                     ["Action"] = "EditImage",
-                    ["Target"] = "Portraits/" + target,
+                    ["Target"] = targetPrefix + "/" + target,
                     ["FromFile"] = fromFile,
                     ["PatchMode"] = "Replace",
                 };
@@ -1173,39 +1262,45 @@ public sealed class ModService
                 return ch;
             }
 
-            foreach (var g in registered
-                .GroupBy(e => SeasonOf(e.Id) is { } s ? e.Id[..^(s.Length + 1)] : e.Id,
-                    StringComparer.OrdinalIgnoreCase)
-                .OrderBy(g => g.Key, StringComparer.OrdinalIgnoreCase))
+            void EmitGroup(string targetPrefix, List<(string Id, string AssetRel)> items)
             {
-                var baseId = g.Key;
-                string? baseRel = null;
-                var seasonRels = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-                var extras = new List<(string Id, string AssetRel)>();
-                foreach (var (id, rel) in g)
+                foreach (var g in items
+                    .GroupBy(e => SeasonOf(e.Id) is { } s ? e.Id[..^(s.Length + 1)] : e.Id,
+                        StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(g => g.Key, StringComparer.OrdinalIgnoreCase))
                 {
-                    var s = SeasonOf(id);
-                    if (s is not null) seasonRels[s] = rel;
-                    else if (id.Equals(baseId, StringComparison.OrdinalIgnoreCase)) baseRel = rel;
-                    else extras.Add((id, rel));
-                }
+                    var baseId = g.Key;
+                    string? baseRel = null;
+                    var seasonRels = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                    var extras = new List<(string Id, string AssetRel)>();
+                    foreach (var (id, rel) in g)
+                    {
+                        var s = SeasonOf(id);
+                        if (s is not null) seasonRels[s] = rel;
+                        else if (id.Equals(baseId, StringComparison.OrdinalIgnoreCase)) baseRel = rel;
+                        else extras.Add((id, rel));
+                    }
 
-                if (baseRel is not null)
-                {
-                    var covered = seasonRels.Keys.ToHashSet(StringComparer.OrdinalIgnoreCase);
-                    var ch = NewEdit(baseId, baseRel);
-                    if (covered.Count > 0 && covered.Count < seasons.Length)
-                        ch["When"] = new Dictionary<string, string?>
-                        { ["Season"] = string.Join(", ", seasons.Where(s => !covered.Contains(s))) };
-                    changes.Add(ch);
+                    if (baseRel is not null)
+                    {
+                        var covered = seasonRels.Keys.ToHashSet(StringComparer.OrdinalIgnoreCase);
+                        var ch = NewEdit(targetPrefix, baseId, baseRel);
+                        if (covered.Count > 0 && covered.Count < seasons.Length)
+                            ch["When"] = new Dictionary<string, string?>
+                            { ["Season"] = string.Join(", ", seasons.Where(s => !covered.Contains(s))) };
+                        changes.Add(ch);
+                    }
+                    foreach (var s in seasons)
+                        if (seasonRels.TryGetValue(s, out var rel))
+                            changes.Add(NewEdit(targetPrefix, baseId, rel,
+                                new Dictionary<string, string?> { ["Season"] = s }));
+                    foreach (var (id, rel) in extras)
+                        changes.Add(NewEdit(targetPrefix, id, rel));
                 }
-                foreach (var s in seasons)
-                    if (seasonRels.TryGetValue(s, out var rel))
-                        changes.Add(NewEdit(baseId, rel,
-                            new Dictionary<string, string?> { ["Season"] = s }));
-                foreach (var (id, rel) in extras)
-                    changes.Add(NewEdit(id, rel));
             }
+
+            EmitGroup("Portraits", registeredPortraits);
+            EmitGroup("Characters", registeredSprites);
 
             // ③ manifest + content.json（UID 按包名稳定哈希，重装不换 UID）
             // 终检：只写入 FromFile 在 dest/assets 下真实存在的条目 ——
@@ -2001,10 +2096,9 @@ public static class NexusUpdateTruth
         if (rec is not null)
         {
             if (remoteFileId is long fid && fid != 0 && rec.FileId != 0 && rec.FileId == fid) return true;
-            if (!string.IsNullOrWhiteSpace(remoteVersion)
-                && !string.IsNullOrWhiteSpace(rec.RemoteVersion)
-                && string.Equals(rec.RemoteVersion, remoteVersion, StringComparison.OrdinalIgnoreCase))
-                return true;
+            // 快道（smapi.io）只给版本号不给 fileId，这条是那种情况下唯一的判据 ——
+            // 必须按语义比：N 网文件栏写 "1.4"、索引写 "1.4.0"，字面相等会把刚装的版认成旧版
+            if (VersionUtil.Same(rec.RemoteVersion, remoteVersion)) return true;
         }
         // 启动器历史上下载过「这一条」MAIN 文件（ModFileLastDownload[fileId]），
         // 即使当时没写安装快照/没回写 manifest，也视为已拥有该文件
@@ -2046,8 +2140,11 @@ public static class NexusUpdateTruth
         if (m.IsConvertedPortraitPack) return false;
         if (AlreadyHasRemoteFile(cfg, m, remoteVersion, fileId))
         {
-            // 有历史下载但缺快照 → 补齐，避免下次再误判
-            if (GetInstallRecord(cfg, m) is null && fileId != 0 && !string.IsNullOrWhiteSpace(remoteVersion))
+            // 有历史下载但缺快照、或快照当年没记版本号（.nxm 那条路曾经只写 fileId）→ 补齐，
+            // 否则下次快道再拿"只给版本号不给 fileId"的结果来判，仍然认不出「这一版已装」
+            var rec = GetInstallRecord(cfg, m);
+            if (fileId != 0 && !string.IsNullOrWhiteSpace(remoteVersion)
+                && (rec is null || string.IsNullOrWhiteSpace(rec.RemoteVersion)))
             {
                 RecordInstall(cfg, m, fileId, remoteVersion!, gamePath);
                 if (!string.Equals(m.Version, remoteVersion, StringComparison.OrdinalIgnoreCase))

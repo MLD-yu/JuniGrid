@@ -441,60 +441,14 @@ public sealed class DepotDownloaderService
                 "请在版本管理里删除该版本本地缓存后重新下载。");
     }
 
-    /// <summary>应用后校验完整性，缺失就抛错，避免用户进档才闪退。两道：
-    /// ① 锚点文件对着 staging 测 —— 残缺缓存铺进目录之后，②是拿 staging 当基准的、测不出来；
-    /// ② staging↔游戏目录全量清单比对 —— 只抽查 Abigail 一个角色会漏掉其它 NPC 资源，
-    /// 而任一 Characters/Portraits 缺失都会在 NPC 构造里 NRE（1.0 实测：新建能进、再进档闪退）。</summary>
+    /// <summary>应用后校验完整性，缺失就抛错，避免用户进档才闪退。只查锚点文件
+    /// （staging 与游戏目录各测一遍）—— 全量清单比对要各扫一遍上万个小文件，
+    /// 是「直接应用」后半段卡顿主因，已移除。</summary>
     private static void ValidateAppliedGame(string gamePath, string staging)
     {
-        // 只查锚点。全量清单要各扫一遍上万个小文件，是「直接应用」后半段卡顿主因。
         CheckStagingAnchors(staging);
         CheckStagingAnchors(gamePath);
     }
-
-    /// <summary>本体文件清单（相对路径集合）。跳过口径与 CopyGameBodyParallel 的排除项一致，
-    /// 免得把 Mods/SMAPI 的正常差异算成本体缺失。单个目录读失败只跳过该层，不整体放弃校验。</summary>
-    private static HashSet<string> EnumerateBodyFiles(string root)
-    {
-        var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        if (!Directory.Exists(root)) return result;
-        var dirs = new Stack<string>();
-        dirs.Push(root);
-        while (dirs.Count > 0)
-        {
-            var dir = dirs.Pop();
-            try
-            {
-                foreach (var sub in Directory.EnumerateDirectories(dir))
-                    if (!IsNonBodyDir(Path.GetFileName(sub))) dirs.Push(sub);
-
-                foreach (var file in Directory.EnumerateFiles(dir))
-                {
-                    var name = Path.GetFileName(file);
-                    // 与 CopyGameBodyParallel 的排除项保持一致：这些是我们自己写的元数据，
-                    // 不铺进游戏目录，也就不能算成「本体缺失」（.junigrid-version 漏掉时
-                    // 每次切换都会假报「切换后游戏目录缺少 1 个文件」）。
-                    if (name.Equals(ManifestMetaName, StringComparison.OrdinalIgnoreCase)
-                        || name.Equals(".junigrid-size", StringComparison.OrdinalIgnoreCase)
-                        || name.Equals(".junigrid-version", StringComparison.OrdinalIgnoreCase)
-                        || name.Equals(CompleteMarkName, StringComparison.OrdinalIgnoreCase))
-                        continue;
-                    result.Add(Path.GetRelativePath(root, file));
-                }
-            }
-            catch { }
-        }
-        return result;
-    }
-
-    private static bool IsNonBodyDir(string name)
-        => name.Equals("Mods", StringComparison.OrdinalIgnoreCase)
-           || name.Equals("smapi", StringComparison.OrdinalIgnoreCase)
-           || name.Equals("smapi-internal", StringComparison.OrdinalIgnoreCase)
-           || name.Equals(".DepotDownloader", StringComparison.OrdinalIgnoreCase)
-           || name.Equals("junigrid_trash", StringComparison.OrdinalIgnoreCase)
-           || name.Equals(".junigrid_trash", StringComparison.OrdinalIgnoreCase)
-           || name.StartsWith("smapi-installer", StringComparison.OrdinalIgnoreCase);
 
     private static bool IsGameVersion16OrNewer(string? ver)
     {
@@ -1418,15 +1372,12 @@ public sealed class DepotDownloaderService
                 string label;
                 // 展示名优先：内置表 / 文件夹名。**不要**在这里 TryReadGameVersion ——
                 // 52 个包各读一遍 exe FileVersion，打开版本列表要卡很久（「未定位」半天）。
-                string? realVer = null;
                 if (!string.IsNullOrEmpty(manifest))
                 {
                     var known = KnownStardewWindows.FirstOrDefault(k => k.ManifestId == manifest);
                     var parts = name.Split('-');
                     var folderKey = parts.Length >= 3 ? string.Join('-', parts.Skip(2)) : name;
                     if (known is not null) label = known.DisplayName;
-                    else if (!string.IsNullOrEmpty(folderKey) && folderKey.Any(char.IsDigit) && !folderKey.All(char.IsDigit))
-                        label = folderKey;
                     else label = folderKey;
                 }
                 else
@@ -1559,9 +1510,6 @@ public sealed class DepotDownloaderService
            || File.Exists(Path.Combine(dir, "Stardew Valley.exe"))
            || Directory.EnumerateFiles(dir, "Stardew Valley.exe", SearchOption.AllDirectories).Any();
 
-    /// <summary>这个目录能不能当「同一个 manifest 的半截包」接着下？只认同一个 manifest
-    /// 且已经有本体文件的目录 —— 目录名可能带版本号也可能带 manifest，判据不能靠名字。
-    /// 判 false 就清空重下（换版本的包、或只剩个空壳时不能拿旧内容去续传）。</summary>
     /// <summary>
     /// 清空重下之前，先把包里的 Mods 抽屉保住。
     /// 这条路径以前是一句静默的 Directory.Delete(staging, true)：换 manifest 重下（Steam 更新了、
@@ -1588,6 +1536,9 @@ public sealed class DepotDownloaderService
             $"重下前把该版本缓存里的 {n} 个 mod 文件夹挪进孤儿区暂存：{dest}（切回 {label} 会自动认领回去）");
     }
 
+    /// <summary>这个目录能不能当「同一个 manifest 的半截包」接着下？只认同一个 manifest
+    /// 且已经有本体文件的目录 —— 目录名可能带版本号也可能带 manifest，判据不能靠名字。
+    /// 判 false 就清空重下（换版本的包、或只剩个空壳时不能拿旧内容去续传）。</summary>
     public static bool CanResumeStagedPackage(string stagingDir, string manifestId)
     {
         try
@@ -1621,13 +1572,6 @@ public sealed class DepotDownloaderService
     }
 
 
-    /// <summary>
-    /// v1.5：切换版本时 Mods / SMAPI 按版本隔离。
-    /// ① 当前游戏目录里的 Mods/SMAPI 存进「当前版本」staging + SMAPI 共享池
-    /// ② 用目标 staging 覆盖游戏本体（仍跳过 Mods）
-    /// ③ 用目标 staging 的 Mods 替换游戏 Mods（无则建空目录）
-    /// ④ 恢复 SMAPI：目标 staging 有则用之；否则从共享池按兼容桶恢复（切版本免重装）
-    /// </summary>
     /// <summary>把当前游戏目录整个收成「当前版本」的缓存包：同盘改名 → 补 manifest 元数据 →
     /// 让包自含 SMAPI。返回包路径；不该做或做不成时返回 null，调用方按老路走（② 删掉旧本体）。</summary>
     private static string? TryAdoptCurrentBody(string gamePath, string targetStaging,
@@ -1672,6 +1616,13 @@ public sealed class DepotDownloaderService
         }
     }
 
+    /// <summary>
+    /// v1.5：切换版本时 Mods / SMAPI 按版本隔离。
+    /// ① 当前游戏目录里的 Mods/SMAPI 存进「当前版本」staging + SMAPI 共享池
+    /// ② 用目标 staging 覆盖游戏本体（仍跳过 Mods）
+    /// ③ 用目标 staging 的 Mods 替换游戏 Mods（无则建空目录）
+    /// ④ 恢复 SMAPI：目标 staging 有则用之；否则从共享池按兼容桶恢复（切版本免重装）
+    /// </summary>
     private static void ApplyStaging(string staging, string gamePath, IProgress<Progress>? progress,
         string? currentGameVersion)
     {
@@ -2371,7 +2322,6 @@ public sealed class DepotDownloaderService
             throw new DepotException($"写入游戏文件失败（{errors.Count} 个）：{errors[0].Message}");
     }
 
-    /// <summary>按真实版本号找 staging 目录（文件夹名后缀或包内 FileVersion）。</summary>
     /// <summary>找该版本的孤儿 Mods 目录。历史上这些目录是按 4 段 FileVersion 命名的
     /// （实测 _mods-orphan 下躺着 1.6.15.24356 / 1.2.6338.29417 / 1.3.7269.37809 三个），
     /// 而恢复按 3 段查 → 永远对不上，mod 一去不回。先按精确名查，查不到再认领
@@ -2575,6 +2525,7 @@ public sealed class DepotDownloaderService
     /// <summary>某个游戏版本对应的缓存包目录（「版本抽屉」就建在它下面）。本机没这个版本的包 = null。</summary>
     public static string? StagingDirForVersion(string? version) => FindStagingByVersionLabel(version);
 
+    /// <summary>按真实版本号找 staging 目录（文件夹名后缀或包内 FileVersion）。</summary>
     private static string? FindStagingByVersionLabel(string? version)
     {
         if (string.IsNullOrWhiteSpace(version) || !Directory.Exists(StagingRoot)) return null;
@@ -3674,9 +3625,6 @@ public sealed class DepotDownloaderService
 
     /// <summary>
     /// 把 DepotDownloader 输出的 ASCII 二维码还原成原始 URL，再用 QRCoder 生成标准 PNG data URI。
-    /// </summary>
-    /// <summary>
-    /// 把 DepotDownloader 输出的 ASCII 二维码还原成原始 URL，再用 QRCoder 生成标准 PNG data URI。
     /// 返回 (dataUri, 解码出的 URL)。
     /// </summary>
     private static (string DataUri, string Url) QrAsciiToDataUriAndUrl(IReadOnlyList<string> lines)
@@ -3859,13 +3807,7 @@ public sealed class DepotDownloaderService
                         if (kickoffDeadlineMs > 0 && !(kickedOff?.Invoke() ?? false)
                             && now - startedAt >= kickoffDeadlineMs)
                         { aborted = true; try { proc.Kill(entireProcessTree: true); } catch { } break; }
-                        if (kickoffDeadlineMs > 0)
-                        {
-                            if (now - lastLineAt < SilenceTimeoutMs) continue;
-                            try { proc.Kill(entireProcessTree: true); } catch { }
-                            ct.ThrowIfCancellationRequested();
-                            throw new DepotException("连接 Steam 长时间无响应（可能令牌失效或网络断开）。请重试；建议 Clash 开 TUN 模式");
-                        }
+                        if (kickoffDeadlineMs > 0 && now - lastLineAt < SilenceTimeoutMs) continue;
                         try { proc.Kill(entireProcessTree: true); } catch { }
                         ct.ThrowIfCancellationRequested();
                         throw new DepotException("连接 Steam 长时间无响应（可能令牌失效或网络断开）。请重试；建议 Clash 开 TUN 模式");

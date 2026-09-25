@@ -387,42 +387,91 @@ public sealed class NexusService
 }
 
     /// <summary>Newest MAIN file (fallback: newest file of any category).</summary>
-    public async Task<NexusFileInfo?> GetLatestMainFileAsync(string apiKey, int modId, bool patient = false)
+    /// <param name="installedFolder">本机已装的包目录名。一个 mod 挂多条 MAIN 时（实测 mod 1839：
+    /// CP 主包 182304 与散 xnb 素材包 182306 同日发布），只按上传时间会选中玩家没装的那条，
+    /// 于是点「更新」永远装不到真正的包、⇧ 也永远消不掉。给了目录名就优先选与它同名的 MAIN。</param>
+    public async Task<NexusFileInfo?> GetLatestMainFileAsync(string apiKey, int modId,
+        bool patient = false, string? installedFolder = null)
+    {
+        var all = await ListFilesAsync(apiKey, modId, patient);
+        return all is null ? null : PickMainFile(all, installedFolder);
+    }
+
+    /// <summary>按 fileId 精确取一条文件 —— .nxm 一键安装记的是「玩家点的那一条」，不是最新那一条，
+    /// 只有 files.json 里对得上 fileId 的版本号才是他实际装到的版本。</summary>
+    public async Task<NexusFileInfo?> GetFileByIdAsync(string apiKey, int modId, long fileId, bool patient = false)
+    {
+        var all = await ListFilesAsync(apiKey, modId, patient);
+        return all?.FirstOrDefault(x => x.F.FileId == fileId).F;
+    }
+
+    private async Task<List<(NexusFileInfo F, long Ts)>?> ListFilesAsync(string apiKey, int modId, bool patient)
     {
         using var res = await SendApiAsync(patient ? SlowHttp : Http, $"{Base}/mods/{modId}/files.json", apiKey);
         if (!res.IsSuccessStatusCode) return null;
         using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
         if (!doc.RootElement.TryGetProperty("files", out var files)) return null;
 
-            NexusFileInfo? bestMain = null, bestAny = null, bestPortrait = null;
-            long bestMainTs = -1, bestAnyTs = -1, bestPortraitTs = -1;
-            foreach (var f in files.EnumerateArray())
-            {
-                var id = f.TryGetProperty("file_id", out var fi) ? fi.GetInt64() : 0;
-                var name = f.TryGetProperty("name", out var fn) ? fn.GetString() ?? "" : "";
-                var ver = f.TryGetProperty("version", out var fv) ? fv.GetString() ?? "" : "";
-                var cat = f.TryGetProperty("category_name", out var fc) ? fc.GetString() ?? "" : "";
-                var ts = f.TryGetProperty("uploaded_timestamp", out var ft) ? ft.GetInt64() : 0;
-                // v1.04.0：主文件大小（字节）—— 详情页统计行「大小」用；缺失按 0 处理（详情页照样显示 0 B）
-                var size = f.TryGetProperty("size", out var fz) && fz.ValueKind == JsonValueKind.Number
-                    && fz.TryGetInt64(out var szl) ? szl : 0;
-                var info = new NexusFileInfo(id, name, ver, cat, size);
-                if (ts > bestAnyTs) { bestAnyTs = ts; bestAny = info; }
-                if (cat.Equals("MAIN", StringComparison.OrdinalIgnoreCase) && ts > bestMainTs)
-                { bestMainTs = ts; bestMain = info; }
-                // 肖像向可选文件（名字带 xnb/png/portrait 且体积不太小）——MAIN 可能是
-                // 空壳/说明包时，安装管线要能下到真正的素材文件
-                var nlow = name.ToLowerInvariant();
-                var looksPortrait = nlow.Contains("xnb") || nlow.Contains("portrait")
-                    || nlow.Contains("肖像") || nlow.EndsWith(".xnb", StringComparison.OrdinalIgnoreCase)
-                    || nlow.EndsWith(".png", StringComparison.OrdinalIgnoreCase);
-                if (looksPortrait && size >= 16 * 1024 && ts > bestPortraitTs)
-                { bestPortraitTs = ts; bestPortrait = info; }
-            }
-            // MAIN 优先；MAIN 异常小且存在更像素材包的可选文件时改用后者
-            if (bestMain is { } m && (m.Size <= 0 || m.Size >= 16 * 1024 || bestPortrait is null))
-                return m;
-            return bestPortrait ?? bestMain ?? bestAny;
+        var list = new List<(NexusFileInfo, long)>();
+        foreach (var f in files.EnumerateArray())
+        {
+            var id = f.TryGetProperty("file_id", out var fi) ? fi.GetInt64() : 0;
+            var name = f.TryGetProperty("name", out var fn) ? fn.GetString() ?? "" : "";
+            var ver = f.TryGetProperty("version", out var fv) ? fv.GetString() ?? "" : "";
+            var cat = f.TryGetProperty("category_name", out var fc) ? fc.GetString() ?? "" : "";
+            var ts = f.TryGetProperty("uploaded_timestamp", out var ft) ? ft.GetInt64() : 0;
+            // v1.04.0：主文件大小（字节）—— 详情页统计行「大小」用；缺失按 0 处理（详情页照样显示 0 B）
+            var size = f.TryGetProperty("size", out var fz) && fz.ValueKind == JsonValueKind.Number
+                && fz.TryGetInt64(out var szl) ? szl : 0;
+            list.Add((new NexusFileInfo(id, name, ver, cat, size), ts));
+        }
+        return list;
+    }
+
+    /// <summary>从一条 mod 的文件列表里挑「代表这个 mod 的那一条文件」。</summary>
+    private static NexusFileInfo? PickMainFile(IReadOnlyList<(NexusFileInfo F, long Ts)> all, string? installedFolder)
+    {
+        if (all.Count == 0) return null;
+        var mains = all.Where(x => x.F.Category.Equals("MAIN", StringComparison.OrdinalIgnoreCase)).ToList();
+        var bestMain = mains.Count > 0 ? PickMainForInstall(mains, installedFolder) : null;
+        // 肖像向可选文件（名字带 xnb/png/portrait 且体积不太小）——MAIN 可能是
+        // 空壳/说明包时，安装管线要能下到真正的素材文件
+        var assets = all.Where(x => x.F.Size >= 16 * 1024 && LooksLikeAssetPack(x.F.Name)).ToList();
+        var bestPortrait = assets.Count > 0 ? assets.MaxBy(x => x.Ts).F : null;
+        var bestAny = all.MaxBy(x => x.Ts).F;
+        // MAIN 优先；MAIN 异常小且存在更像素材包的可选文件时改用后者
+        if (bestMain is { } m && (m.Size <= 0 || m.Size >= 16 * 1024 || bestPortrait is null))
+            return m;
+        return bestPortrait ?? bestMain ?? bestAny;
+    }
+
+    /// <summary>多条 MAIN 里选一条：与已装包目录同名的优先，其余按上传时间取新。</summary>
+    internal static NexusFileInfo? PickMainForInstall(
+        IReadOnlyList<(NexusFileInfo F, long Ts)> mains, string? installedFolder)
+    {
+        var hint = NormPkgName(installedFolder);
+        NexusFileInfo? best = null;
+        long bestTs = -1;
+        foreach (var (f, ts) in mains)
+        {
+            var hit = hint.Length > 0 && NormPkgName(f.Name) == hint;
+            var bestHit = best is not null && NormPkgName(best.Name) == hint;
+            if (hit && !bestHit || hit == bestHit && ts > bestTs) { best = f; bestTs = ts; }
+        }
+        return best;
+    }
+
+    /// <summary>包名归一：只留字母数字（顺带吃掉 [CP] / 空格 / 下划线 / 版本号点号），
+    /// 让磁盘目录「[CP] Portrait Anime Mods OhoDavi」与 N 网文件名「CP Portrait Anime Mods OhoDavi」相等。</summary>
+    private static string NormPkgName(string? s)
+        => string.IsNullOrWhiteSpace(s) ? "" : new string(s.Where(char.IsLetterOrDigit).ToArray()).ToLowerInvariant();
+
+    private static bool LooksLikeAssetPack(string name)
+    {
+        var nlow = name.ToLowerInvariant();
+        return nlow.Contains("xnb") || nlow.Contains("portrait")
+            || nlow.Contains("肖像") || nlow.EndsWith(".xnb", StringComparison.OrdinalIgnoreCase)
+            || nlow.EndsWith(".png", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>

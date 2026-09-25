@@ -1219,6 +1219,34 @@ if (!portraitOnly && !guardOnly && !qrOnly && !savesOnly)
         && Shows("1.6.4", "1.6.7") && Shows("1", "2") && Shows("0.0.1", "0.0.2"),
         "0.0.1 ⇧ 1 屏蔽 ✓ ‖ 1.6.4 ⇧ 2 屏蔽 ✓ ‖ 1.6.4→1.6.7 仍提示 ✓ ‖ 本地单段 1→2 仍提示 ✓");
 
+    // C17b smapi.io 快道只给版本号、不给 fileId，而 .nxm 安装记录里的 remoteVersion 是空串
+    // —— 实测 mod 30482：16:16 装的正是最新 MAIN 125074（N 网文件版本 "1.4"），
+    //    16:31 快道回 "1.4.0"，"1.4" 与 "1.4.0" 字符串不等 → ⇧ 永远消不掉，显示还停在包内 1.3.0
+    var cfg17b = new JuniGridConfig();
+    var m17b = new ModEntry { Folder = "Donut SVE", UniqueID = "DonutSteelPeas.SVESeasonalAnimePortraits", Version = "1.3.0", NexusModId = 30482 };
+    cfg17b.ModNexusInstalls[m17b.UniqueID] = new NexusInstallRecord { NexusModId = 30482, FileId = 125074, RemoteVersion = "1.4" };
+    var already14 = NexusUpdateTruth.AlreadyHasRemoteFile(cfg17b, m17b, "1.4.0", null);
+    var newerVerNoFileId = NexusUpdateTruth.ShouldShowUpdate(cfg17b, m17b, "1.5.0", null);
+    Check("C17b 无 fileId 时按语义比版本：已装 1.4 认得远端 1.4.0；真更高版仍亮",
+        already14 && newerVerNoFileId,
+        "1.4 vs 1.4.0 认成同一版=" + already14 + " ‖ 1.4⇧1.5.0 提示=" + newerVerNoFileId
+        + " ‖ EffectiveLocalVersion=" + NexusUpdateTruth.EffectiveLocalVersion(cfg17b, m17b));
+
+    // C17c 一个 mod 有多条 MAIN 时（mod 1839：CP 主包 + 散 xnb 素材包同日发布），
+    // 「最新 MAIN」按上传时间会选中散图包 → 点更新永远装不到真正的那个包
+    var mains1839 = new (NexusFileInfo F, long Ts)[] {
+        (new NexusFileInfo(182306, "Oho Davi Portrait xnb 1.6.7", "1.6.7", "MAIN", 721586), 1789100040),
+        (new NexusFileInfo(182304, "CP Portrait Anime Mods OhoDavi", "1.6.7", "MAIN", 860123), 1789100000),
+    };
+    var withHint = NexusService.PickMainForInstall(mains1839, "[CP] Portrait Anime Mods OhoDavi");
+    var noHint = NexusService.PickMainForInstall(mains1839, null);
+    var singleMain = NexusService.PickMainForInstall(
+        new (NexusFileInfo, long)[] { (new NexusFileInfo(125074, "Seasonal_Anime_Portraits", "1.4", "MAIN", 500000), 1739499000) },
+        "[CP] Donut's Seasonal Anime Characters SVE");
+    Check("C17c 多条 MAIN 时优先选与已装包同名的那条；没有名字对得上的仍按最新 MAIN（不改变现状）",
+        withHint?.FileId == 182304 && noHint?.FileId == 182306 && singleMain?.FileId == 125074,
+        "带目录名提示→" + withHint?.FileId + " ‖ 无提示→" + noHint?.FileId + " ‖ 只有一条 MAIN→" + singleMain?.FileId);
+
     Check("C12b 「已加载」筛选认得清单块与条目，不认普通 INFO",
         LogLineClassifier.MatchesFilter("[12:00:00 INFO  SMAPI] Loaded 21 mods:", "loaded")
         && LogLineClassifier.MatchesFilter("[12:00:00 INFO  SMAPI]    Cloudy Skies 1.9.1 by Khloe Leclair | desc", "loaded")
@@ -3282,8 +3310,8 @@ if (!realMode)
         psB21.SetLocked(kDir, scanB21, "JGTestKid", false, null, null, null);
         Check("B23g 解锁后可继续换肤，锁定标记清空",
             !PortraitSkinService.IsLocked(cfgSvc.Current, "JGTestKid")
-            && !PortraitSkinService.IsLocked(cfgSvc.Current, "JGTestKidClone")
-            && cfgSvc.Current.PortraitLocks.Count == 0,
+            && !PortraitSkinService.IsLocked(cfgSvc.Current, "JGTestKidClone"),
+            // 只验测试自己的 id —— cfgSvc 与真实用户配置同源，用户机器上可能已有锁
             "锁残留=" + string.Join(",", cfgSvc.Current.PortraitLocks.Keys));
 
         // 批量应用：有皮肤的角色全部切换；锁定的跳过
