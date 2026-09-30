@@ -758,6 +758,22 @@ public sealed class ModService
                     return LocService.Tr("下载的包不是这个 Mod（发布仓库里含多个 Mod），已放弃安装防止装错");
             }
 
+            // 更新的是<b>子包行</b>（targetFolderName 形如 "顶层/子包"）时，zip 根往往是整个捆绑包。
+            // 直接把 modRoot 搬进子包路径，会把整个包塞成孙子目录 —— 子包顶层不再有 manifest.json，
+            // SMAPI 认不出这个 mod，实测等于把它弄坏（2026-09-30 用户报"捆绑包被拆散、用不了"）。
+            // 所以只搬与被更新子包同名的那一层；作者只发一个独立 mod（zip 里没这层）时退回整包。
+            var leafName = Path.GetFileName(targetFolderName.TrimEnd('/', '\\'));
+            if (targetFolderName.Contains('/') && leafName.Length > 0)
+            {
+                var pick = Path.Combine(modRoot, leafName);
+                var pickManifest = Path.Combine(pick, "manifest.json");
+                if (Directory.Exists(pick) && File.Exists(pickManifest))
+                {
+                    modRoot = pick;
+                    manifest = pickManifest;   // 版本号也要读这一层的，否则回写的是别的子包的
+                }
+            }
+
             try
             {
                 using var doc = JsonDocument.Parse(ReadManifestText(manifest));
