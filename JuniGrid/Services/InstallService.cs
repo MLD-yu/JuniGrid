@@ -54,7 +54,7 @@ public sealed class InstallService
         try
         {
             if (pos > 1)
-                Step($"排队等待写入 Mods…（前面还有 {pos - 1} 个安装）", pct, null);
+                Step(LocService.Tf("排队等待写入 Mods…（前面还有 {0} 个安装）", pos - 1), pct, null);
             await _installGate.WaitAsync();
         }
         finally
@@ -81,10 +81,10 @@ public sealed class InstallService
     public async Task<string?> InstallModDirectAsync(int modId)
     {
         var cfg = _cfg.Current;
-        if (string.IsNullOrWhiteSpace(cfg.NexusApiKey))
-            return "还没配置 Nexus API Key —— 先到「Nexus」页粘贴";
+        if (!NexusService.IsAuthenticated)
+            return LocService.Tr("还没配置 Nexus API Key —— 先到「Nexus」页粘贴");
         if (string.IsNullOrWhiteSpace(cfg.GamePath))
-            return "还没设置游戏目录 —— 先到「设置」页选择";
+            return LocService.Tr("还没设置游戏目录 —— 先到「设置」页选择");
 
         // v1.3.1：Nexus mod 2400 = SMAPI —— 它的 Nexus 包是官方安装器而非 mod
         //（zip 里没有 manifest.json），普通安装管线必报"没有 manifest.json"。
@@ -92,7 +92,7 @@ public sealed class InstallService
         if (modId == SmapiNexusId)
             return await InstallSmapiFromNexusEntryAsync();
 
-        var taskTitle = await ResolveModTitleAsync(cfg.NexusApiKey, modId, null);
+        var taskTitle = await ResolveModTitleAsync(modId, null);
         var task = _center.Start($"下载并安装 {taskTitle}", "install");
 
         // v1.1.7：整段工作可重入 —— 暂停后继续会重新挂 worker；半截包由 ResumableDownload 续传
@@ -105,18 +105,18 @@ public sealed class InstallService
             string? zipPath = null;   // v1.1.3：取消时清理半截包用（catch 里拿不到 try 内的局部量）
             try
             {
-                Step("正在获取文件信息…", 2);
-                var file = await _nexus.GetLatestMainFileAsync(cfg.NexusApiKey, modId);
+                Step(LocService.Tr("正在获取文件信息…"), 2);
+                var file = await _nexus.GetLatestMainFileAsync(modId);
                 ct.ThrowIfCancellationRequested();
-                if (file is null) { _center.Finish(task, false, "找不到可下载的文件"); return "找不到可下载的文件"; }
+                if (file is null) { _center.Finish(task, false, LocService.Tr("找不到可下载的文件")); return LocService.Tr("找不到可下载的文件"); }
 
-                Step("正在获取下载地址…", 5);
-                var dl = await _nexus.GetDownloadUrlAsync(cfg.NexusApiKey, modId, file.FileId);
+                Step(LocService.Tr("正在获取下载地址…"), 5);
+                var dl = await _nexus.GetDownloadUrlAsync(modId, file.FileId);
                 ct.ThrowIfCancellationRequested();
                 if (dl.NeedsPremium)
-                { _center.Finish(task, false, "需要 Nexus Premium 会员，已改为网页方式"); return "premium：这个 mod 的直链下载需要 Nexus Premium 会员"; }
+                { _center.Finish(task, false, LocService.Tr("需要 Nexus Premium 会员，已改为网页方式")); return LocService.Tr("premium：这个 mod 的直链下载需要 Nexus Premium 会员"); }
                 if (dl.Url is null)
-                { _center.Finish(task, false, "获取下载地址失败：" + (dl.Error ?? "未知错误")); return "获取下载地址失败：" + (dl.Error ?? "未知错误"); }
+                { _center.Finish(task, false, LocService.Tr("获取下载地址失败：") + (dl.Error ?? "未知错误")); return LocService.Tr("获取下载地址失败：") + (dl.Error ?? "未知错误"); }
 
                 var zip = Path.Combine(StoragePaths.DownloadsDir,
                     $"direct-{modId}-{file.FileId}.zip");
@@ -125,7 +125,7 @@ public sealed class InstallService
 
                 var progress = new Progress<NexusDownloadProgress>(p =>
                     Step(p.Message, p.Percent, p.SpeedMBps));
-                Step($"正在下载 {file.Name}…", 8, 0);
+                Step(LocService.Tf("正在下载 {0}…", file.Name), 8, 0);
                 await _nexus.DownloadFileAsync(dl.Url, zip, progress, ct);
                 if (ct.IsCancellationRequested)   // 下完才发现被移除/暂停 → 别装了
                 {
@@ -144,16 +144,16 @@ public sealed class InstallService
                 try
                 {
                     ct.ThrowIfCancellationRequested();
-                    Step("正在安装到 Mods…", 95);
+                    Step(LocService.Tr("正在安装到 Mods…"), 95);
                     // v1.6.5：Portraiture 素材包（无 manifest+PNG）在 ModService 内直接转换成
                     // CP 肖像包，不再依赖/安装 Portraiture 框架。包名用任务标题（可能被翻译
                     // 服务机翻，仅作目录名/展示，无碍功能）。
                     err = await Task.Run(() => _mods.InstallNew(cfg.GamePath, zip, out modName, modId,
-                        portraiturePackName: taskTitle), ct);
+                        portraiturePackName: taskTitle, cfg: _cfg), ct);
                 }
                 finally { ExitInstallGate(); }
                 if (err is not null)
-                { _center.Finish(task, false, "安装失败：" + err); return "安装失败：" + err; }
+                { _center.Finish(task, false, LocService.Tr("安装失败：") + err); return LocService.Tr("安装失败：") + err; }
 
                 // v0.69.0：记录「最后下载日期」（详情页标题下 + 文件页签绿色✓ 用）
                 cfg.ModLastDownload[modId.ToString()] = DateTime.Now.ToString("yyyy-MM-dd");
@@ -236,8 +236,8 @@ public sealed class InstallService
         string? zipPath = null;
         try
         {
-            Step($"正在获取下载地址（SMAPI 文件 #{fileId}）…", 8, null);
-            var dl = await _nexus.GetNxmDownloadUrlAsync(cfg.NexusApiKey, modId, fileId, key, exp);
+            Step(LocService.Tf("正在获取下载地址（SMAPI 文件 #{0}）…", fileId), 8, null);
+            var dl = await _nexus.GetNxmDownloadUrlAsync(modId, fileId, key, exp);
             ct.ThrowIfCancellationRequested();
             if (dl.Url is null)
             {
@@ -251,7 +251,7 @@ public sealed class InstallService
             Directory.CreateDirectory(Path.GetDirectoryName(zipPath)!);
             var dlProgress = new Progress<NexusDownloadProgress>(
                 p => Step(p.Message, p.Percent, p.SpeedMBps));
-            Step("正在下载 SMAPI 安装器（你选择的版本）…", 10, 0);
+            Step(LocService.Tr("正在下载 SMAPI 安装器（你选择的版本）…"), 10, 0);
             await _nexus.DownloadFileAsync(dl.Url, zipPath, dlProgress, ct);
             if (ct.IsCancellationRequested)
             {
@@ -260,7 +260,7 @@ public sealed class InstallService
                 throw new OperationCanceledException(ct);
             }
 
-            Step("正在静默安装 SMAPI…", 90, null);
+            Step(LocService.Tr("正在静默安装 SMAPI…"), 90, null);
             var progress = new Progress<UpdateService.InstallProgress>(
                 p => Step(p.Message, p.Percent, p.SpeedMBps));
             var err = await _updater.InstallSmapiZipAsync(zipPath, cfg.GamePath, progress);
@@ -278,7 +278,7 @@ public sealed class InstallService
         {
             if (task.Status == "paused") return;   // 半截包留给继续
             try { if (zipPath is not null && File.Exists(zipPath)) File.Delete(zipPath); } catch { }
-            _center.Finish(task, false, "已取消");
+            _center.Finish(task, false, LocService.Tr("已取消"));
         }
         catch (Exception ex)
         {
@@ -305,7 +305,7 @@ public sealed class InstallService
             Interlocked.Increment(ref _busyCount);
             try
             {
-                Step("正在获取适配当前游戏的 SMAPI…", 5);
+                Step(LocService.Tr("正在获取适配当前游戏的 SMAPI…"), 5);
                 // v1.1.8：按当前游戏版本取对应 release（1.6+ = latest 4.x；1.4/1.5 等 = 历史 tag）
                 var info = await _updater.CheckSmapiForGameAsync(
                     _game.ProbeSmapiVersion(cfg.GamePath),
@@ -318,7 +318,7 @@ public sealed class InstallService
                     return msg;
                 }
                 if (info.HasUpdate is false && info.InstalledParsed)
-                    Step("本地 SMAPI 已是最新，按重装执行…", 8);
+                    Step(LocService.Tr("本地 SMAPI 已是最新，按重装执行…"), 8);
 
                 // v1.3.4：SMAPI 安装含几百 MB 的 Mods 备份与游戏目录写入，全程持安装锁
                 await EnterInstallGateAsync(Step, 8);
@@ -335,7 +335,7 @@ public sealed class InstallService
                 if (ct.IsCancellationRequested && task.Status == "paused")
                     return "已暂停";
                 if (err is not null)
-                { _center.Finish(task, false, "安装失败：" + err); return "安装失败：" + err; }
+                { _center.Finish(task, false, LocService.Tr("安装失败：") + err); return LocService.Tr("安装失败：") + err; }
 
                 var done = $"安装完成：SMAPI {info.LatestVersion ?? ""}".TrimEnd();
                 _center.Finish(task, true, done);
@@ -379,30 +379,30 @@ public sealed class InstallService
             Interlocked.Increment(ref _busyCount);
             try
             {
-                Step("解析收到的 Nexus 下载链接…", 2);
+                Step(LocService.Tr("解析收到的 Nexus 下载链接…"), 2);
                 if (!TryParseNxm(link, out var modId, out var fileId, out var key, out var exp))
                 {
-                    _center.Finish(task, false, "无法解析链接");
+                    _center.Finish(task, false, LocService.Tr("无法解析链接"));
                     Notify();
                     return;
                 }
 
                 var cfg = _cfg.Current;
-                if (string.IsNullOrWhiteSpace(cfg.NexusApiKey))
+                if (!NexusService.IsAuthenticated)
                 {
-                    _center.Finish(task, false, "还没配置 Nexus API Key");
+                    _center.Finish(task, false, LocService.Tr("还没配置 Nexus API Key"));
                     Notify();
                     return;
                 }
                 if (string.IsNullOrWhiteSpace(cfg.GamePath))
                 {
-                    _center.Finish(task, false, "还没设置游戏目录");
+                    _center.Finish(task, false, LocService.Tr("还没设置游戏目录"));
                     Notify();
                     return;
                 }
 
                 // 解析出 modId 后把任务标题补上 mod 名称，方便在 /tasks 页识别
-                task.Title = "下载并安装 " + await ResolveModTitleAsync(cfg.NexusApiKey, modId, null);
+                task.Title = LocService.Tr("下载并安装 ") + await ResolveModTitleAsync(modId, null);
                 ct.ThrowIfCancellationRequested();
 
                 // v1.3.1：SMAPI（mod 2400）网页回流同样转专属通道 —— Nexus 包是安装器
@@ -415,14 +415,14 @@ public sealed class InstallService
                     return;
                 }
 
-                Step($"正在获取下载地址（Mod #{modId}）…", 8);
-                // v0.62.0：恢复带 API key 头 —— Nexus 的 download_link.json 端点强制要求 apikey 头，
-                // 即使 URL 里有 key/expires，没头直接 401（v0.61 把 key 去掉反而引入了这个错）。
-                var dl = await _nexus.GetNxmDownloadUrlAsync(cfg.NexusApiKey, modId, fileId, key, exp);
+                Step(LocService.Tf("正在获取下载地址（Mod #{0}）…", modId), 8);
+                // download_link.json 必须带认证头 —— 现为 OAuth Bearer（SendApiAsync 默认挂）；
+                // 另附 nxm 链接里的一次性 key/expires 作 query 参数。二者缺一 → 401。
+                var dl = await _nexus.GetNxmDownloadUrlAsync(modId, fileId, key, exp);
                 ct.ThrowIfCancellationRequested();
                 if (dl.Url is null)
                 {
-                    _center.Finish(task, false, dl.Error ?? "获取下载地址失败");
+                    _center.Finish(task, false, dl.Error ?? LocService.Tr("获取下载地址失败"));
                     Notify();
                     return;
                 }
@@ -433,7 +433,7 @@ public sealed class InstallService
 
                 var progress = new Progress<NexusDownloadProgress>(p =>
                     Step(p.Message, p.Percent, p.SpeedMBps));
-                Step("正在下载…", 12, 0);
+                Step(LocService.Tr("正在下载…"), 12, 0);
                 await _nexus.DownloadFileAsync(dl.Url, zip, progress, ct);
                 if (ct.IsCancellationRequested)   // 下完才发现被移除/暂停 → 别装了
                 {
@@ -449,12 +449,12 @@ public sealed class InstallService
                 try
                 {
                     ct.ThrowIfCancellationRequested();
-                    Step("正在安装到 Mods…", 95);
+                    Step(LocService.Tr("正在安装到 Mods…"), 95);
                     var nxmTitle = task.Title.StartsWith("下载并安装 ") ? task.Title["下载并安装 ".Length..] : null;
                     // v1.6.5：Portraiture 素材包直接转换成 CP 肖像包（不再装框架）
                     // v1.1.8：同直装路径，InstallNew 丢线程池，避免冻住 UI
                     nxmErr = await Task.Run(() => _mods.InstallNew(cfg.GamePath, zip, out modName, modId,
-                        portraiturePackName: nxmTitle), ct);
+                        portraiturePackName: nxmTitle, cfg: _cfg), ct);
                 }
                 finally { ExitInstallGate(); }
                 if (nxmErr is null)
@@ -474,7 +474,7 @@ public sealed class InstallService
                         cfg.ModFileLastDownload[fileId.ToString()] = DateTime.Now.ToString("yyyy-MM-dd");
                         // 版本号必须一起记：留空 ⇒ 快道（smapi.io 只给版本号、不给 fileId）那条路
                         // 再没有任何判据能认出「这一版我已经装过了」，⇧ 装上就消不掉
-                        var nxmVer = (await _nexus.GetFileByIdAsync(cfg.NexusApiKey, modId, fileId))?.Version ?? "";
+                        var nxmVer = (await _nexus.GetFileByIdAsync(modId, fileId))?.Version ?? "";
                         var guess = modName ?? "";
                         var entry = (await Task.Run(() => _mods.Scan(cfg.GamePath), ct))
                             .FirstOrDefault(x => x.NexusModId == modId
@@ -494,7 +494,7 @@ public sealed class InstallService
                 }
                 else
                 {
-                    _center.Finish(task, false, "安装失败：" + nxmErr);
+                    _center.Finish(task, false, LocService.Tr("安装失败：") + nxmErr);
                     Notify();
                 }
             }
@@ -552,12 +552,12 @@ public sealed class InstallService
     public async Task<string?> InstallMissingDependenciesAsync(IReadOnlyList<string>? onlyUids = null,
         IReadOnlyDictionary<string, int>? preResolved = null)
     {
-        if (Busy) return "上一个安装还没完成，等它结束再试";
+        if (Busy) return LocService.Tr("上一个安装还没完成，等它结束再试");
         var cfg = _cfg.Current;
-        if (string.IsNullOrWhiteSpace(cfg.NexusApiKey))
-            return "还没配置 Nexus API Key —— 先到「Nexus」页粘贴";
+        if (!NexusService.IsAuthenticated)
+            return LocService.Tr("还没配置 Nexus API Key —— 先到「Nexus」页粘贴");
         if (string.IsNullOrWhiteSpace(cfg.GamePath))
-            return "还没设置游戏目录 —— 先到「设置」页选择";
+            return LocService.Tr("还没设置游戏目录 —— 先到「设置」页选择");
 
         var task = _center.Start(
             onlyUids is null ? "一键安装缺失依赖" : $"安装缺失依赖（{onlyUids.Count} 项）", "install");
@@ -612,7 +612,7 @@ public sealed class InstallService
                     task.Cts.Token.ThrowIfCancellationRequested();
                     processed.Add(dep);
                     var idx = processed.Count;
-                    Step($"({idx}/{total}) 正在处理 {dep}…", Math.Round(idx * 90.0 / (total + 1), 1));
+                    Step(LocService.Tf("({0}/{1}) 正在处理 {2}…", idx, total, dep), Math.Round(idx * 90.0 / (total + 1), 1));
 
                     // ① 加载器本体不是 mod，自动装不进去
                     if (dep.Equals("SMAPI", StringComparison.OrdinalIgnoreCase))
@@ -631,11 +631,11 @@ public sealed class InstallService
                         var face = await FirstCandidateAsync(cfg, dep, preResolved);
                         if (face is null)
                         {
-                            Step($"✗ {dep}：Nexus 搜索不到匹配的 mod，已打开搜索页转人工");
+                            Step(LocService.Tf("✗ {0}：Nexus 搜索不到匹配的 mod，已打开搜索页转人工", dep));
                             AddUnresolvedOutcome(dep, toOpen, outcomes);
                             continue;
                         }
-                        Step($"⏭ {dep}：免费账户不能 API 直下，已打开网页转手动");
+                        Step(LocService.Tf("⏭ {0}：免费账户不能 API 直下，已打开网页转手动", dep));
                         outcomes.Add(new DependencyRunItem(dep, "manual", face.Name, face.Id,
                             dep.Equals(ModService.PortraitureFrameworkUid, StringComparison.OrdinalIgnoreCase)
                                 ? "Portraiture 框架需手动下载 —— 点「Mod Manager Download」后启动器自动接管；装完请到立绘页确认素材包"
@@ -654,11 +654,11 @@ public sealed class InstallService
                         foreach (var c in cands.Take(3))
                         {
                             task.Cts.Token.ThrowIfCancellationRequested();
-                            Step($"({idx}/{total}) 正在获取 {c.Name} 的文件信息…");
-                            var file = await _nexus.GetLatestMainFileAsync(cfg.NexusApiKey, c.Id);
-                            if (file is null) { lastErr = "找不到可下载的文件"; continue; }
+                            Step(LocService.Tf("({0}/{1}) 正在获取 {2} 的文件信息…", idx, total, c.Name));
+                            var file = await _nexus.GetLatestMainFileAsync(c.Id);
+                            if (file is null) { lastErr = LocService.Tr("找不到可下载的文件"); continue; }
 
-                            var dl = await _nexus.GetDownloadUrlAsync(cfg.NexusApiKey, c.Id, file.FileId);
+                            var dl = await _nexus.GetDownloadUrlAsync(c.Id, file.FileId);
                             if (dl.NeedsPremium)
                             {
                                 // 换候选也一样 —— 账号级限制：本次余下依赖全部转手动
@@ -673,17 +673,17 @@ public sealed class InstallService
                             try
                             {
                                 var progress = new Progress<NexusDownloadProgress>(p => Step(p.Message, p.Percent, p.SpeedMBps));
-                                Step($"({idx}/{total}) 正在下载 {c.Name}…", null, 0);
+                                Step(LocService.Tf("({0}/{1}) 正在下载 {2}…", idx, total, c.Name), null, 0);
                                 await _nexus.DownloadFileAsync(dl.Url, zipPath, progress, task.Cts.Token);
                                 if (task.Cts.IsCancellationRequested)
                                     return task.Status == "paused" ? "已暂停" : "已取消";
 
-                                Step($"({idx}/{total}) 正在安装 {c.Name}…", Math.Round(idx * 95.0 / (total + 1), 1));
+                                Step(LocService.Tf("({0}/{1}) 正在安装 {2}…", idx, total, c.Name), Math.Round(idx * 95.0 / (total + 1), 1));
                                 string? modName = null;
                                 var err = await Task.Run(() => _mods.InstallNew(cfg.GamePath, zipPath, out modName, c.Id,
-                                    requireUniqueId: dep), task.Cts.Token);
+                                    requireUniqueId: dep, cfg: _cfg), task.Cts.Token);
                                 if (err == ModService.UidMismatchError)
-                                { lastErr = $"候选「{c.Name}」不含 {dep}，换下一个"; continue; }
+                                { lastErr = LocService.Tf("候选「{0}」不含 {1}，换下一个", c.Name, dep); continue; }
                                 if (err is not null) { lastErr = err; continue; }
 
                                 // 成功：记住解析结果 + 与直装同款的收尾（更新队列/最后下载日期/刷新列表）
@@ -695,7 +695,7 @@ public sealed class InstallService
                                     dep.Equals(ModService.PortraitureFrameworkUid, StringComparison.OrdinalIgnoreCase)
                                         ? "Portraiture 框架已装 —— 供声明依赖它的 mod 使用；启动器转换的 CP 肖像包不依赖它，游戏内按 P 切换高清模式"
                                         : null));
-                                Step($"✓ 已安装 {modName ?? c.Name}（{dep}）");
+                                Step(LocService.Tf("✓ 已安装 {0}（{1}）", modName ?? c.Name, dep));
                                 Notify();
                                 // P0-3：装上的依赖可能带肖像内容/框架 → 立绘页重扫
                                 NotifyPortraits();
@@ -713,7 +713,7 @@ public sealed class InstallService
                         if (ok || premiumBlocked || searched) break;
                         searched = true;
                         Step(cands.Count > 0
-                            ? $"({idx}/{total}) 已知候选不匹配，正在搜索 {dep}…"
+                            ? LocService.Tf("({0}/{1}) 已知候选不匹配，正在搜索 {2}…", idx, total, dep)
                             : $"({idx}/{total}) 正在搜索 {dep}…");
                         cands = await SearchDependencyCandidatesAsync(dep);
                         if (cands.Count == 0) break;
@@ -725,12 +725,12 @@ public sealed class InstallService
                     var face = cands.Count > 0 ? cands[0] : null;
                     outcomes.Add(new DependencyRunItem(dep, "manual", face?.Name, face?.Id,
                         "已在浏览器打开此页面 —— 点「Mod Manager Download」，启动器会自动接管下载安装（Nexus 免费账户限制）"));
-                    Step($"⏭ {dep}：Nexus 直下需要 Premium，已打开网页转手动");
+                    Step(LocService.Tf("⏭ {0}：Nexus 直下需要 Premium，已打开网页转手动", dep));
                     if (face is not null) toOpen.Add($"https://www.nexusmods.com/stardewvalley/mods/{face.Id}");
                 }
                     else if (searched && cands.Count == 0)
                     {
-                        Step($"✗ {dep}：Nexus 搜索不到匹配的 mod，已打开搜索页转人工");
+                        Step(LocService.Tf("✗ {0}：Nexus 搜索不到匹配的 mod，已打开搜索页转人工", dep));
                         AddUnresolvedOutcome(dep, toOpen, outcomes);
                     }
                     else
@@ -786,7 +786,7 @@ public sealed class InstallService
         }
         catch (Exception ex)
         {
-            _center.Finish(task, false, "一键装依赖失败：" + ex.Message);
+            _center.Finish(task, false, LocService.Tr("一键装依赖失败：") + ex.Message);
             return ex.Message;
         }
         finally
@@ -796,41 +796,84 @@ public sealed class InstallService
     }
 
     /// <summary>确认弹窗的展示信息：UID → (mod 名, Nexus modId, 封面)。
-    /// 免 key GraphQL 按下载数取首个命中，仅用于展示 —— 实际安装仍以下载后的
-    /// UniqueID 校验为准，这里搜错顶多显示错封面，不会装错 mod。</summary>
+    /// 免 key GraphQL 的命中要过 <see cref="AuthorAffinity"/> 这道闸才敢拿出来当"这个依赖是谁"
+    /// —— 实际安装仍以下载后的 UniqueID 校验为准，但展示错了会把人直接带去别人的 mod 页。</summary>
     public sealed record DependencyDisplayInfo(string Uid, string? Name, int? ModId, string? CoverUrl);
+
+    /// <summary>UID 的作者段（"ChaseXavier.Miku" → "ChaseXavier"）；没有点号或太短（"a.b"）返回 null。</summary>
+    private static string? UidAuthorSegment(string uid)
+    {
+        var dot = uid.IndexOf('.');
+        if (dot <= 0) return null;
+        var seg = new string(uid[..dot].Where(char.IsLetterOrDigit).ToArray()).ToLowerInvariant();
+        return seg.Length >= 2 ? seg : null;
+    }
+
+    /// <summary>某条搜索结果与这个 UID 的"作者亲和度"：
+    /// 3=作者段与上传者完全相同 · 2=一方包含另一方（Wildflour ↔ Wildflourmods）·
+    /// 1=作者段是上传者的首字母缩写（CF ↔ CyanFire）· 0=对不上。
+    /// 为什么必须看作者：搜 "Miku" 按下载数排第一是 lucasedu11 的「Miku skin for Abigail」(4291)，
+    /// 而 ChaseXavier.Miku 真正对应的是排第三的「CP_Miku NPC」(4373)。旧写法直接取第一个命中，
+    /// 于是弹窗把人指向别人的 mod，用户照装之后「缺少依赖」依旧（实测 2026-09-26）。</summary>
+    internal static int AuthorAffinity(string uid, string? uploader)
+    {
+        var a = UidAuthorSegment(uid);
+        if (a is null) return 0;                       // UID 没有作者段 → 无从判，交给名字
+        var u = new string((uploader ?? "").Where(char.IsLetterOrDigit).ToArray()).ToLowerInvariant();
+        if (u.Length == 0) return 0;
+        if (u == a) return 3;
+        if (u.Contains(a) || a.Contains(u)) return 2;
+        // 首字母缩写：上传者的驼峰词首字母串（CyanFire → "cf"）
+        var initials = new string((uploader ?? "").Where(char.IsUpper).ToArray()).ToLowerInvariant();
+        if (initials.Length >= 2 && initials == a) return 1;
+        return 0;
+    }
+
+    /// <summary>按作者亲和度从高到低排候选（同分保持原有的下载数顺序），供展示与下载共用。</summary>
+    internal static List<NexusModListEntry> RankByAuthor(string uid, IEnumerable<NexusModListEntry> hits)
+        => hits.OrderByDescending(h => AuthorAffinity(uid, h.Uploader)).ToList();
+
 
     /// <summary>v1.2.3：展示信息进程内缓存 —— 同会话反复打开弹窗不再重搜（mod 名/封面基本不变）。</summary>
     private static readonly ConcurrentDictionary<string, DependencyDisplayInfo> DisplayCache =
         new(StringComparer.OrdinalIgnoreCase);
 
-    /// <summary>解析单个依赖 UID 的展示信息：进程内缓存 → 配置持久缓存 → 免 key 搜索（命中后两处都回写）。
-    /// 搜索失败/无命中返回 null（调用方退回显示 UID）。</summary>
+    /// <summary>解析单个依赖 UID 的展示信息：进程内缓存 → 配置持久缓存 → 免 key 搜索。
+    /// <b>只有作者段能对上（<see cref="AuthorAffinity"/> &gt; 0）的命中才拿出来当"这个依赖是谁"</b>；
+    /// 对不上就返回 null（弹窗退回显示裸 UID，不再给出可点的错误页面），并顺手把
+    /// 老版本按"下载数第一"存下来的错答案从配置里清掉（自愈，不靠用户手动删配置）。</summary>
     public async Task<DependencyDisplayInfo?> ResolveDependencyDisplayAsync(string uid)
     {
         if (DisplayCache.TryGetValue(uid, out var cached)) return cached;
         // v1.2.4：配置持久缓存 —— 跨会话同步出结果，重启后弹窗首开不再等搜索
         var cfg = _cfg.Current;
+        var staleSaved = false;
         if (cfg.DependencyDisplays.TryGetValue(uid, out var saved))
         {
-            var fromSaved = new DependencyDisplayInfo(uid,
-                saved.Name.Length > 0 ? saved.Name : null,
-                saved.ModId > 0 ? saved.ModId : null,
-                saved.CoverUrl.Length > 0 ? saved.CoverUrl : null);
-            DisplayCache[uid] = fromSaved;
-            return fromSaved;
+            if (AuthorAffinity(uid, saved.Uploader) > 0)
+            {
+                var fromSaved = new DependencyDisplayInfo(uid,
+                    saved.Name.Length > 0 ? saved.Name : null,
+                    saved.ModId > 0 ? saved.ModId : null,
+                    saved.CoverUrl.Length > 0 ? saved.CoverUrl : null);
+                DisplayCache[uid] = fromSaved;
+                return fromSaved;
+            }
+            staleSaved = true;   // 缓存里没有上传者、或上传者与 UID 作者段对不上 → 重新解析
         }
         try
         {
-            var term = UidSearchTerms(uid).FirstOrDefault();
-            if (string.IsNullOrWhiteSpace(term)) return null;
-            var hits = await _nexus.BrowseModsAsync("downloads", 0, 5, "stardewvalley", searchText: term);
-            var top = hits?.FirstOrDefault(h => h.Id > 0);
-            if (top is null) return null;
+            var ranked = RankByAuthor(uid, await SearchDependencyCandidatesAsync(uid));
+            var top = ranked.FirstOrDefault(h => h.Id > 0 && AuthorAffinity(uid, h.Uploader) > 0);
+            if (top is null)
+            {
+                if (staleSaved) DropStaleDisplay(cfg, uid);
+                return null;
+            }
             var info = new DependencyDisplayInfo(uid, top.Name, top.Id,
                 string.IsNullOrWhiteSpace(top.ThumbnailUrl) ? top.PictureUrl : top.ThumbnailUrl);
             DisplayCache[uid] = info;
-            // 回写持久缓存，下次会话秒开；写失败不影响本次展示（大不了下次重搜）
+            // 回写持久缓存（连上传者一起存，下次会话能直接判它可不可信），写失败不影响本次展示
             try
             {
                 cfg.DependencyDisplays[uid] = new DependencyDisplayEntry
@@ -838,13 +881,26 @@ public sealed class InstallService
                     Name = top.Name ?? "",
                     ModId = top.Id,
                     CoverUrl = info.CoverUrl ?? "",
+                    Uploader = top.Uploader ?? "",
                 };
                 _cfg.Save(cfg);
             }
             catch { }
             return info;
         }
-        catch { return null; }
+        catch
+        {
+            if (staleSaved) DropStaleDisplay(cfg, uid);
+            return null;
+        }
+    }
+
+    /// <summary>清掉一条不可信的持久缓存（旧规则按下载数存进来的错答案，如 ChaseXavier.Miku → 4291）。</summary>
+    private void DropStaleDisplay(JuniGridConfig cfg, string uid)
+    {
+        if (!cfg.DependencyDisplays.Remove(uid)) return;
+        try { _cfg.Save(cfg); } catch { }
+        AppLog.Info("Install", $"[依赖解析] 丢弃错认的缓存 {uid}（旧规则按下载数取首个命中）");
     }
 
     /// <summary>已知候选（v1.2.3：弹窗预解析 + 配置缓存）：零搜索开销直接用。只有第一个
@@ -863,7 +919,7 @@ public sealed class InstallService
         var firstName = "";
         try
         {
-            var info = await _nexus.GetModAsync(cfg.NexusApiKey, ids[0]);
+            var info = await _nexus.GetModAsync(ids[0]);
             if (!string.IsNullOrWhiteSpace(info?.Name)) firstName = info!.Name;
         }
         catch { }
@@ -887,17 +943,20 @@ public sealed class InstallService
                 if (h.Id > 0 && seen.Add(h.Id)) list.Add(h);
             if (list.Count >= 12) break;   // 候选上限，防跑飞
         }
-        return list;
+        // 作者段能对上的候选排前面：下载数高≠就是它（搜 "Miku" 下载第一是别人的皮肤包）
+        return RankByAuthor(uid, list);
     }
 
-    /// <summary>premiumBlocked 快速通道专用：只找一个候选 id 生成手动链接（known → 搜索）。</summary>
+    /// <summary>premiumBlocked 快速通道专用：只找一个候选 id 生成手动链接（known → 搜索）。
+    /// 搜索结果一个都对不上作者段时宁可返回 null（转"未找到"开搜索页人工确认），
+    /// 也不能把人领到下载数最高的那个同名 mod 页面上。</summary>
     private async Task<NexusModListEntry?> FirstCandidateAsync(
         JuniGridConfig cfg, string uid, IReadOnlyDictionary<string, int>? preResolved)
     {
         var known = await KnownCandidatesAsync(cfg, uid, preResolved);
         if (known.Count > 0) return known[0];
         var hits = await SearchDependencyCandidatesAsync(uid);
-        return hits.FirstOrDefault();
+        return hits.FirstOrDefault(h => AuthorAffinity(uid, h.Uploader) > 0);
     }
 
     /// <summary>unresolved 收尾：结果项 + Nexus 站内搜索页链接（转人工确认，结束时统一开浏览器）。</summary>
@@ -951,11 +1010,11 @@ public sealed class InstallService
     /// 解析出可读的 mod 名称用于任务标题（/tasks 页需要显示"在下载哪个 mod"）。
     /// 网络请求拿不到名称时回退到传入的 fallback 或 "Mod #{id}"。
     /// </summary>
-    private async Task<string> ResolveModTitleAsync(string apiKey, int modId, string? fallbackName)
+    private async Task<string> ResolveModTitleAsync(int modId, string? fallbackName)
     {
         try
         {
-            var info = await _nexus.GetModAsync(apiKey, modId);
+            var info = await _nexus.GetModAsync(modId);
             if (!string.IsNullOrWhiteSpace(info?.Name)) return info.Name;
         }
         catch (Exception __ex) { AppLog.Warn("InstallService", __ex.Message); }

@@ -21,6 +21,7 @@
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
     gap: 10px;
+    margin-top: 8px;   /* 首行卡片 hover 会上浮 + 投影向上扩散，给 .jg-main(overflow:auto) 留出余量，避免顶部被裁 */
     overflow: visible;
 }.jg-stat-label {
     opacity: 0.7;
@@ -139,7 +140,7 @@
 .jg-heat-grid th.jg-heat-month { position: relative; width: 0; font-size: 0; padding: 0; height: 15px; vertical-align: bottom; }.jg-heat-month span { position: absolute; left: 0; bottom: 0; font-size: 11px; font-weight: 400; color: var(--jg-text-3); white-space: nowrap; }/* v1.1.9：月份标签可悬停（data-tip 显示该月总时长 + JS 圈整月）—— hover 提亮，
    右侧 8px padding 扩大命中区（相邻标签至少隔 4 列，不会互相重叠） */
 .jg-heat-month span[data-month] { padding-right: 8px; cursor: default; }.jg-heat-month span[data-month]:hover { color: var(--jg-text); }.jg-heat-grid td { padding: 0; }/* v1.1.6：格子只读展示（手动改时长的入口已删，只信系统统计），不再有手型/放大反馈 */
-.jg-heat-cell { display: block; width: max(5px, calc((100cqw - 194px) / 53)); height: auto; aspect-ratio: 1; border-radius: 2.5px; background: var(--jg-track); outline: 1px solid var(--jg-line); outline-offset: -1px; transition: transform 120ms ease, opacity 260ms ease; }/* v1.1.7：hover 轻微放大 —— 纯静态格子配悬停提示太「死」，给个缩放反馈 */
+.jg-heat-cell { display: block; width: max(5px, calc((100cqw - 194px) / 53)); height: auto; aspect-ratio: 1; border-radius: 5px; background: var(--jg-track); outline: 1px solid var(--jg-line); outline-offset: -1px; transition: transform 120ms ease, opacity 260ms ease; }/* v1.1.7：hover 轻微放大 —— 纯静态格子配悬停提示太「死」，给个缩放反馈 */
 .jg-heat-cell:hover { transform: scale(1.35); }.jg-heat-cell.l1 { background: #c4c4c4; }.jg-heat-cell.l2 { background: #8c8c8c; }.jg-heat-cell.l3 { background: #474747; }.jg-heat-cell.l4 { background: #000; }.jg-heat-cell.empty { background: transparent; outline: none; }.jg-heat-cell.future { opacity: .45; }/* v1.1.9：悬停月份标签时的整月描边 —— SVG 折线沿「1 号→月末」的阶梯边界
    （junigrid.ui.js 按该月各周列区段生成路径，定位到 .jg-heat-scroll 内容坐标）；
    浅色主题黑线，深色主题白线（theme.css 覆盖）；pointer-events:none 不挡格子 hover */
@@ -152,7 +153,7 @@
 
 /* ─── v1.4：游戏版本卡可点击 → 版本管理弹窗 ─── */
 .jg-card-click { cursor: pointer; transition: transform .18s ease, box-shadow .18s ease; overflow: visible; }
-.jg-card-click:hover { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(0,0,0,.08); }
+.jg-card-click:hover { transform: translateY(-2px); box-shadow: 0 6px 16px rgba(0,0,0,.10); }
 .jg-card-click .jg-ver-card-sub { display: flex; align-items: center; }
 .jg-ver-hint { margin-left: auto; font-size: 11px; color: var(--jg-text-4); opacity: 0; transition: opacity .18s ease; }
 .jg-card-click:hover .jg-ver-hint { opacity: 1; }

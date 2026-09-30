@@ -15,15 +15,15 @@
    悬浮窗可拖动（makeTaskDockDraggable，拖动超过 5px 吞掉本次点击）。 *@
 @if (Cfg.Current.ShowTaskDock || Center.RunningCount > 0)
 {
-    <button class="jg-taskdock @(Center.RunningCount > 0 ? "running" : "") @(_done ? "done" : "")" @onclick="Go" @oncontextmenu="HideFromMenu" @oncontextmenu:preventDefault title="下载/安装任务（左键打开任务中心，右键隐藏悬浮窗）">
+    <button class="jg-taskdock @(Center.RunningCount > 0 ? "running" : "") @(_done ? "done" : "")" @onclick="Go" @oncontextmenu="HideFromMenu" @oncontextmenu:preventDefault title='@Loc.T("下载/安装任务（左键打开任务中心，右键隐藏悬浮窗）")'>
     @if (Center.RunningCount > 0)
     {
         <div class="jg-taskdock-fill" style="@($"width:{Center.TotalPercent:0}%")"></div>
     }
     <div class="jg-taskdock-body">
         <div class="jg-taskdock-title">@(Center.RunningCount > 0
-            ? $"{Center.RunningCount} 个任务进行中"
-            : Center.Items.Count > 0 ? "" : "暂无任务")</div>
+            ? Loc.F("{0} 个任务进行中", Center.RunningCount)
+            : Center.Items.Count > 0 ? "" : Loc.T("暂无任务"))</div>
         @if (Center.RunningCount > 0)
         {
             <div class="jg-taskdock-sub">@Center.TotalPercent.ToString("F0")% · @(Center.TotalSpeedKnown ? Center.TotalSpeedMBps.ToString("F1") + " M/s" : "—")</div>
@@ -42,6 +42,7 @@
     protected override void OnInitialized()
     {
         Center.OnChanged += Refresh;
+        Center.OnFinished += OnTaskFinished;
         ConfigService.Saved += Refresh;   // 设置页切换「打开任务管理悬浮窗」时即时显隐
     }
 
@@ -77,11 +78,24 @@
     public void Dispose()
     {
         Center.OnChanged -= Refresh;
+        Center.OnFinished -= OnTaskFinished;
         ConfigService.Saved -= Refresh;
     }
 
     // OnChanged 可能从后台下载线程触发，必须 InvokeAsync 回 UI 线程
     private void Refresh() => InvokeAsync(StateHasChanged);
+
+    // 单个下载/安装任务落定 → 置顶主窗；失败再补一条红色 toast（成功已有任务舱对号 + 各页摘要，不叠 toast）
+    private void OnTaskFinished(TaskItem t, bool success)
+    {
+        _ = InvokeAsync(async () =>
+        {
+            JuniGrid.App.BringMainWindowToFront();
+            if (success) return;
+            var msg = t.Title.Length > 0 ? t.Title + LocService.Tr(" 失败") : (t.LastLine ?? "下载失败");
+            try { await JS.InvokeVoidAsync("junigridJs.toast", msg, "err"); } catch { }
+        });
+    }
 
     // v1.06.6：下载页的展开/收起动画已关闭 —— 点击就是普通切换；
     // 在下载页时点悬浮窗 = history.back 回到进入前的页面

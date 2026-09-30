@@ -28,7 +28,8 @@
 
     // ── 长按进度条：横扫填充 + 前缘波浪（移植 ReactBits HoldButton 的 fill/crest 两层）──
     // JS 只写一个进度量 --lp-p，宽度/波浪位置全在 CSS 里算；几何量一次测完写进变量，
-    // 不引 ResizeObserver —— 皮肤卡是固定 92px，缩放(transform)也不改 offsetWidth。
+    // 不引 ResizeObserver —— 皮肤卡宽度随列自适应、但弹窗宽固定后布局即恒定，
+    // 且缩放走 transform 不改 offsetWidth，所以开卡时量一次就够。
     function ensureBar(card) {
         var bar = card.querySelector('.jg-pt-lp-bar');
         if (bar) return bar;

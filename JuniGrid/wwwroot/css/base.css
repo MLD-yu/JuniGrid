@@ -40,6 +40,7 @@
     --jg-line-strong: rgba(0,0,0,0.14);
     --jg-line-heavy: rgba(0,0,0,0.25);
     --jg-outline: #1a1a1a;               /* 聚焦/选中描边（深色下翻白） */
+    --jg-accent: #7aa2ff;                /* 强调色基线（system 模式由 JS 覆盖成 Windows 系统色） */
     /* 「墨色」主按钮：浅色主题黑底白字，深色主题反转成浅底深字 */
     --jg-ink: #141414;
     --jg-ink-strong: #0a0a0a;
@@ -84,6 +85,7 @@ html[data-theme="dark"] {
     --jg-line-strong: rgba(255,255,255,0.16);
     --jg-line-heavy: rgba(255,255,255,0.30);
     --jg-outline: #dfe3ea;
+    --jg-accent: #8fb0ff;                /* 强调色基线（深色；system 模式由 JS 覆盖成 Windows 系统色） */
     --jg-ink: #e8eaee;
     --jg-ink-strong: #f4f5f7;
     --jg-ink-hover: #ffffff;
@@ -103,6 +105,100 @@ html[data-theme="dark"] {
     --neutral-layer-1: #1e2025;
     --neutral-foreground-rest: #e7e9ee;
 }
+
+/* ============================================================
+   颜色主题（data-accent 轴，与浅/深 data-theme 正交）。
+   每个预设只定义一个「强调色」，其余（表面淡染 / 主按钮 / 描边 / 滑块 /
+   热力图）全部用 color-mix 从 --jg-accent 派生 —— 一致且好调。
+   浅色模式：表面极淡染色、主按钮走「柔和粉彩 + 深色字」；
+   深色模式：表面暗调染色、主按钮走「鲜亮强调色 + 白字」。
+   "system" 不在此列 —— 保持中性白面 + 墨色按钮，强调色由 JS 注入系统色。
+   ============================================================ */
+/* —— 浅色派生（非 system 主题共用）—— 侧栏走 Qoder 那种「实色粉彩」，内容区近白带淡染 —— */
+:root[data-accent]:not([data-accent="system"]) {
+    --jg-content: color-mix(in srgb, var(--jg-accent) 5%, #ffffff);
+    --jg-card: color-mix(in srgb, var(--jg-accent) 2%, #ffffff);
+    --neutral-layer-1: color-mix(in srgb, var(--jg-accent) 4%, #ffffff);
+    --jg-bg: var(--jg-content);
+    --jg-shell-grad: linear-gradient(135deg,
+        color-mix(in srgb, var(--jg-accent) 24%, #ffffff),
+        color-mix(in srgb, var(--jg-accent) 15%, #ffffff));
+    --jg-well: color-mix(in srgb, var(--jg-accent) 9%, #ffffff);
+    --jg-hover: color-mix(in srgb, var(--jg-accent) 13%, #ffffff);
+    --jg-hover-strong: color-mix(in srgb, var(--jg-accent) 19%, #ffffff);
+    --jg-line: color-mix(in srgb, var(--jg-accent) 14%, #ffffff);
+    --jg-line-strong: color-mix(in srgb, var(--jg-accent) 24%, #ffffff);
+    --jg-line-heavy: color-mix(in srgb, var(--jg-accent) 34%, #ffffff);
+    --jg-ink: color-mix(in srgb, var(--jg-accent) 58%, #ffffff);
+    --jg-ink-strong: color-mix(in srgb, var(--jg-accent) 74%, #ffffff);
+    --jg-ink-hover: color-mix(in srgb, var(--jg-accent) 68%, #ffffff);
+    --jg-ink-grad: linear-gradient(135deg,
+        color-mix(in srgb, var(--jg-accent) 46%, #ffffff),
+        color-mix(in srgb, var(--jg-accent) 62%, #ffffff));
+    --jg-on-ink: color-mix(in srgb, var(--jg-accent) 52%, #0c0f0c);
+    --jg-outline: var(--jg-accent);
+    --jg-pill-thumb: var(--jg-accent);
+    --jg-toggle-track: color-mix(in srgb, var(--jg-accent) 22%, #e3e5e8);
+}
+/* —— 深色派生 —— 内容区保持「近黑 + 一丝强调色」（像浅色的纯白那样耐看），
+   主题存在感靠按钮/热力图/描边，而不是把整块画布染绿 —— */
+html[data-theme="dark"][data-accent]:not([data-accent="system"]) {
+    --jg-content: color-mix(in srgb, var(--jg-accent) 4%, #15161a);
+    --jg-card: color-mix(in srgb, var(--jg-accent) 8%, #1a1c21);
+    --neutral-layer-1: color-mix(in srgb, var(--jg-accent) 9%, #1e2025);
+    --jg-nav-thumb: var(--jg-content);   /* 选中滑块 = 内容区底色（无缝「从内容里凸起」），不是卡片色 */
+    --jg-bg: var(--jg-content);
+    --jg-shell-grad: linear-gradient(135deg,
+        color-mix(in srgb, var(--jg-accent) 9%, #0f1114),
+        color-mix(in srgb, var(--jg-accent) 4%, #0f1114));
+    --jg-well: color-mix(in srgb, var(--jg-accent) 7%, #15161a);
+    --jg-hover: color-mix(in srgb, var(--jg-accent) 10%, #1e2025);
+    --jg-hover-strong: color-mix(in srgb, var(--jg-accent) 14%, #1e2025);
+    --jg-line: color-mix(in srgb, var(--jg-accent) 10%, #2a2c31);
+    --jg-line-strong: color-mix(in srgb, var(--jg-accent) 16%, #2a2c31);
+    --jg-line-heavy: color-mix(in srgb, var(--jg-accent) 24%, #2a2c31);
+    --jg-ink: color-mix(in srgb, var(--jg-accent) 92%, #ffffff);
+    --jg-ink-strong: var(--jg-accent);
+    --jg-ink-hover: color-mix(in srgb, var(--jg-accent) 88%, #ffffff);
+    --jg-ink-grad: linear-gradient(135deg,
+        color-mix(in srgb, var(--jg-accent) 96%, #ffffff),
+        color-mix(in srgb, var(--jg-accent) 82%, #000000));
+    --jg-on-ink: #ffffff;
+    --jg-outline: var(--jg-accent);
+    --jg-pill-thumb: var(--jg-accent);
+    --jg-toggle-track: color-mix(in srgb, var(--jg-accent) 30%, #43464c);
+}
+/* —— 各主题的强调色（浅 / 深各一）—— */
+:root[data-accent="forest"] { --jg-accent: #2f9e5c; }
+:root[data-accent="mint"]   { --jg-accent: #12a0a0; }
+:root[data-accent="honey"]  { --jg-accent: #e0a512; }
+:root[data-accent="parchment"] { --jg-accent: #b07b45; }
+:root[data-accent="sky"]    { --jg-accent: #2f80d8; }
+:root[data-accent="rose"]   { --jg-accent: #dd4a72; }
+html[data-theme="dark"][data-accent="forest"] { --jg-accent: #46b56e; }
+html[data-theme="dark"][data-accent="mint"]   { --jg-accent: #2bc4c4; }
+html[data-theme="dark"][data-accent="honey"]  { --jg-accent: #f0b429; --jg-on-ink: #2a2000; }
+html[data-theme="dark"][data-accent="parchment"] { --jg-accent: #c9925a; --jg-on-ink: #1b120a; }
+html[data-theme="dark"][data-accent="sky"]    { --jg-accent: #57a0ee; }
+html[data-theme="dark"][data-accent="rose"]   { --jg-accent: #ec5f83; }
+
+/* 命名主题的热力图随强调色；system/默认保留原灰阶(home.css)/蓝阶(theme.css) */
+:root[data-accent]:not([data-accent="system"]) .jg-heat-cell.l1 { background: color-mix(in srgb, var(--jg-accent) 24%, #ffffff); }
+:root[data-accent]:not([data-accent="system"]) .jg-heat-cell.l2 { background: color-mix(in srgb, var(--jg-accent) 48%, #ffffff); }
+:root[data-accent]:not([data-accent="system"]) .jg-heat-cell.l3 { background: color-mix(in srgb, var(--jg-accent) 74%, #ffffff); }
+:root[data-accent]:not([data-accent="system"]) .jg-heat-cell.l4 { background: var(--jg-accent); }
+html[data-theme="dark"][data-accent]:not([data-accent="system"]) .jg-heat-cell.l1 { background: color-mix(in srgb, var(--jg-accent) 32%, #0d0e11); }
+html[data-theme="dark"][data-accent]:not([data-accent="system"]) .jg-heat-cell.l2 { background: color-mix(in srgb, var(--jg-accent) 55%, #0d0e11); }
+html[data-theme="dark"][data-accent]:not([data-accent="system"]) .jg-heat-cell.l3 { background: color-mix(in srgb, var(--jg-accent) 78%, #0d0e11); }
+html[data-theme="dark"][data-accent]:not([data-accent="system"]) .jg-heat-cell.l4 { background: color-mix(in srgb, var(--jg-accent) 92%, #ffffff); }
+
+/* 跟随系统 · 深色：内容区保持近黑，但模块卡片染一丝系统强调色（浅色的系统卡片保持纯白） */
+html[data-theme="dark"][data-accent="system"] {
+    --jg-card: color-mix(in srgb, var(--jg-accent) 6%, #1e2025);
+    --neutral-layer-1: color-mix(in srgb, var(--jg-accent) 8%, #1e2025);
+    --jg-nav-thumb: var(--jg-content);
+}
+
 
 *, *::before, *::after { box-sizing: border-box; }
 html, body {
@@ -170,6 +266,9 @@ body.jg-booting #app > * { opacity: 0 !important; visibility: hidden !important;
        会导致最后一行贴边/被裁。改用 .jg-page 的 padding-bottom（跟随内容）。 */
     padding: clamp(14px, 1.6vw, 28px) clamp(16px, 2vw, 40px) 0;
     scrollbar-width: none;              /* Firefox：隐藏滚动条（仍可滚动） */
+    /* 内容区左上角：只有这一角露在粉色外壳上（右上角贴着窗口右边、两下角落在窗口
+       底边，都看不出角），所以只圆这一角。12px 与卡片和导航滑块圆角同值。 */
+    border-top-left-radius: 12px;
 }
 .jg-main::-webkit-scrollbar { display: none; }   /* WebKit：隐藏滚动条（仍可滚动） */
 
@@ -274,7 +373,7 @@ html[data-theme="dark"] .jg-tt-moon { opacity: 1; }
 }
 .jg-trans-toggle:hover { filter: brightness(0.97); }
 html[data-theme="dark"] .jg-trans-toggle:hover { filter: brightness(1.15); }
-.jg-trans-toggle.on { background: #19943C; border-color: #19943C; }
+.jg-trans-toggle.on { background: var(--jg-accent); border-color: var(--jg-accent); }
 .jg-trans-toggle .jg-tt-knob { left: 2px; }
 html[data-theme="dark"] .jg-trans-toggle .jg-tt-knob { left: 2px; }
 .jg-trans-toggle.on .jg-tt-knob,

@@ -213,7 +213,7 @@ public partial class MainWindow : Window
             services.AddSingleton<PageRefreshService>();
             services.AddSingleton<TaskCenterService>();
             services.AddSingleton<InstallService>();
-            services.AddSingleton<NexusSsoService>();
+            services.AddSingleton<NexusOAuthService>();
             // v0.2.1：缓存与存储管理 + 内存管理
             services.AddSingleton<StorageService>();
             services.AddSingleton<MemoryService>();
@@ -225,10 +225,15 @@ public partial class MainWindow : Window
             services.AddSingleton<TranslationService>();
             // v1.3.0：立绘页（CP 皮肤包归类 / Portraiture 素材包 / 选择同步磁盘）
             services.AddSingleton<PortraitSkinService>();
+            // i18n：源文本即 key 的轻量本地化服务（中/EN）
+            services.AddSingleton<LocService>();
             var provider = services.BuildServiceProvider();
             Resources.Add("services", provider);
             App.Services = provider;
             Log("DI configured");
+
+            // 启动恢复 OAuth2 持久会话（有 token 则挂上 Bearer，过期则后台刷新）
+            provider.GetRequiredService<NexusOAuthService>().RestoreSession();
 
             // 游戏在运行但不是本程序启动的（如 JuniGrid 重启）→ 接上现有 SMAPI 日志
             provider.GetRequiredService<LauncherService>().AttachIfGameRunning();

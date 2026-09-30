@@ -46,7 +46,21 @@
     word-break: break-word;
     margin: 8px 0;
 }.jg-moddetail-desc h1, .jg-moddetail-desc h2, .jg-moddetail-desc h3,
-.jg-moddetail-desc h4, .jg-moddetail-desc h5 { margin: 10px 0 4px; line-height: 1.4; }.jg-moddetail-desc hr { border: 0; border-top: 1px solid var(--jg-line-strong); margin: 10px 0; }/* -------- Mod 单行列表（PCL 风格）------ */
+.jg-moddetail-desc h4, .jg-moddetail-desc h5 { margin: 10px 0 4px; line-height: 1.4; }.jg-moddetail-desc hr { border: 0; border-top: 1px solid var(--jg-line-strong); margin: 10px 0; }/* v1.2.6：作者 BBCode 的 [center] / [spoiler] 两块版式（旧版标签被剥掉后整页只剩左对齐、折叠内容摊平进正文）*/
+.jg-moddetail-desc .jg-desc-center { text-align: center; }.jg-moddetail-desc .jg-desc-spoiler {
+    margin: 8px 0;
+    padding: 6px 12px;
+    border: 1px solid var(--jg-line);
+    border-left: 3px solid var(--jg-outline);
+    border-radius: 6px;
+    background: rgba(15,127,255,0.06);
+}.jg-moddetail-desc .jg-desc-spoiler > summary {
+    cursor: pointer;
+    user-select: none;
+    font-weight: 600;
+    color: var(--jg-text-2);
+    list-style: none;
+}.jg-moddetail-desc .jg-desc-spoiler > summary::-webkit-details-marker { display: none; }.jg-moddetail-desc .jg-desc-spoiler[open] > summary { margin-bottom: 6px; }/* -------- Mod 单行列表（PCL 风格）------ */
 .jg-modrows { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; }.jg-modrow {
     display: flex;
     align-items: center;
@@ -91,7 +105,17 @@
     background: var(--jg-track);
     opacity: 0.75;
     flex-shrink: 0;
-}.jg-modrow-desc {
+}
+/* SMAPI 社区兼容性判定徽标。用站内既有的琥珀警示色（与 SMAPI 提示行同色系）而不用
+   --jg-accent —— 强调色会被读成"选中态"，读不出"这个 mod 有问题"。 */
+.jg-tag.broken {
+    background: rgba(217,123,0,.14);
+    color: #d97b00;
+    opacity: 1;
+    font-weight: 600;
+    cursor: pointer;
+}
+html[data-theme="dark"] .jg-tag.broken { background: rgba(240,181,90,.16); color: #f0b55a; }.jg-modrow-desc {
     font-size: 12px;
     opacity: 0.6;
     white-space: nowrap;

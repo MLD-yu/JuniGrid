@@ -14,7 +14,7 @@
            （v1.0.17：更新提示统一收口到标题栏自更新按钮的悬浮气泡，
              设置图标上的红点角标是设置页更新时代的残留，已移除） *@
         <NavLink class="jg-topnav-item" ActiveClass="active" Match="@item.Match" href="@item.Href"
-                 data-tip="@item.Label" aria-label="@item.Label"
+                 data-tip="@Loc.T(item.Label)" aria-label="@Loc.T(item.Label)"
                  @onclick="() => OnIconClick(item)">
             @* v1.1.2：深浅双图标 —— 深色主题换 -on-dark 亮色变体（home/mods/settings 的
                深灰填充在深色下看不见；nexus/smapi 本身彩色，两态共用同一张） *@

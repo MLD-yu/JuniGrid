@@ -341,15 +341,15 @@ public sealed class LauncherService
     public PreFlightResult CheckSmapi(string gamePath)
     {
         if (string.IsNullOrWhiteSpace(gamePath))
-            return PreFlightResult.Fail("尚未设置游戏路径，请先到设置页选择。");
+            return PreFlightResult.Fail(LocService.Tr("尚未设置游戏路径，请先到设置页选择。"));
 
         if (!Directory.Exists(gamePath))
-            return PreFlightResult.Fail($"游戏目录不存在：{gamePath}");
+            return PreFlightResult.Fail(LocService.Tf("游戏目录不存在：{0}", gamePath));
 
         var exe = Path.Combine(gamePath, "StardewModdingAPI.exe");
         if (!File.Exists(exe))
             return PreFlightResult.Fail(
-                $"未找到 SMAPI：{exe}\n\n去 smapi.io 下载安装，或在首页切换到「Steam 官方」启动。");
+                LocService.Tf("未找到 SMAPI：{0}\n\n去 smapi.io 下载安装，或在首页切换到「Steam 官方」启动。", exe));
 
         return PreFlightResult.Ok();
     }
@@ -423,20 +423,16 @@ public sealed class LauncherService
     // ------------------------------------------------------------------
     // Launch
     // ------------------------------------------------------------------
-    /// <summary>无窗口模式启动失败时，带控制台重试一次的机会（每次启动只给一次）。</summary>
-    private bool _relaunchWithConsoleTried;
-    /// <summary>用户点了「取消启动/关闭游戏」——我们自己杀的进程，不是崩溃，
-    /// 禁止再走「带控制台自动重拉」（会和清场看门狗对打，弹 0x800700E8 管道已关闭）。</summary>
+    /// <summary>用户点了「取消启动/关闭游戏」——我们自己杀的进程，不是崩溃。</summary>
     private volatile bool _killedByUser;
 
     /// <summary>
-    /// v1.6.10：默认**不显示 SMAPI 控制台窗口** —— 日志页（尾随 SMAPI-latest.txt）+ 命令输入框
-    /// 就是为取代它而做的。代价是 SMAPI 走「按任意键退出」那条路时玩家看不到提示，
-    /// 所以下面 Exited 里一旦发现非 0 退出，就自动带窗口重拉一次，让真实报错可见。
+    /// v1.6.10：不显示 SMAPI 控制台窗口 —— 日志页（尾随 SMAPI-latest.txt）+ 命令输入框取代它。
+    /// 退出时不再自动带窗口重拉、也不再复述报错/版本提示（用户明确要"退出就退出了"）；
+    /// SMAPI 自身的报错仍通过日志尾随实时显示，想看就在日志页看。
     /// </summary>
     public LaunchResult LaunchSmapi(string gamePath)
     {
-        _relaunchWithConsoleTried = false;
         _killedByUser = false;
         return LaunchSmapiCore(gamePath, showConsole: false);
     }
@@ -471,7 +467,6 @@ public sealed class LauncherService
         try
         {
             var startedAt = DateTime.Now;
-            var firstAttempt = !_relaunchWithConsoleTried;
             _smapiProcess = new Process
             {
                 StartInfo = new ProcessStartInfo
@@ -494,30 +489,19 @@ public sealed class LauncherService
             proc.Exited += (_, _) =>
             {
                 OnGameExit();
-                int? code = null;
-                try { code = proc.ExitCode; } catch { }
-                RaiseLog($"[JuniGrid] 游戏进程已退出，代码 {code}");
-                ExplainSmapiExit(gamePath, code, startedAt);
+                // 退出就退出了：不打退出码、不复述 SMAPI 关键报错、不做版本不匹配提示，
+                // 无头崩溃也不再自动带控制台重拉一次（用户明确不要这些）。SMAPI 自身的报错
+                // 仍通过日志尾随实时显示，想看就在日志页看，我们不替它总结、也不重启。
                 var gen = _logTailGen;
                 _ = Task.Delay(3000).ContinueWith(_ =>
                 {
                     if (_logTailGen == gen) StopLogTail();
                 });
-
-                // 用户主动取消/关游戏 = 我们自己 Kill 的，绝不能当启动失败再拉一次：
-                // 重拉会和清场看门狗对打，Process.Start/写 stdin 撞上已关闭的管道
-                //（0x800700E8 ERROR_NO_DATA「管道正在被关闭」）弹窗吓人。
-                if (!showConsole && code is not 0 && !_relaunchWithConsoleTried && !_killedByUser)
-                {
-                    _relaunchWithConsoleTried = true;
-                    RaiseLog("[JuniGrid] 启动异常，正在带控制台窗口重试一次 —— 真实报错会显示在那个窗口里");
-                    _ = Task.Run(() => LaunchSmapiCore(gamePath, showConsole: true));
-                }
             };
 
             proc.Start();
             _sessionStart = startedAt;
-            if (firstAttempt) ClearLog();
+            ClearLog();
             RaiseLog($"[JuniGrid] 已启动 SMAPI 进程 (PID {proc.Id})"
                      + (showConsole ? "，控制台窗口已显示" : "，日志见下方尾随"));
             StartLogTail();
@@ -529,56 +513,6 @@ public sealed class LauncherService
             return LaunchResult.Fail(ex.Message);
         }
     }
-
-    /// <summary>
-    /// SMAPI 异常退出时把「真实原因」补进启动器日志。
-    /// -532462766 (0xE0434352) = .NET 未处理异常，常见是无控制台时 PressAnyKeyToExit 的 ReadKey；
-    /// 根因一般在 SMAPI-latest.txt 里更早的 ERROR 行。
-    ///
-    /// 只在**真的没跑成**时开口：SMAPI 每次启动都把「缺依赖的 mod 被跳过」整块写成 ERROR，
-    /// 而正常玩完一局退出是代码 0 —— 不加这道闸门，玩家每次关游戏都会看到一句假的「未能正常进入游戏」。
-    /// </summary>
-    private void ExplainSmapiExit(string gamePath, int? exitCode, DateTime startedAt)
-    {
-        try
-        {
-            if (exitCode is null or 0) return;
-            var logPath = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                "StardewValley", "ErrorLogs", "SMAPI-latest.txt");
-            if (!File.Exists(logPath)) return;
-            // 只认这一次会话写的日志。SMAPI 起不来时 latest.txt 还是上一局的，
-            // 拿上局的报错解释这局的退出就是张冠李戴。
-            if (File.GetLastWriteTime(logPath) < startedAt.AddSeconds(-5)) return;
-            // v1.1.8：SMAPI 可能仍持有写句柄 —— File.ReadAllLines 默认 FileShare.Read 会炸
-            string[] lines;
-            try
-            {
-                using var fs = new FileStream(logPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-                using var sr = new StreamReader(fs, System.Text.Encoding.UTF8);
-                lines = sr.ReadToEnd().Split('\n').Select(l => l.TrimEnd('\r')).ToArray();
-            }
-            catch { return; }
-            var errors = lines
-                .Where(l => l.Contains("ERROR", StringComparison.OrdinalIgnoreCase)
-                            || l.Contains("Press any key", StringComparison.OrdinalIgnoreCase)
-                            || l.Contains("crashed", StringComparison.OrdinalIgnoreCase))
-                .TakeLast(8)
-                .ToList();
-            if (errors.Count == 0) return;
-            RaiseLog("[JuniGrid] 非正常退出，SMAPI 日志里的关键报错：");
-            foreach (var e in errors)
-                RaiseLog("[SMAPI] " + e);
-            var gameVer = UpdateService.ReadLocalGameVersion(gamePath);
-            var smapi = Path.Combine(gamePath, "StardewModdingAPI.exe");
-            var smapiVer = File.Exists(smapi)
-                ? FileVersionInfo.GetVersionInfo(smapi).FileVersion : "(未安装)";
-            RaiseLog($"[JuniGrid] 当前游戏 {gameVer} / SMAPI {smapiVer}。" +
-                     "版本不匹配请用「Steam 官方」启动，或切到与 SMAPI 匹配的游戏版本。");
-        }
-        catch { }
-    }
-
 
     private async Task TrackSteamExitAsync()
     {
@@ -730,8 +664,8 @@ public sealed class LauncherService
         var exe = Path.Combine(gamePath, "Stardew Valley.exe");
         if (!File.Exists(exe))
             return LaunchResult.Fail(
-                $"找不到游戏本体：{exe}\n\n" +
-                "这次本来要直启本体（避免 Steam 云把刚收起来的存档拉回来），但目录里没有 Stardew Valley.exe。");
+                LocService.Tf("找不到游戏本体：{0}\n\n", exe) +
+                LocService.Tr("这次本来要直启本体（避免 Steam 云把刚收起来的存档拉回来），但目录里没有 Stardew Valley.exe。"));
         try
         {
             _sessionStart = DateTime.Now;
@@ -755,7 +689,7 @@ public sealed class LauncherService
         }
         catch (Exception ex)
         {
-            return LaunchResult.Fail("无法直启游戏本体：" + ex.Message);
+            return LaunchResult.Fail(LocService.Tr("无法直启游戏本体：") + ex.Message);
         }
     }
 
@@ -787,17 +721,17 @@ public sealed class LauncherService
             string badge, hint;
             if (!s.MetaComplete)
             {
-                badge = "元数据缺失";
-                hint = "没有 SaveGameInfo，认不出写入版本 —— 旧版本进得去也可能闪退，建议用最新版试；或从留底/云端找回完整档";
+                badge = LocService.Tr("元数据缺失");
+                hint = LocService.Tr("没有 SaveGameInfo，认不出写入版本 —— 旧版本进得去也可能闪退，建议用最新版试；或从留底/云端找回完整档");
             }
             else if (readable && !upgrade)
             {
-                badge = "可直接玩";
+                badge = LocService.Tr("可直接玩");
                 hint = $"当前 {current ?? "未知"} 读得了";
             }
             else if (readable)
             {
-                badge = "可直接玩 · 会升级";
+                badge = LocService.Tr("可直接玩 · 会升级");
                 hint = $"当前 {current ?? "未知"} 读得了；存一次盘后旧版本就回不去了（会自动留底）";
             }
             else
@@ -867,21 +801,21 @@ public sealed class LauncherService
         var cfg = _cfg.Current;
         var gamePath = cfg.GamePath;
         if (string.IsNullOrWhiteSpace(gamePath) || !Directory.Exists(gamePath))
-            return LaunchResult.Fail("未检测到 Stardew Valley 游戏目录，请先在「设置」里指定。");
+            return LaunchResult.Fail(LocService.Tr("未检测到 Stardew Valley 游戏目录，请先在「设置」里指定。"));
 
         // 升级前留底已去掉：后果用户自担
 
         if (needSwitch)
         {
             if (DepotDownloaderService.IsApplyInProgress)
-                return LaunchResult.Fail("正在切换版本，请等它完成后再玩这份档。");
+                return LaunchResult.Fail(LocService.Tr("正在切换版本，请等它完成后再玩这份档。"));
             if (IsGameProcessRunning())
-                return LaunchResult.Fail("游戏正在运行 — 请先退出，再点「用这份档玩」。");
+                return LaunchResult.Fail(LocService.Tr("游戏正在运行 — 请先退出，再点「用这份档玩」。"));
             var staged = _depot.ListStagedPackages()
                 .FirstOrDefault(p => p.Complete &&
                     SaveVersionService.CompareVersions(p.Label, target) == 0);
             if (staged is null)
-                return LaunchResult.Fail($"版本包 {target} 不完整，请到「版本管理」重新下载后再玩这份档。");
+                return LaunchResult.Fail(LocService.Tf("版本包 {0} 不完整，请到「版本管理」重新下载后再玩这份档。", target));
             Log($"正在切到 {target} …");
             var ok = false;
             try
@@ -892,9 +826,9 @@ public sealed class LauncherService
             }
             catch (Exception ex)
             {
-                return LaunchResult.Fail("切换版本失败：" + ex.Message);
+                return LaunchResult.Fail(LocService.Tr("切换版本失败：") + ex.Message);
             }
-            if (!ok) return LaunchResult.Fail($"版本包 {target} 不完整，无法切换。请到「版本管理」重新下载。");
+            if (!ok) return LaunchResult.Fail(LocService.Tf("版本包 {0} 不完整，无法切换。请到「版本管理」重新下载。", target));
             // 真历史降级才锁，避免 Steam 覆盖（与版本弹窗同一口径）
             try
             {
@@ -932,11 +866,11 @@ public sealed class LauncherService
         // 前置：路径都没有 → 极大概率 Steam 账号未拥有此游戏或未安装
         if (string.IsNullOrWhiteSpace(_cfg.Current.GamePath) || !Directory.Exists(_cfg.Current.GamePath))
             return LaunchResult.Fail(
-                "未检测到 Stardew Valley 游戏目录。\n\n" +
-                "可能原因：\n" +
-                "  · 当前 Steam 账号未拥有本游戏（需先在 Steam 购买）\n" +
-                "  · 游戏未安装或路径异常 → 请在「设置」里手动指定目录\n\n" +
-                "启动器会尝试用 steam:// 协议拉起，若 Steam 弹\"此账号不拥有该游戏\"即为此因。");
+                LocService.Tr("未检测到 Stardew Valley 游戏目录。\n\n") +
+                LocService.Tr("可能原因：\n") +
+                LocService.Tr("  · 当前 Steam 账号未拥有本游戏（需先在 Steam 购买）\n") +
+                LocService.Tr("  · 游戏未安装或路径异常 → 请在「设置」里手动指定目录\n\n") +
+                LocService.Tr("启动器会尝试用 steam:// 协议拉起，若 Steam 弹\"此账号不拥有该游戏\"即为此因。"));
 
         // v1.2.4：版本锁定开启 → 启动前同步锁状态（appmanifest 只读）。
         // v1.6.8：只在历史版本降级生效时上锁；已回官方最新则自动解除 ——
@@ -977,7 +911,7 @@ public sealed class LauncherService
         }
         catch (Exception ex)
         {
-            return LaunchResult.Fail("无法通过 Steam 启动：" + ex.Message);
+            return LaunchResult.Fail(LocService.Tr("无法通过 Steam 启动：") + ex.Message);
         }
     }
 }

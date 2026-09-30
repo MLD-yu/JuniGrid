@@ -22,6 +22,16 @@ internal static class FakeDepotDownloader
         n++;
         try { File.WriteAllText(nFile, n.ToString()); } catch { }
 
+        // 把启动器注入的代理环境变量回写出来 —— 验的是「真的到了子进程」，
+        // 而不是只验我们调过 ApplyDdProxyEnv（撤掉那一行注入，这个文件就会是空的）。
+        try
+        {
+            File.WriteAllText(Path.Combine(Path.GetTempPath(), "jg-fake-dd-proxy.txt"),
+                (Environment.GetEnvironmentVariable("HTTPS_PROXY") ?? "") + "|" +
+                (Environment.GetEnvironmentVariable("HTTP_PROXY") ?? ""));
+        }
+        catch { }
+
         Console.Out.WriteLine($"[fake-dd] attempt={n} script={script}");
 
         // hang = 连 CM 时一句话都不吐（真实表现就是 DD 自己闷头退避 10 轮 ≈64 秒）：

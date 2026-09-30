@@ -563,10 +563,10 @@ public sealed class UpdateService
                 progress?.Report(new InstallProgress("已备份现有 Mods 目录，开始下载 SMAPI…", 0, 0));
 
             progress?.Report(new InstallProgress("正在下载 SMAPI 安装包…"));
-            progress?.Report(new InstallProgress("连接下载服务器…", 0, 0));
+            progress?.Report(new InstallProgress("连接下载服务器…LocService.Tr(", 0, 0));
             // v1.1.7：半截包放稳定路径 —— 暂停后继续可续传，不再每次新建时间戳目录导致断点丢失
             var zip = Path.Combine(StoragePaths.SmapiInstallerDir,
-                $"smapi-dl-{(info.LatestVersion ?? "latest").Replace('/', '-')}.zip");
+                $")smapi-dl-{(info.LatestVersion ?? "latest").Replace('/', '-')}.zip");
 
             // v1.5：本机已有同名安装包 → 跳过网络下载。有该版本抽屉就存在抽屉里（跟版本走），
             // 没有就存在通用安装包缓存的 keep 子目录（见 GetSmapiInstallerCacheDir）。
@@ -575,7 +575,7 @@ public sealed class UpdateService
             var cachedZip = Path.Combine(cachedDir, Path.GetFileName(new Uri(info.InstallerZipUrl).LocalPath));
             if (File.Exists(cachedZip) && new FileInfo(cachedZip).Length > 1024)
             {
-                progress?.Report(new InstallProgress("使用本机已缓存的 SMAPI 安装包…", 50, 0));
+                progress?.Report(new InstallProgress(LocService.Tr("使用本机已缓存的 SMAPI 安装包…"), 50, 0));
                 File.Copy(cachedZip, zip, overwrite: true);
             }
             else
@@ -613,7 +613,7 @@ public sealed class UpdateService
         catch (Exception ex)
         {
             // modsBackup 仍保留，方便用户手动恢复；临时目录由 finally 清
-            return "SMAPI 自动安装失败：" + ex.Message;
+            return LocService.Tr("SMAPI 自动安装失败：") + ex.Message;
         }
         finally { CleanSmapiTemp(temp); }
     }
@@ -717,16 +717,16 @@ public sealed class UpdateService
             if (modsBackup is not null)
                 progress?.Report(new InstallProgress("已备份现有 Mods 目录…", 0, 0));
 
-            progress?.Report(new InstallProgress("正在解压安装包…"));
+            progress?.Report(new InstallProgress("正在解压安装包…LocService.Tr("));
             await Task.Run(() => ExtractWithRetryAsync(zip, temp, progress));   // v1.08：离开 UI 线程
 
             // 兜底：如果这个 zip 是「double-zipped」外壳，解出来还是 zip，自动再解一层。
             var innerZip = Directory
-                .GetFiles(temp, "*.zip", SearchOption.AllDirectories)
+                .GetFiles(temp, ")*.zip", SearchOption.AllDirectories)
                 .FirstOrDefault(f => !string.Equals(f, zip, StringComparison.OrdinalIgnoreCase));
             if (innerZip is not null)
             {
-                progress?.Report(new InstallProgress("检测到内层压缩包，正在再次解压…"));
+                progress?.Report(new InstallProgress(LocService.Tr("检测到内层压缩包，正在再次解压…")));
                 await Task.Run(() => ExtractWithRetryAsync(innerZip, temp, progress));   // v1.08
             }
 
@@ -740,7 +740,7 @@ public sealed class UpdateService
             // 游戏目录，这完全无需 console，也是启动器更可靠的做法。
             // v1.1.8：2.x / 3.0.x / 3.7.x 与 4.5.2 同一条管线 —— 统一递归找 install.dat。
             // v1.1.9：SMAPI 2.5 没有 install.dat —— internal/Windows/ 本身就是解开的载荷。
-            progress?.Report(new InstallProgress("正在后台安装 SMAPI（手动安装官方文件）…", 90));
+            progress?.Report(new InstallProgress(LocService.Tr("正在后台安装 SMAPI（手动安装官方文件）…"), 90));
 
             string? dat = null;
             // ① 新结构：SMAPI {ver} installer/internal/windows/install.dat
@@ -789,7 +789,7 @@ public sealed class UpdateService
             {
                 var extracted = Path.Combine(temp, "smapi-files");
                 Directory.CreateDirectory(extracted);
-                progress?.Report(new InstallProgress("正在解压安装内容…", 95));
+                progress?.Report(new InstallProgress(LocService.Tr("正在解压安装内容…"), 95));
                 await Task.Run(() => ExtractWithRetryAsync(dat, extracted, progress));   // v1.08
                 payloadRoot = FindStardewApiRoot(extracted)
                     ?? throw new InvalidOperationException("SMAPI 安装包内没有 StardewModdingAPI.exe（安装包异常）");
@@ -797,7 +797,7 @@ public sealed class UpdateService
             else
             {
                 // 2.5 载荷已就位，无需再解压
-                progress?.Report(new InstallProgress("正在写入 SMAPI 文件…", 95));
+                progress?.Report(new InstallProgress(LocService.Tr("正在写入 SMAPI 文件…"), 95));
                 payloadRoot = preExtractedWindows!;
             }
 
@@ -816,7 +816,7 @@ public sealed class UpdateService
             // 默认 mod，所以先恢复备份，再把缺失的默认 mod 补回，绝不整目录覆盖。
             if (modsBackup is not null)
             {
-                progress?.Report(new InstallProgress("正在恢复 Mod 文件夹…", 100));
+                progress?.Report(new InstallProgress(LocService.Tr("正在恢复 Mod 文件夹…"), 100));
                 await Task.Run(() => RestoreMods(modsBackup, Path.Combine(gamePath, "Mods")));   // v1.08：离开 UI 线程
             }
             CopyBuiltinMods(Path.Combine(payloadRoot, "Mods"), Path.Combine(gamePath, "Mods"));
@@ -834,7 +834,7 @@ public sealed class UpdateService
         catch (Exception ex)
         {
             // modsBackup 仍保留，方便用户手动恢复；临时目录由 finally 清
-            return "SMAPI 自动安装失败：" + ex.Message;
+            return LocService.Tr("SMAPI 自动安装失败：") + ex.Message;
         }
         finally { CleanSmapiTemp(temp); }
     }
@@ -902,7 +902,7 @@ public sealed class UpdateService
                         $"解压被系统拦截（{ex.Message}）—— 常见于 Windows Defender 实时保护，"
                         + "可临时把 %LocalAppData%\\JuniGrid 加入排除项后重试。", ex);
                 }
-                progress?.Report(new InstallProgress($"解压被拦截，正在重试（{attempt}/{maxAttempts - 1}）…"));
+                progress?.Report(new InstallProgress(LocService.Tf("解压被拦截，正在重试（{0}/{1}）…", attempt, maxAttempts - 1)));
                 await Task.Delay(500 * attempt);
             }
         }

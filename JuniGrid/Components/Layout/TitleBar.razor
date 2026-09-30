@@ -20,8 +20,8 @@
              点击落盘 TranslationEnabled 并通知观察器启停，控制全站外文自动翻译。 ── *@
         <div class="jg-theme-wrap">
             <button class="jg-trans-toggle @(_transOn ? "on" : "")" @onclick="ToggleTrans"
-                    data-tip="@(_transOn ? "自动翻译：开 · 国内网络不稳定时可能延迟或暂时失败" : "自动翻译：关")"
-                    aria-label="自动翻译开关">
+                    data-tip="@(_transOn ? Loc.T("自动翻译：开 · 国内网络不稳定时可能延迟或暂时失败") : Loc.T("自动翻译：关"))"
+                    aria-label='@Loc.T("自动翻译开关")'>
                 <span class="jg-tt-knob">
                     <svg viewBox="0 0 24 24" aria-hidden="true">
                         <path fill="currentColor" d="M12.87 15.07l-2.54-2.51.03-.03A17.52 17.52 0 0 0 14.07 6H17V4h-7V2H8v2H1v2h11.17C11.5 7.92 10.44 9.75 9 11.35 8.07 10.32 7.3 9.19 6.69 8h-2c.73 1.63 1.73 3.17 2.98 4.56l-5.09 5.02L4 19l5-5 3.11 3.11.76-2.04zM18.5 10h-2L12 22h2l1.12-3h4.75L21 22h2l-4.5-12zm-2.62 7l1.62-4.33L19.12 17h-3.24z"/>
@@ -33,7 +33,7 @@
              深色=月亮居右）。视觉完全由 html[data-theme] 驱动，Blazor 不需要持有状态；
              点击走宿主侧 MainWindow.RevealThemeSwitchAsync 的圆形揭示动画 + junigridJs.applyTheme 切主题。 ── *@
         <div class="jg-theme-wrap">
-            <button class="jg-theme-toggle" @onclick="ToggleThemeAsync" data-tip="切换深色 / 浅色主题" aria-label="切换深色 / 浅色主题">                <span class="jg-tt-knob">
+            <button class="jg-theme-toggle" @onclick="ToggleThemeAsync" data-tip='@Loc.T("切换深色 / 浅色主题")' aria-label='@Loc.T("切换深色 / 浅色主题")'>                <span class="jg-tt-knob">
                     <svg class="jg-tt-sun" viewBox="0 0 1024 1024" aria-hidden="true">
                         <path fill="currentColor" d="M512 298.666667a170.666667 170.666667 0 1 0 0 341.333333 170.666667 170.666667 0 0 0 0-341.333333z m0 284.444444a113.777778 113.777778 0 1 1 0-227.555555 113.777778 113.777778 0 0 1 0 227.555555zM512 85.333333a28.444444 28.444444 0 0 1 28.444444 28.444445v56.888889a28.444444 28.444444 0 1 1-56.888888 0V113.777778a28.444444 28.444444 0 0 1 28.444444-28.444445z m0 739.555556a28.444444 28.444444 0 0 1 28.444444 28.444444v56.888889a28.444444 28.444444 0 1 1-56.888888 0v-56.888889a28.444444 28.444444 0 0 1 28.444444-28.444444zM85.333333 512a28.444444 28.444444 0 0 1 28.444445-28.444444h56.888889a28.444444 28.444444 0 1 1 0 56.888888H113.777778a28.444444 28.444444 0 0 1-28.444445-28.444444z m739.555556 0a28.444444 28.444444 0 0 1 28.444444-28.444444h56.888889a28.444444 28.444444 0 1 1 0 56.888888h-56.888889a28.444444 28.444444 0 0 1-28.444444-28.444444zM231.762946 231.762946a28.444444 28.444444 0 0 1 40.220445 0l40.220444 40.220445a28.444444 28.444444 0 1 1-40.220444 40.220444l-40.220445-40.220444a28.444444 28.444444 0 0 1 0-40.220445z m480.033219 480.033219a28.444444 28.444444 0 0 1 40.220444 0l40.220445 40.220444a28.444444 28.444444 0 1 1-40.220445 40.220445l-40.220444-40.220445a28.444444 28.444444 0 0 1 0-40.220444z m40.220444-480.033219a28.444444 28.444444 0 0 1 0 40.220445l-40.220444 40.220444a28.444444 28.444444 0 1 1-40.220444-40.220444l40.220444-40.220445a28.444444 28.444444 0 0 1 40.220444 0zM271.983391 711.796165a28.444444 28.444444 0 0 1 0 40.220444l-40.220445 40.220445a28.444444 28.444444 0 1 1-40.220444-40.220445l40.220444-40.220444a28.444444 28.444444 0 0 1 40.220445 0z"/>
                     </svg>
@@ -43,9 +43,9 @@
                 </span>
             </button>
         </div>
-        <button class="jg-winbtn" @onclick="Minimize" data-tip="最小化" aria-label="最小化">—</button>
-        <button class="jg-winbtn" @onclick="ToggleMax" data-tip="@(_isMax ? "还原" : "最大化")" aria-label="@(_isMax ? "还原" : "最大化")">@(_isMax ? "❐" : "☐")</button>
-        <button class="jg-winbtn jg-winbtn-close" @onclick="Close" data-tip="关闭" aria-label="关闭">✕</button>
+        <button class="jg-winbtn" @onclick="Minimize" data-tip='@Loc.T("最小化")' aria-label='@Loc.T("最小化")'>—</button>
+        <button class="jg-winbtn" @onclick="ToggleMax" data-tip="@(_isMax ? Loc.T("还原") : Loc.T("最大化"))" aria-label="@(_isMax ? Loc.T("还原") : Loc.T("最大化"))">@(_isMax ? "❐" : "☐")</button>
+        <button class="jg-winbtn jg-winbtn-close" @onclick="Close" data-tip='@Loc.T("关闭")' aria-label='@Loc.T("关闭")'>✕</button>
     </div>
 </div>
 

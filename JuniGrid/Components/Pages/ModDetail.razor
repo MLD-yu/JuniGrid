@@ -11,7 +11,7 @@
 
 <div class="jg-page">
     <div class="jg-detail-topbar">
-    <button class="jg-detail-back" @onclick="GoBack" data-tip="返回" aria-label="返回">
+    <button class="jg-detail-back" @onclick="GoBack" data-tip='@Loc.T("返回")' aria-label='@Loc.T("返回")'>
         <svg viewBox="0 0 24 24" fill="none" stroke="#3d3d3d" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
             <polyline points="15 18 9 12 15 6"></polyline>
         </svg>
@@ -52,7 +52,7 @@
             <div class="jg-dl4-left">
                 <h1 class="jg-dl4-title">@_mod.Name@if (_lastDownloaded is not null)
                 {
-                    <span class="jg-dl4-lastdl">最后一次安装时间是 @_lastDownloaded</span>
+                    <span class="jg-dl4-lastdl">@Loc.F("最后一次安装时间是 {0}", _lastDownloaded)</span>
                 }</h1>
                 @if (!string.IsNullOrWhiteSpace(_mod.Summary))
                 {
@@ -63,30 +63,28 @@
                     @{
                         var alreadyInstalled = _installedFolder is not null;
                         // v1.04.0：已装判定优先于一键安装开关 —— 无论开关与否，「Mod 列表已有该 mod」都要显示
-                        var installLabel = _installing ? "安装中…"
-                            : alreadyInstalled ? (HasUpdate ? "更新" : "Mod 列表已有该 mod")
-                            : !Cfg.Current.EnableOneClickInstall ? "在浏览器安装" : "安装";
+                        var installLabel = _installing ? Loc.T("安装中…")
+                            : alreadyInstalled ? (HasUpdate ? Loc.T("更新") : Loc.T("Mod 列表已有该 mod"))
+                            : !Cfg.Current.EnableOneClickInstall ? Loc.T("在浏览器安装") : Loc.T("安装");
                         var disableInstall = _installing || (alreadyInstalled && !HasUpdate);
                     }
                     <button class="jg-dl4-cta" @onclick="Install" disabled="@disableInstall">
                         @installLabel
                         <span class="jg-dl4-cta-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px"><path d="M12 3v12"/><polyline points="7 10 12 15 17 10"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg></span>
                     </button>
-                    <button class="jg-dl4-ghost" @onclick="OpenPage" data-tip="在 Nexus 网站打开">
+                    <button class="jg-dl4-ghost" @onclick="OpenPage" data-tip='@Loc.T("在 Nexus 网站打开")'>
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;vertical-align:-3px;margin-right:6px">
                             <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
                             <polyline points="15 3 21 3 21 9"/>
                             <line x1="10" y1="14" x2="21" y2="3"/>
-                        </svg>
-                        官网打开
-                    </button>
+                        </svg> @Loc.T("官网打开") </button>
                 </div>
 
 
 
                 @if (_installMsg is not null)
                 {
-                    <div class="jg-dl4-msg">@_installMsg</div>
+                    <div class="jg-dl4-msg">@Loc.T(_installMsg)</div>
                 }
 
             @* ─── v0.69.5：三项手风琴（多开不互关 / 平滑展开 / 超长内部滚动且标题吸顶）─── *@
@@ -105,11 +103,11 @@
                             }
                             else if (_reqFailed)
                             {
-                                <span style="opacity:.65">要求数据拉取失败，</span><button class="jg-linklike" @onclick="OpenPage">点此到官网查看</button>
+                                <span style="opacity:.65">@Loc.T("要求数据拉取失败，")</span><button class="jg-linklike" @onclick="OpenPage">@Loc.T("点此到官网查看")</button>
                             }
                             else if (_requirements.Count == 0)
                             {
-                                <span style="opacity:.6">该模组没有前置要求。</span>
+                                <span style="opacity:.6">@Loc.T("该模组没有前置要求。")</span>
                             }
                             else
                             {
@@ -117,9 +115,9 @@
                                 var offsiteReqs = _requirements.Where(r => r.External).ToList();
                                 if (nexusReqs.Count > 0)
                                 {
-                                    <div class="jg-req-sub">Nexus 要求</div>
+                                    <div class="jg-req-sub">@Loc.T("Nexus 要求")</div>
                                     <div class="jg-req-table">
-                                        <div class="jg-req-th"><span>模组名称</span><span>注释</span></div>
+                                        <div class="jg-req-th"><span>@Loc.T("模组名称")</span><span>@Loc.T("注释")</span></div>
                                         @foreach (var r in nexusReqs)
                                         {
                                             <div class="jg-req-row">
@@ -135,7 +133,7 @@
                                                     else { @r.ModName }
                                                     @if (!IsReqInstalled(r))
                                                     {
-                                                        <span class="jg-req-missing">未安装</span>
+                                                        <span class="@(IsReqOptional(r) ? "jg-req-optional" : "jg-req-missing")">@(IsReqOptional(r) ? Loc.T("可选未装") : Loc.T("未安装"))</span>
                                                     }
                                                 </span>
                                                 <span class="jg-req-notes">@(string.IsNullOrWhiteSpace(r.Notes) ? "—" : r.Notes)</span>
@@ -145,9 +143,9 @@
                                 }
                                 if (offsiteReqs.Count > 0)
                                 {
-                                    <div class="jg-req-sub" style="margin-top:10px">场外需求</div>
+                                    <div class="jg-req-sub" style="margin-top:10px">@Loc.T("场外需求")</div>
                                     <div class="jg-req-table">
-                                        <div class="jg-req-th"><span>模组名称</span><span>注释</span></div>
+                                        <div class="jg-req-th"><span>@Loc.T("模组名称")</span><span>@Loc.T("注释")</span></div>
                                         @foreach (var r in offsiteReqs)
                                         {
                                             <div class="jg-req-row">
@@ -174,8 +172,8 @@
                             <svg class="jg-acc-arrow" width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
                         </button>
                         <div class="jg-acc-body">
-                            @if (_translations is null) { <span style="opacity:.65">正在拉取…</span> }
-                            else if (_translations.Count == 0) { <span style="opacity:.6">暂无译本。</span> }
+                            @if (_translations is null) { <span style="opacity:.65">@Loc.T("正在拉取…")</span> }
+                            else if (_translations.Count == 0) { <span style="opacity:.6">@Loc.T("暂无译本。")</span> }
                             else
                             {
                                 @foreach (var t in _translations)
@@ -195,12 +193,12 @@
                 <div class="jg-acc @(_openAccs.Contains(3) ? "open" : "")" id="jgAcc3">
                     <div class="jg-acc-inner">
                         <button class="jg-acc-head" @onclick="() => ToggleAcc(3)">
-                            <span class="jg-acc-no">03</span><span class="jg-acc-name">Changelogs@(_changelogs is { Count: > 0 } ? $"（{_changelogs.Count} 个版本）" : "")</span>
+                            <span class="jg-acc-no">03</span><span class="jg-acc-name">Changelogs@(_changelogs is { Count: > 0 } ? Loc.F("（{0} 个版本）", _changelogs.Count) : "")</span>
                             <svg class="jg-acc-arrow" width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
                         </button>
                         <div class="jg-acc-body">
-                            @if (_changelogs is null) { <span style="opacity:.65">正在拉取…</span> }
-                            else if (_changelogs.Count == 0) { <span style="opacity:.6">暂无更新日志。</span> }
+                            @if (_changelogs is null) { <span style="opacity:.65">@Loc.T("正在拉取…")</span> }
+                            else if (_changelogs.Count == 0) { <span style="opacity:.6">@Loc.T("暂无更新日志。")</span> }
                             else
                             {
                                 @foreach (var c in _changelogs)
@@ -232,7 +230,7 @@
                     <span class="jg-dl4-meta-item">by
                         @* ─── v1.04.0：作者名可点击跳转个人主页 + blur 高光（深#3d3d3d/浅#ffffff）+ hover 头像预览（GSAP easeReverse）─── *@
                         <span class="jg-author-wrap" id="jgAuthorTip">
-                            <button type="button" class="jg-author-name" @onclick="OpenAuthorPage" aria-label="查看作者主页">
+                            <button type="button" class="jg-author-name" @onclick="OpenAuthorPage" aria-label='@Loc.T("查看作者主页")'>
                                 <span class="jg-author-hl"></span>
                                 <span class="jg-author-name-txt">@(_mod.Author ?? "Unknown")</span>
                             </button>
@@ -245,7 +243,7 @@
                                 {
                                     <span class="jg-author-ava jg-author-ava-fb">@(_mod.Author is { Length: > 0 } a ? a[..1].ToUpperInvariant() : "U")</span>
                                 }
-                                <span class="jg-author-bubble-txt">查看 TA 的主页 →</span>
+                                <span class="jg-author-bubble-txt">@Loc.T("查看 TA 的主页 →")</span>
                             </span>
                         </span>
                     </span>
@@ -263,7 +261,7 @@
                     @if (!string.IsNullOrEmpty(_mod.UpdatedAt))
                     {
                         <span class="jg-dl4-dot">·</span>
-                        <span class="jg-dl4-meta-item">更新于 @_mod.UpdatedAt</span>
+                        <span class="jg-dl4-meta-item">@Loc.F("更新于 {0}", _mod.UpdatedAt)</span>
                     }
                 </div>
             </div>
@@ -273,7 +271,7 @@
         @if (!string.IsNullOrWhiteSpace(_mod.DescriptionHtml))
         {
             <div class="jg-detail-section jg-detail-full">
-                <div class="jg-detail-section-title">详细介绍</div>
+                <div class="jg-detail-section-title">@Loc.T("详细介绍")</div>
                 <div class="jg-moddetail-desc jg-desc-with-imgs">@((MarkupString)(_descHtml ?? ""))</div>
             </div>
         }
@@ -282,7 +280,7 @@
         <div class="jg-flip-modal" id="jgFlipModal">
             <div class="jg-flip-overlay"></div>
             <div class="jg-flip-content"></div>
-            <button class="jg-flip-close" type="button" aria-label="关闭">
+            <button class="jg-flip-close" type="button" aria-label='@Loc.T("关闭")'>
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round">
                     <path d="M6 6l12 12M18 6L6 18" />
                 </svg>
@@ -329,7 +327,6 @@
     /// <summary>同一 Nexus Mod 可能含多个子包（共享 UpdateKey），靠 UniqueID 二次定位到具体那条。</summary>
     [Parameter] public string? UniqueID { get; set; }
 
-    private string _key = "";
     private NexusModDetail? _mod;
     // v0.72.0：最新 MAIN 文件（可更新判定与一键直装 InstallModDirectAsync 同一权威源）
     private NexusFileInfo? _latestFile;
@@ -411,12 +408,11 @@
         _translations = null;
         _changelogs = null;
         _installMsg = null;
-        _key = Cfg.Current.NexusApiKey;
 
-        if (string.IsNullOrEmpty(_key))
+        if (!NexusService.IsAuthenticated)
         {
             _loading = false;
-            _error = "还没配置 Nexus API Key —— 先到「Nexus」页粘贴你的 Personal API Key。";
+            _error = LocService.Tr("还没配置 Nexus API Key —— 先到「Nexus」页粘贴你的 Personal API Key。");
             return;
         }
 
@@ -439,13 +435,13 @@
             // v1.06.8：缓存命中（10 分钟内看过）直接用，返回 A 秒开不转圈；未命中才走网络
             if (!_detailCache.TryGetValue(ModId, out var hit) || DateTime.UtcNow - hit.At > DetailCacheTtl)
             {
-                var mod = await NexusApi.GetModDetailAsync(_key, ModId);
-                if (mod is null) { _error = "拉取失败 —— 检查网络或 API Key 是否有效。"; }
+                var mod = await NexusApi.GetModDetailAsync(ModId);
+                if (mod is null) { _error = LocService.Tr("拉取失败 —— 检查网络或 API Key 是否有效。"); }
                 else
                 {
                     // v0.72.0：拉最新 MAIN 文件做可更新判定（与一键直装同源）。失败静默。
                     NexusFileInfo? latest = null;
-                    try { latest = await NexusApi.GetLatestMainFileAsync(_key, ModId, patient: true, installedFolder: _installedFolder); }
+                    try { latest = await NexusApi.GetLatestMainFileAsync(ModId, patient: true, installedFolder: _installedFolder); }
                     catch { latest = null; }
                     hit = (mod, latest, DateTime.UtcNow);
                     RememberDetail(ModId, hit);
@@ -484,7 +480,7 @@
                     catch { _translations = new(); }
                     try
                     {
-                        _changelogs = await NexusApi.GetChangelogsAsync(_key, ModId) ?? new();
+                        _changelogs = await NexusApi.GetChangelogsAsync(ModId) ?? new();
                         await InvokeAsync(StateHasChanged);
                     }
                     catch { _changelogs = new(); }
@@ -493,7 +489,7 @@
                 {
                     try
                     {
-                        var hist = await NexusApi.GetDownloadHistoryAsync(_key);
+                        var hist = await NexusApi.GetDownloadHistoryAsync();
                         if (hist is not null && hist.TryGetValue(ModId, out var remote)
                             && (_lastDownloaded is null
                                 || string.Compare(remote, _lastDownloaded, StringComparison.Ordinal) > 0))
@@ -524,7 +520,7 @@
         }
         catch (Exception ex)
         {
-            _error = "拉取失败：" + ex.Message;
+            _error = LocService.Tr("拉取失败：") + ex.Message;
         }
         _loading = false;
     }
@@ -555,9 +551,9 @@
     private async Task Install()
     {
         if (_mod is null) return;
-        if (string.IsNullOrEmpty(_key))
+        if (!NexusService.IsAuthenticated)
         {
-            _installMsg = "请先在「设置 → Nexus」里填入 API key 才能一键安装";
+            _installMsg = LocService.Tr("请先在「设置 → Nexus」里填入 API key 才能一键安装");
             return;
         }
         if (!Cfg.Current.EnableOneClickInstall)
@@ -568,7 +564,7 @@
             return;
         }
         _installing = true;
-        _installMsg = "正在后台下载安装…（大文件需要一点时间）";
+        _installMsg = LocService.Tr("正在后台下载安装…（大文件需要一点时间）");
         StateHasChanged();
         try
         {
@@ -582,7 +578,7 @@
             }
             else if (err.Contains("premium", StringComparison.OrdinalIgnoreCase))
             {
-                _installMsg = "这个 mod 需要 Premium 才能直装 —— 已为你打开系统浏览器，点 Mod Manager Download 即可自动安装";
+                _installMsg = LocService.Tr("这个 mod 需要 Premium 才能直装 —— 已为你打开系统浏览器，点 Mod Manager Download 即可自动安装");
                 MainWindow.OpenNexusOverlay(
                     $"https://www.nexusmods.com/stardewvalley/mods/{ModId}?tab=files");
             }
@@ -593,12 +589,12 @@
             }
             else
             {
-                _installMsg = "安装失败：" + err;
+                _installMsg = LocService.Tr("安装失败：") + err;
             }
         }
         catch (Exception ex)
         {
-            _installMsg = "失败：" + ex.Message;
+            _installMsg = LocService.Tr("失败：") + ex.Message;
         }
         finally
         {
@@ -645,6 +641,12 @@
         }
         return _localMods.Any(m => string.Equals(m.Name?.Trim(), n, StringComparison.OrdinalIgnoreCase));
     }
+
+    /// <summary>官网 Requirements 没有"是否必需"的结构化字段，只有注释栏（notes）作者会写
+    /// "Required." / "Optional"（实测 Miku skin for Abigail 的 Seasonal Outfits = Optional）。
+    /// 只认以 optional 开头的写法；认不出仍按必需的红标处理，宁可多提示不误吞。</summary>
+    private static bool IsReqOptional(NexusRequirementEx r) =>
+        (r.Notes ?? "").TrimStart().StartsWith("optional", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>依赖 → 跳它的详情页。拿得到 mod_id 就进内部详情；拿不到（=0）才降级到 Nexus 搜索。</summary>
     private void GoDep(int modId, string name)

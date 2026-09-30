@@ -9,37 +9,37 @@
     <div class="jg-tasks-inner" style="display:flex;gap:16px;">
         <aside class="jg-tasks-side" style="flex:0 0 200px;">
             @* ─── 透明底黑箭头返回（悬浮白底黑字胶囊提示跟随鼠标）─── *@
-            <button class="jg-tasks-back" @onclick="GoBack" data-tip="返回" aria-label="返回">
+            <button class="jg-tasks-back" @onclick="GoBack" data-tip='@Loc.T("返回")' aria-label='@Loc.T("返回")'>
                 <svg width="20" height="20" viewBox="0 0 1024 1024" fill="none">
                     <path d="M532.526499 904.817574L139.506311 511.797385 532.526499 118.777197c12.258185-12.258185 12.432147-32.892131-0.187265-45.51052-12.707416-12.707416-32.995485-12.703323-45.511543-0.187265L75.166957 484.739123c-7.120165 7.120165-10.163477 17.065677-8.990768 26.624381-1.500167 9.755178 1.5104 20.010753 8.990768 27.491121l411.660734 411.660734c12.258185 12.258185 32.892131 12.432147 45.511543-0.187265 12.707416-12.707416 12.7023-32.995485 0.187265-45.51052z" fill="currentColor"/>
                 </svg>
             </button>
-            <div style="margin-top:24px;font-size:13px;opacity:.7;">总进度</div>
+            <div style="margin-top:24px;font-size:13px;opacity:.7;">@Loc.T("总进度")</div>
             <div style="font-size:26px;font-weight:600;color:var(--jg-text)">@Center.TotalPercent.ToString("F2") %</div>
-            <div style="margin-top:16px;font-size:13px;opacity:.7;">下载速度</div>
+            <div style="margin-top:16px;font-size:13px;opacity:.7;">@Loc.T("下载速度")</div>
             <div style="font-size:22px;font-weight:600;color:var(--jg-text)">@(Center.TotalSpeedKnown ? Center.TotalSpeedMBps.ToString("F2") + " M/s" : "—")</div>
-            <div style="margin-top:16px;font-size:13px;opacity:.7;">剩余任务</div>
+            <div style="margin-top:16px;font-size:13px;opacity:.7;">@Loc.T("剩余任务")</div>
             <div style="font-size:22px;font-weight:600;color:var(--jg-text)">@Center.RunningCount</div>
             <div style="margin-top:24px;display:flex;flex-direction:column;gap:8px;">
                 <button class="jg-tasks-clear" @onclick="ResumeAll"
-                        data-tip="继续所有已暂停的任务（历史版本会从头重下）"
-                        disabled="@(!HasPaused)">全部继续</button>
+                        data-tip='@Loc.T("继续所有已暂停的任务（历史版本会从头重下）")'
+                        disabled="@(!HasPaused)">@Loc.T("全部继续")</button>
                 <button class="jg-tasks-clear" @onclick="PauseAll"
-                        data-tip="暂停所有进行中的任务（含排队中的）"
-                        disabled="@(!HasRunning)">全部暂停</button>
+                        data-tip='@Loc.T("暂停所有进行中的任务（含排队中的）")'
+                        disabled="@(!HasRunning)">@Loc.T("全部暂停")</button>
                 <button class="jg-tasks-clear" @onclick="AskClear"
-                        data-tip="删除当前筛选下的所有任务记录，正在跑的会一起取消"
-                        disabled="@(_visible.Count == 0)">全部删除</button>
+                        data-tip='@Loc.T("删除当前筛选下的所有任务记录，正在跑的会一起取消")'
+                        disabled="@(_visible.Count == 0)">@Loc.T("全部删除")</button>
             </div>
         </aside>
         <section style="flex:1;min-width:0;">
-            <h1 style="margin-top:0;">任务管理</h1>
+            <h1 style="margin-top:0;">@Loc.T("任务管理")</h1>
             @* ─── 筛选导航：第一个胶囊 = 任务类型（点本体一键回「全部」，点小箭头才弹下拉）
                    + 状态胶囊 进行中/成功/失败 ─── *@
             <div class="jg-tfilters">
                 <div class="jg-sort-dd jg-tf-kind @(_filter == "all" ? "active" : "")" id="jgKindFilter">
-                    <span class="jg-tf-label" @onclick="KindPillClick" title="点击回到该类型的全部任务">@KindLabel(_kind)</span>
-                    <span class="jg-tf-caret" @onclick="ToggleKindMenu" title="选择任务类型">
+                    <span class="jg-tf-label" @onclick="KindPillClick" title='@Loc.T("点击回到该类型的全部任务")'>@KindLabel(_kind)</span>
+                    <span class="jg-tf-caret" @onclick="ToggleKindMenu" title='@Loc.T("选择任务类型")'>
                         <svg class="jg-sort-arrow" width="12" height="12" viewBox="0 0 12 12" fill="none">
                             <path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
                         </svg>
@@ -48,19 +48,19 @@
                         @foreach (var k in Kinds)
                         {
                             <button type="button" class="jg-sort-item @(_kind == k.Key ? "active" : "")"
-                                    @onclick="() => SelectKind(k.Key)">@k.Label</button>
+                                    @onclick="() => SelectKind(k.Key)">@Loc.T(k.Label)</button>
                         }
                     </div>
                 </div>
                 @foreach (var f in Filters)
                 {
                     var key = f.Key;
-                    <button class="jg-tfilter @(_filter == key ? "active" : "")" @onclick="() => SetFilter(key)">@f.Label</button>
+                    <button class="jg-tfilter @(_filter == key ? "active" : "")" @onclick="() => SetFilter(key)">@Loc.T(f.Label)</button>
                 }
             </div>
             @if (_visible.Count == 0)
             {
-                <div class="jg-note">当前筛选下没有任务。</div>
+                <div class="jg-note">@Loc.T("当前筛选下没有任务。")</div>
             }
             else
             {
@@ -70,22 +70,22 @@
                     var arrowId = "jgArr-" + t.Id.ToString("N");
                     <div class="jg-card" @key="t.Id" style="margin-bottom:10px;">
                         <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
-                            <div style="font-weight:600;word-break:break-word;overflow-wrap:anywhere;flex:1;min-width:0;">@t.Title</div>
+                            <div style="font-weight:600;word-break:break-word;overflow-wrap:anywhere;flex:1;min-width:0;">@Loc.T(t.Title)</div>
                             @if (t.Status == "running" && t.CanPause)
                             {
-                                <button class="jg-rowbtn" @onclick="() => Pause(t)" title="暂停">⏸</button>
+                                <button class="jg-rowbtn" @onclick="() => Pause(t)" title='@Loc.T("暂停")'>⏸</button>
                             }
                             else if (t.Status == "paused" && t.CanPause)
                             {
-                                <button class="jg-rowbtn" @onclick="() => Resume(t)" title="继续">▶</button>
+                                <button class="jg-rowbtn" @onclick="() => Resume(t)" title='@Loc.T("继续")'>▶</button>
                             }
                             @if (t.Status is "running" or "paused")
                             {
-                                <button class="jg-rowbtn" @onclick="() => Remove(t)" title="取消">×</button>
+                                <button class="jg-rowbtn" @onclick="() => Remove(t)" title='@Loc.T("取消")'>×</button>
                             }
                             else
                             {
-                                <button class="jg-rowbtn" @onclick="() => Remove(t)" title="移除">×</button>
+                                <button class="jg-rowbtn" @onclick="() => Remove(t)" title='@Loc.T("移除")'>×</button>
                             }
                         </div>
                         <div style="margin-top:6px;font-size:12px;display:flex;align-items:center;gap:6px;">
@@ -93,7 +93,7 @@
                             @if (log.Count > 0)
                             {
                                 @* ─── 数字进度后边的下拉按钮：展开该任务的下载信息 ─── *@
-                                <button class="jg-taskdrop-trigger" @onclick="() => ToggleDrop(t)" aria-label="展开下载信息">
+                                <button class="jg-taskdrop-trigger" @onclick="() => ToggleDrop(t)" aria-label='@Loc.T("展开下载信息")'>
                                     <svg id="@arrowId" width="12" height="12" viewBox="0 0 12 12" fill="none">
                                         <path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
                                     </svg>
@@ -121,7 +121,7 @@
                                 }
                                 @if (lines.Count == 0)
                                 {
-                                    <div class="jg-tl-empty">暂无详细日志（正在后台处理，请稍候…）</div>
+                                    <div class="jg-tl-empty">@Loc.T("暂无详细日志（正在后台处理，请稍候…）")</div>
                                 }
                                 @for (var i = 0; i < lines.Count; i++)
                                 {
@@ -194,11 +194,11 @@
     {
         <div class="jg-tasks-confirm-mask" @onclick="CancelConfirm">
             <div class="jg-tasks-confirm" @onclick:stopPropagation>
-                <div style="font-weight:600;margin-bottom:6px;">删除任务</div>
-                <div style="font-size:13px;opacity:.8;">确定删除当前筛选下的 @_visible.Count 条任务吗？正在下载/安装的会一起取消。</div>
+                <div style="font-weight:600;margin-bottom:6px;">@Loc.T("删除任务")</div>
+                <div style="font-size:13px;opacity:.8;">@Loc.F("确定删除当前筛选下的 {0} 条任务吗？正在下载/安装的会一起取消。", _visible.Count)</div>
                 <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px;">
-                    <button class="jg-tasks-cancel" @onclick="CancelConfirm">取消</button>
-                    <button class="jg-tasks-clear" style="margin:0;" @onclick="DoClear">确定删除</button>
+                    <button class="jg-tasks-cancel" @onclick="CancelConfirm">@Loc.T("取消")</button>
+                    <button class="jg-tasks-clear" style="margin:0;" @onclick="DoClear">@Loc.T("确定删除")</button>
                 </div>
             </div>
         </div>
@@ -253,7 +253,7 @@
     private string _kind = "all";     // 类型维度：all / mod / cleanup
 
     private string KindLabel(string key) =>
-        Kinds.FirstOrDefault(k => k.Key == key).Label ?? "全部";
+        Loc.T(Kinds.FirstOrDefault(k => k.Key == key).Label ?? "全部");
 
     private void SetFilter(string key)
     {
@@ -322,7 +322,7 @@
             if (line.StartsWith("正在下载"))
             {
                 if (lastWasDl) continue;   // 连续心跳只留一行
-                yield return "正在下载…";
+                yield return LocService.Tr("正在下载…");
                 lastWasDl = true;
                 continue;
             }
@@ -369,7 +369,7 @@
             return;
         }
         if (!Center.Resume(t))
-            _ = JS.InvokeVoidAsync("junigridJs.toast", "该任务暂停后需重新发起（已保留已下载部分）", "err");
+            _ = JS.InvokeVoidAsync("junigridJs.toast", LocService.Tr("该任务暂停后需重新发起（已保留已下载部分）"), "err");
     }
 
     // ─── 全部删除（当前筛选）：确认弹窗 → 按筛选清掉记录，正在跑的同步取消 ───

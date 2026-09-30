@@ -290,3 +290,25 @@
 .jg-sort-dd.jg-dd-right .jg-sort-menu { left: auto; right: 0; }/* ═══ v1.05.0：用户卡片 tooltip 压过浏览页下拉按钮（z-index 9500 之上）═══ */
 .jg-nexus-scope .jg-user-tip { position: relative; z-index: 9700; }.jg-nexus-scope .jg-user-tip-bubble { z-index: 9701; }
 
+/* ── v1.10：作者推荐 —— 无限循环跑马灯（对照 reactbits Logo Loop：轨道匀速平移、
+      内容复制一份做无缝衔接、悬停暂停，滚轮可来回拨）。两份卡片各自带 margin-right，
+      不用 gap —— 有 gap 时 -50% 会差半个间距，接缝处会跳一下。
+      ⚠ 偏移量由 junigridJs.picksLoopInit 每帧写 inline transform，这里【不要】再挂
+      CSS animation：动画优先级高于 inline style，会把 JS 写的 transform 整个盖掉，
+      滚轮也就接不上手（自动和手动抢同一个值）。 ── */
+.jg-picks { margin-top: 26px; }
+.jg-picks-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.jg-picks-star {
+    width: 18px; height: 18px; flex: none; background: var(--jg-ink, #0e100f);
+    -webkit-mask: url(../assets/author-pick-star.svg) center / contain no-repeat;
+            mask: url(../assets/author-pick-star.svg) center / contain no-repeat;
+}
+.jg-picks-title { font-size: 15px; font-weight: 700; }
+.jg-picks-rail {
+    overflow: hidden;
+    cursor: ew-resize;
+    -webkit-mask-image: linear-gradient(90deg, transparent, #000 40px, #000 calc(100% - 40px), transparent);
+            mask-image: linear-gradient(90deg, transparent, #000 40px, #000 calc(100% - 40px), transparent);
+}
+.jg-picks-track { display: flex; width: max-content; will-change: transform; }
+.jg-picks-item { flex: 0 0 230px; width: 230px; margin-right: 12px; }

@@ -359,7 +359,7 @@ public sealed class StorageService
     private string MoveBucketsToTrash(string gamePath, string[] dirs, string title)
     {
         var task = _center.Start("移出：" + title, "cleanup");
-        _center.Report(task, "正在移进游戏卸载回收站…", 5);
+        _center.Report(task, LocService.Tr("正在移进游戏卸载回收站…"), 5);
         try
         {
             var trash = StoragePaths.GameTrashDir(gamePath);
@@ -376,7 +376,7 @@ public sealed class StorageService
                     var len = DirSize(batch);
                     if (TryMoveTree(batch, dst)) { moved++; bytes += len; }
                     else skipped++;
-                    _center.Report(task, $"已移出 {moved} 批（{ResumableDownload.FormatBytes(bytes)}）"
+                    _center.Report(task, LocService.Tf("已移出 {0} 批（{1}）", moved, ResumableDownload.FormatBytes(bytes))
                         + (skipped > 0 ? $"，占用中跳过 {skipped} 批" : ""),
                         5 + 90.0 * (moved + skipped) / Math.Max(1, batches.Count + dirs.Length));
                 }
@@ -395,15 +395,15 @@ public sealed class StorageService
         }
         catch (Exception ex)
         {
-            _center.Finish(task, false, "移出失败：" + ex.Message);
-            return "移出失败：" + ex.Message;
+            _center.Finish(task, false, LocService.Tr("移出失败：") + ex.Message);
+            return LocService.Tr("移出失败：") + ex.Message;
         }
     }
 
     private Task<string> RunClean(string sizeKey, string title, string[] roots)
     {
         var task = _center.Start("清理：" + title, "cleanup");
-        _center.Report(task, "开始清理…", 3);
+        _center.Report(task, LocService.Tr("开始清理…"), 3);
 
         var pruneDirs = roots.Any(Directory.Exists);   // 目录根才需要收尾空壳
         return Task.Run(() =>
@@ -421,7 +421,7 @@ public sealed class StorageService
                 catch { skipped++; }   // 占用中/权限不足：跳过，不中断
                 if (i % 50 == 0 || i == files.Count - 1)
                     _center.Report(task,
-                        $"已清理 {ResumableDownload.FormatBytes(freed)}（跳过占用中 {skipped} 个）",
+                        LocService.Tf("已清理 {0}（跳过占用中 {1} 个）", ResumableDownload.FormatBytes(freed), skipped),
                         3 + 92.0 * (i + 1) / Math.Max(1, files.Count));
             }
             if (pruneDirs)
@@ -516,14 +516,14 @@ public sealed class StorageService
         var oldVerCache = StoragePaths.DepotStagingDir;
 
         if (SelfUpdateService.CacheBusy)
-            return "自更新安装包正在下载，稍后再更改缓存目录";
+            return LocService.Tr("自更新安装包正在下载，稍后再更改缓存目录");
 
         var cfg = _cfg.Current;
         cfg.CacheRoot = newRoot;
         _cfg.Save(cfg);
 
         var task = _center.Start(newRoot is null ? "恢复默认缓存位置" : "迁移缓存目录", "cleanup");
-        _center.Report(task, newRoot is null ? "正在恢复默认位置…" : $"目标：{newRoot}", 5);
+        _center.Report(task, newRoot is null ? LocService.Tr("正在恢复默认位置…") : LocService.Tf("目标：{0}", newRoot), 5);
         return await Task.Run(() =>
         {
             long moved = 0, skipped = 0;
@@ -565,7 +565,7 @@ public sealed class StorageService
                 cfg.PendingWebView2MoveFrom = oldWv2;
                 _cfg.Save(cfg);
                 wv2Note = "；WebView2 数据将在重启应用后自动迁移";
-                _center.Report(task, "WebView2 数据将在重启后自动迁移", 90);
+                _center.Report(task, LocService.Tr("WebView2 数据将在重启后自动迁移"), 90);
             }
 
             var msg = newRoot is null

@@ -106,11 +106,11 @@ public static class XnaRedistService
             }
 
             if (!File.Exists(msi) || new FileInfo(msi).Length < 1024 * 1024)
-                return "XNA 运行库下载失败（微软源与镜像都不通）—— 老版本游戏可能无法启动";
+                return LocService.Tr("XNA 运行库下载失败（微软源与镜像都不通）—— 老版本游戏可能无法启动");
             if (!IsMicrosoftSigned(msi))
             {
                 try { File.Delete(msi); } catch { }
-                return "下载的 XNA 运行库没有有效的微软签名，已中止安装";
+                return LocService.Tr("下载的 XNA 运行库没有有效的微软签名，已中止安装");
             }
 
             progress?.Invoke("正在安装 XNA 运行库（请在弹出的窗口确认管理员授权）…", 99);
@@ -130,11 +130,11 @@ public static class XnaRedistService
                 ? "XNA 运行库安装被取消（未确认管理员授权）—— 老版本游戏可能无法启动"
                 : $"XNA 运行库安装失败（msiexec 退出码 {code}）—— 老版本游戏可能无法启动";
         }
-        catch (OperationCanceledException) { return "XNA 运行库安装被取消"; }
+        catch (OperationCanceledException) { return LocService.Tr("XNA 运行库安装被取消"); }
         catch (Exception ex)
         {
             AppLog.Warn("XNA", "安装异常: " + ex.Message);
-            return "XNA 运行库安装异常：" + ex.Message;
+            return LocService.Tr("XNA 运行库安装异常：") + ex.Message;
         }
     }
 

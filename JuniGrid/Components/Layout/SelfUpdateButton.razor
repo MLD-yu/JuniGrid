@@ -35,15 +35,15 @@
             @if (_downloading)
             {
                 <span class="jg-upd-tip-spin" aria-hidden="true"></span>
-                <span>下载中@(_progressPercent is > 0 ? $" {_progressPercent:0}%" : "")</span>
+                <span>@Loc.T("下载中")@(_progressPercent is > 0 ? $" {_progressPercent:0}%" : "")</span>
             }
             else if (_ready)
             {
-                <span>点击安装</span>
+                <span>@Loc.T("点击安装")</span>
             }
             else if (_failed)
             {
-                <span>下载失败，点击重试</span>
+                <span>@Loc.T("下载失败，点击重试")</span>
             }
             else
             {

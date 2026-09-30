@@ -6,6 +6,7 @@
 @inject GameService Game
 @inject SteamService Steam
 @inject NexusService NexusApi
+@inject NexusOAuthService OAuth
 @inject NavigationManager Nav
 @inject IJSRuntime JS
 @inject StorageService Storage
@@ -15,9 +16,10 @@
 @inject TaskCenterService Center
 
 <div class="jg-page">
-    <h1 style="margin-top:0">设置</h1>
+    <h1 style="margin-top:0">@Loc.T("设置")</h1>
+
     <div class="jg-card" style="margin-top:12px">
-        <div style="font-weight:600">账号</div>
+        <div style="font-weight:600">@Loc.T("账号")</div>
         <div style="display:flex;flex-direction:column;gap:10px;margin-top:8px;">
             <div style="display:flex;align-items:center;gap:10px;">
                 @if (_steam.Found && _steam.AvatarDataUri is not null)
@@ -31,30 +33,30 @@
                 }
                 <div style="flex:1">
                     <div style="font-weight:600;display:flex;align-items:center;gap:6px;">
-                        Steam · @(_steam.Found ? (_steam.PersonaName ?? _steam.AccountName ?? "已登录") : "未登录")
+                        Steam · @(_steam.Found ? (_steam.PersonaName ?? _steam.AccountName ?? Loc.T("已登录")) : Loc.T("未登录"))
                         @if (DdAuthorized)
                         {
-                            <span class="jg-premium-badge" style="background:#2e7d32">下载已授权</span>
+                            <span class="jg-auth-badge">@Loc.T("下载已授权")</span>
                         }
                     </div>
                     <div style="font-size:12px;opacity:.65">
                         @if (DdAuthorized)
                         {
-                            <text>历史版本下载免密@(GetDdAccountSuffix())</text>
+                            <text>@Loc.F("历史版本下载免密{0}", GetDdAccountSuffix())</text>
                         }
                         else
                         {
-                            <text>Steam 客户端级登录，切换账号请在 Steam 里操作；下载历史版本前需扫码授权</text>
+                            <text>@Loc.T("Steam 客户端级登录，切换账号请在 Steam 里操作；下载历史版本前需扫码授权")</text>
                         }
                     </div>
                 </div>
                 @if (DdAuthorized)
                 {
-                    <button class="jg-nexus-logout-btn" @onclick="DdRevoke">解除授权</button>
+                    <button class="jg-nexus-logout-btn" @onclick="DdRevoke">@Loc.T("解除授权")</button>
                 }
                 else
                 {
-                    <button class="jg-nexus-login-btn" @onclick="OpenDdQr">扫码授权</button>
+                    <button class="jg-nexus-login-btn" @onclick="OpenDdQr">@Loc.T("扫码授权")</button>
                 }
             </div>
             <div style="display:flex;align-items:center;gap:10px;">
@@ -67,16 +69,16 @@
                     <img src="assets/nav/nexus.svg" alt="nexus" style="width:36px;height:36px;border-radius:50%;object-fit:cover;" />
                 }
                 <div style="flex:1">
-                    <div style="font-weight:600;display:flex;align-items:center;gap:6px;">Nexus · @(string.IsNullOrEmpty(_nexusName) ? "未登录" : _nexusName) @if (_nexusPremium) { <span class="jg-premium-badge">Premium</span> }</div>
-                    <div style="font-size:12px;opacity:.65">@(string.IsNullOrEmpty(_nexusName) ? "登录后可使用 Nexus 下载与安装" : "Nexus Mods 账号已登录")</div>
+                    <div style="font-weight:600;display:flex;align-items:center;gap:6px;">Nexus · @(string.IsNullOrEmpty(_nexusName) ? Loc.T("未登录") : _nexusName) @if (_nexusPremium) { <span class="jg-premium-badge">Premium</span> }</div>
+                    <div style="font-size:12px;opacity:.65">@(string.IsNullOrEmpty(_nexusName) ? Loc.T("登录后可使用 Nexus 下载与安装") : Loc.T("Nexus Mods 账号已登录"))</div>
                 </div>
                 @if (!string.IsNullOrEmpty(_nexusName))
                 {
-                    <button class="jg-nexus-logout-btn" @onclick="NexusLogout">退出 Nexus</button>
+                    <button class="jg-nexus-logout-btn" @onclick="NexusLogout">@Loc.T("退出 Nexus")</button>
                 }
                 else
                 {
-                    <button class="jg-nexus-login-btn" @onclick='() => Nav.NavigateTo("/nexus?login=1")'>登录</button>
+                    <button class="jg-nexus-login-btn" @onclick='() => Nav.NavigateTo("/nexus?login=1")'>@Loc.T("登录")</button>
                 }
             </div>
         </div>
@@ -85,13 +87,15 @@
     @* ─── Steam 下载授权：扫码弹窗 ─── *@
     @if (_ddQrOpen)
     {
-        <div style="position:fixed;inset:0;background:rgba(0,0,0,.65);display:flex;align-items:center;justify-content:center;z-index:1000" @onclick="CloseDdQr">
-            <div class="jg-card" style="max-width:420px;padding:18px 22px" @onclick:stopPropagation>
-                <div style="font-weight:600;margin-bottom:10px">Steam 扫码授权</div>
+        @* 用全站 .jg-modal-overlay（z-index 99998）：内联的 1000 会被 .jg-sort-dd(9500) 盖过，
+           导致扫码进行中还能点背后的语言/主题下拉 *@
+        <div class="jg-modal-overlay" @onclick="CloseDdQr">
+            <div class="jg-modal" style="padding:18px 22px" @onclick:stopPropagation>
+                <div style="font-weight:600;margin-bottom:10px">@Loc.T("Steam 扫码授权")</div>
 
                 @if (!string.IsNullOrEmpty(_ddQrError))
                 {
-                    <div class="jg-qr-err">@_ddQrError</div>
+                    <div class="jg-qr-err">@Loc.T(_ddQrError)</div>
                 }
 
                 @if (_ddQrLines is { Count: >= 27 })
@@ -100,15 +104,15 @@
                     <div class="jg-qr-stage vector">
                         <QrAsciiImage Lines="_ddQrLines" Size="340" />
                     </div>
-                    <div class="jg-qr-hint">@DdQrScanHint</div>
+                    <div class="jg-qr-hint">@Loc.T(DdQrScanHint)</div>
                 }
                 else if (!string.IsNullOrEmpty(_ddQrDataUri))
                 {
                     <div class="jg-qr-stage">
-                        <img class="qr" src="@_ddQrDataUri" alt="扫码授权"
+                        <img class="qr" src="@_ddQrDataUri" alt='@Loc.T("扫码授权")'
                              @onerror="OnQrImgError"/>
                     </div>
-                    <div class="jg-qr-hint">@DdQrScanHint</div>
+                    <div class="jg-qr-hint">@Loc.T(DdQrScanHint)</div>
                 }
                 else if (!string.IsNullOrEmpty(_ddQrError) && !_ddQrBusy)
                 {
@@ -124,7 +128,7 @@
                         <div class="veil"></div>
                         <div class="hub"><div class="ring"></div></div>
                     </div>
-                    <div class="jg-qr-hint">@(string.IsNullOrWhiteSpace(_ddQrState) ? "正在连接…" : DdQrHint)</div>
+                    <div class="jg-qr-hint">@(string.IsNullOrWhiteSpace(_ddQrState) ? Loc.T("正在连接…") : DdQrHint)</div>
                 }
 
                 <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:12px">
@@ -132,24 +136,62 @@
                     {
                         @* 出码截止是 20 秒，不该让人干等：点一下 1 秒内掐掉这一路马上重开，
                            而且这次重开不占用重试次数（用户主动要的，不是失败） *@
-                        <button type="button" class="jg-path-btn" @onclick="KickQrRetry">立即重开</button>
+                        <button type="button" class="jg-path-btn" @onclick="KickQrRetry">@Loc.T("立即重开")</button>
                     }
-                    <button type="button" class="jg-path-btn" @onclick="CloseDdQr">@(_ddQrBusy ? "取消" : "关闭")</button>
+                    <button type="button" class="jg-path-btn" @onclick="CloseDdQr">@(_ddQrBusy ? Loc.T("取消") : Loc.T("关闭"))</button>
                 </div>
             </div>
         </div>
     }
 
 
+    @* ── i18n：界面语言（复用 Mod 管理页同款自定义下拉，不用原生 select）── *@
     <div class="jg-card" style="margin-top:12px">
-        <div style="font-weight:600">游戏目录</div>
+        <div style="font-weight:600">@Loc.T("界面语言")</div>
+        <div class="jg-sort-dd jg-lang-dd @(_langOpen ? "open" : "")" data-dd="lang" style="margin-top:8px; width:fit-content; max-width:100%">
+            <button class="jg-sort-trigger" @onclick="ToggleLang">
+                @(Loc.Lang == "en" ? "English" : "简体中文")
+                <svg class="jg-sort-arrow" width="12" height="12" viewBox="0 0 12 12" fill="none">
+                    <path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+            </button>
+            <div class="jg-sort-menu">
+                <button class="jg-sort-item @(Loc.Lang == "zh" ? "active" : "")" @onclick='() => PickLang("zh")'>@Loc.T("简体中文")</button>
+                <button class="jg-sort-item @(Loc.Lang == "en" ? "active" : "")" @onclick='() => PickLang("en")'>English</button>
+            </div>
+        </div>
+        <div class="jg-dd-overlay @(_langOpen ? "open" : "")" data-dd="lang" @onclick="CloseLang"></div>
+    </div>
+
+    @* ── 颜色主题（data-accent 轴；纯 CSS 变量，切换即时全站重上色，无需重载）── *@
+    <div class="jg-card" style="margin-top:12px">
+        <div style="font-weight:600">@Loc.T("颜色主题")</div>
+        <div class="jg-accent-grid">
+            @foreach (var a in Accents)
+            {
+                var accent = a.Key == "system" ? SystemHex : a.Accent;
+                var cur = Cfg.Current.Accent == a.Key;
+                <button class="jg-accent-card @(cur ? "cur" : "")" @onclick="() => SetAccent(a.Key)">
+                    <span class="jg-accent-mock" style="@($"--mock-accent:{accent}")">
+                        <span class="jg-mock-bar"></span>
+                        <span class="jg-mock-dot @(cur ? "on" : "")"></span>
+                        <span class="jg-mock-panel"><i></i><i></i></span>
+                    </span>
+                    <span class="jg-accent-name">@(Loc.Lang == "en" ? a.En : a.Zh)</span>
+                </button>
+            }
+        </div>
+    </div>
+
+    <div class="jg-card" style="margin-top:12px">
+        <div style="font-weight:600">@Loc.T("游戏目录")</div>
         <input class="jg-ver-input" style="margin-top:6px" @bind="_gamePath"
-               placeholder="例：C:\Program Files (x86)\Steam\steamapps\common\Stardew Valley" />
+               placeholder='@Loc.T("例：C:\\Program Files (x86)\\Steam\\steamapps\\common\\Stardew Valley")' />
 
         <div style="display:flex;gap:8px;margin-top:8px">
-            <button type="button" class="jg-path-btn" @onclick="Pick">浏览...</button>
-            <button type="button" class="jg-path-btn" @onclick="AutoDetect">自动检测</button>
-            <button type="button" class="jg-path-btn primary" @onclick="Save">保存</button>
+            <button type="button" class="jg-path-btn" @onclick="Pick">@Loc.T("浏览...")</button>
+            <button type="button" class="jg-path-btn" @onclick="AutoDetect">@Loc.T("自动检测")</button>
+            <button type="button" class="jg-path-btn primary" @onclick="Save">@Loc.T("保存")</button>
         </div>
 
         @* ─── v1.2.4：游戏版本锁定 —— Steam 版才有 appmanifest，非 Steam 目录自动降级为说明文字 ─── *@
@@ -158,10 +200,10 @@
             <div class="jg-switch-col" style="margin-top:10px">
                 <div class="jg-switch-row @(_manifestLocked ? "on" : "")" @onclick="ToggleLockGameVersion">
                     <span style="display:flex;align-items:center;gap:8px">
-                        <span>锁定游戏版本</span>
+                        <span>@Loc.T("锁定游戏版本")</span>
                         <span class="jg-help-tip">
                             <span class="jg-help-tip-btn">?</span>
-                            <span class="jg-help-tip-bubble">开启后 Steam 无法更新游戏本体（含 Steam 启动前的强制更新），当前版本会一直保持可玩 —— 适合想留在旧版本搭配旧 mod 的玩家。想更新游戏时，先关闭本开关再启动。</span>
+                            <span class="jg-help-tip-bubble">@Loc.T("开启后 Steam 无法更新游戏本体（含 Steam 启动前的强制更新），当前版本会一直保持可玩 —— 适合想留在旧版本搭配旧 mod 的玩家。想更新游戏时，先关闭本开关再启动。")</span>
                         </span>
                     </span>
                     <span class="jg-switch"><span class="jg-switch-knob"></span></span>
@@ -170,29 +212,36 @@
         }
         else
         {
-            <div style="font-size:12px;opacity:.6;margin-top:8px">未找到 Steam 版清单文件（appmanifest）—— 版本锁定仅适用于 Steam 版游戏目录。</div>
+            <div style="font-size:12px;opacity:.6;margin-top:8px">@Loc.T("未找到 Steam 版清单文件（appmanifest）—— 版本锁定仅适用于 Steam 版游戏目录。")</div>
         }
 
     </div>
 
     <div class="jg-card" style="margin-top:12px">
-        <div style="font-weight:600">Nexus 安装</div>
+        <div style="font-weight:600">@Loc.T("Nexus 安装")</div>
         <div class="jg-switch-col">
+            @* ─── v1.2.5：一个开关管两头 —— 应用内详情页按钮走不走浏览器，以及系统层
+               HKCU\Software\Classes\nxm 归谁（浏览器点「Mod Manager Download」时 Windows 交给谁，
+               注册表只有一个值，谁最后写谁赢）。原先是两行开关，已合并。─── *@
             <div class="jg-switch-row @(_oneClickInstall ? "on" : "")" @onclick="ToggleOneClick">
                 <span style="display:flex;align-items:center;gap:8px">
-                    <span>一键安装</span>
+                    <span>@Loc.T("一键安装")</span>
+                    <span class="jg-help-tip">
+                        <span class="jg-help-tip-btn">?</span>
+                        <span class="jg-help-tip-bubble">@Loc.T("详情页点「安装」时免弹浏览器，直接在后台下载并装进 Mods。")<br />@Loc.T("同时接管 Nexus 下载链接：在网页点「Mod Manager Download」会直接交给 JuniGrid 下载，而不是 Vortex 等其它管理器。")<br />@Loc.T("注意：开着时 JuniGrid 每次启动都会重新接管一次；关闭则把链接交还给之前接管它的管理器（Vortex / NMM），若那个管理器已经不存在，就清空这条注册。")</span>
+                    </span>
                 </span>
                 <span class="jg-switch"><span class="jg-switch-knob"></span></span>
             </div>
             <div class="jg-switch-row @(_autoInstall ? "on" : "") @(!_nexusPremium ? "disabled" : "")" @onclick="ToggleAutoInstall">
                 <span style="display:flex;align-items:center;gap:8px">
-                    <span>自动安装更新</span>
+                    <span>@Loc.T("自动安装更新")</span>
                     @if (!_nexusPremium)
                     {
                         @* v1.x：GSAP 弹性 tooltip 问号（仅非 Premium 显示），hover 弹出、移开立即消失 *@
                         <span class="jg-help-tip">
                             <span class="jg-help-tip-btn">?</span>
-                            <span class="jg-help-tip-bubble">此功能仅 Nexus Mods Premium 用户可用<br />当 mod 管理页面有 mod 需要更新时，系统会自动为您更新</span>
+                            <span class="jg-help-tip-bubble">@Loc.T("此功能仅 Nexus Mods Premium 用户可用")<br />@Loc.T("当 mod 管理页面有 mod 需要更新时，系统会自动为您更新")</span>
                         </span>
                     }
                 </span>
@@ -202,12 +251,12 @@
     </div>
 
     <div class="jg-card" style="margin-top:12px">
-        <div style="font-weight:600">内容过滤</div>
+        <div style="font-weight:600">@Loc.T("内容过滤")</div>
         <div class="jg-switch-col">
             @* 单一开关。默认关 = 一律排除成人内容；开 = 应用不加成人条件，
                列表随登录用户 Nexus 账号的成人内容设置执行（服务端强制），应用永不覆盖账号偏好 *@
             <div class="jg-switch-row @(_showAdult ? "on" : "")" @onclick="ToggleShowAdult">
-                <span>显示成人内容</span>
+                <span>@Loc.T("显示成人内容")</span>
                 <span class="jg-switch"><span class="jg-switch-knob"></span></span>
             </div>
         </div>
@@ -215,13 +264,13 @@
 
     <div class="jg-card" style="margin-top:12px">
         <div style="display:inline-flex;align-items:center;gap:6px;cursor:pointer" @onclick='() => Nav.NavigateTo("/tasks")'>
-            <div style="font-weight:600">任务管理</div>
-            <img src="assets/task-arrow.svg" alt="前往任务管理" style="width:14px;height:14px;opacity:.75" />
+            <div style="font-weight:600">@Loc.T("任务管理")</div>
+            <img src="assets/task-arrow.svg" alt='@Loc.T("前往任务管理")' style="width:14px;height:14px;opacity:.75" />
         </div>
         <div class="jg-switch-col">
             <div class="jg-switch-row @(_showTaskDock ? "on" : "")" @onclick="ToggleTaskDock">
                 <span style="display:flex;align-items:center;gap:8px">
-                    <span>打开任务管理悬浮窗</span>
+                    <span>@Loc.T("打开任务管理悬浮窗")</span>
                 </span>
                 <span class="jg-switch"><span class="jg-switch-knob"></span></span>
             </div>
@@ -229,54 +278,54 @@
     </div>
 
     <div class="jg-card" style="margin-top:12px">
-        <div style="font-weight:600">内存管理</div>
-        <div style="font-size:12px;opacity:.65;margin-top:2px">定时保养自身与 WebView2；系统占用告急时连同游戏一并释放</div>
+        <div style="font-weight:600">@Loc.T("内存管理")</div>
+        <div style="font-size:12px;opacity:.65;margin-top:2px">@Loc.T("定时保养自身与 WebView2；系统占用告急时连同游戏一并释放")</div>
 
         <div class="jg-mem-line" style="margin-top:8px">
-            系统 @FmtMb(_mem?.SysTotalBytes)，可用 @FmtMb(_mem?.SysAvailBytes)（@Pct()%）· 自身 @FmtMb(_mem?.AppWorkingSet)
+                @Loc.F("系统 {0}，可用 {1}（{2}%）· 自身 {3}", FmtMb(_mem?.SysTotalBytes), FmtMb(_mem?.SysAvailBytes), Pct(), FmtMb(_mem?.AppWorkingSet))
         </div>
 
         <div class="jg-kv-grid" style="margin-top:10px">
             <div class="jg-kv">
-                <div class="k">自身进程</div>
+                <div class="k">@Loc.T("自身进程")</div>
                 <div class="v">@FmtMb(_mem?.AppWorkingSet)<span class="jg-kv-sub">GC @FmtMb(_mem?.AppGcBytes)</span></div>
             </div>
             <div class="jg-kv">
-                <div class="k">WebView2 子进程</div>
-                <div class="v">@FmtMb(_mem?.WebViewWorkingSet)<span class="jg-kv-sub">@(_mem?.WebViewProcCount ?? 0) 个进程</span></div>
+                <div class="k">@Loc.T("WebView2 子进程")</div>
+                <div class="v">@FmtMb(_mem?.WebViewWorkingSet)<span class="jg-kv-sub">@Loc.F("{0} 个进程", _mem?.WebViewProcCount ?? 0)</span></div>
             </div>
             <div class="jg-kv">
-                <div class="k">游戏进程</div>
-                <div class="v">@(_mem is { GameRunning: true } ? FmtMb(_mem.GameWorkingSet) : "未运行")</div>
+                <div class="k">@Loc.T("游戏进程")</div>
+                <div class="v">@(_mem is { GameRunning: true } ? FmtMb(_mem.GameWorkingSet) : Loc.T("未运行"))</div>
             </div>
             <div class="jg-kv">
-                <div class="k">系统内存占用</div>
+                <div class="k">@Loc.T("系统内存占用")</div>
                 <div class="v">@Pct()%</div>
             </div>
         </div>
 
         <div class="jg-switch-col" style="margin-top:6px">
             <div class="jg-switch-row @(_memTimer ? "on" : "")" @onclick="ToggleMemTimer">
-                <span>定时自动压缩</span>
+                <span>@Loc.T("定时自动压缩")</span>
                 <span class="jg-switch"><span class="jg-switch-knob"></span></span>
             </div>
             @* 滑杆面板：初始隐藏由 Blazor 的 style 决定（不依赖 JS 时序），开合动画由 JS 弹性播放 *@
             <div class="jg-slider-panel" style="@(_memTimer ? null : "display:none")" @ref="_timerPanel">
                 <div class="jg-slider-row">
-                    <span class="jg-slider-label">定时释放</span>
-                    <div class="e-slider" data-min="5" data-max="240" data-step="5" data-suffix="分" @ref="_timerSlider">
+                    <span class="jg-slider-label">@Loc.T("定时释放")</span>
+                    <div class="e-slider" data-min="5" data-max="240" data-step="5" data-suffix='@Loc.T("分")' @ref="_timerSlider">
                         <div class="es-track-wrap"><div class="es-track"><div class="es-fill"></div></div></div>
                         <span class="es-value"></span>
                     </div>
                 </div>
             </div>
             <div class="jg-switch-row @(_memThreshold ? "on" : "")" @onclick="ToggleMemThreshold">
-                <span>占用阈值自动压缩</span>
+                <span>@Loc.T("占用阈值自动压缩")</span>
                 <span class="jg-switch"><span class="jg-switch-knob"></span></span>
             </div>
             <div class="jg-slider-panel" style="@(_memThreshold ? null : "display:none")" @ref="_thresholdPanel">
                 <div class="jg-slider-row">
-                    <span class="jg-slider-label">占用阈值</span>
+                    <span class="jg-slider-label">@Loc.T("占用阈值")</span>
                     <div class="e-slider" data-min="50" data-max="95" data-step="1" data-suffix="%" @ref="_thresholdSlider">
                         <div class="es-track-wrap"><div class="es-track"><div class="es-fill"></div></div></div>
                         <span class="es-value"></span>
@@ -286,17 +335,17 @@
         </div>
 
         <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
-            <button type="button" class="jg-path-btn" @onclick="CompressNow">立即压缩</button>
-            <button type="button" class="jg-path-btn" @onclick="TrimGameNow">清理游戏内存</button>
+            <button type="button" class="jg-path-btn" @onclick="CompressNow">@Loc.T("立即压缩")</button>
+            <button type="button" class="jg-path-btn" @onclick="TrimGameNow">@Loc.T("清理游戏内存")</button>
         </div>
     </div>
 
     <div class="jg-card" style="margin-top:12px">
-        <div style="font-weight:600">缓存与存储</div>
-        <div style="font-size:12px;opacity:.65;margin-top:2px">各类缓存占用统计、清理与统一缓存目录</div>
+        <div style="font-weight:600">@Loc.T("缓存与存储")</div>
+        <div style="font-size:12px;opacity:.65;margin-top:2px">@Loc.T("各类缓存占用统计、清理与统一缓存目录")</div>
 
         <div class="jg-mem-line" style="margin-top:8px;display:flex;align-items:center;gap:8px">
-            <span>可清理缓存共 @FmtMb(Storage.TotalKnownBytes)</span>
+            <span>@Loc.F("可清理缓存共 {0}", FmtMb(Storage.TotalKnownBytes))</span>
         </div>
 
         <div style="margin-top:4px">
@@ -312,32 +361,32 @@
                                     aria-controls="jg-vercache-panel" @onclick="ToggleVerCache">
                                 <span class="jg-store-main" style="flex:1;min-width:0">
                                     <span class="jg-store-name" style="display:flex;align-items:center;gap:6px">
-                                        @c.Name
+                                        @Loc.T(c.Name)
                                         <svg class="jg-acc-chev" viewBox="0 0 16 16" fill="none" aria-hidden="true"
                                              style="display:inline-block;vertical-align:middle">
                                             <path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
                                         </svg>
-                                        @if (c.Movable) { <span class="jg-store-tag">可迁移</span> }
+                                        @if (c.Movable) { <span class="jg-store-tag">@Loc.T("可迁移")</span> }
                                     </span>
-                                    <span class="jg-store-path" title="@c.DisplayPath" style="display:block">@c.Note · @c.DisplayPath</span>
+                                    <span class="jg-store-path" title="@c.DisplayPath" style="display:block">@Loc.T(c.Note) · @c.DisplayPath</span>
                                 </span>
                             </button>
                             <div class="jg-store-size">@FmtSize(c.Id)</div>
-                            <button type="button" class="jg-mini-btn" @onclick='() => OpenCatFolder(c)'>打开</button>
+                            <button type="button" class="jg-mini-btn" @onclick='() => OpenCatFolder(c)'>@Loc.T("打开")</button>
                         </div>
                         <div id="jg-vercache-panel" class="jg-acc-panel @(_verAccOpen ? "open" : "")">
                             <div class="jg-acc-inner">
                                 @if (_verCaches.Count == 0)
                                 {
-                                    <div class="jg-acc-empty">尚未下载任何历史版本。在「游戏版本管理」里切换版本后会缓存在这里。</div>
+                                    <div class="jg-acc-empty">@Loc.T("尚未下载任何历史版本。在「游戏版本管理」里切换版本后会缓存在这里。")</div>
                                 }
                                 @foreach (var v in _verCaches)
                                 {
                                     <div class="jg-acc-item">
-                                        <span class="jg-acc-item-name">@v.Label</span>
+                                        <span class="jg-acc-item-name">@Loc.T(v.Label)</span>
                                         <span class="jg-acc-item-size">@ResumableDownload.FormatBytes(v.SizeBytes)</span>
                                         <button type="button" class="jg-mini-btn danger-outline"
-                                                @onclick="() => AskDeleteVerCache(v)">删除</button>
+                                                @onclick="() => AskDeleteVerCache(v)">@Loc.T("删除")</button>
                                     </div>
                                 }
                                 @* 版本包之外的附属目录：删的代价不同的东西分行放（SMAPI 本体删了要重装、
@@ -346,15 +395,15 @@
                                 {
                                     <div class="jg-acc-item">
                                         <span class="jg-acc-item-name" style="display:flex;align-items:center;gap:6px">
-                                            @b.Kind.Name
+                                            @Loc.T(b.Kind.Name)
                                             <span class="jg-help-tip">
                                                 <span class="jg-help-tip-btn">?</span>
-                                                <span class="jg-help-tip-bubble">@b.Kind.Tip</span>
+                                                <span class="jg-help-tip-bubble">@Loc.T(b.Kind.Tip)</span>
                                             </span>
                                         </span>
-                                        <span class="jg-acc-item-size">@(b.Bytes < 0 ? "计算中…" : ResumableDownload.FormatBytes(b.Bytes))</span>
+                                        <span class="jg-acc-item-size">@(b.Bytes < 0 ? Loc.T("计算中…") : ResumableDownload.FormatBytes(b.Bytes))</span>
                                         <button type="button" class="jg-mini-btn danger-outline"
-                                                @onclick="() => AskDeleteBucket(b)">删除</button>
+                                                @onclick="() => AskDeleteBucket(b)">@Loc.T("删除")</button>
                                     </div>
                                 }
                             </div>
@@ -365,42 +414,42 @@
                 <div class="jg-store-row">
                     <div class="jg-store-main">
                         <div class="jg-store-name">
-                            @c.Name
-                            @if (c.Movable) { <span class="jg-store-tag">可迁移</span> }
-                            @if (!c.Cleanable) { <span class="jg-store-tag">固定</span> }
+                            @Loc.T(c.Name)
+                            @if (c.Movable) { <span class="jg-store-tag">@Loc.T("可迁移")</span> }
+                            @if (!c.Cleanable) { <span class="jg-store-tag">@Loc.T("固定")</span> }
                         </div>
-                        <div class="jg-store-path" title="@c.DisplayPath">@c.Note · @c.DisplayPath</div>
+                        <div class="jg-store-path" title="@c.DisplayPath">@Loc.T(c.Note) · @c.DisplayPath</div>
                     </div>
                     <div class="jg-store-size">@FmtSize(c.Id)</div>
                     @if (c.Cleanable)
                     {
-                        <button type="button" class="jg-mini-btn" @onclick='() => AskClean(c.Id)'>清理</button>
+                        <button type="button" class="jg-mini-btn" @onclick='() => AskClean(c.Id)'>@Loc.T("清理")</button>
                     }
                     @* 收起来的档必须有出口：只给占用不给「放回」，玩家就只能看着它凭空消失 *@
                     @if (c.Id == "saveshidden")
                     {
                         <button type="button" class="jg-mini-btn" disabled="@_restoringSaves"
-                                @onclick="RestoreSaves">@(_restoringSaves ? "放回中…" : "放回")</button>
+                                @onclick="RestoreSaves">@(_restoringSaves ? Loc.T("放回中…") : Loc.T("放回"))</button>
                     }
-                    <button type="button" class="jg-mini-btn" @onclick='() => OpenCatFolder(c)'>打开</button>
+                    <button type="button" class="jg-mini-btn" @onclick='() => OpenCatFolder(c)'>@Loc.T("打开")</button>
                 </div>
             }
         </div>
 
         <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;align-items:center">
-            <button type="button" class="jg-path-btn" @onclick="ChangeCacheRoot">更改缓存目录…</button>
+            <button type="button" class="jg-path-btn" @onclick="ChangeCacheRoot">@Loc.T("更改缓存目录…")</button>
             @if (!string.IsNullOrWhiteSpace(Cfg.Current.CacheRoot))
             {
-                <button type="button" class="jg-path-btn" @onclick="ResetCacheRoot">恢复默认位置</button>
+                <button type="button" class="jg-path-btn" @onclick="ResetCacheRoot">@Loc.T("恢复默认位置")</button>
             }
-            <button type="button" class="jg-path-btn" @onclick='() => RefreshStats()'>刷新占用</button>
-            <button type="button" class="jg-path-btn primary" @onclick="AskCleanAll">一键清理</button>
+            <button type="button" class="jg-path-btn" @onclick='() => RefreshStats()'>@Loc.T("刷新占用")</button>
+            <button type="button" class="jg-path-btn primary" @onclick="AskCleanAll">@Loc.T("一键清理")</button>
         </div>
-        <div class="jg-note" style="margin-top:6px">可迁移项统一存进缓存目录 更改时自动迁移 WebView2 在重启应用后生效 游戏回收站由游戏目录决定 设置数据固定不可迁移</div>
+        <div class="jg-note" style="margin-top:6px">@Loc.T("可迁移项统一存进缓存目录 更改时自动迁移 WebView2 在重启应用后生效 游戏回收站由游戏目录决定 设置数据固定不可迁移")</div>
     </div>
 
     <div class="jg-card jg-cursor-grid" style="margin-top:12px">
-        <div style="font-weight:600">关于</div>
+        <div style="font-weight:600">@Loc.T("关于")</div>
         <div class="jg-about">
             <div class="jg-about-main">
                 <div class="jg-about-leftcol">
@@ -412,11 +461,11 @@
                         </span>
                     </div>
                     <div class="jg-author-row">
-                        <span>作者：</span>
+                        <span>@Loc.T("作者：")</span>
                         <img src="assets/author-avatar.jpg" alt="MLD avatar" class="jg-author-avatar" />
                         <span class="jg-pixel-name">MLD</span>
                     </div>
-                    <div class="jg-logoloop" aria-label="联系方式">
+                    <div class="jg-logoloop" aria-label='@Loc.T("联系方式")'>
                         <div class="jg-ll-track">
                             <ul class="jg-ll-seq">
                                 <li class="jg-ll-item">
@@ -430,13 +479,13 @@
                                     </a>
                                 </li>
                                 <li class="jg-ll-item">
-                                    <a class="jg-ll-link" href="https://space.bilibili.com/385452339" target="_blank" rel="noreferrer noopener" title="哔哩哔哩">
-                                        <img src="assets/logos/logo-bilibili.svg" alt="哔哩哔哩" />
+                                    <a class="jg-ll-link" href="https://space.bilibili.com/385452339" target="_blank" rel="noreferrer noopener" title='@Loc.T("哔哩哔哩")'>
+                                        <img src="assets/logos/logo-bilibili.svg" alt='@Loc.T("哔哩哔哩")' />
                                     </a>
                                 </li>
                                 <li class="jg-ll-item">
-                                    <a class="jg-ll-link" href="https://www.douyin.com/user/MS4wLjABAAAAFva5cHzXf-dy_N7_4sKzjVHRBXj7_mkQ9EzTUXI96QM?from_tab_name=main" target="_blank" rel="noreferrer noopener" title="抖音">
-                                        <img src="assets/logos/logo-douyin.svg?v=2" alt="抖音" />
+                                    <a class="jg-ll-link" href="https://www.douyin.com/user/MS4wLjABAAAAFva5cHzXf-dy_N7_4sKzjVHRBXj7_mkQ9EzTUXI96QM?from_tab_name=main" target="_blank" rel="noreferrer noopener" title='@Loc.T("抖音")'>
+                                        <img src="assets/logos/logo-douyin.svg?v=2" alt='@Loc.T("抖音")' />
                                     </a>
                                 </li>
                             </ul>
@@ -444,15 +493,15 @@
                     </div>
                 </div>
                 <div class="jg-sponsor">
-                    <div class="jg-sponsor-title">赞助支持：</div>
-                    <div class="jg-sponsor-sub">如果它能帮到你，可以请作者喝杯咖啡</div>
+                    <div class="jg-sponsor-title">@Loc.T("赞助支持：")</div>
+                    <div class="jg-sponsor-sub">@Loc.T("如果它能帮到你，可以请作者喝杯咖啡")</div>
                     <div class="jg-sponsor-tabs">
-                        <button type="button" class="jg-sponsor-tab @(_sponsorWechat ? "active" : "")" @onclick='() => _sponsorWechat = true'>微信</button>
-                        <button type="button" class="jg-sponsor-tab @(!_sponsorWechat ? "active" : "")" @onclick='() => _sponsorWechat = false'>支付宝</button>
+                        <button type="button" class="jg-sponsor-tab @(_sponsorWechat ? "active" : "")" @onclick='() => _sponsorWechat = true'>@Loc.T("微信")</button>
+                        <button type="button" class="jg-sponsor-tab @(!_sponsorWechat ? "active" : "")" @onclick='() => _sponsorWechat = false'>@Loc.T("支付宝")</button>
                     </div>
                     <img class="jg-sponsor-qr"
                          src="@(_sponsorWechat ? "assets/sponsor-wechat.jpg" : "assets/sponsor-alipay.jpg")"
-                         alt="@(_sponsorWechat ? "微信赞赏码" : "支付宝收款码")" />
+                         alt="@(_sponsorWechat ? Loc.T("微信赞赏码") : Loc.T("支付宝收款码"))" />
                 </div>
             </div>
         </div>
@@ -463,15 +512,12 @@
 {
     <div class="jg-modal-overlay" @onclick="CancelChangeRoot">
         <div class="jg-modal" @onclick:stopPropagation>
-            <div class="jg-modal-title">更改缓存目录</div>
-            <div class="jg-modal-body">
-                下载/安装临时、SMAPI 安装包、Mods 备份将立即迁移到：<br />
-                <b>@_pendingRoot</b><br /><br />
-                WebView2 数据在重启应用后自动迁移（正在使用的文件除外，留在原处可稍后清理）。
-            </div>
+            <div class="jg-modal-title">@Loc.T("更改缓存目录")</div>
+            <div class="jg-modal-body"> @Loc.T("下载/安装临时、SMAPI 安装包、Mods 备份将立即迁移到：")<br />
+                <b>@_pendingRoot</b><br /><br /> @Loc.T("WebView2 数据在重启应用后自动迁移（正在使用的文件除外，留在原处可稍后清理）。") </div>
             <div class="jg-modal-actions">
-                <button class="jg-path-btn" data-modal-close @onclick="CancelChangeRoot">取消</button>
-                <button class="jg-path-btn primary" @onclick="ConfirmChangeRoot">开始迁移</button>
+                <button class="jg-path-btn" data-modal-close @onclick="CancelChangeRoot">@Loc.T("取消")</button>
+                <button class="jg-path-btn primary" @onclick="ConfirmChangeRoot">@Loc.T("开始迁移")</button>
             </div>
         </div>
     </div>
@@ -484,7 +530,7 @@
             <div class="jg-modal-title">@ConfirmTitle</div>
             <div class="jg-modal-body">@ConfirmBody</div>
             <div class="jg-modal-actions">
-                <button class="jg-path-btn" data-modal-close @onclick="CancelClean">取消</button>
+                <button class="jg-path-btn" data-modal-close @onclick="CancelClean">@Loc.T("取消")</button>
                 <button class="jg-path-btn primary" @onclick="DoConfirm">@ConfirmOkLabel</button>
             </div>
         </div>
@@ -493,6 +539,54 @@
 
 @code {
     private SteamProfile _steam = SteamProfile.None;
+
+    // i18n：语言下拉（复用 .jg-sort-dd 结构 + dropdownToggle 的 GSAP 动画）。
+    // 选中 → 持久化并触发 Loc.OnChanged，本页就地重渲染。
+    private bool _langOpen;
+    private async Task ToggleLang()
+    {
+        _langOpen = !_langOpen;
+        try { await JS.InvokeVoidAsync("junigridJs.dropdownToggle", ".jg-lang-dd", _langOpen); } catch { }
+    }
+    private async Task CloseLang()
+    {
+        if (!_langOpen) return;
+        _langOpen = false;
+        try { await JS.InvokeVoidAsync("junigridJs.dropdownToggle", ".jg-lang-dd", false); } catch { }
+    }
+    private async Task PickLang(string lang)
+    {
+        _langOpen = false;
+        try { await JS.InvokeVoidAsync("junigridJs.dropdownToggle", ".jg-lang-dd", false); } catch { }
+        Loc.SetLang(lang);
+    }
+
+    private void OnLocChanged() => InvokeAsync(StateHasChanged);
+
+    // 颜色主题：data-accent 是纯 CSS 变量轴，切换即时全站重上色（无需重载/重渲染）。
+    // "system" 用 Windows 系统色作强调色、按钮保持中性；其余走 base.css 主题块。
+    private string SystemHex => JuniGrid.App.GetSystemAccentHex() ?? "#7aa2ff";
+
+    private static readonly (string Key, string Zh, string En, string Accent)[] Accents =
+    {
+        ("system",    "默认",   "Default",   ""),
+        ("forest",    "森林绿", "Forest",    "#2f9e5c"),
+        ("mint",      "薄荷青", "Mint",      "#12a0a0"),
+        ("honey",     "蜂蜜金", "Honey",     "#e0a512"),
+        ("parchment", "羊皮纸", "Parchment", "#b07b45"),
+        ("sky",       "天蓝",   "Sky",       "#2f80d8"),
+        ("rose",      "玫红",   "Rose",      "#dd4a72"),
+    };
+
+    private void SetAccent(string key)
+    {
+        var c = Cfg.Current;
+        if (string.Equals(c.Accent, key, StringComparison.OrdinalIgnoreCase)) return;
+        c.Accent = key;
+        Cfg.Save(c);
+        _ = JS.InvokeVoidAsync("junigridJs.applyAccent", key, SystemHex);
+        StateHasChanged();   // 刷新选中态描边
+    }
     private string _nexusName = "";
     private string? _nexusAvatar;
     private bool   _nexusPremium;
@@ -500,15 +594,9 @@
 
     private void NexusLogout()
     {
-        var cfg = Cfg.Current;
-        cfg.NexusApiKey = "";
-        cfg.NexusUserName = "";
-        cfg.NexusProfileUrl = "";
-        cfg.NexusIsPremium = false;
-        cfg.NexusAvatarDataUri = "";
-        Cfg.Save(cfg);
+        OAuth.Logout();   // 清空 OAuth2 令牌、已挂载的 Bearer 以及缓存的账号字段
         _nexusName = ""; _nexusAvatar = null; _nexusPremium = false;
-        _ = JS.InvokeVoidAsync("junigridJs.toast", "已退出 Nexus 登录");
+        _ = JS.InvokeVoidAsync("junigridJs.toast", LocService.Tr("已退出 Nexus 登录"));
         StateHasChanged();
     }
 
@@ -529,12 +617,13 @@
     /// 这里原先挂的是 s.team 长链接（用户要求去掉），链接本身仍写在 juni-grid.log 里。</summary>
     private string DdQrScanHint =>
         string.IsNullOrWhiteSpace(_ddQrState) || _ddQrState.StartsWith("等待手机扫码")
+            || _ddQrState.StartsWith(Loc.T("等待手机扫码确认…"))
             ? "用 Steam 手机 App 扫这张码"
             : DdQrHint;
 
     private void OnQrImgError()
     {
-        _ddQrError = "二维码图片加载失败，请点取消后重试";
+        _ddQrError = LocService.Tr("二维码图片加载失败，请点取消后重试");
         StateHasChanged();
     }
 
@@ -546,7 +635,7 @@
         var acc = Cfg.Current.SteamCmdAccount;
         if (string.IsNullOrWhiteSpace(acc)) return "";
         if (_steam.Found && string.Equals(acc, _steam.AccountName, StringComparison.OrdinalIgnoreCase))
-            return "（本机 Steam 账号）";
+            return LocService.Tr("（本机 Steam 账号）");
         return $"（授权账号：{acc}）";
     }
 
@@ -555,7 +644,7 @@
         // 同账号只允许一路 Steam 会话：下载在飞时再起一路扫码，会把那一路顶掉（实测互踢）
         if (DepotDownloaderService.SteamSessionBusy)
         {
-            _ = JS.InvokeVoidAsync("junigridJs.toast", "有版本正在下载，等它下完（或先在任务中心取消）再重新授权", "err");
+            _ = JS.InvokeVoidAsync("junigridJs.toast", LocService.Tr("有版本正在下载，等它下完（或先在任务中心取消）再重新授权"), "err");
             return;
         }
         _ddQrOpen = true;
@@ -616,7 +705,7 @@
                 _ddQrBusy = false;
                 _ddQrState = "授权成功";
                 ClearDdQrImage();   // 撤掉旧码，避免成功后还显示二维码
-                _ = JS.InvokeVoidAsync("junigridJs.toast", "Steam 下载授权成功，历史版本下载已免密");
+                _ = JS.InvokeVoidAsync("junigridJs.toast", LocService.Tr("Steam 下载授权成功，历史版本下载已免密"));
                 StateHasChanged();
             });
             // 稍候自动关窗，让用户看到 toast / 状态
@@ -671,7 +760,7 @@
         var cfg = Cfg.Current;
         cfg.DepotQrLoggedIn = false;
         Cfg.Save(cfg);
-        _ = JS.InvokeVoidAsync("junigridJs.toast", "已解除 Steam 下载授权，下次下载需重新扫码");
+        _ = JS.InvokeVoidAsync("junigridJs.toast", LocService.Tr("已解除 Steam 下载授权，下次下载需重新扫码"));
         StateHasChanged();
     }
 
@@ -687,7 +776,7 @@
         _nexusAvatar = cached is not null && cached.StartsWith("data:image/", StringComparison.Ordinal) ? cached : null;
         // v1.08.2：已登录则后台自愈刷新（validate 已按 user_id 构造真实头像直链），拉到不同才写回缓存；
         // 不 await —— 设置页首屏不因网络等待延迟
-        if (!string.IsNullOrEmpty(cfg.NexusApiKey)) _ = RefreshNexusAvatarAsync();
+        if (NexusService.IsAuthenticated) _ = RefreshNexusAvatarAsync();
     }
 
     private async Task RefreshNexusAvatarAsync()
@@ -695,7 +784,7 @@
         try
         {
             var cfg = Cfg.Current;
-            var u = await NexusApi.ValidateAsync(cfg.NexusApiKey);
+            var u = await NexusApi.ValidateAsync();
             if (u is null || string.IsNullOrEmpty(u.Avatar)) return;
             var fresh = await NexusApi.FetchAvatarAsync(u.Avatar);
             if (string.IsNullOrEmpty(fresh)) return;
@@ -752,8 +841,8 @@
         cfg.LockGameVersion = want;
         Cfg.Save(cfg);
         _ = JS.InvokeVoidAsync("junigridJs.toast", want
-            ? "已锁定游戏版本 —— Steam 不会再自动更新本体，可一直玩当前版本"
-            : "已解除锁定 —— 下次通过 Steam 启动会正常更新游戏");
+            ? LocService.Tr("已锁定游戏版本 —— Steam 不会再自动更新本体，可一直玩当前版本")
+            : LocService.Tr("已解除锁定 —— 下次通过 Steam 启动会正常更新游戏"));
         StateHasChanged();
     }
 
@@ -857,20 +946,20 @@
     {
         // 一键全压：自身（GC + 工作集换出）+ WebView2 子进程（工作集换出）
         var (before, after) = await Task.Run(() => Mem.CompressSelf());
-        var msg = $"自身 {ResumableDownload.FormatBytes(before)} → {ResumableDownload.FormatBytes(after)}";
+        var msg = LocService.Tf("自身 {0} → {1}", ResumableDownload.FormatBytes(before), ResumableDownload.FormatBytes(after));
         var wv = await Task.Run(() => Mem.TrimWebView2());
         if (wv.count > 0)
-            msg += $"；WebView2（{wv.count} 进程）{ResumableDownload.FormatBytes(wv.before)} → {ResumableDownload.FormatBytes(wv.after)}";
+            msg += LocService.Tf("；WebView2（{0} 进程）{1} → {2}", wv.count, ResumableDownload.FormatBytes(wv.before), ResumableDownload.FormatBytes(wv.after));
         _mem = Mem.GetSnapshot();
         StateHasChanged();
-        await JS.InvokeVoidAsync("junigridJs.toast", "已压缩：" + msg);
+        await JS.InvokeVoidAsync("junigridJs.toast", LocService.Tr("已压缩：") + msg);
     }
 
     private async Task TrimGameNow()
     {
         var n = await Task.Run(() => Mem.TrimGameWorkingSet());
         await JS.InvokeVoidAsync("junigridJs.toast",
-            n > 0 ? $"已清理 {n} 个游戏进程的工作集" : "游戏未在运行", n > 0 ? null : "err");
+            n > 0 ? LocService.Tf("已清理 {0} 个游戏进程的工作集", n) : "游戏未在运行", n > 0 ? null : "err");
     }
 
     // ─── v0.2.1：缓存与存储 ───
@@ -969,19 +1058,19 @@
         if (pkg is null) return;
         if (!DepotQr.DeleteStagedPackage(pkg.ManifestId))
         {
-            await JS.InvokeVoidAsync("junigridJs.toast", "删除失败（文件可能被占用）", "err");
+            await JS.InvokeVoidAsync("junigridJs.toast", LocService.Tr("删除失败（文件可能被占用）"), "err");
             return;
         }
         LoadVerCaches();
         _cats = Storage.GetCategories();
         _ = Storage.RefreshAllAsync(force: true);
         await InvokeAsync(StateHasChanged);
-        await JS.InvokeVoidAsync("junigridJs.toast", $"已删除版本缓存 {pkg.Label}");
+        await JS.InvokeVoidAsync("junigridJs.toast", LocService.Tf("已删除版本缓存 {0}", pkg.Label));
     }
 
     private string FmtSize(string id)
     {
-        if (Storage.IsComputing(id)) return "计算中…";
+        if (Storage.IsComputing(id)) return LocService.Tr("计算中…");
         var b = Storage.GetSize(id);
         return b < 0 ? "—" : ResumableDownload.FormatBytes(b);
     }
@@ -1015,10 +1104,10 @@
     private bool _confirmCleanAll;
 
     private string ConfirmTitle => _pendingDeleteVer is not null ? "删除版本缓存"
-        : _pendingBucket is not null ? (_pendingBucket.Value.Kind.Danger ? "移出" + _pendingBucket.Value.Kind.Name : "删除" + _pendingBucket.Value.Kind.Name)
+        : _pendingBucket is not null ? (_pendingBucket.Value.Kind.Danger ? Loc.F("移出{0}", Loc.T(_pendingBucket.Value.Kind.Name)) : Loc.F("删除{0}", Loc.T(_pendingBucket.Value.Kind.Name)))
         : _confirmCleanAll ? "一键清理缓存" : "清理缓存";
     private string ConfirmOkLabel => _pendingDeleteVer is not null || _pendingBucket is not null
-        ? (_pendingBucket is { } pb && pb.Kind.Danger ? "确认移出" : "确认删除") : "确认清理";
+        ? Loc.T(_pendingBucket is { } pb && pb.Kind.Danger ? "确认移出" : "确认删除") : Loc.T("确认清理");
     private string ConfirmBody => _pendingDeleteVer is not null ? DeleteVerConfirmText
         : _pendingBucket is not null ? BucketConfirmText : CleanConfirmText;
 
@@ -1028,8 +1117,8 @@
         {
             var b = _pendingBucket!.Value;
             return b.Kind.Danger
-                ? $"{b.Kind.Name}（{ResumableDownload.FormatBytes(b.Bytes)}）里的 mod 会移到游戏卸载回收站，不直接删。\n\n{b.Kind.Tip}\n\n反悔的话：在「缓存与存储」那行「游戏卸载回收站」里能拿回来；清空那个回收站之后就真没了。"
-                : $"{b.Kind.Name}（{ResumableDownload.FormatBytes(b.Bytes)}）将被删除。\n\n{b.Kind.Tip}";
+                ? Loc.F("{0}（{1}）里的 mod 会移到游戏卸载回收站，不直接删。\n\n{2}\n\n反悔的话：在「缓存与存储」那行「游戏卸载回收站」里能拿回来；清空那个回收站之后就真没了。", Loc.T(b.Kind.Name), ResumableDownload.FormatBytes(b.Bytes), Loc.T(b.Kind.Tip))
+                : Loc.F("{0}（{1}）将被删除。\n\n{2}", Loc.T(b.Kind.Name), ResumableDownload.FormatBytes(b.Bytes), Loc.T(b.Kind.Tip));
         }
     }
 
@@ -1076,12 +1165,12 @@
             if (_confirmCleanAll)
             {
                 var n = _cats.Count(x => x.Cleanable && x.Id != "vercache");
-                return $"将逐个清理全部可清理缓存（不含游戏版本缓存 —— 每个版本的去留在版本管理里单独决定）。\n\n"
-                     + "正在使用的文件会自动跳过；游戏卸载回收站清空后无法恢复。";
+                return Loc.T("将逐个清理全部可清理缓存（不含游戏版本缓存 —— 每个版本的去留在版本管理里单独决定）。\n\n")
+                     + Loc.T("正在使用的文件会自动跳过；游戏卸载回收站清空后无法恢复。");
             }
             var c = _cats.FirstOrDefault(x => x.Id == _pendingCleanId);
-            if (c is null) return "确定清理吗？";
-            return $"将清理「{c.Name}」。\n\n{c.Tip}\n\n正在使用的文件会自动跳过。";
+            if (c is null) return Loc.T("确定清理吗？");
+            return Loc.F("将清理「{0}」。\n\n{1}\n\n正在使用的文件会自动跳过。", Loc.T(c.Name), Loc.T(c.Tip));
         }
     }
 
@@ -1102,7 +1191,7 @@
             // 版本缓存不参与一键清理 —— 每个历史版本的去留在版本管理里单独决定
             foreach (var c in _cats.Where(x => x.Cleanable && x.Id != "vercache").ToList())
                 await Storage.CleanCategoryAsync(c.Id);
-            await JS.InvokeVoidAsync("junigridJs.toast", "全部缓存已处理完（版本缓存不受影响），详见任务记录");
+            await JS.InvokeVoidAsync("junigridJs.toast", LocService.Tr("全部缓存已处理完（版本缓存不受影响），详见任务记录"));
         }
         else if (id is not null)
         {
@@ -1114,7 +1203,7 @@
     {
         var ok = await Storage.RefreshAllAsync(force: true);
         await JS.InvokeVoidAsync("junigridJs.toast",
-            ok ? "占用刷新成功" : "占用刷新失败 请重试", ok ? null : "err");
+            ok ? LocService.Tr("占用刷新成功") : LocService.Tr("占用刷新失败 请重试"), ok ? null : "err");
     }
 
     // ─── 更改统一缓存目录：可迁移项（下载/SMAPI/WebView2/Mods 备份）一起跟着走 ───
@@ -1122,7 +1211,7 @@
 
     private void ChangeCacheRoot()
     {
-        var dlg = new Microsoft.Win32.OpenFolderDialog { Title = "选择缓存目录" };
+        var dlg = new Microsoft.Win32.OpenFolderDialog { Title = LocService.Tr("选择缓存目录") };
         if (dlg.ShowDialog() == true) _pendingRoot = dlg.FolderName;
     }
 
@@ -1158,6 +1247,7 @@
 
     public void Dispose()
     {
+        Loc.OnChanged -= OnLocChanged;
         Mem.OnSnapshot -= OnMemSnap;
         ConfigService.Saved -= OnCfgSaved;   // v1.1.4
         Storage.OnStats -= OnStorageStats;
@@ -1183,6 +1273,8 @@
 
     protected override async Task OnInitializedAsync()
     {
+        // i18n：语言切换后就地重渲染本页（不整页 reload，避免闪一下）
+        Loc.OnChanged += OnLocChanged;
         await LoadAccountsAsync();
         _gamePath = Cfg.Current.GamePath;        _oneClickInstall = Cfg.Current.EnableOneClickInstall;
         // 重 IO 丢后台：ProbeManifest 扫 Steam 清单 + ListStagedPackages 过 52 个版本包，
@@ -1267,6 +1359,12 @@
         var cfg = Cfg.Current;
         cfg.EnableOneClickInstall = _oneClickInstall;
         Cfg.Save(cfg);
+        // 同一个开关还管 nxm:// 注册：立刻生效，不用等下次启动；
+        // 关闭时把注册交还给被我们压掉的管理器（抢注前已备份原值），交还不了才删。
+        if (_oneClickInstall) JuniGrid.App.ClaimNxmHandlerNow();
+        else JuniGrid.App.ReleaseNxmHandler();
+        _ = JS.InvokeVoidAsync("junigridJs.toast",
+            _oneClickInstall ? LocService.Tr("已由 JuniGrid 接收 Nexus 下载链接") : LocService.Tr("已让出 Nexus 下载链接"), "ok");
     }
 
     private void SaveAutoInstall()
@@ -1294,8 +1392,8 @@
         Cfg.Save(cfg);
         ProbeManifest();   // v1.2.4：目录变了 → Steam 清单与锁状态重探
         _ = JS.InvokeVoidAsync("junigridJs.toast", HasSmapi(_gamePath)
-            ? "已保存游戏目录"
-            : "已保存游戏目录（未检测到 SMAPI，可通过首页「Steam 官方」启动游玩）");
+            ? LocService.Tr("已保存游戏目录")
+            : LocService.Tr("已保存游戏目录（未检测到 SMAPI，可通过首页「Steam 官方」启动游玩）"));
     }
 
     private void AutoDetect()
@@ -1310,12 +1408,12 @@
             }
             else
             {
-                _ = JS.InvokeVoidAsync("junigridJs.toast", "检测到目录，但里面没有 Stardew Valley.exe，请手动选择游戏目录", "err");
+                _ = JS.InvokeVoidAsync("junigridJs.toast", LocService.Tr("检测到目录，但里面没有 Stardew Valley.exe，请手动选择游戏目录"), "err");
             }
         }
         else
         {
-            _ = JS.InvokeVoidAsync("junigridJs.toast", "未自动检测到游戏目录，请点「浏览...」手动选择", "err");
+            _ = JS.InvokeVoidAsync("junigridJs.toast", LocService.Tr("未自动检测到游戏目录，请点「浏览...」手动选择"), "err");
         }
     }
 
@@ -1323,7 +1421,7 @@
     {
         var dlg = new Microsoft.Win32.OpenFolderDialog
         {
-            Title = "选择 Stardew Valley 游戏目录"
+            Title = LocService.Tr("选择 Stardew Valley 游戏目录")
         };
         if (dlg.ShowDialog() == true)
         {
@@ -1334,7 +1432,7 @@
             }
             else
             {
-                _ = JS.InvokeVoidAsync("junigridJs.toast", "请选择包含 Stardew Valley.exe 的游戏目录", "err");
+                _ = JS.InvokeVoidAsync("junigridJs.toast", LocService.Tr("请选择包含 Stardew Valley.exe 的游戏目录"), "err");
             }
         }
     }
@@ -1343,7 +1441,7 @@
     {
         if (!IsValidGamePath(_gamePath))
         {
-            _ = JS.InvokeVoidAsync("junigridJs.toast", "目录无效：请填写包含 Stardew Valley.exe 的游戏目录", "err");
+            _ = JS.InvokeVoidAsync("junigridJs.toast", LocService.Tr("目录无效：请填写包含 Stardew Valley.exe 的游戏目录"), "err");
             return;
         }
         SaveGamePath();

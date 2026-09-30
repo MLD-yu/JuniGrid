@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.IO;
 using System.Net;
 using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -10,7 +11,8 @@ namespace JuniGrid.Services;
 
 /// <summary>
 /// Nexus Mods Public API v1 (https://api.nexusmods.com).
-///  - Version checks work with any free personal API key.
+///  - 需鉴权的端点用 OAuth2 的 Bearer access token（由 NexusOAuthService 登录获得）；
+///    未登录时请求不带 Authorization，仅公开 GraphQL 浏览可用。不使用个人 API Key。
 ///  - Direct download links are Premium-only (Nexus policy): free accounts
 ///    get HTTP 403 on download_link — surfaced as NeedsPremium.
 /// Rate limits: ~100 req/day free, 2500/day premium (X-RL-* headers).
@@ -34,6 +36,17 @@ public sealed class NexusService
         h.Timeout = TimeSpan.FromSeconds(15);   // v1.06.8：检查更新提速——慢请求 15s 快速失败，不再拖住整批
         return h;
     }
+
+    /// <summary>已登录用户的 OAuth2 access token（由 NexusOAuthService 设置）。未登录为 null ——
+    /// 此时请求不带鉴权（公开 GraphQL 浏览仍可用）。</summary>
+    private static string? _bearerToken;
+    public static string? BearerToken
+    {
+        get => Volatile.Read(ref _bearerToken);
+        set => Volatile.Write(ref _bearerToken, value);
+    }
+    /// <summary>用户是否已通过 OAuth2 登录（存在 Bearer token）。</summary>
+    public static bool IsAuthenticated => !string.IsNullOrEmpty(BearerToken);
 
     // ══════════════════════════════════════════════════════════════════
     // Nexus API 集中限流闸门（AUP 二审：降低并发 + 集中识别 429 + 遵守 Retry-After）
@@ -138,9 +151,9 @@ public sealed class NexusService
     private static async Task<HttpResponseMessage> SendApiAsync(
         HttpClient client,
         string url,
-        string? apiKey = null,
         HttpMethod? method = null,
         string? jsonBody = null,
+        bool useBearer = true,
         CancellationToken ct = default)
     {
         await ApiGate.WaitAsync(ct).ConfigureAwait(false);
@@ -151,8 +164,8 @@ public sealed class NexusService
                 await WaitIfPausedAsync(ct).ConfigureAwait(false);
 
                 using var req = new HttpRequestMessage(method ?? HttpMethod.Get, url);
-                if (!string.IsNullOrEmpty(apiKey))
-                    req.Headers.TryAddWithoutValidation("apikey", apiKey);
+                if (useBearer && BearerToken is { } token && token.Length > 0)
+                    req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
                 if (jsonBody is not null)
                     req.Content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
 
@@ -193,9 +206,9 @@ public sealed class NexusService
 
     /// <summary>Mod metadata (name + current version + cover). null on error.</summary>
     /// <summary>v0.46.0：拉取本游戏的官方分类表（category_id → 名称），调用方缓存进 config。</summary>
-    public async Task<Dictionary<int, string>?> GetCategoriesAsync(string apiKey)
+    public async Task<Dictionary<int, string>?> GetCategoriesAsync()
     {
-        using var res = await SendApiAsync(Http, Base + ".json", apiKey);
+        using var res = await SendApiAsync(Http, Base + ".json");
         if (!res.IsSuccessStatusCode) return null;
         using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
         if (!doc.RootElement.TryGetProperty("categories", out var arr) || arr.ValueKind != JsonValueKind.Array)
@@ -211,9 +224,9 @@ public sealed class NexusService
         return dict;
     }
 
-    public async Task<NexusModInfo?> GetModAsync(string apiKey, int modId)
+    public async Task<NexusModInfo?> GetModAsync(int modId)
     {
-        using var res = await SendApiAsync(Http, $"{Base}/mods/{modId}.json", apiKey);
+        using var res = await SendApiAsync(Http, $"{Base}/mods/{modId}.json");
         if (!res.IsSuccessStatusCode) return null;
         using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
         var root = doc.RootElement;
@@ -227,9 +240,9 @@ public sealed class NexusService
     }
 
     /// <summary>Full mod detail for the in-app detail page (incl. HTML description + cover).</summary>
-    public async Task<NexusModDetail?> GetModDetailAsync(string apiKey, int modId)
+    public async Task<NexusModDetail?> GetModDetailAsync(int modId)
     {
-        using var res = await SendApiAsync(SlowHttp, $"{Base}/mods/{modId}.json", apiKey);
+        using var res = await SendApiAsync(SlowHttp, $"{Base}/mods/{modId}.json");
         if (!res.IsSuccessStatusCode) return null;
         using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
         var root = doc.RootElement;
@@ -378,6 +391,28 @@ public sealed class NexusService
         "<span style=\"font-family:$1\">$2</span>", RegexOptions.Singleline);
     s = Regex.Replace(s, @"\[hr\]", "<hr/>", RegexOptions.IgnoreCase);
 
+    // ── v1.2.6：实测 45 个包描述里出现、旧版漏掉的四类（旧版走到下面的兜底被当未知标签剥光）──
+    // 块级标签自带换行，作者紧贴着写的这一个 <br /> 会变成多余空行 —— 先各吞掉一个
+    s = Regex.Replace(s, @"(?i)(<br\s*/?>\s*)(?=\[center\]|\[spoiler\]|\[line\])", "");
+    s = Regex.Replace(s, @"(?i)(?<=\[/center\]|\[/spoiler\]|\[line\])\s*<br\s*/?>", "");
+    // [center] 104 处：作者的标题/横幅排版全靠它，剥掉标签 = 整页只剩左对齐
+    s = Regex.Replace(s, @"\[center\](.*?)\[/center\]",
+        "<div class=\"jg-desc-center\">$1</div>", RegexOptions.Singleline | RegexOptions.IgnoreCase);
+    // [spoiler] 90 处：剥掉标签会把作者折叠起来的长说明直接摊平进正文
+    s = Regex.Replace(s, @"\[spoiler\](.*?)\[/spoiler\]",
+        "<details class=\"jg-desc-spoiler\"><summary>显示隐藏内容</summary>$1</details>",
+        RegexOptions.Singleline | RegexOptions.IgnoreCase);
+    // [line] 20 处：Nexus 的分隔线写法（[hr] 之外的那一种）
+    s = Regex.Replace(s, @"\[line\]", "<hr/>", RegexOptions.IgnoreCase);
+    // [heading] 2 处
+    s = Regex.Replace(s, @"\[heading\](.*?)\[/heading\]",
+        "<h3>$1</h3>", RegexOptions.Singleline | RegexOptions.IgnoreCase);
+    // [youtube]11位ID[/youtube] 12 处：只给可点链接 —— 内嵌播放器在无代理/墙内环境只剩一块空白，
+    // 旧版连标签一起剥掉后正文里剩一串裸 ID
+    s = Regex.Replace(s, @"\[youtube\]\s*([A-Za-z0-9_\-]{6,20})\s*\[/youtube\]",
+        "<a href=\"https://www.youtube.com/watch?v=$1\" target=\"_blank\" rel=\"noopener\">▶ YouTube 视频</a>",
+        RegexOptions.IgnoreCase);
+
     // 剩下的未知 BBCode 当作纯文本剥掉标签语法，避免方括号毒化
     // v0.58.0：列表闭合标记 [*] 的收尾 [/ *] / [/*] 也要清掉（* 不是字母，原规则匹配不到）
     s = Regex.Replace(s, @"\[/?\*\]", "", RegexOptions.Singleline);
@@ -390,24 +425,24 @@ public sealed class NexusService
     /// <param name="installedFolder">本机已装的包目录名。一个 mod 挂多条 MAIN 时（实测 mod 1839：
     /// CP 主包 182304 与散 xnb 素材包 182306 同日发布），只按上传时间会选中玩家没装的那条，
     /// 于是点「更新」永远装不到真正的包、⇧ 也永远消不掉。给了目录名就优先选与它同名的 MAIN。</param>
-    public async Task<NexusFileInfo?> GetLatestMainFileAsync(string apiKey, int modId,
+    public async Task<NexusFileInfo?> GetLatestMainFileAsync(int modId,
         bool patient = false, string? installedFolder = null)
     {
-        var all = await ListFilesAsync(apiKey, modId, patient);
+        var all = await ListFilesAsync(modId, patient);
         return all is null ? null : PickMainFile(all, installedFolder);
     }
 
     /// <summary>按 fileId 精确取一条文件 —— .nxm 一键安装记的是「玩家点的那一条」，不是最新那一条，
     /// 只有 files.json 里对得上 fileId 的版本号才是他实际装到的版本。</summary>
-    public async Task<NexusFileInfo?> GetFileByIdAsync(string apiKey, int modId, long fileId, bool patient = false)
+    public async Task<NexusFileInfo?> GetFileByIdAsync(int modId, long fileId, bool patient = false)
     {
-        var all = await ListFilesAsync(apiKey, modId, patient);
+        var all = await ListFilesAsync(modId, patient);
         return all?.FirstOrDefault(x => x.F.FileId == fileId).F;
     }
 
-    private async Task<List<(NexusFileInfo F, long Ts)>?> ListFilesAsync(string apiKey, int modId, bool patient)
+    private async Task<List<(NexusFileInfo F, long Ts)>?> ListFilesAsync(int modId, bool patient)
     {
-        using var res = await SendApiAsync(patient ? SlowHttp : Http, $"{Base}/mods/{modId}/files.json", apiKey);
+        using var res = await SendApiAsync(patient ? SlowHttp : Http, $"{Base}/mods/{modId}/files.json");
         if (!res.IsSuccessStatusCode) return null;
         using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
         if (!doc.RootElement.TryGetProperty("files", out var files)) return null;
@@ -525,9 +560,9 @@ public sealed class NexusService
     }
 
     /// <summary>v0.69.0：mod 的更新日志（版本 → 变更行）。对应官网 LOGS 页签的 Changelogs。</summary>
-    public async Task<List<NexusChangelog>?> GetChangelogsAsync(string apiKey, int modId)
+    public async Task<List<NexusChangelog>?> GetChangelogsAsync(int modId)
     {
-        using var res = await SendApiAsync(SlowHttp, $"{Base}/mods/{modId}/changelogs.json", apiKey);
+        using var res = await SendApiAsync(SlowHttp, $"{Base}/mods/{modId}/changelogs.json");
         if (!res.IsSuccessStatusCode) return null;
         using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
         var list = new List<NexusChangelog>();
@@ -585,8 +620,8 @@ public sealed class NexusService
         try
         {
             var body = JsonSerializer.Serialize(new { query });
-            // GraphQL 浏览公开（无 apikey）——仍走集中闸门（并发 + 429）
-            using var res = await SendApiAsync(Http, GraphQlEndpoint, apiKey: null, method: HttpMethod.Post, jsonBody: body);
+            // GraphQL 浏览公开（不带 Bearer）——仍走集中闸门（并发 + 429）
+            using var res = await SendApiAsync(Http, GraphQlEndpoint, HttpMethod.Post, body, useBearer: false);
             if (!res.IsSuccessStatusCode) return null;
             using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
             // v0.76.0：GraphQL 语法/参数报错时响应是 200 + {"errors":[...],"data":null} ——
@@ -758,12 +793,12 @@ public sealed class NexusService
     /// 这是 v1 遗留端点、官方随时可能下线 —— 任何失败一律返回 null，调用方静默兜底，
     /// 绝不因为这个端点影响详情页打开。
     /// </summary>
-    public async Task<Dictionary<int, string>?> GetDownloadHistoryAsync(string apiKey)
+    public async Task<Dictionary<int, string>?> GetDownloadHistoryAsync()
     {
         try
         {
             using var res = await SendApiAsync(SlowHttp,
-                "https://api.nexusmods.com/v1/user/download_history.json", apiKey);
+                "https://api.nexusmods.com/v1/user/download_history.json");
             if (!res.IsSuccessStatusCode) return null;
             using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
             var map = new Dictionary<int, string>();
@@ -795,10 +830,10 @@ public sealed class NexusService
     }
 
     /// <summary>CDN download URL for a file. NeedsPremium=true on free accounts (HTTP 403).</summary>
-    public async Task<NexusDownloadResult> GetDownloadUrlAsync(string apiKey, int modId, long fileId)
+    public async Task<NexusDownloadResult> GetDownloadUrlAsync(int modId, long fileId)
     {
         using var res = await SendApiAsync(Http,
-            $"{Base}/mods/{modId}/files/{fileId}/download_link.json", apiKey);
+            $"{Base}/mods/{modId}/files/{fileId}/download_link.json");
         if ((int)res.StatusCode == 403) return NexusDownloadResult.PremiumRequired;
         if (!res.IsSuccessStatusCode) return NexusDownloadResult.Fail($"HTTP {(int)res.StatusCode}");
 
@@ -806,7 +841,7 @@ public sealed class NexusService
         foreach (var server in doc.RootElement.EnumerateArray())
             if (server.TryGetProperty("URI", out var u) && u.GetString() is { } uri)
                 return NexusDownloadResult.Ok(uri);
-        return NexusDownloadResult.Fail("响应里没有下载地址");
+        return NexusDownloadResult.Fail(LocService.Tr("响应里没有下载地址"));
     }
 
     // 大文件下载用单独的长超时客户端（免费账户限速约 1MB/s，
@@ -845,16 +880,16 @@ public sealed class NexusService
     // the user clicking "Mod Manager Download" on the website)
     // ------------------------------------------------------------------
     public async Task<NexusDownloadResult> GetNxmDownloadUrlAsync(
-        string? apiKey, int modId, long fileId, string key, string expires)
+        int modId, long fileId, string key, string expires)
     {
         var url = $"{Base}/mods/{modId}/files/{fileId}/download_link.json"
                 + $"?key={Uri.EscapeDataString(key)}&expires={Uri.EscapeDataString(expires)}";
-        using var res = await SendApiAsync(Http, url, apiKey);
+        using var res = await SendApiAsync(Http, url);
         if (!res.IsSuccessStatusCode)
         {
             var code = (int)res.StatusCode;
             return NexusDownloadResult.Fail(code is 400 or 401 or 403
-                ? $"HTTP {code}（下载凭证与「设置」里的 API Key 所属账号不一致，或链接已过期——请确认应用和网页登录的是同一个 Nexus 账号，然后回网页重新点一次 Mod Manager Download）"
+                ? LocService.Tf("HTTP {0}（下载凭证与当前登录的 Nexus 账号不一致，或链接已过期——请确认应用和网页登录的是同一个账号，然后回网页重新点一次 Mod Manager Download）", code)
                 : $"HTTP {code}（链接可能已过期，回网页重新点一次下载）");
         }
 
@@ -862,7 +897,7 @@ public sealed class NexusService
         foreach (var server in doc.RootElement.EnumerateArray())
             if (server.TryGetProperty("URI", out var u) && u.GetString() is { } uri)
                 return NexusDownloadResult.Ok(uri);
-        return NexusDownloadResult.Fail("响应里没有下载地址");
+        return NexusDownloadResult.Fail(LocService.Tr("响应里没有下载地址"));
     }
 
     // ------------------------------------------------------------------
@@ -1052,12 +1087,16 @@ public sealed class NexusService
     /// v1.08.0 实测：该接口已无 avatar / member_id 字段 —— 用户 id 叫 user_id（读 member_id 恒为 0，
     /// GraphQL 附加信息与头像回填整条链路因此从未跑起来）；头像直链可按
     /// avatars.nexusmods.com/{user_id}/100 构造（当前接口把它错装在 profile_url 字段里，顺手纠正）。</summary>
-    public async Task<NexusUser?> ValidateAsync(string apiKey)
+    public async Task<NexusUser?> ValidateAsync()
     {
         try
         {
-            using var res = await SendApiAsync(Http, "https://api.nexusmods.com/v1/users/validate.json", apiKey);
-            if (!res.IsSuccessStatusCode) return null;
+            using var res = await SendApiAsync(Http, "https://api.nexusmods.com/v1/users/validate.json");
+            if (!res.IsSuccessStatusCode)
+            {
+                // 该遗留端点只认老 apikey，OAuth 的 Bearer 会 401 —— 账号信息改从 access token 的 JWT 里读
+                return BearerToken is { } bt && bt.Length > 0 ? AccountFromJwt(bt) : null;
+            }
             using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
             var r = doc.RootElement;
             var memberId = r.TryGetProperty("user_id", out var ui) && ui.ValueKind == JsonValueKind.Number ? ui.GetInt32()
@@ -1070,9 +1109,39 @@ public sealed class NexusService
                 profileUrl = $"https://www.nexusmods.com/users/{memberId}";
             return new NexusUser(
                 GetStr(r, "name") ?? "",
+                GetStr(r, "email") ?? "",
                 profileUrl,
                 avatar,
                 r.TryGetProperty("is_premium", out var pp) && pp.ValueKind == JsonValueKind.True,
+                memberId);
+        }
+        catch { return null; }
+    }
+
+    /// <summary>OAuth 的 access token 本身就是 nexus-user-service 签发的 JWT，payload 里带
+    /// sub(用户 id) / user.username / user.membership_roles —— validate.json 不收 Bearer 时用它合成账号信息。</summary>
+    private static NexusUser? AccountFromJwt(string jwt)
+    {
+        try
+        {
+            var seg = jwt.Split('.');
+            if (seg.Length < 2) return null;
+            var payload = seg[1].Replace('-', '+').Replace('_', '/');
+            payload = payload.PadRight(payload.Length + (4 - payload.Length % 4) % 4, '=');
+            using var doc = JsonDocument.Parse(System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(payload)));
+            var r = doc.RootElement;
+            var memberId = r.TryGetProperty("sub", out var s) && int.TryParse(s.GetString(), out var mid) ? mid : 0;
+            if (!r.TryGetProperty("user", out var u) || u.ValueKind != JsonValueKind.Object) return null;
+            // 会员与否看 premium_expiry（未开通=0；付费=未来到期时间戳），membership_roles 里的
+            // "supporter" 只是社区标识、不代表付费会员，不能拿来判 premium。
+            var premium = u.TryGetProperty("premium_expiry", out var pe) && pe.ValueKind == JsonValueKind.Number
+                && pe.GetInt64() > DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            return new NexusUser(
+                u.TryGetProperty("username", out var un) ? un.GetString() ?? "" : "",
+                "",
+                memberId > 0 ? $"https://www.nexusmods.com/users/{memberId}" : "",
+                memberId > 0 ? $"https://avatars.nexusmods.com/{memberId}/100" : "",
+                premium,
                 memberId);
         }
         catch { return null; }
@@ -1167,7 +1236,7 @@ public sealed class NexusService
     }
 }
 
-public sealed record NexusUser(string Name, string ProfileUrl, string Avatar, bool IsPremium, int MemberId);
+public sealed record NexusUser(string Name, string Email, string ProfileUrl, string Avatar, bool IsPremium, int MemberId);
 
 /// <summary>v0.70.1：用户扩展信息（GraphQL user(id)，tooltip 卡片用）。
 /// v1.07.0：新增 Avatar —— GraphQL 真实头像直链，validate.json 头像缺失时的回填源。</summary>

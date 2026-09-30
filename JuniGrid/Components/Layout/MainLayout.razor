@@ -19,7 +19,7 @@
             </main>
             @* ── v1.1.2：返回顶部（Mod 管理 / Mod 详情 / Nexus 显示；滚过一屏才出现）──
                点击 GSAP 补间 scrollTop 丝滑滚回；放左边避开右下角任务中心悬浮球 ── *@
-            <button id="jgBackTop" class="jg-backtop" data-tip="回到顶部" aria-label="回到顶部">
+            <button id="jgBackTop" class="jg-backtop" data-tip='@Loc.T("回到顶部")' aria-label='@Loc.T("回到顶部")'>
                 <img src="assets/back-top.svg" alt="" draggable="false" />
             </button>
         </div>
@@ -45,6 +45,8 @@
     protected override async Task OnAfterRenderAsync(bool firstRender)    {
         if (firstRender)
         {
+            // 颜色主题 + 系统强调色：首帧应用（system 模式注入 Windows 强调色，其余走 CSS 主题块）
+            try { await JS.InvokeVoidAsync("junigridJs.applyAccent", Cfg.Current.Accent, JuniGrid.App.GetSystemAccentHex()); } catch { }
             // v0.20.0：不要一挂载完就通知 —— 那时 shell DOM 有了但 CSS 还没铺完，
             // WPF 层立刻淡入会看到深色兜底底色。让 JS 那边先等两帧 rAF + 一小段 stabilize，
             // 直到浅色主题真正绘制稳定，再通知 WPF 主窗淡入。

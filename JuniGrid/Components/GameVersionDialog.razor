@@ -18,12 +18,12 @@
         <div class="jg-modal jg-ver-modal" @onclick:stopPropagation>
 
             <div class="jg-ver-head">
-                <div class="jg-ver-title">游戏版本管理</div>
+                <div class="jg-ver-title">@Loc.T("游戏版本管理")</div>
                 <div class="jg-ver-head-meta">
                     <span class="jg-ver-lockchip @(_manifestLocked ? "on" : "")" @onclick="ToggleLock">
-                        @(_manifestLocked ? "已锁定" : "未锁定")
+                        @(_manifestLocked ? Loc.T("已锁定") : Loc.T("未锁定"))
                     </span>
-                    <button type="button" class="jg-ver-x" @onclick="Close" title="关闭">
+                    <button type="button" class="jg-ver-x" @onclick="Close" title='@Loc.T("关闭")'>
                         <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
                             <path d="M2 2l10 10M12 2L2 12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
                         </svg>
@@ -48,12 +48,12 @@
             </div>
 
             <div class="jg-ver-sec" style="display:flex;align-items:center;justify-content:space-between;gap:10px">
-                <span>版本列表</span>
+                <span>@Loc.T("版本列表")</span>
                 @* 国内连不上 Steam CM 时，历史版本可能怎么试都下不来 —— 只要包在本地（别的机器 /
                    U盘 / 网盘拷来的）就该有路：认领进缓存后点它离线切换，全程不连 Steam。 *@
                 <button type="button" class="jg-ver-mini" disabled="@SwitchBlocked"
-                        title="认领从别的机器 / U盘拷来的版本包，之后离线切换不连 Steam"
-                        @onclick="ImportLocal">导入本地包</button>
+                        title='@Loc.T("认领从别的机器 / U盘拷来的版本包，之后离线切换不连 Steam")'
+                        @onclick="ImportLocal">@Loc.T("导入本地包")</button>
             </div>
             <div class="jg-ver-vlist">
             @* @key：行元素会被 GSAP 写上 inline transform，列表重排（下载完置顶）时
@@ -68,14 +68,14 @@
                         {
                             <div class="swipe-row__rail">
                                 <button type="button" class="swipe-row__action"
-                                        title="删除本地缓存"
+                                        title='@Loc.T("删除本地缓存")'
                                         disabled="@(SwitchBlocked || IsDownloading(k))"
                                         @onclick="() => AskDelete(k.DisplayName, staged)">
                                     <span class="swipe-row__glyph">
                                         <span class="swipe-row__icon">
                                             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg>
                                         </span>
-                                        <span>删除</span>
+                                        <span>@Loc.T("删除")</span>
                                     </span>
                                 </button>
                             </div>
@@ -90,9 +90,9 @@
                             @if (k.HasManifest && !IsInstalled(k) && (staged is null || !staged.Complete))
                             {
                                 <button type="button" class="jg-ver-mini"
-                                        title="@(staged is null ? "只下载到这个版本的缓存，不切换（可与其它版本一起排队）" : "这个包没确认下完，缺的文件会让游戏进档时闪退；点一下按清单补齐缺的文件")"
+                                        title="@(staged is null ? Loc.T("只下载到这个版本的缓存，不切换（可与其它版本一起排队）") : Loc.T("这个包没确认下完，缺的文件会让游戏进档时闪退；点一下按清单补齐缺的文件"))"
                                         disabled="@IsDownloading(k)"
-                                        @onclick="() => OnDownloadClicked(k)">@(IsDownloading(k) ? (IsQueued(k) ? "排队中" : "下载中") : (staged is null ? "下载" : "校验补齐"))</button>
+                                        @onclick="() => OnDownloadClicked(k)">@(IsDownloading(k) ? (IsQueued(k) ? Loc.T("排队中") : Loc.T("下载中")) : (staged is null ? Loc.T("下载") : Loc.T("校验补齐")))</button>
                             }
                         </div>
                     </div>
@@ -107,7 +107,7 @@
                     @* 取消只在下载/排队时出现；应用本体时没有安全的中途取消 *@
                     @if (_canCancelSwitch)
                     {
-                        <button class="jg-ver-btn ghost" @onclick="CancelSwitch">取消</button>
+                        <button class="jg-ver-btn ghost" @onclick="CancelSwitch">@Loc.T("取消")</button>
                     }
                 </div>
             }
@@ -115,7 +115,7 @@
             {
                 @if (_error is not null)
                 {
-                    <div class="jg-ver-note @(_error == "已取消" ? "" : "danger")" style="margin-top:8px">@_error</div>
+                    <div class="jg-ver-note @(_error == Loc.T("已取消") ? "" : "danger")" style="margin-top:8px">@Loc.T(_error)</div>
                 }
                 @if (_done)
                 {
@@ -132,11 +132,11 @@
     {
         <div class="jg-modal-overlay" @onclick="CancelDelete" @onclick:stopPropagation>
             <div class="jg-modal" @onclick:stopPropagation>
-                <div class="jg-modal-title">删除本地缓存</div>
+                <div class="jg-modal-title">@Loc.T("删除本地缓存")</div>
                 <div class="jg-modal-body">@_pendingDeleteText</div>
                 <div class="jg-modal-actions">
-                    <button type="button" class="jg-pill-ghost" data-modal-close @onclick="CancelDelete">取消</button>
-                    <button type="button" class="jg-pill-danger" @onclick="DoDeleteStaged">确认删除</button>
+                    <button type="button" class="jg-pill-ghost" data-modal-close @onclick="CancelDelete">@Loc.T("取消")</button>
+                    <button type="button" class="jg-pill-danger" @onclick="DoDeleteStaged">@Loc.T("确认删除")</button>
                 </div>
             </div>
         </div>
@@ -173,10 +173,10 @@
         {
             var cfg = Cfg.Current;
             if (IsHistoricalRecordActive(cfg))
-                return "已切换 " + cfg.LastHistoricalLabel;
-            return _gameVersion is null
+                return Loc.T("已切换 ") + cfg.LastHistoricalLabel;
+            return Loc.T(_gameVersion is null
                 ? "正在识别游戏目录…"
-                : "Steam 安装目录本体";
+                : "Steam 安装目录本体");
         }
     }
 
@@ -288,11 +288,11 @@
 
     private string StatusTag(DepotDownloaderService.KnownVersion k)
     {
-        if (IsInstalled(k)) return "当前";
+        if (IsInstalled(k)) return Loc.T("当前");
         var pkg = StagedOf(k);
-        if (pkg is not null) return pkg.Complete ? "已下载 · 点击切换" : "未确认下完 · 需校验补齐";
-        if (IsDownloading(k)) return IsQueued(k) ? "排队中" : "下载中";
-        return k.HasManifest ? "未下载" : "缺 Manifest";
+        if (pkg is not null) return Loc.T(pkg.Complete ? "已下载 · 点击切换" : "未确认下完 · 需校验补齐");
+        if (IsDownloading(k)) return Loc.T(IsQueued(k) ? "排队中" : "下载中");
+        return Loc.T(k.HasManifest ? "未下载" : "缺 Manifest");
     }
 
     /// <summary>这一版的下载任务（running/paused，按标题里的 manifest 认）。</summary>
@@ -314,23 +314,23 @@
     {
         if (_gameRunning)
         {
-            _ = JS.InvokeVoidAsync("junigridJs.toast", "游戏正在运行 — 请先退出后再下载", "err");
+            _ = JS.InvokeVoidAsync("junigridJs.toast", LocService.Tr("游戏正在运行 — 请先退出后再下载"), "err");
             return;
         }
         if (!k.HasManifest)
         {
-            _ = JS.InvokeVoidAsync("junigridJs.toast", "该版本缺少 Manifest ID，无法下载", "err");
+            _ = JS.InvokeVoidAsync("junigridJs.toast", LocService.Tr("该版本缺少 Manifest ID，无法下载"), "err");
             return;
         }
         if (!VerDl.IsAuthorized)
         {
-            _ = JS.InvokeVoidAsync("junigridJs.toast", "请先在设置里完成 Steam 扫码授权", "err");
+            _ = JS.InvokeVoidAsync("junigridJs.toast", LocService.Tr("请先在设置里完成 Steam 扫码授权"), "err");
             return;
         }
         try
         {
             VerDl.StartDownload(k.DisplayName, k.ManifestId, k.Version, applyToGame: false);
-            _ = JS.InvokeVoidAsync("junigridJs.toast", $"已开始下载 {k.DisplayName}（进度见右下角任务中心）");
+            _ = JS.InvokeVoidAsync("junigridJs.toast", LocService.Tf("已开始下载 {0}（进度见右下角任务中心）", k.DisplayName));
             StateHasChanged();
         }
         catch (Exception ex)
@@ -441,33 +441,33 @@
     {
         if (_gameRunning)
         {
-            _ = JS.InvokeVoidAsync("junigridJs.toast", "游戏正在运行 — 请先退出后再下载或切换版本", "err");
+            _ = JS.InvokeVoidAsync("junigridJs.toast", LocService.Tr("游戏正在运行 — 请先退出后再下载或切换版本"), "err");
             return;
         }
         if (_busy)
         {
-            _ = JS.InvokeVoidAsync("junigridJs.toast", "正在切换版本，请稍候", "err");
+            _ = JS.InvokeVoidAsync("junigridJs.toast", LocService.Tr("正在切换版本，请稍候"), "err");
             return;
         }
         if (DepotDownloaderService.IsApplyInProgress)
         {
-            _ = JS.InvokeVoidAsync("junigridJs.toast", "正在切换版本，请等它完成", "err");
+            _ = JS.InvokeVoidAsync("junigridJs.toast", LocService.Tr("正在切换版本，请等它完成"), "err");
             return;
         }
         if (!k.HasManifest)
         {
-            _ = JS.InvokeVoidAsync("junigridJs.toast", "该版本缺少 Manifest ID，无法下载", "err");
+            _ = JS.InvokeVoidAsync("junigridJs.toast", LocService.Tr("该版本缺少 Manifest ID，无法下载"), "err");
             return;
         }
         if (IsInstalled(k))
         {
-            _ = JS.InvokeVoidAsync("junigridJs.toast", "当前已是该版本");
+            _ = JS.InvokeVoidAsync("junigridJs.toast", LocService.Tr("当前已是该版本"));
             return;
         }
         if (IsDownloading(k))
         {
             _ = JS.InvokeVoidAsync("junigridJs.toast",
-                IsQueued(k) ? $"{k.DisplayName} 还在排队，轮到它下载完才能切"
+                IsQueued(k) ? LocService.Tf("{0} 还在排队，轮到它下载完才能切", k.DisplayName)
                             : $"{k.DisplayName} 正在下载，下完才能切", "err");
             return;
         }
@@ -480,7 +480,7 @@
             if (!staged.Complete)
             {
                 _ = JS.InvokeVoidAsync("junigridJs.toast",
-                    $"{k.DisplayName} 没确认下完 —— 先点右边的「校验补齐」，补完再切（缺文件的包进档会闪退）", "err");
+                    LocService.Tf("{0} 没确认下完 —— 先点右边的「校验补齐」，补完再切（缺文件的包进档会闪退）", k.DisplayName), "err");
                 return;
             }
             _selectedStaged = staged;
@@ -491,7 +491,7 @@
         }
         // 没下载过的版本不再"点一下就顺手把游戏目录换掉"：要先按「下载」，下完才允许切
         _ = JS.InvokeVoidAsync("junigridJs.toast",
-            $"{k.DisplayName} 还没下载 —— 先点右边的「下载」，下完再点版本号切换", "err");
+            LocService.Tf("{0} 还没下载 —— 先点右边的「下载」，下完再点版本号切换", k.DisplayName), "err");
     }
 
     private void ApplySelectedStaged() => _ = ApplyStagedAsync();
@@ -501,13 +501,13 @@
         if (_selectedStaged is not { } st || _manifestPath is null) return;
         if (_gameRunning)
         {
-            _error = "游戏正在运行 — 请先退出后再切换版本";
+            _error = LocService.Tr("游戏正在运行 — 请先退出后再切换版本");
             await InvokeAsync(StateHasChanged);
             return;
         }
         if (DepotDownloaderService.IsApplyInProgress)
         {
-            _error = "正在切换版本，请等它完成";
+            _error = LocService.Tr("正在切换版本，请等它完成");
             await InvokeAsync(StateHasChanged);
             return;
         }
@@ -515,7 +515,7 @@
         _done = false;
         _error = null;
         _canCancelSwitch = false;
-        _stateText = "使用本地缓存，直接应用…";
+        _stateText = LocService.Tr("使用本地缓存，直接应用…");
         _switchCts = new CancellationTokenSource();
         await InvokeAsync(StateHasChanged);
 
@@ -544,7 +544,7 @@
             cfg.LastHistoricalInternalVersion = _gameVersion ?? "";
             Cfg.Save(cfg);
             RefreshLibrary();
-            _ = JS.InvokeVoidAsync("junigridJs.toast", $"已切换到 {st.Label}", "ok");
+            _ = JS.InvokeVoidAsync("junigridJs.toast", LocService.Tf("已切换到 {0}", st.Label), "ok");
             // P0-1/P0-3：Mods 整包替换 + 立绘扫描数据失效 —— 广播已打开的页面重扫
             PageRefresh.Request("mods");
             PageRefresh.Request("portraits");
@@ -554,7 +554,7 @@
         }
         catch (OperationCanceledException)
         {
-            _error = "已取消";
+            _error = LocService.Tr("已取消");
         }
         catch (Exception ex)
         {
@@ -583,7 +583,7 @@
         var cfg = Cfg.Current;
         cfg.LockGameVersion = want;
         Cfg.Save(cfg);
-        _ = JS.InvokeVoidAsync("junigridJs.toast", want ? "已锁定游戏版本" : "已解除锁定");
+        _ = JS.InvokeVoidAsync("junigridJs.toast", want ? LocService.Tr("已锁定游戏版本") : LocService.Tr("已解除锁定"));
         StateHasChanged();
     }
 
@@ -610,23 +610,23 @@
         // 半成品和整包会混在一个抽屉里（切它时锚点校验会拦，但包已经坏了）。
         if (Center.Snapshot().Any(t => t.Kind == "gameversion" && t.Status is "running" or "paused"))
         {
-            _ = JS.InvokeVoidAsync("junigridJs.toast", "有版本正在下载或排队，等它结束再导入本地包", "err");
+            _ = JS.InvokeVoidAsync("junigridJs.toast", LocService.Tr("有版本正在下载或排队，等它结束再导入本地包"), "err");
             return;
         }
         var dlg = new Microsoft.Win32.OpenFolderDialog
-        { Title = "选择版本包文件夹（里面有 Stardew Valley.dll 或 Stardew Valley.exe）" };
+        { Title = LocService.Tr("选择版本包文件夹（里面有 Stardew Valley.dll 或 Stardew Valley.exe）") };
         if (dlg.ShowDialog() != true) return;
         try
         {
             var label = Depot.ImportLocalPackage(dlg.FolderName);
             RefreshLibrary();
             StateHasChanged();
-            _ = JS.InvokeVoidAsync("junigridJs.toast", $"已认领本地版本包 {label}，点它即可离线切换");
+            _ = JS.InvokeVoidAsync("junigridJs.toast", LocService.Tf("已认领本地版本包 {0}，点它即可离线切换", label));
         }
         catch (Exception ex)
         {
             _ = JS.InvokeVoidAsync("junigridJs.toast",
-                ex is DepotDownloaderService.DepotException ? ex.Message : "导入失败：" + ex.Message, "err");
+                ex is DepotDownloaderService.DepotException ? ex.Message : LocService.Tr("导入失败：") + ex.Message, "err");
         }
     }
 
@@ -636,13 +636,13 @@
         CancelDelete();
         if (!Depot.DeleteStagedPackage(manifestId))
         {
-            _ = JS.InvokeVoidAsync("junigridJs.toast", "删除失败（文件可能被占用）", "err");
+            _ = JS.InvokeVoidAsync("junigridJs.toast", LocService.Tr("删除失败（文件可能被占用）"), "err");
             return;
         }
         if (_selectedStaged?.ManifestId == manifestId) _selectedStaged = null;
         RefreshLibrary();
         StateHasChanged();
-        _ = JS.InvokeVoidAsync("junigridJs.toast", "已删除本地缓存", "ok");
+        _ = JS.InvokeVoidAsync("junigridJs.toast", LocService.Tr("已删除本地缓存"), "ok");
     }
 
     private async Task Close()
@@ -652,7 +652,7 @@
         {
             try { _switchCts?.Cancel(); } catch { }
             _busy = false;
-            _error = "已取消";
+            _error = LocService.Tr("已取消");
         }
         // App Store 卡片收回：先 FLIP 缩回版本卡，再卸弹窗
         try { await JS.InvokeVoidAsync("junigridJs.flipModal", "jgVerCard", false); } catch { }

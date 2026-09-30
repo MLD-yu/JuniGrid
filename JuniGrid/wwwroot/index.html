@@ -78,7 +78,14 @@
     </div>
 
     <script>
+        // Blazor WebView 的良性竞态：某个 fire-and-forget 的 DotNet.invokeMethodAsync
+        //（长按/滚动上报/关弹窗/翻译）在 JS 侧已把待办表拆掉之后才回完成回调 —— 典型发生在
+        // 切页（如 立绘 → Mods）或重载的瞬间。blazor.webview.js 会抛
+        // "There is no pending async call with ID N"。它不影响数据、页面照常，
+        // 但这个浮层是给【启动失败】用的，不该被这种一次性互操作残留触发。
+        const BENIGN = /no pending async call with ID/i;
         function showErr(msg) {
+            if (BENIGN.test(msg)) return;
             const el = document.getElementById('blazor-error-ui');
             if (!el) return;
             document.getElementById('err-msg').textContent = msg;

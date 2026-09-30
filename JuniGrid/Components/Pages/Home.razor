@@ -12,7 +12,7 @@
 <div class="jg-page">
     <div class="jg-grid-4">
         <div class="jg-card">
-            <div class="jg-stat-label">已装 Mod</div>
+            <div class="jg-stat-label">@Loc.T("已装 Mod")</div>
             <div class="jg-stat-num">
                 @if (_statsReady)
                 {
@@ -24,7 +24,7 @@
                 }
             </div>
             <div class="jg-stat-sub">
-                @(_statsReady ? $"{_activeModCount} 启用 · {_totalModCount - _activeModCount} 禁用" : "正在扫描…")
+                @(_statsReady ? Loc.F("{0} 启用 · {1} 禁用", _activeModCount, _totalModCount - _activeModCount) : Loc.T("正在扫描…"))
             </div>
         </div>
 
@@ -37,19 +37,19 @@
                 }
                 else
                 {
-                    @(_smapiVersion is null ? "未安装" : _smapiVersion)
+                    @(_smapiVersion is null ? Loc.T("未安装") : _smapiVersion)
                 }
             </div>
             <div class="jg-stat-sub">
-                @(!_statsReady ? "正在检测…"
-                    : _smapiVersion is null ? "仅支持 Steam 官方启动" : "Mod 加载器就绪")
+                @(!_statsReady ? Loc.T("正在检测…")
+                    : _smapiVersion is null ? Loc.T("仅支持 Steam 官方启动") : Loc.T("Mod 加载器就绪"))
             </div>
         </div>
 
         @* v1.4：版本卡可点击 → 版本管理弹窗（官方分支切换 / 锁定更新）
            id = FLIP 源：点这张卡，弹窗从它的矩形放大出来 *@
-        <div class="jg-card jg-card-click" id="jgVerCard" @onclick="OpenVersionMgr" data-tip="切换官方旧版本 / 锁定自动更新">
-            <div class="jg-stat-label">游戏版本</div>
+        <div class="jg-card jg-card-click" id="jgVerCard" @onclick="OpenVersionMgr" data-tip='@Loc.T("切换官方旧版本 / 锁定自动更新")'>
+            <div class="jg-stat-label">@Loc.T("游戏版本")</div>
             <div class="jg-stat-num">
                 @if (UpdateService.DisplayGameVersion(_gameVersion, Cfg.Current.LastHistoricalLabel, Cfg.Current.LastHistoricalInternalVersion) is { Length: > 0 } ver)
                 {
@@ -62,19 +62,17 @@
             </div>
             <div class="jg-stat-sub jg-ver-card-sub">
                 <span>Stardew Valley</span>
-                <span class="jg-ver-hint">管理版本 ⇄</span>
+                <span class="jg-ver-hint">@Loc.T("管理版本 ⇄")</span>
             </div>
         </div>
 
         <div class="jg-card">
-            <div class="jg-stat-label">最近游玩</div>
+            <div class="jg-stat-label">@Loc.T("最近游玩")</div>
             <div class="jg-stat-num" style="font-size:18px;line-height:1.3;">
-                @(_cfg.LastLaunchTime is null ? "还没启动过" : FormatTime(_cfg.LastLaunchTime))
+                @(_cfg.LastLaunchTime is null ? Loc.T("还没启动过") : FormatTime(_cfg.LastLaunchTime))
             </div>
             @* v1.1.2：总时长改用热力图口径（PlayTimeService 全部年份的秒数总和） *@
-            <div class="jg-stat-sub">
-                @_cfg.TotalLaunchCount 次启动 · 共 @FormatHours(PlayTime.TotalSeconds)
-            </div>
+            <div class="jg-stat-sub">@Loc.F(" {0} 次启动 · 共 {1} ", _cfg.TotalLaunchCount, FormatHours(PlayTime.TotalSeconds))</div>
         </div>
     </div>
 
@@ -82,13 +80,11 @@
        数据只来自 PlayTimeService 的系统统计（游戏进程每 30s 自动累计），不做手动修改入口 *@
     <div class="jg-card jg-heat-card">
         <div class="jg-heat-head">
-            <div class="jg-heat-title">@_heatYear 年共游玩 @FormatHours(_yearTotalSeconds)（@_yearDays 天）</div>
+            <div class="jg-heat-title">@Loc.F("{0} 年共游玩 {1}（{2} 天）", _heatYear, FormatHours(_yearTotalSeconds), _yearDays)</div>
             @* v1.1.6：年份选择改通用下拉（复用 dropdownToggle 的 GSAP 弹性动画 + 遮罩点外收回）；
                jg-dd-right 让菜单右对齐（贴标题行右缘不超出卡片） *@
             <div class="jg-sort-dd jg-dd-right jg-heat-yeardd @(_heatDdOpen ? "open" : "")" data-dd="heatyear">
-                <button class="jg-sort-trigger" @onclick="ToggleYearDd">
-                    @_heatYear 年
-                    <svg class="jg-sort-arrow" width="12" height="12" viewBox="0 0 12 12" fill="none">
+                <button class="jg-sort-trigger" @onclick="ToggleYearDd">@Loc.F(" {0} 年 ", _heatYear)<svg class="jg-sort-arrow" width="12" height="12" viewBox="0 0 12 12" fill="none">
                         <path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
                     </svg>
                 </button>
@@ -96,7 +92,7 @@
                     @foreach (var y in _years)
                     {
                         var year = y;
-                        <button class="jg-sort-item @(_heatYear == year ? "active" : "")" @onclick="() => PickYear(year)">@year 年</button>
+                        <button class="jg-sort-item @(_heatYear == year ? "active" : "")" @onclick="() => PickYear(year)">@Loc.F("{0} 年", year)</button>
                     }
                 </div>
             </div>
@@ -153,15 +149,11 @@
         <div class="jg-heat-foot">
             @* v1.1.6：图例色块 hover 放大 + data-tip 胶囊提示显示该色对应时长档位
                （data-tip 全局委托自动生效，文案与 HeatCell.Level 阈值一一对应）*@
-            <div class="jg-heat-legend">
-                少
-                <span class="jg-heat-cell l0" data-tip="没有游玩"></span>
-                <span class="jg-heat-cell l1" data-tip="少于 1 小时"></span>
-                <span class="jg-heat-cell l2" data-tip="1–2 小时"></span>
-                <span class="jg-heat-cell l3" data-tip="2–4 小时"></span>
-                <span class="jg-heat-cell l4" data-tip="4 小时以上"></span>
-                多
-            </div>
+            <div class="jg-heat-legend"> @Loc.T("少") <span class="jg-heat-cell l0" data-tip='@Loc.T("没有游玩")'></span>
+                <span class="jg-heat-cell l1" data-tip='@Loc.T("少于 1 小时")'></span>
+                <span class="jg-heat-cell l2" data-tip='@Loc.T("1–2 小时")'></span>
+                <span class="jg-heat-cell l3" data-tip='@Loc.T("2–4 小时")'></span>
+                <span class="jg-heat-cell l4" data-tip='@Loc.T("4 小时以上")'></span> @Loc.T("多") </div>
         </div>
     </div>
 
@@ -372,10 +364,10 @@
         _monthLabels = colMonths.Select(cm =>
         {
             if (cm is not int m) return new HeatMonth("", null, null);
-            var name = monthNames[m];
-            return new DateTime(_heatYear, m, 1) > today ? new HeatMonth(name, m, $"{name} 还没到")
-                : monthTotals[m] > 0 ? new HeatMonth(name, m, $"{name} 共游玩 {FormatHours(monthTotals[m])}（{monthDays[m]} 天）")
-                : new HeatMonth(name, m, $"{name} 没有游玩");
+            var name = Loc.T(monthNames[m]);
+            return new DateTime(_heatYear, m, 1) > today ? new HeatMonth(name, m, Loc.F("{0} 还没到", name))
+                : monthTotals[m] > 0 ? new HeatMonth(name, m, Loc.F("{0} 共游玩 {1}（{2} 天）", name, FormatHours(monthTotals[m]), monthDays[m]))
+                : new HeatMonth(name, m, Loc.F("{0} 没有游玩", name));
         }).ToList();
     }
 
@@ -402,19 +394,19 @@
         RebuildHeat();
     }
 
-    private static string WdayLabel(int row) => row switch
+    private string WdayLabel(int row) => row switch
     {
-        1 => "一", 3 => "三", 5 => "五", _ => ""
+        1 => Loc.T("一"), 3 => Loc.T("三"), 5 => Loc.T("五"), _ => ""
     };
 
     // 悬停胶囊提示（data-tip 全局委托，动态格子也能用）
-    private static string Tip(HeatCell cell) =>
+    private string Tip(HeatCell cell) =>
         cell.Seconds > 0
-            ? $"{Math.Round(cell.Seconds / 3600.0, 1)} 小时 · {cell.Key}"
-            : $"没有游玩 · {cell.Key}";
+            ? Loc.F("{0} 小时 · {1}", Math.Round(cell.Seconds / 3600.0, 1), cell.Key)
+            : Loc.F("没有游玩 · {0}", cell.Key);
 
-    private static string FormatHours(long seconds) =>
-        seconds <= 0 ? "0 小时" : (seconds / 3600.0).ToString("0.0") + " 小时";
+    private string FormatHours(long seconds) =>
+        Loc.F("{0} 小时", seconds <= 0 ? "0" : (seconds / 3600.0).ToString("0.0"));
 
     private static string FormatTime(string iso) =>
         DateTime.TryParse(iso, out var t) ? t.ToString("MM-dd HH:mm") : iso;

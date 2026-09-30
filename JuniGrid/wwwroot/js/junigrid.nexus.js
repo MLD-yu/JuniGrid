@@ -317,6 +317,54 @@ void main(){
     };
     })();
 
+// ─── v1.10：作者推荐跑马灯 —— 偏移量由这里逐帧写成 inline transform。
+// 不用 CSS animation：动画优先级高于 inline style，会把 JS 写的 transform 整个盖掉，
+// 滚轮就无法接手同一个偏移量。悬停暂停自动滚动；滚轮（含触摸板横向）可来回拨。
+// 轨道里放了两份一样的卡片 ⇒ 偏移量对「一份的宽度」取模，接缝处看不出来。
+junigridJs.picksLoopInit = function () {
+    var rail = document.querySelector('.jg-picks-rail');
+    if (!rail || rail.dataset.picksBound) return;
+    var track = rail.querySelector('.jg-picks-track');
+    if (!track || track.children.length === 0 || track.children.length % 2 !== 0) return;
+    rail.dataset.picksBound = "1";
 
+    var half = 0;      // 一份卡片的宽度 = 无缝循环的周期
+    var offset = 0;    // 当前平移量，恒在 [0, half)
+    var hovered = false;
+    var last = 0;
+    var SPEED = 50.4;  // px/s：48 秒走完一份（和原来那条 CSS 动画同速）
 
+    function measure() {
+        half = track.scrollWidth / 2;
+        if (half > 0) offset = ((offset % half) + half) % half;
+    }
+    function apply() {
+        if (half > 0) track.style.transform = 'translateX(' + (-offset).toFixed(2) + 'px)';
+    }
+    function step(now) {
+        if (!rail.isConnected) return;   // 节点被换掉就停手，不留悬挂的 rAF（新节点会重新 init）
+        var dt = last ? Math.min((now - last) / 1000, 0.1) : 0;
+        last = now;
+        var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        if (!hovered && !reduce && half > 0) {
+            offset += SPEED * dt;
+            if (offset >= half) offset -= half;
+            apply();
+        }
+        requestAnimationFrame(step);
+    }
 
+    rail.addEventListener('mouseenter', function () { hovered = true; });
+    rail.addEventListener('mouseleave', function () { hovered = false; });
+    rail.addEventListener('wheel', function (e) {
+        if (!half) return;
+        e.preventDefault();   // 别让页面跟着上下跳：这条轨道是横向的，滚的就是「往前/往后」
+        var d = Math.abs(e.deltaY) >= Math.abs(e.deltaX) ? e.deltaY : e.deltaX;
+        offset += d * 0.6;
+        offset = ((offset % half) + half) % half;
+        apply();
+    }, { passive: false });
+    window.addEventListener('resize', measure);
+
+    measure(); apply(); requestAnimationFrame(step);
+};

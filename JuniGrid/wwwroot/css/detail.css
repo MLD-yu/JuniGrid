@@ -76,6 +76,17 @@
     color: #2b1c05;
     font-size: 11px; font-weight: 700; letter-spacing: .02em;
     line-height: 1.55; white-space: nowrap;
+}
+/* 「下载已授权」徽标：形状同 .jg-premium-badge，但配色从主题强调色推导。
+   用淡底 + 强调色字而不是实心底，实心底上的白字在 honey 这类亮色强调色上对比不够。 */
+.jg-auth-badge {
+    display: inline-flex; align-items: center;
+    padding: 1px 9px; border-radius: 999px;
+    background: color-mix(in srgb, var(--jg-accent) 18%, transparent);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--jg-accent) 42%, transparent);
+    color: var(--jg-accent);
+    font-size: 11px; font-weight: 700; letter-spacing: .02em;
+    line-height: 1.55; white-space: nowrap;
 }/* v0.69.1：mod 名称后的最后安装时间（深灰、无对号） */
 .jg-dl4-lastdl { font-size: 12px; color: var(--jg-text-2); font-weight: 400; margin-left: 12px; }/* 视差图片轮播 */
 .jg-carousel {
@@ -107,7 +118,9 @@
 .jg-acc-inner { scrollbar-width: none; }.jg-acc-inner::-webkit-scrollbar { width: 0; height: 0; }.jg-acc.open.jg-acc-scroll .jg-acc-inner::-webkit-scrollbar { width: 6px; }.jg-acc.open.jg-acc-scroll .jg-acc-inner::-webkit-scrollbar-thumb { background: rgba(0,0,0,.18); border-radius: 3px; }.jg-req-row { display: grid; grid-template-columns: 1fr 1fr; padding: 9px 14px; font-size: 13px; align-items: center; }.jg-req-row + .jg-req-row { border-top: 1px solid var(--jg-line); }/* ═══ v0.69.7：Requirements 链接去下划线 + 封面缩略图 ═══ */
 .jg-req-link { background: none; border: none; padding: 0; cursor: pointer; font-size: 13px;
     color: #b8860b; font-weight: 600; text-align: left; text-decoration: none; }.jg-req-link:hover { color: #9a7109; text-decoration: none; }.jg-req-cover { width: 30px; height: 30px; object-fit: cover; border-radius: 6px; flex: none; }.jg-req-name { display: flex; align-items: center; gap: 8px; min-width: 0; }.jg-req-missing { flex: none; font-size: 10.5px; font-weight: 600; color: #c50f1f;
-  border: 1px solid rgba(197,15,31,.45); border-radius: 999px; padding: 1px 7px; }.jg-req-table { margin-top: 4px; }.jg-detail-section { margin-top: 18px; }.jg-detail-section-title { font-size: 14.5px; font-weight: 700; color: var(--jg-text); margin-bottom: 8px; }/* ═══ v0.69.9：手风琴头部悬浮时不压内容 + 头部实心背景 + Body 顶部空出 ═══ */
+  border: 1px solid rgba(197,15,31,.45); border-radius: 999px; padding: 1px 7px; }/* v1.2.4：官网 notes 写明 Optional 的需求 —— 缺了不影响用，别和硬缺失同一个红标 */
+.jg-req-optional { flex: none; font-size: 10.5px; font-weight: 600; color: #d97b00;
+  border: 1px solid rgba(217,123,0,.45); border-radius: 999px; padding: 1px 7px; }.jg-req-table { margin-top: 4px; }.jg-detail-section { margin-top: 18px; }.jg-detail-section-title { font-size: 14.5px; font-weight: 700; color: var(--jg-text); margin-bottom: 8px; }/* ═══ v0.69.9：手风琴头部悬浮时不压内容 + 头部实心背景 + Body 顶部空出 ═══ */
 .jg-acc-head { background: var(--jg-card); }.jg-acc.open .jg-acc-body { padding-top: 8px; }.jg-acc-inner { position: relative; }/* ═══ v0.70.0：hover 实色背景（旧 rgba 半透明 + sticky 导致下层文字透过来叠字）═══
    v1.3.7 再修：--jg-well 本身是 rgba 4-5% 的半透明色，hover 用它等于没盖住 ——
    章节头是 sticky，滚动内容从底下穿过、文字全部叠影（用户实测 Requirements/Changelogs）。

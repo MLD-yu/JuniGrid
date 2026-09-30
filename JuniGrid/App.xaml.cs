@@ -1,10 +1,12 @@
 using System.Diagnostics;
 using System.IO;
 using System.IO.Pipes;
+using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Threading;
 using JuniGrid.Services;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Win32;
 
 namespace JuniGrid;
 
@@ -87,9 +89,151 @@ public partial class App : Application
         TaskScheduler.UnobservedTaskException += OnUnobservedTaskException;
 
         StartPipeServer();
+        // 活下来的那个实例负责处理 nxm:// 注册项：「一键安装」开着就从 Vortex/NMM 手里抢过来，
+        // 关了才只在「没人能接」时修回自己（见方法注释）
+        EnsureNxmHandlerPointsAtSelf(ReadOneClickInstallFlag());
         PendingNxmLink = nxmArg;
 
         base.OnStartup(e);
+    }
+
+    /// <summary>OnStartup 早于 DI，读不了 ConfigService.Current，这里只瞄一眼配置文件里的「一键安装」。
+    /// 读不到按该属性的默认值 true 处理 —— 配置文件缺失＝首启，损坏时 ConfigService 也会回落到同一默认。</summary>
+    private static bool ReadOneClickInstallFlag()
+    {
+        try
+        {
+            var p = ConfigService.ConfigFilePath;
+            if (!File.Exists(p)) return true;
+            using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(p));
+            return !doc.RootElement.TryGetProperty("enableOneClickInstall", out var v)
+                   || v.ValueKind != System.Text.Json.JsonValueKind.False;
+        }
+        catch { return true; }
+    }
+
+    /// <summary>设置页开关调用：立刻把 nxm:// 注册项指向当前实例。</summary>
+    public static void ClaimNxmHandlerNow() => EnsureNxmHandlerPointsAtSelf(true);
+
+    // 抢注前那条命令的原值（Vortex / NMM 写下的）存在我们自己的键下：
+    // nxm 那棵树是我们建的、释放时要动它，不能把要还原的东西寄存在会被动掉的地方。
+    private const string NxmBackupKey = @"Software\JuniGrid";
+    private const string NxmBackupValue = "NxmDisplacedCommand";
+    private const string NxmRootKey = @"Software\Classes\nxm";
+    private const string NxmCmdKey = NxmRootKey + @"\shell\open\command";
+
+    /// <summary>从注册表那条命令里取出 exe 路径（值形如 "C:\...\Vortex.exe" "%1"）。</summary>
+    private static string? ExeOf(string? cmd)
+    {
+        if (string.IsNullOrWhiteSpace(cmd)) return null;
+        var m = Regex.Match(cmd, "\"?(.+?\\.exe)\"?", RegexOptions.IgnoreCase);
+        return m.Success ? m.Groups[1].Value : cmd;
+    }
+
+    /// <summary>设置页开关关闭时调用：把我们压掉的那条原命令交还给上一个管理器。
+    /// 只删键是不够的 —— 删掉的正是别家写进去的那个值，删完谁都没有；对方会不会自己再写回来
+    /// 取决于它自己的时机，我们控制不了。抢注时已把原值备份，所以这里能确定性地还原。
+    /// 没有备份（或备份里的 exe 已不存在）才退回删除。</summary>
+    public static void ReleaseNxmHandler()
+    {
+        try
+        {
+            string? saved = null;
+            using (var k = Registry.CurrentUser.OpenSubKey(NxmBackupKey))
+                saved = k?.GetValue(NxmBackupValue) as string;
+            var back = ExeOf(saved);
+
+            if (back is { Length: > 0 } && File.Exists(back))
+            {
+                // 原样写回，一个字都不能改：这条值本身就是完整命令行（自带引号和参数）。
+                // 早先这里误传给 WriteSelf，于是整条又被包一层引号、再追加一个 "%1"，
+                // 变成 ""E:\...\Vortex.exe" "%1"" "%1" —— Vortex 解析不出 -d，只置顶不下载。
+                WriteNxmCommand(saved!);
+                try
+                {
+                    using var k = Registry.CurrentUser.OpenSubKey(NxmBackupKey, true);
+                    if (k?.GetValue(NxmBackupValue) is not null) k.DeleteValue(NxmBackupValue);
+                }
+                catch { }
+                AppLog.Info("Startup", "nxm:// 处理器已交还原管理器: " + back);
+                return;
+            }
+
+            if (Registry.CurrentUser.OpenSubKey(NxmRootKey) is not null)
+                Registry.CurrentUser.DeleteSubKeyTree(NxmRootKey);
+            AppLog.Info("Startup", back is { Length: > 0 }
+                ? $"已删除 nxm:// 处理器（备份里的 {back} 已不存在，交还无意义）"
+                : "已删除 nxm:// 处理器（我们没抢过别人，没有可交还的对象）");
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warn("Startup", "释放 nxm:// 处理器失败: " + ex.Message);
+        }
+    }
+
+    private static void WriteSelf(string exe) => WriteNxmCommand($"\"{exe}\" \"%1\"");
+
+    /// <summary>写 nxm 处理器。参数是**整条命令行**，原样落盘不再加工 ——
+    /// 交还别的管理器时必须走这里，不能走 WriteSelf（那条会给参数再套一层引号并追加 "%1"）。</summary>
+    private static void WriteNxmCommand(string commandLine)
+    {
+        using (var root = Registry.CurrentUser.CreateSubKey(NxmRootKey))
+        {
+            root?.SetValue(null, "URL:nxm");
+            root?.SetValue("URL Protocol", "");
+        }
+        using var cmd = Registry.CurrentUser.CreateSubKey(NxmCmdKey);
+        cmd?.SetValue(null, commandLine);
+    }
+
+    /// <summary>nxm:// 处理器自检（HKCU，不需要管理员）。
+    /// 开（=「一键安装」开着）：无条件抢过来，但先把压掉的那条原命令备份下来，好在关闭时交还。
+    /// 关：退出竞争，一律不写自己 —— 唯一例外是这条注册是我们自己留下的死路径（旧版本把命令写进了
+    /// 仓库 bin\Debug，那份 exe 一删点「Mod Manager Download」就静默失败，看起来像"我们不接下载"），
+    /// 这种残局要收拾。注意"键不存在"不算残局：那正是我们把位置让出去了。</summary>
+    private static void EnsureNxmHandlerPointsAtSelf(bool claim)
+    {
+        try
+        {
+            var exe = Environment.ProcessPath ?? "";
+            if (exe.Length == 0 || !File.Exists(exe)) return;
+            string? cur;
+            using (var rk = Registry.CurrentUser.OpenSubKey(NxmCmdKey))
+                cur = rk?.GetValue(null) as string;
+            var path = ExeOf(cur);
+
+            // 已经指着自己 ⇒ 两种模式都不用动，也不能动（动了会把备份覆盖成我们自己）
+            if (path is not null && path.Equals(exe, StringComparison.OrdinalIgnoreCase)) return;
+
+            if (!claim)
+            {
+                var oursDead = path is { Length: > 0 }
+                               && !File.Exists(path)
+                               && Path.GetFileName(path).Equals("JuniGrid.exe", StringComparison.OrdinalIgnoreCase);
+                if (!oursDead) return;
+            }
+
+            // 只有确实压掉了一个还能用的管理器才记备份；指向死路径的旧值不值得留档
+            if (cur is { Length: > 0 } && path is { Length: > 0 } && File.Exists(path))
+                try
+                {
+                    using var bk = Registry.CurrentUser.CreateSubKey(NxmBackupKey);
+                    bk?.SetValue(NxmBackupValue, cur);
+                }
+                catch { }
+
+            WriteSelf(exe);
+            // 记原值必须记整条命令，不能记剥掉参数后的 exe 路径：
+            // Vortex 登记的是 "<exe>" -d "%1"，少了 -d 它 commander 解析不出 --download，
+            // 就只会把窗口置顶然后直接 return（表现为"弹到前台但不下载"）。
+            AppLog.Info("Startup",
+                $"nxm:// 处理器已{(claim ? "接管" : "修回")}当前实例: {exe}" +
+                (string.IsNullOrEmpty(cur) ? "" : "（原: " + cur + "）"));
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warn("Startup", "nxm:// 处理器自检失败: " + ex.Message);
+        }
     }
 
     /// <summary>单实例锁被占时（无 nxm 转发场景）：结束其它 JuniGrid 实例并等锁释放。
@@ -402,6 +546,69 @@ public partial class App : Application
 
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    /// <summary>把主窗口拉到所有应用最前并抢前台焦点（登录、下载完成时调用）。
+    /// Windows 有「前台锁」：非前台进程直接调 SetForegroundWindow 会被系统忽略。
+    /// 这里用经典绕过链 —— AttachThreadInput 把本线程输入队列临时挂到当前前台窗口线程，
+    /// 再 BringWindowToTop + SetForegroundWindow，并短暂置 Topmost 抬升 Z 序。</summary>
+    public static void BringMainWindowToFront()
+    {
+        try
+        {
+            var app = Current;
+            if (app is null) return;
+            if (!app.Dispatcher.CheckAccess()) { app.Dispatcher.Invoke(BringMainWindowToFront); return; }
+            var w = app.MainWindow;
+            if (w is null) return;
+            if (w.WindowState == WindowState.Minimized) w.WindowState = WindowState.Normal;
+            w.Show();
+            var hwnd = new System.Windows.Interop.WindowInteropHelper(w).Handle;
+            if (hwnd == IntPtr.Zero) { w.Activate(); return; }
+
+            w.Topmost = true;
+            w.Topmost = false;
+            ShowWindow(hwnd, SW_RESTORE);
+            BringWindowToTop(hwnd);
+            var fore = GetForegroundWindow();
+            var foreTid = GetWindowThreadProcessId(fore, IntPtr.Zero);
+            var curTid = GetCurrentThreadId();
+            bool attached = foreTid != 0 && foreTid != curTid && AttachThreadInput(curTid, foreTid, true);
+            try { SetForegroundWindow(hwnd); }
+            finally { if (attached) AttachThreadInput(curTid, foreTid, false); }
+            w.Activate();
+        }
+        catch { }
+    }
+
+    private const int SW_RESTORE = 9;
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool BringWindowToTop(IntPtr hWnd);
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr hWnd, IntPtr ProcessId);
+    [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+    private static extern uint GetCurrentThreadId();
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
+
+    /// <summary>读 Windows 系统强调色（HKCU\...\DWM\AccentColor，0x00BBGGRR）→ "#RRGGBB"。
+    /// 读不到返回 null（前端回落到默认蓝）。用于「成功」类 toast 跟随系统配色。</summary>
+    public static string? GetSystemAccentHex()
+    {
+        try
+        {
+            using var k = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\DWM");
+            var v = k?.GetValue("AccentColor") as int?;
+            if (v is not int a) return null;
+            int r = a & 0xFF, g = (a >> 8) & 0xFF, b = (a >> 16) & 0xFF;
+            return $"#{r:X2}{g:X2}{b:X2}";
+        }
+        catch { return null; }
+    }
 
     private void OnDispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)
     {

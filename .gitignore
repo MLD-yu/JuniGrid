@@ -38,3 +38,6 @@ TestDocs/
 
 # test harness run outputs
 test-harness/*.txt
+
+# 拆文件前的整份备份（与上面 _revert-backup-*/ 同一类，只留本地）
+_backup-*/

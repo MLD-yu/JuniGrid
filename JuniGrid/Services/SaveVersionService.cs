@@ -422,10 +422,10 @@ public static class SaveVersionService
     public static string? Restore(string saveName, string stampDir, Action<string>? log = null)
     {
         var root = SavesDir();
-        if (root is null) return "还没有存档目录，退回不了";
+        if (root is null) return LocService.Tr("还没有存档目录，退回不了");
         var saveRoot = Path.Combine(BackupRoot, saveName);
         if (!PathsUnder(stampDir, saveRoot) || !File.Exists(Path.Combine(stampDir, StampMeta)))
-            return "这份留底已经不在原位置了";
+            return LocService.Tr("这份留底已经不在原位置了");
         var dst = Path.Combine(root, saveName);
         try
         {
@@ -435,7 +435,7 @@ public static class SaveVersionService
                     DateTime.Now.ToString("yyyyMMdd_HHmmss") + "-" + ReplacedMark + "现有档");
                 if (DepotDownloaderService.MoveDirectoryVerified(dst, aside, null, null, "换下现有存档")
                     == DepotDownloaderService.DirMove.Failed)
-                    return "现有的那份挪不动，已停止（没有覆盖任何东西）";
+                    return LocService.Tr("现有的那份挪不动，已停止（没有覆盖任何东西）");
                 // 补上完成标记，这份「换下来的」才算一份认得出的留底：界面上列得出来、
                 // 没有标记的半成品会被回收逻辑清掉，被换下来的档绝不能被那样清掉。
                 var moved = ReadSlot(aside);
@@ -451,7 +451,7 @@ public static class SaveVersionService
         catch (Exception ex)
         {
             log?.Invoke($"退回存档「{saveName}」失败：{ex.Message}");
-            return "退回失败：" + ex.Message;
+            return LocService.Tr("退回失败：") + ex.Message;
         }
     }
 
@@ -915,7 +915,7 @@ public static class SaveVersionService
     public static string DescribeHalfSyncedShort(List<string> bad)
     {
         var head = string.Join("、", bad.Take(3)) + (bad.Count > 3 ? " 等" : "");
-        return "有 " + bad.Count + " 份档只剩索引件、没有存档文件（" + head + "）—— Steam 云同步断在半路，" +
+        return LocService.Tr("有 ") + bad.Count + " 份档只剩索引件、没有存档文件（" + head + "）—— Steam 云同步断在半路，" +
             "现在存盘可能把残缺状态覆盖到云端。再点一次「启动游戏」= 你看过这句、仍要启动；" +
             "更稳的是先让 Steam 把云同步跑完。";
     }
@@ -924,7 +924,7 @@ public static class SaveVersionService
     public static string DescribeHalfSynced(List<string> bad)
     {
         var head = string.Join("、", bad.Take(6)) + (bad.Count > 6 ? " 等 " + bad.Count + " 份" : "");
-        return "存档目录里有 " + bad.Count + " 份档只剩索引件、没有存档文件（" + head + "）—— " +
+        return LocService.Tr("存档目录里有 ") + bad.Count + " 份档只剩索引件、没有存档文件（" + head + "）—— " +
             "这是 Steam 云存档下到一半断了的现场。现在进游戏存一次盘，Steam 会当成「本地比云端新」" +
             "把缺文件的本地状态传上去覆盖云端，那几份档就真没了。\n\n" +
             "等 Steam 把云存档下完再启动：Steam 完全退出（不是关窗口）再重开 → 点开始游戏让它重跑同步；" +

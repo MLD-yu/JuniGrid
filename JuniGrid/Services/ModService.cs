@@ -324,7 +324,7 @@ public sealed class ModService
                 var alt = Path.Combine(parent, "." + name);
                 if (Directory.Exists(alt)) { name = "." + name; src = alt; }
             }
-            if (!Directory.Exists(src)) return "找不到 Mod 文件夹";
+            if (!Directory.Exists(src)) return LocService.Tr("找不到 Mod 文件夹");
 
             // 启用时先解开被禁用的祖先（.Stardew Valley Expanded/X → Stardew Valley Expanded/X）。
             // 逐段从顶往下改名；任一祖先失败则中止，避免半开状态让 SMAPI 仍整棵跳过。
@@ -367,7 +367,7 @@ public sealed class ModService
                     var alt = Path.Combine(parent, "." + name);
                     if (Directory.Exists(alt)) { name = "." + name; src = alt; }
                 }
-                if (!Directory.Exists(src)) return "找不到 Mod 文件夹";
+                if (!Directory.Exists(src)) return LocService.Tr("找不到 Mod 文件夹");
             }
 
             var targetName = disabled
@@ -447,7 +447,7 @@ public sealed class ModService
             if (!Directory.Exists(dir))
             {
                 var alt = Path.Combine(parent, "." + parts[^1]);
-                if (!Directory.Exists(alt)) return "找不到 Mod 文件夹";
+                if (!Directory.Exists(alt)) return LocService.Tr("找不到 Mod 文件夹");
                 dir = alt;
             }
             var trash = EnsureTrashReady(gamePath);
@@ -564,17 +564,17 @@ public sealed class ModService
         try
         {
             if (string.IsNullOrWhiteSpace(gamePath) || string.IsNullOrWhiteSpace(folder))
-                return "路径无效";
+                return LocService.Tr("路径无效");
             var manifestPath = Path.Combine(gamePath, "Mods", folder.Replace('/', '\\'), "manifest.json");
-            if (!File.Exists(manifestPath)) return "找不到 manifest.json";
-            if (!skipAliveCheck && IsGameProcessAlive) return "游戏运行中，暂不能修改清单";
+            if (!File.Exists(manifestPath)) return LocService.Tr("找不到 manifest.json");
+            if (!skipAliveCheck && IsGameProcessAlive) return LocService.Tr("游戏运行中，暂不能修改清单");
 
             // Newtonsoft 宽松解析（SMAPI manifest 允许尾随逗号/注释），再规整写回
             var text = ReadManifestText(manifestPath);
             var root = Newtonsoft.Json.Linq.JObject.Parse(text);
             var currentName = root["Name"]?.Type == Newtonsoft.Json.Linq.JTokenType.String
                 ? (string?)root["Name"] : null;
-            if (string.IsNullOrEmpty(currentName)) return "清单缺少 Name 字段";
+            if (string.IsNullOrEmpty(currentName)) return LocService.Tr("清单缺少 Name 字段");
 
             if (string.IsNullOrWhiteSpace(remark))
             {
@@ -727,7 +727,7 @@ public sealed class ModService
         try
         {
             var manifest = ExtractToTemp(zipPath, "mod-update-", out temp);
-            if (manifest is null) return "压缩包里没找到 manifest.json";
+            if (manifest is null) return LocService.Tr("压缩包里没找到 manifest.json");
             var modRoot = ResolveModRoot(temp, out var allManifests);
 
             // 安全锁：多 Mod 共用一个 GitHub 仓库时，latest release 可能是别的 Mod。
@@ -753,7 +753,7 @@ public sealed class ModService
                     catch { }
                 }
                 if (!found)
-                    return "下载的包不是这个 Mod（发布仓库里含多个 Mod），已放弃安装防止装错";
+                    return LocService.Tr("下载的包不是这个 Mod（发布仓库里含多个 Mod），已放弃安装防止装错");
             }
 
             try
@@ -808,8 +808,280 @@ public sealed class ModService
     /// </summary>
     public const string UidMismatchError = "uniqueid-mismatch";
 
+    // ------------------------------------------------------------------
+    // 覆盖型包（汉化补丁这类没有 manifest.json、只往别的 mod 上盖文件的包）
+    // ------------------------------------------------------------------
+
+    private const string OverlayBackupSuffix = ".junigrid_backup";
+
+    private sealed record OverlayPlan(string Host, List<string> RelPaths);
+
+    private enum OverlayFail
+    {
+        None,
+        /// <summary>包内文件都是光秃秃一层（裸 zh.json），没说宿主是谁。</summary>
+        NoHostInPack,
+        /// <summary>包内跨了两个不同的顶层目录，不知道该盖谁。</summary>
+        MultiHost,
+        /// <summary>认出了宿主名，但用户没装它。</summary>
+        HostNotInstalled,
+    }
+
+    /// <summary>一次扫描的覆盖健康度汇总：ByHost 给列表徽标，StaleKeys 给清单弹窗逐行判定。</summary>
+    public sealed record OverlayReport(
+        Dictionary<string, (int Total, int Stale)> ByHost,
+        HashSet<string> StaleKeys);
+
+    /// <summary>宿主目录可能是 Mods/X，也可能是被禁用的 Mods/.X（SetDisabled 用点前缀）。
+    /// 记录里统一存不带点的名字，找的时候两种都试 —— 与立绘页那条点名容错同款。</summary>
+    private static string? ResolveHostDir(string gamePath, string host)
+    {
+        var plain = Path.Combine(gamePath, "Mods", host);
+        if (Directory.Exists(plain)) return plain;
+        var dotted = Path.Combine(gamePath, "Mods", "." + host);
+        return Directory.Exists(dotted) ? dotted : null;
+    }
+
+    private static string Sha256Of(string file)
+    {
+        try { return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(file))); }
+        catch { return ""; }
+    }
+
+    /// <summary>
+    /// 判定一个没有 manifest.json 的包要盖到哪个已装 mod 上。<b>只采信包自己的内部路径</b>：
+    /// 所有文件共享同一个第一层目录名，那个名字就是宿主。
+    /// 包名像不像某个 mod 只用来给人看，不作为落盘依据 —— 猜错的表现是"装成功了但游戏里
+    /// 毫无变化"，用户自己永远查不出来，所以判定不出时返回 null 让调用方放弃安装。
+    /// </summary>
+    private static OverlayPlan? ProbeOverlay(string gamePath, string tempDir, out OverlayFail fail, out string hostGuess)
+    {
+        fail = OverlayFail.None;
+        hostGuess = "";
+        string[] files;
+        try { files = Directory.GetFiles(tempDir, "*", SearchOption.AllDirectories); }
+        catch { return null; }
+        if (files.Length == 0) { fail = OverlayFail.NoHostInPack; return null; }
+
+        string? host = null;
+        var rel = new List<string>();
+        foreach (var f in files)
+        {
+            var r = Path.GetRelativePath(tempDir, f).Replace('\\', '/');
+            var cut = r.IndexOf('/');
+            if (cut <= 0) { fail = OverlayFail.NoHostInPack; return null; }
+            var top = r[..cut];
+            if (host is null) host = top;
+            else if (!host.Equals(top, StringComparison.OrdinalIgnoreCase)) { fail = OverlayFail.MultiHost; return null; }
+            rel.Add(r[(cut + 1)..]);
+        }
+        if (host is null || rel.Count == 0) { fail = OverlayFail.NoHostInPack; return null; }
+        hostGuess = host;
+        if (ResolveHostDir(gamePath, host) is null) { fail = OverlayFail.HostNotInstalled; return null; }
+        return new OverlayPlan(host, rel);
+    }
+
+    private static string OverlayRefusal(OverlayFail fail, string gamePath, string hostGuess)
+    {
+        switch (fail)
+        {
+            case OverlayFail.HostNotInstalled:
+                return LocService.Tf("这个包要盖在「{0}」上，但你还没装它。先装被翻译的那个 mod，再装它。", hostGuess);
+            case OverlayFail.MultiHost:
+                return LocService.Tr("这个包里同时含多个 mod 的目录，判断不出该盖谁，已放弃安装。请分开安装或手动放置。");
+            default:
+                return LocService.Tr("这个包里没有 manifest.json，包内路径也没说明它是给哪个 mod 的（只有一个裸文件名），判断不出宿主，已放弃安装。");
+        }
+    }
+
+    /// <summary>把覆盖包的文件写进宿主目录，并逐文件记账。
+    /// 备份只在"还没有备份"时创建 —— 已有备份说明先前有别的包盖过这里，那份才是真原版，
+    /// 用当前值覆盖它就会把还原目标污染成上一个覆盖版。</summary>
+    private string? ApplyOverlay(string gamePath, string tempDir, OverlayPlan plan, ConfigService cfg,
+        int? nexusModId, string packName, out string? modName)
+    {
+        modName = null;
+        var hostDir = ResolveHostDir(gamePath, plan.Host);
+        if (hostDir is null) return LocService.Tr("找不到要覆盖的 mod，已放弃安装");
+        var hostRoot = Path.GetFullPath(hostDir) + Path.DirectorySeparatorChar;
+        var c = cfg.Current;
+        var written = 0;
+
+        foreach (var r in plan.RelPaths)
+        {
+            var local = r.Replace('/', Path.DirectorySeparatorChar);
+            var src = Path.Combine(tempDir, plan.Host, local);
+            if (!File.Exists(src)) continue;
+            var dst = Path.GetFullPath(Path.Combine(hostDir, local));
+            // 包内出现 ../ 之类的越界路径时绝不允许写到宿主外面去
+            if (!dst.StartsWith(hostRoot, StringComparison.OrdinalIgnoreCase))
+                return LocService.Tr("覆盖包里含越界路径，已放弃安装");
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(dst)!);
+                var key = plan.Host + "|" + r;
+                var origHash = "";
+                if (File.Exists(dst))
+                {
+                    origHash = Sha256Of(dst);
+                    var bak = dst + OverlayBackupSuffix;
+                    if (!File.Exists(bak)) File.Copy(dst, bak);
+                }
+                // 重复安装同一个包时，真原版哈希以第一条记录为准，别让"上一个覆盖版"冒充原版
+                if (File.Exists(dst) && c.Overlays.TryGetValue(key, out var prev) && prev.OriginalSha256.Length > 0)
+                    origHash = prev.OriginalSha256;
+
+                File.Copy(src, dst, overwrite: true);
+                // 留一份包里的原件：没有它，"关掉"就变成"卸载"，再也打不开了。
+                // 放 AppDataDir 而不是缓存目录 —— 缓存是「缓存与存储」页能一键清的，清了就等于弄丢用户的包。
+                var storeId = Guid.NewGuid().ToString("N")[..12];
+                try
+                {
+                    var keep = Path.Combine(OverlayStoreDir(storeId), local);
+                    Directory.CreateDirectory(Path.GetDirectoryName(keep)!);
+                    File.Copy(src, keep, overwrite: true);
+                }
+                catch (Exception ex)
+                {
+                    AppLog.Warn("Mods", "[覆盖包] 副本保存失败，之后将无法重新开启：" + ex.Message);
+                    storeId = "";
+                }
+                c.Overlays[key] = new OverlayRecord
+                {
+                    Host = plan.Host,
+                    RelPath = r,
+                    PackName = packName,
+                    NexusModId = nexusModId,
+                    OriginalSha256 = origHash,
+                    AppliedSha256 = Sha256Of(dst),
+                    StoreId = storeId,
+                    Enabled = true,
+                };
+                written++;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                return $"「{Path.GetFileName(hostDir)}」里的文件正被占用，覆盖未完成：{r}";
+            }
+        }
+        if (written == 0) return LocService.Tr("覆盖包里没有可写入的文件");
+
+        cfg.Save(c);
+        modName = packName;
+        AppLog.Info("Mods", $"[覆盖包] {packName} → {Path.GetFileName(hostDir)}，共写入 {written} 个文件");
+        return null;
+    }
+
+    /// <summary>扫描时校验覆盖记录：磁盘上还是我们放上去的那一份吗？
+    /// 宿主 mod 更新会把整个旧目录移进回收站再装新版，覆盖于是静默消失。
+    /// 这里<b>只报不修</b>：自动重放会盖掉上游可能已经改好的官方翻译，判断错了没人知道。
+    /// ByHost 给列表行的徽标用，StaleKeys 给清单弹窗逐行标红用。</summary>
+    public static OverlayReport OverlayHealth(string gamePath, JuniGridConfig cfg)
+    {
+        var byHost = new Dictionary<string, (int Total, int Stale)>(StringComparer.OrdinalIgnoreCase);
+        var stale = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (key, rec) in cfg.Overlays)
+        {
+            var hostDir = ResolveHostDir(gamePath, rec.Host);
+            var file = hostDir is null
+                ? null
+                : Path.Combine(hostDir, rec.RelPath.Replace('/', Path.DirectorySeparatorChar));
+            var ours = file is not null && File.Exists(file) && Sha256Of(file) == rec.AppliedSha256;
+            // "正常" = 磁盘状态和开关一致：开着该是我们的文件在位，关着该是不在位
+            var alive = rec.Enabled ? ours : !ours;
+            var cur = byHost.TryGetValue(rec.Host, out var v) ? v : (0, 0);
+            byHost[rec.Host] = (cur.Item1 + 1, alive ? cur.Item2 : cur.Item2 + 1);
+            if (!alive) stale.Add(key);
+        }
+        return new OverlayReport(byHost, stale);
+    }
+
+    /// <summary>覆盖包文件的副本目录。开关要能来回，就得留着包里那份原件；
+    /// 放 AppDataDir 而不是缓存目录 —— 缓存是「缓存与存储」页能一键清掉的，清了就等于弄丢用户的包。</summary>
+    public static string OverlayStoreDir(string storeId)
+        => Path.Combine(StoragePaths.AppDataDir, "overlays", storeId);
+
+    /// <summary>开 / 关一条覆盖。开着 = 我们的文件在位；关掉 = 把原文件放回去，<b>但账和副本都留着</b>，
+    /// 所以随时能再打开，不需要重新下载汉化包。彻底删账走 <see cref="RevertOverlay"/>。</summary>
+    public string? SetOverlayEnabled(string gamePath, string key, bool enabled, ConfigService cfg)
+    {
+        var c = cfg.Current;
+        if (!c.Overlays.TryGetValue(key, out var rec)) return LocService.Tr("找不到这条覆盖记录");
+        var hostDir = ResolveHostDir(gamePath, rec.Host);
+        if (hostDir is null) return LocService.Tf("找不到宿主 mod「{0}」", rec.Host);
+        var local = rec.RelPath.Replace('/', Path.DirectorySeparatorChar);
+        var dst = Path.GetFullPath(Path.Combine(hostDir, local));
+        var bak = dst + OverlayBackupSuffix;
+        try
+        {
+            if (enabled)
+            {
+                var keep = string.IsNullOrEmpty(rec.StoreId)
+                    ? null : Path.Combine(OverlayStoreDir(rec.StoreId), local);
+                if (keep is null || !File.Exists(keep))
+                    return LocService.Tr("覆盖包的文件副本已丢失，无法重新开启。请重新安装该汉化包。");
+                if (File.Exists(dst) && !File.Exists(bak)) File.Copy(dst, bak);
+                Directory.CreateDirectory(Path.GetDirectoryName(dst)!);
+                File.Copy(keep, dst, overwrite: true);
+                rec.AppliedSha256 = Sha256Of(dst);
+            }
+            else if (File.Exists(bak))
+            {
+                File.Copy(bak, dst, overwrite: true);   // 备份留着：下次开启时它才是"原版"
+            }
+            else if (File.Exists(dst) && string.IsNullOrEmpty(rec.OriginalSha256))
+            {
+                File.Delete(dst);                       // 这个文件本来就是覆盖包新增的
+            }
+            rec.Enabled = enabled;
+            cfg.Save(c);
+            AppLog.Info("Mods", $"[覆盖包] {(enabled ? "开启" : "关闭")} {rec.Host}/{rec.RelPath}");
+            return null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return LocService.Tr("文件正被占用，操作失败");
+        }
+    }
+
+    /// <summary>彻底撤销一条覆盖：还原原文件、删掉备份与副本、销账。
+    /// 备份没了就不硬编 —— 宿主被整体重装过时，目录里那份新文件正是上游原版，没什么可还原的，
+    /// 这时只把账销掉，并如实说明。</summary>
+    public string? RevertOverlay(string gamePath, string key, ConfigService cfg)
+    {
+        var c = cfg.Current;
+        if (!c.Overlays.TryGetValue(key, out var rec)) return LocService.Tr("找不到这条覆盖记录");
+        var hostDir = ResolveHostDir(gamePath, rec.Host);
+        var dst = hostDir is null
+            ? null
+            : Path.GetFullPath(Path.Combine(hostDir, rec.RelPath.Replace('/', Path.DirectorySeparatorChar)));
+        var bak = dst is null ? null : dst + OverlayBackupSuffix;
+
+        try
+        {
+            if (bak is not null && File.Exists(bak))
+            {
+                if (dst is not null) File.Copy(bak, dst, overwrite: true);
+                File.Delete(bak);
+            }
+            else if (dst is not null && rec.OriginalSha256.Length == 0 && File.Exists(dst))
+            {
+                File.Delete(dst);   // 原本没这个文件，是覆盖包新增的 → 删掉就是还原
+            }
+            if (!string.IsNullOrEmpty(rec.StoreId))
+                try { Directory.Delete(OverlayStoreDir(rec.StoreId), recursive: true); } catch { }
+            c.Overlays.Remove(key);
+            cfg.Save(c);
+            return null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return LocService.Tr("文件正被占用，还原失败");
+        }
+    }
+
     public string? InstallNew(string gamePath, string zipPath, out string? modName, int? nexusModId = null,
-        string? requireUniqueId = null, string? portraiturePackName = null)
+        string? requireUniqueId = null, string? portraiturePackName = null, ConfigService? cfg = null)
     {
         modName = null;
         string? temp = null;
@@ -818,12 +1090,17 @@ public sealed class ModService
             var manifest = ExtractToTemp(zipPath, "mod-install-", out temp);
             if (manifest is null)
             {
+                // 依赖直装（带 requireUniqueId）的候选包没有 manifest，就是"这个包不是我们要的那个 mod"，
+                // 交回哨兵值让调用方换下一个候选。绝不能退化成覆盖安装或一条把循环打断的错误文案。
+                if (requireUniqueId is not null)
+                {
+                    TryDelete(temp);
+                    return UidMismatchError;
+                }
                 // v1.6.5：裸 PNG 肖像包（Portraiture 素材包形态）—— 不再装 Portraiture 框架
                 //（框架的全局 HD 覆盖会压过启动器生成的 CP 肖像切换，两者打架），直接转换成
                 // 标准 CP 内容包：与有 manifest 的肖像包走同一条扫描/切换管线。
-                // 依赖直装流程带 requireUniqueId，与此分支互斥（找不到 manifest 直接按 UID
-                // 不匹配处理，绝不误装素材包）。
-                if (requireUniqueId is null && TempContainsImages(temp!))
+                if (TempContainsImages(temp!))
                 {
                     var packName = SanitizeFolderName(
                         string.IsNullOrWhiteSpace(portraiturePackName)
@@ -834,12 +1111,23 @@ public sealed class ModService
                     if (err is null) modName = packName;
                     return err;
                 }
-                // 没有 manifest.json 的不是独立 mod（多为汉化补丁/覆盖型文件包），
-                // 自动装进去会以"孤儿文件夹"混进列表、且无法识别版本/依赖。
-                // 改为提示手动下载，让用户自己决定怎么处理。
+                // 没有 manifest.json 的多半是汉化补丁/覆盖型文件包。自动建目录装进去会变成
+                // "孤儿文件夹"（SMAPI 读不到、版本/依赖也认不出），所以走覆盖链：
+                // 只认包内路径指明的宿主，逐文件备份 + 记账；判不出宿主就放弃，绝不新建目录硬塞。
+                var plan = ProbeOverlay(gamePath, temp!, out var ofail, out var hostGuess);
+                if (plan is not null && cfg is not null)
+                {
+                    var oerr = ApplyOverlay(gamePath, temp!, plan, cfg, nexusModId,
+                        SanitizeFolderName(Path.GetFileNameWithoutExtension(zipPath)), out modName);
+                    TryDelete(temp);
+                    return oerr;
+                }
+                // cfg 为 null 时连账都记不了，宁可不装（没有记录 = 不可逆的静默改动）
                 TryDelete(temp);
                 modName = null;
-                return "这个压缩包没有 manifest.json，不是完整的独立 mod（可能是汉化补丁/覆盖包）。请改用 Manual download 手动下载并自行放置。";
+                if (cfg is null)
+                    return LocService.Tr("这个压缩包没有 manifest.json，且当前流程无法为覆盖安装留下还原记录，已放弃安装。");
+                return OverlayRefusal(ofail, gamePath, hostGuess);
             }
             var modRoot = ResolveModRoot(temp, out var allManifests);
             var isBundle = allManifests.Length > 1;
@@ -867,7 +1155,7 @@ public sealed class ModService
                 catch (Exception __checkEx)
                 {
                     AppLog.Warn("ModService", "manifest 校验失败: " + __checkEx.Message);
-                    return "压缩包里的 manifest.json 已损坏或为空，不是完整的 mod，已放弃安装";
+                    return LocService.Tr("压缩包里的 manifest.json 已损坏或为空，不是完整的 mod，已放弃安装");
                 }
             }
 
@@ -1029,23 +1317,28 @@ public sealed class ModService
     public string? ConvertLoosePortraitFolder(string gamePath, string folderName, out string? modName)
     {
         modName = null;
-        var src = Path.Combine(gamePath, "Mods", folderName);
+        var src = Path.Combine(gamePath, "Mods", folderName.Replace('/', Path.DirectorySeparatorChar));
         if (!PortraitSkinService.LooksLikeLoosePortraitFolder(gamePath, src))
             return $"「{folderName}」不符合转换条件：目录里不能有 manifest.json（那样它已经是完整的 mod/包），" +
                    "并且至少要有一张图的文件名对得上原版角色名（例：Emily.png、Abigail_Spring.png）。";
+        // folderName 允许带子路径（"Portraiture/Portraits/TP's Emily Portrait"）。留底名与新包名
+        // 都必须取【末级目录名】：Path.Combine 会把带分隔符的名字展开成一串嵌套目录，
+        // 而且 SMAPI 把已有 manifest 的目录（Portraiture）当成一个 mod、不再认它子文件夹里的清单
+        // —— 就地转换等于造出一个永远不加载的死包，新包必须落在 Mods\ 顶层。
+        var leaf = Path.GetFileName(folderName.Replace('\\', '/').TrimEnd('/'));
         var backup = Path.Combine(StoragePaths.ModsBackupDir,
-            folderName + "-raw-" + DateTime.Now.ToString("yyyyMMdd_HHmmss"));
+            leaf + "-raw-" + DateTime.Now.ToString("yyyyMMdd_HHmmss"));
         try { Directory.CreateDirectory(Path.GetDirectoryName(backup)!); }
-        catch (Exception ex) { return "建留底目录失败（缓存目录不可写？）：" + ex.Message; }
+        catch (Exception ex) { return LocService.Tr("建留底目录失败（缓存目录不可写？）：") + ex.Message; }
         if (!StorageService.TryMoveTree(src, backup))
-            return "挪动原目录失败（可能被游戏/资源管理器占用，或跨盘拷贝中断）—— 原素材还在 Mods 里没动。";
+            return LocService.Tr("挪动原目录失败（可能被游戏/资源管理器占用，或跨盘拷贝中断）—— 原素材还在 Mods 里没动。");
 
-        var err = InstallPortraitPackAsCp(gamePath, backup, folderName, null, out modName);
+        var err = InstallPortraitPackAsCp(gamePath, backup, leaf, null, out modName);
         if (err is not null)
         {
             modName = null;
             try { if (!Directory.Exists(src)) Directory.Move(backup, src); }
-            catch (Exception rex) { err += $"\n⚠ 回滚也没成功，你的原素材在：{backup}（{rex.Message}）"; }
+            catch (Exception rex) { err += LocService.Tf("\n⚠ 回滚也没成功，你的原素材在：{0}（{1}）", backup, rex.Message); }
             return err;
         }
         AppLog.Warn("Portraits",
@@ -1054,21 +1347,36 @@ public sealed class ModService
     }
 
     /// <summary>自动转换：扫描时把「手工拖进来的裸图目录」就地转成 CP 包，判定与手动入口
-    /// 完全同一个（LooksLikeLoosePortraitFolder）。手动那条菜单入口保留不动。</summary>
+    /// 完全同一个（LooksLikeLoosePortraitFolder）。手动那条菜单入口保留不动。
+    /// v1.7.29：还要扫 <c>Mods/Portraiture/Portraits/*</c> —— 素材包放在框架自己目录里时
+    /// 顶层扫描根本看不见它，于是它一直留在原地，只能靠"点一下把 Portraiture 的 active 切成
+    /// HDP"来生效；而 HDP 是 HD Portraits 桥接模块，一开就把<b>所有</b>有 Mods/HDPortraits
+    /// 条目的 NPC 交出去（实测：给艾米丽选了素材包 ⇒ 法师的脸被 [CP] Dacar 接管）。
+    /// 转成 CP 包之后覆盖包能直接钉它，Portraiture 退回它该干的活：只当别的 mod 的前置。</summary>
     public void AutoConvertLoosePortraits(string gamePath)
     {
         if (string.IsNullOrWhiteSpace(gamePath)) return;
         var modsDir = Path.Combine(gamePath, "Mods");
         if (!Directory.Exists(modsDir)) return;
-        List<string> dirs;
-        try { dirs = Directory.EnumerateDirectories(modsDir).ToList(); }
+        var candidates = new List<string>();
+        try { candidates.AddRange(Directory.EnumerateDirectories(modsDir).Select(d => Path.GetFileName(d))); }
         catch { return; }
+        // Portraiture 素材包（框架目录在、且没被禁用）
+        var pRoot = Path.Combine(modsDir, "Portraiture", "Portraits");
+        if (Directory.Exists(pRoot))
+            try
+            {
+                candidates.AddRange(Directory.EnumerateDirectories(pRoot)
+                    .Select(d => "Portraiture/Portraits/" + Path.GetFileName(d)));
+            }
+            catch { }
         var done = 0;
-        foreach (var dir in dirs)
+        foreach (var name in candidates)
         {
-            var name = Path.GetFileName(dir);
+            var dir = Path.Combine(modsDir, name.Replace('/', Path.DirectorySeparatorChar));
+            var leaf = Path.GetFileName(dir.TrimEnd(Path.DirectorySeparatorChar));
             // 禁用目录（. 前缀）不碰：SMAPI 没加载它，转换会把用户明确关掉的东西变成开的
-            if (name.StartsWith('.') || !PortraitSkinService.LooksLikeLoosePortraitFolder(gamePath, dir)) continue;
+            if (leaf.StartsWith('.') || !PortraitSkinService.LooksLikeLoosePortraitFolder(gamePath, dir)) continue;
             var err = ConvertLoosePortraitFolder(gamePath, name, out var modName);
             if (err is not null) { AppLog.Warn("Portraits", $"[自动转换] {name} 未转换：{err.Split('\n')[0]}"); continue; }
             AppLog.Warn("Portraits", $"[自动转换] {name} → CP 肖像包「{modName}」");
@@ -1076,13 +1384,412 @@ public sealed class ModService
         }
     }
 
+    // ---------------- 裸图 → CP 包：命名归一与发条（安装 / 自愈共用） ----------------
+
+    /// <summary>转换器落盘格式版本，写进包根旁路标记 <c>junigrid-convert.txt</c>。
+    /// 标记缺失或落后 = 这个包是老规则转出来的（资产名可能是游戏里根本不存在的目标），
+    /// <see cref="HealConvertedPortraitPacks"/> 会拿包里现有的图按现行规则重算 content.json。
+    /// 1 = 场合图直接用文件名当资产名；2 = 补 NPC 前缀 + 认 Sprites 目录 + 剥基准别名。</summary>
+    public const int ConvertFormat = 3;
+    public const string ConvertFormatFile = "junigrid-convert.txt";
+
+    private static readonly string[] PortraitSeasons = { "spring", "summer", "fall", "winter" };
+
+    /// <summary>类别判定要认「Characters.png / Portraits.png」这种带后缀的目录名
+    ///（Female Wizard 的 zip 把 XNB 解出来的文件夹就叫 Characters.png/）。</summary>
+    private static bool PackKindSeg(string s, string kind) =>
+        s.Equals(kind, StringComparison.OrdinalIgnoreCase)
+        || s.StartsWith(kind + ".", StringComparison.OrdinalIgnoreCase)
+        || s.StartsWith(kind + "_", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>季节判定：只认 id 的最后一个 _ 分段是季节词（Caroline_Spring）。
+    /// 不能改成"字符串里哪儿出现都算"—— Caroline_Winter_Indoor、Abigail_SpiritsEve
+    /// 这类场合资产会被误判成季节图，整季的脸被一张场合图顶掉。</summary>
+    private static string? PortraitSeasonOf(string id)
+    {
+        foreach (var s in PortraitSeasons)
+            if (id.EndsWith("_" + s, StringComparison.OrdinalIgnoreCase)) return s;
+        return null;
+    }
+
+    /// <summary>这个文件名指的是哪个角色：本身是角色名（Caroline），或第一段是角色名
+    /// （Caroline_Vanilla / Caroline_Beach）。认不出返回 null。</summary>
+    private static string? NpcTokenOf(string id)
+    {
+        if (PortraitSkinService.IsKnownNpcAsset(id)) return id;
+        var i = id.IndexOf('_');
+        return i > 0 && PortraitSkinService.IsKnownNpcAsset(id[..i]) ? id[..i] : null;
+    }
+
+    /// <summary>基准图别名：Caroline_Vanilla.png 就是 Caroline 本体，不是场合变体。
+    /// 不剥掉就会生成 Characters/Caroline_Vanilla —— 游戏里没这个资产，补丁空转
+    /// （实测：走路图整季保持默认，用户报"人自带的精灵图一张没用上"）。</summary>
+    private static readonly string[] BaseAliasSuffixes =
+        { "vanilla", "base", "default", "normal", "original", "standard" };
+
+    /// <summary>这个裸名整串都是外观后缀（Spring / Winter_Indoor / Aerobics）才算"丢了角色名的变体"。
+    /// Bear、AnsweringMachine、Dobson 这类是它们自己的资产名，补上角色前缀就是凭空造目标
+    ///（B43d 实测：平铺多角色包被补出 Abigail_Bear，把好包改坏）。</summary>
+    private static bool IsAppearanceVariantName(string id)
+    {
+        var parts = id.Split('_', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 0) return false;
+        foreach (var p in parts)
+            if (!PortraitSkinService.AppearanceSuffixes.Contains(p)) return false;
+        return true;
+    }
+
+    /// <summary>
+    /// 给同一文件夹里的裸图补 NPC 前缀（v1.7.18）：裸图包（Portraiture 风格）的文件只写到场合名 ——
+    /// assets/Portraits/{Caroline,Spring,Aerobics,Beach}.png、assets/Sprites/{Caroline_Vanilla,Fall}.png。
+    /// 旧写法直接拿文件名当资产名，生成的是 Portraits/Spring、Characters/Fall 这种游戏里【不存在】的资产：
+    /// 补丁全空转，只有 Caroline.png 命中基础像 ⇒ 用户选到哪张场合图就把哪张当整季的脸（实测
+    /// "Alternative Portraits and Sprites for Childhood Sweetheart Caroline"：四季全裸体、
+    /// 自带精灵图一张没用上）。
+    /// 补前缀要过两道闸：① 文件夹名 + 各文件名首段去重后必须【只有一个角色】；② 裸名整串都是
+    /// 外观后缀（<see cref="PortraitSkinService.AppearanceSuffixes"/>：Spring、Winter_Indoor、Aerobics）。
+    /// 混装文件夹（stardewvalley anime mods 那种 79 张平铺，Abigail/Emily/… 全在一起）里认不出角色的
+    /// 文件名是它们自己的资产名（AnsweringMachine、Bear、Dobson），挂到某个角色名下就是把好包改坏。
+    /// 基准别名（Caroline_Vanilla → Caroline）与混装无关，任何情况都剥。
+    /// </summary>
+    private static List<(string Id, string AssetRel)> QualifyPortraitIdsByNpc(
+        List<(string Id, string AssetRel)> items)
+    {
+        var outList = new List<(string Id, string AssetRel)>(items.Count);
+        foreach (var g in items.GroupBy(e =>
+                 {
+                     var i = e.AssetRel.LastIndexOf('/');
+                     return i > 0 ? e.AssetRel[..i] : "";
+                 }))
+        {
+            var folder = g.Key[(g.Key.LastIndexOf('/') + 1)..];
+            var npcs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (PortraitSkinService.IsKnownNpcAsset(folder)) npcs.Add(folder);
+            foreach (var (id, _) in g)
+            {
+                var t = NpcTokenOf(id);
+                if (t is not null) npcs.Add(t);
+            }
+            var npc = npcs.Count == 1 ? npcs.First() : null;
+            foreach (var (id, rel) in g)
+            {
+                var own = NpcTokenOf(id);
+                if (own is null)
+                {
+                    outList.Add((npc is not null && IsAppearanceVariantName(id) ? npc + "_" + id : id, rel));
+                    continue;
+                }
+                var tail = id.Length > own.Length ? id[(own.Length + 1)..] : "";
+                outList.Add((BaseAliasSuffixes.Contains(tail.ToLowerInvariant()) ? own : id, rel));
+            }
+        }
+        return outList;
+    }
+
+    /// <summary>
+    /// 把归一后的清单编成 CP 条目 —— 立绘钉 Portraits/，精灵表钉 Characters/。
+    /// 同一基准 id 的季节图各带 When Season；基准图的 When 排除已被季节图覆盖的季节
+    /// （CP 后打的补丁盖先打的）；其余场合图（_Beach/_Winter_Indoor/_Aerobics…）逐条钉
+    /// Portraits/&lt;角色&gt;_&lt;后缀&gt;，与原版/各家 mod 的资产名同款。
+    /// </summary>
+    /// <summary>这张图属于哪个基资产：去掉季节后缀；冬季拆室内/室外的也归到同一个基资产
+    /// （<c>Caroline_Winter_Indoor</c> → <c>Caroline</c>）。</summary>
+    private static string SeasonGroupKey(string id)
+    {
+        var s = PortraitSeasonOf(id);
+        if (s is not null) return id[..^(s.Length + 1)];
+        var t = WinterPairTail(id);
+        return t is not null ? id[..^t.Length] : id;
+    }
+
+    /// <summary>返回这张图带的冬季室内/室外后缀（不是则 null）。</summary>
+    private static string? WinterPairTail(string id) =>
+        id.EndsWith("_Winter_Indoor", StringComparison.OrdinalIgnoreCase)
+            ? "_Winter_Indoor"
+            : id.EndsWith("_Winter_Outdoor", StringComparison.OrdinalIgnoreCase)
+                ? "_Winter_Outdoor" : null;
+
+    private static List<Dictionary<string, object?>> BuildPortraitPackChanges(
+        List<(string Id, string AssetRel)> portraits, List<(string Id, string AssetRel)> sprites)
+    {
+        var changes = new List<Dictionary<string, object?>>();
+        Dictionary<string, object?> NewEdit(
+            string targetPrefix, string target, string fromFile, Dictionary<string, string?>? when = null)
+        {
+            var ch = new Dictionary<string, object?>
+            {
+                ["Action"] = "EditImage",
+                ["Target"] = targetPrefix + "/" + target,
+                ["FromFile"] = fromFile,
+                ["PatchMode"] = "Replace",
+            };
+            if (when is not null) ch["When"] = when;
+            return ch;
+        }
+
+        void EmitGroup(string targetPrefix, List<(string Id, string AssetRel)> items)
+        {
+            foreach (var g in items
+                .GroupBy(e => SeasonGroupKey(e.Id), StringComparer.OrdinalIgnoreCase)
+                .OrderBy(g => g.Key, StringComparer.OrdinalIgnoreCase))
+            {
+                var baseId = g.Key;
+                string? baseRel = null;
+                var seasonRels = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                var extras = new List<(string Id, string AssetRel)>();
+                foreach (var (id, rel) in g)
+                {
+                    var s = PortraitSeasonOf(id);
+                    if (s is not null) { seasonRels[s] = rel; continue; }
+                    // 冬季拆「室内 / 室外」两张的包（卡罗琳 Overhaul 实测）：这两张【就是冬季那张】，
+                    // 不是独立资产 —— 游戏里没有 Portraits/<NPC>_Winter_Indoor 这个资产，
+                    // 单独发一条就是死补丁，而基础资产的冬季被兜底默认像填走 ⇒ 冬天显示成默认那张
+                    // （用户报的"冬 tab 还是裸体"）。优先室外做代表，进屋由覆盖包的 IsOutdoors 双钉切换。
+                    var tail = WinterPairTail(id);
+                    if (tail is not null)
+                    {
+                        if (!id.EndsWith("_Winter_Indoor", StringComparison.OrdinalIgnoreCase)
+                            || !seasonRels.ContainsKey("winter"))
+                            seasonRels["winter"] = rel;
+                        continue;
+                    }
+                    if (id.Equals(baseId, StringComparison.OrdinalIgnoreCase)) baseRel = rel;
+                    else extras.Add((id, rel));
+                }
+
+                if (baseRel is not null)
+                {
+                    var covered = seasonRels.Keys.ToHashSet(StringComparer.OrdinalIgnoreCase);
+                    var ch = NewEdit(targetPrefix, baseId, baseRel);
+                    if (covered.Count > 0 && covered.Count < PortraitSeasons.Length)
+                        ch["When"] = new Dictionary<string, string?>
+                        { ["Season"] = string.Join(", ", PortraitSeasons.Where(s => !covered.Contains(s))) };
+                    changes.Add(ch);
+                }
+                foreach (var s in PortraitSeasons)
+                    if (seasonRels.TryGetValue(s, out var rel))
+                        changes.Add(NewEdit(targetPrefix, baseId, rel,
+                            new Dictionary<string, string?> { ["Season"] = s }));
+                foreach (var (id, rel) in extras)
+                    changes.Add(NewEdit(targetPrefix, id, rel));
+            }
+        }
+
+        EmitGroup("Portraits", portraits);
+        EmitGroup("Characters", sprites);
+        return changes;
+    }
+
+    /// <summary>终检：只留 FromFile 在包里真实存在的条目 —— 幽灵引用会让 CP 把资产置 null，
+    /// 游戏绘制崩溃（Gil/Lewis 实测）。</summary>
+    private static List<Dictionary<string, object?>> DropGhostPatches(
+        string packRoot, List<Dictionary<string, object?>> changes, string packName)
+    {
+        var safe = new List<Dictionary<string, object?>>(changes.Count);
+        foreach (var chg in changes)
+        {
+            if (chg.TryGetValue("FromFile", out var ffObj)
+                && ffObj is string ff
+                && File.Exists(Path.Combine(packRoot, ff.Replace('/', Path.DirectorySeparatorChar))))
+                safe.Add(chg);
+            else
+                AppLog.Warn("Portraits", $"[转换包] {packName}: 跳过幽灵补丁 FromFile={ffObj}");
+        }
+        return safe;
+    }
+
+    private static readonly JsonSerializerOptions PackJsonOpts = new()
+    {
+        WriteIndented = true,
+        Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+    };
+
+    private static string RenderPackContentJson(List<Dictionary<string, object?>> changes) =>
+        JsonSerializer.Serialize(
+            new Dictionary<string, object?> { ["Format"] = "2.5", ["Changes"] = changes }, PackJsonOpts);
+
+    /// <summary>
+    /// 自愈：把我们自己转出来的 CP 肖像包（UID = <c>JuniGrid.PortraitPack.*</c>）里按老规则写的
+    /// content.json 按现行规则重算一遍。转换只发生在"安装那一刻"，所以规则修好之前装的包
+    /// 一直是坏的 —— 用户看到的就是"改了代码为什么还是全错"（实测 Caroline Overhaul）。
+    /// 图本来就在包的 assets/ 下，重算不需要原压缩包，用户也不必重装。
+    /// 只在标记缺失/落后时动包；重算结果与现状一致就只补标记（不惊动扫描缓存签名）。
+    /// 返回重写了 content.json 的包数。
+    /// </summary>
+    public static int HealConvertedPortraitPacks(string gamePath)
+    {
+        if (string.IsNullOrWhiteSpace(gamePath)) return 0;
+        var modsDir = Path.Combine(gamePath, "Mods");
+        if (!Directory.Exists(modsDir)) return 0;
+        var healed = 0;
+        foreach (var dir in Directory.EnumerateDirectories(modsDir))
+        {
+            try { if (HealOneConvertedPack(dir)) healed++; }
+            catch (Exception ex)
+            { AppLog.Warn("Portraits", $"[转换包自愈] {Path.GetFileName(dir)} 失败：{ex.Message}"); }
+        }
+        if (healed > 0)
+            AppLog.Warn("Portraits", $"[转换包自愈] 按现行命名规则重算了 {healed} 个包的 content.json");
+        return healed;
+    }
+
+    private static bool HealOneConvertedPack(string packDir)
+    {
+        var name = Path.GetFileName(packDir);
+        if (name.StartsWith('.')
+            || name.Contains("junigrid_trash", StringComparison.OrdinalIgnoreCase)) return false;
+        var manifestPath = Path.Combine(packDir, "manifest.json");
+        if (!File.Exists(manifestPath)) return false;
+        string uid;
+        // CP 的 manifest 是 JSONC（作者手写注释、尾逗号很常见）—— 严格解析会抛，
+        // 结果每次启动给几十个【根本不是肖像包】的目录刷"[转换包自愈] X 失败"（实测 24 条）。
+        var jopts = new JsonDocumentOptions
+        {
+            CommentHandling = JsonCommentHandling.Skip,
+            AllowTrailingCommas = true,
+        };
+        using (var doc = JsonDocument.Parse(File.ReadAllText(manifestPath), jopts))
+        {
+            if (!doc.RootElement.TryGetProperty("UniqueID", out var uidEl)) return false;
+            uid = uidEl.GetString() ?? "";
+        }
+        if (!uid.StartsWith("JuniGrid.PortraitPack.", StringComparison.OrdinalIgnoreCase)) return false;
+
+        var markerPath = Path.Combine(packDir, ConvertFormatFile);
+        if (File.Exists(markerPath)
+            && int.TryParse(File.ReadAllText(markerPath).Trim(), out var have)
+            && have >= ConvertFormat) return false;
+
+        // 包里现有的图重新入账（安装时的分类/去重规则原样复用）
+        var portraits = new List<(string Id, string AssetRel)>();
+        var sprites = new List<(string Id, string AssetRel)>();
+        foreach (var file in Directory.EnumerateFiles(packDir, "*.png", SearchOption.AllDirectories)
+                     .OrderBy(f => f, StringComparer.OrdinalIgnoreCase))
+        {
+            var rel = Path.GetRelativePath(packDir, file).Replace(Path.DirectorySeparatorChar, '/');
+            var segs = rel.Split('/');
+            if (segs.Any(s => s == ".." || s.Length == 0)) continue;
+            var id = Path.GetFileNameWithoutExtension(rel);
+            if (id.Length == 0) continue;
+            var isSprite = segs.Any(s => PackKindSeg(s, "Characters") || PackKindSeg(s, "Sprites")
+                                         || PackKindSeg(s, "Sprite"))
+                || id.Contains("Sprite", StringComparison.OrdinalIgnoreCase);
+            if (!isSprite && !segs.Any(s => PackKindSeg(s, "Portraits"))
+                && (id.Contains("Walk", StringComparison.OrdinalIgnoreCase)
+                    || id.Contains("行走", StringComparison.OrdinalIgnoreCase)))
+                isSprite = true;
+            var bucket = isSprite ? sprites : portraits;
+            if (!bucket.Any(r => r.Id.Equals(id, StringComparison.OrdinalIgnoreCase)))
+                bucket.Add((id, rel));
+        }
+        if (portraits.Count == 0 && sprites.Count == 0)
+        {
+            AppLog.Warn("Portraits", $"[转换包自愈] {name}：包里找不到 PNG，未重算");
+            return false;
+        }
+
+        var qPortraits = QualifyPortraitIdsByNpc(portraits);
+        var qSprites = QualifyPortraitIdsByNpc(sprites);
+        var safe = DropGhostPatches(packDir, BuildPortraitPackChanges(qPortraits, qSprites), name);
+        if (safe.Count == 0)
+        {
+            AppLog.Warn("Portraits", $"[转换包自愈] {name}：重算结果一条可用补丁都没有，保留原 content.json");
+            return false;
+        }
+
+        // 现行规则会把哪些裸名改写成带角色名的资产（Spring → Caroline_Spring）
+        var renamedFrom = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        for (var i = 0; i < qPortraits.Count; i++)
+            if (!string.Equals(portraits[i].Id, qPortraits[i].Id, StringComparison.OrdinalIgnoreCase))
+                renamedFrom.Add(portraits[i].Id);
+        for (var i = 0; i < qSprites.Count; i++)
+            if (!string.Equals(sprites[i].Id, qSprites[i].Id, StringComparison.OrdinalIgnoreCase))
+                renamedFrom.Add(sprites[i].Id);
+
+        // 现有 content.json 的目标叶子名（Target 可以逗号分隔多目标）
+        var contentPath = Path.Combine(packDir, "content.json");
+        var before = File.Exists(contentPath) ? File.ReadAllText(contentPath) : null;
+        var curTargets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var curHasPriority = false;
+        if (before is not null)
+        {
+            try
+            {
+                using var cdoc = JsonDocument.Parse(before);
+                if (cdoc.RootElement.TryGetProperty("Changes", out var arr))
+                    foreach (var c in arr.EnumerateArray())
+                    {
+                        if (c.TryGetProperty("Priority", out _)) curHasPriority = true;
+                        if (c.TryGetProperty("Target", out var t) && t.ValueKind == JsonValueKind.String)
+                            foreach (var one in (t.GetString() ?? "").Split(','))
+                            {
+                                var leaf = one.Trim();
+                                leaf = leaf[(leaf.LastIndexOf('/') + 1)..];
+                                if (leaf.Length > 0) curTargets.Add(leaf);
+                            }
+                    }
+            }
+            catch { /* 解析不出就当作"没有待改名的目标"，下面自然不动它 */ }
+        }
+
+        void StampOnly(string why)
+        {
+            File.WriteAllText(markerPath, ConvertFormat.ToString());
+            AppLog.Warn("Portraits", $"[转换包自愈] {name}：{why}，content.json 未改写");
+        }
+
+        var newTargets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var chg in safe)
+        {
+            var t = (chg["Target"] as string) ?? "";
+            newTargets.Add(t[(t.LastIndexOf('/') + 1)..]);
+        }
+        // "有病"的两种信号，任一成立才重写 —— 重算不是无害的：Female Wizard 那版转换器还给每条
+        // 补丁写了 Priority: Late + 10，stardewvalley anime mods 那种 79 张平铺的包里
+        // Portraits/Bear、Portraits/AnsweringMachine 本来就不该带角色名。
+        // ① 包里的裸名被现行规则改成了带角色名的资产（Characters/Spring → Characters/Caroline）；
+        // ② 现有 content.json 里还有【新规则不再产生的资产名】—— 例如旧版把卡罗琳的
+        //    Winter_Indoor/_Outdoor 当成独立场合资产发出去（游戏里没那资产 = 死补丁，
+        //    冬季基础像反被兜底默认像填走）。
+        var stale = renamedFrom.Where(curTargets.Contains).ToList();
+        // ② 只认【旧版误发的冬季室内/室外对】这一种"新规则不再产生的目标"。
+        // 不能放宽成"任何新规则不再产生的目标"：Seasonal Rasmodia 的 Characters/Magnus_Spring
+        // 是 1.6 Appearance 真引用的资产，折成"基础像 + When 春"反而把四季全弄掉。
+        var dropped = curTargets.Where(t => !newTargets.Contains(t)
+            && WinterPairTail(t) is not null
+            && newTargets.Contains(t[..^WinterPairTail(t)!.Length])).ToList();
+        if (stale.Count == 0 && dropped.Count == 0)
+        { StampOnly("没有按裸文件名写出去的资产名，也没有旧版误发的冬季室内/室外对"); return false; }
+        if (curHasPriority) { StampOnly("老版补丁带 Priority，重算会丢掉优先级"); return false; }
+        var unqualified = newTargets.Where(t => NpcTokenOf(t) is null && !curTargets.Contains(t)).ToList();
+        if (unqualified.Count > 0)
+        { StampOnly($"重算会新增认不出角色的目标（{string.Join(", ", unqualified.Take(4))}）"); return false; }
+
+        var json = RenderPackContentJson(safe);
+        if (before is not null)
+        {
+            if (NormalizeJson(before) == NormalizeJson(json)) { StampOnly("重算结果与现状一致"); return false; }
+            File.WriteAllText(contentPath + ".bak-junigrid", before);   // 可回退
+        }
+        File.WriteAllText(contentPath, json);
+        File.WriteAllText(markerPath, ConvertFormat.ToString());
+        AppLog.Warn("Portraits",
+            $"[转换包自愈] {name}：{stale.Count} 个游戏里不存在的资产名已按现行规则改写"
+            + $"（{string.Join(", ", stale.Take(4))} → 带角色名），共 {safe.Count} 条补丁；旧版留 content.json.bak-junigrid");
+        return true;
+    }
+
+    private static string NormalizeJson(string s)
+    {
+        try { return JsonSerializer.Serialize(JsonDocument.Parse(s).RootElement); }
+        catch { return s; }
+    }
+
     /// <summary>
     /// v1.6.5：裸 PNG 肖像包 → 标准 Content Patcher 内容包（自制转换，不再依赖
     /// Portraiture 框架）。装到 Mods/&lt;包名&gt;/：manifest（UID = JuniGrid.PortraitPack.*）
-    /// + content.json（每张 PNG 一条 EditImage）+ assets/。
-    /// · 季节后缀（_Spring/_Summer/_Fall/_Winter）→ 基础立绘 + Season 条件；
-    ///   基础图的 When 会排除已被季节图覆盖的季节（CP 后打的补丁盖先打的）。
-    /// · 其余后缀（_Beach/_Hospital…）按 Portraiture 同款约定映射到 Portraits/&lt;名&gt;_&lt;后缀&gt;。
+    /// + content.json（每张 PNG 一条 EditImage）+ assets/。命名规则见
+    /// <see cref="QualifyPortraitIdsByNpc"/> / <see cref="BuildPortraitPackChanges"/>。
     /// 重装 = 旧包挪回收站原名装新版。返回 null = 成功。
     /// </summary>
     private static string? InstallPortraitPackAsCp(
@@ -1095,15 +1802,6 @@ public sealed class ModService
             if (Directory.Exists(dest))
                 StageExistingToTrash(gamePath, dest);
             Directory.CreateDirectory(dest);
-
-            var seasons = new[] { "spring", "summer", "fall", "winter" };
-            string? SeasonOf(string id)
-            {
-                foreach (var s in seasons)
-                    if (id.EndsWith("_" + s, StringComparison.OrdinalIgnoreCase))
-                        return s;
-                return null;
-            }
 
             // ① 收集素材 → assets/：PNG 直接拷；XNB（老式编译素材，图在 xnb 里）解码转成
             // PNG。说明图（Usage/安装方式/readme…）只落盘不登记。
@@ -1123,7 +1821,7 @@ public sealed class ModService
                 .OrderBy(f => f, StringComparer.OrdinalIgnoreCase)
                 .ToArray();
             if (files.Length == 0)
-            { TryDelete(dest); return "压缩包里没有 PNG/XNB 肖像素材，不是可识别的肖像包"; }
+            { TryDelete(dest); return LocService.Tr("压缩包里没有 PNG/XNB 肖像素材，不是可识别的肖像包"); }
 
             var xnbDecodeFail = 0;
             var xnbDecodeOk = 0;
@@ -1138,13 +1836,10 @@ public sealed class ModService
                 //（Female Wizard 的 zip 把 XNB 解出来的文件夹就叫 Characters.png/）。
                 // 旧写法 s.Equals("Characters") 对不上 → 精灵表被当成 Portraits/Wizard 打进
                 // 覆盖包，游戏里法师头像变成一张大红脸（实测）。
-                static bool KindSeg(string s, string kind) =>
-                    s.Equals(kind, StringComparison.OrdinalIgnoreCase)
-                    || s.StartsWith(kind + ".", StringComparison.OrdinalIgnoreCase)
-                    || s.StartsWith(kind + "_", StringComparison.OrdinalIgnoreCase);
-                var isSprite = segs.Any(s => KindSeg(s, "Characters"))
+                var isSprite = segs.Any(s => PackKindSeg(s, "Characters") || PackKindSeg(s, "Sprites")
+                                             || PackKindSeg(s, "Sprite"))
                     || id.Contains("Sprite", StringComparison.OrdinalIgnoreCase);
-                var isPortrait = segs.Any(s => KindSeg(s, "Portraits"));
+                var isPortrait = segs.Any(s => PackKindSeg(s, "Portraits"));
                 // 尺寸兜底：立绘近方形（宽高都 ≥64）；精灵表宽窄高长（走路图 64×192+）
                 if (!isSprite && !isPortrait)
                 {
@@ -1198,6 +1893,10 @@ public sealed class ModService
                     : "压缩包里只有说明文件、没有可用肖像素材，已放弃安装";
             }
 
+            // ①a 场合资产补 NPC 前缀（规则与注释见 QualifyPortraitIdsByNpc）
+            registeredPortraits = QualifyPortraitIdsByNpc(registeredPortraits);
+            registeredSprites = QualifyPortraitIdsByNpc(registeredSprites);
+
             // ①b 安装时自动体检（v1.6.8）：逐张校验 可解码 / 尺寸合法 / 非全透明 ——
             // 有问题的素材剔除出包并记日志。立绘要求宽高为 64 的倍数（含 2x HD 128x256）；
             // 精灵表是 16xN 帧网格（64x480 = 4 向 × 15 行），只要求可解码 + 非空白，
@@ -1207,7 +1906,7 @@ public sealed class ModService
                 try
                 {
                     var tex = PixelKit.DecodePng(p);
-                    if (tex is null) return "无法解码";
+                    if (tex is null) return LocService.Tr("无法解码");
                     if (asSprite)
                     {
                         if (tex.Width < 16 || tex.Height < 32)
@@ -1221,7 +1920,7 @@ public sealed class ModService
                         if (tex.PixelsRgba[i] > 16) { blankPx = false; break; }
                     return blankPx ? "全透明空白图" : null;
                 }
-                catch { return "解码异常"; }
+                catch { return LocService.Tr("解码异常"); }
             }
 
             var validPortraits = new List<(string Id, string AssetRel)>();
@@ -1241,97 +1940,22 @@ public sealed class ModService
                 else AppLog.Warn("Portraits", $"[素材校验] {Path.GetFileName(dest)}/{id}（精灵）: {problem}，已从包中剔除");
             }
             if (validPortraits.Count == 0 && validSprites.Count == 0)
-            { TryDelete(dest); return "压缩包里的肖像素材全部未通过校验（无法解码/空白/尺寸非法），已放弃安装"; }
+            { TryDelete(dest); return LocService.Tr("压缩包里的肖像素材全部未通过校验（无法解码/空白/尺寸非法），已放弃安装"); }
             registeredPortraits = validPortraits;
             registeredSprites = validSprites;
 
             // ② 按基础 id 分组生成 EditImage —— 立绘钉 Portraits/，精灵表钉 Characters/
             //（旧版只出 Portraits/，且两类共用一个 id 列表，精灵表会顶掉真立绘）。
-            var changes = new List<Dictionary<string, object?>>();
-            Dictionary<string, object?> NewEdit(
-                string targetPrefix, string target, string fromFile, Dictionary<string, string?>? when = null)
-            {
-                var ch = new Dictionary<string, object?>
-                {
-                    ["Action"] = "EditImage",
-                    ["Target"] = targetPrefix + "/" + target,
-                    ["FromFile"] = fromFile,
-                    ["PatchMode"] = "Replace",
-                };
-                if (when is not null) ch["When"] = when;
-                return ch;
-            }
-
-            void EmitGroup(string targetPrefix, List<(string Id, string AssetRel)> items)
-            {
-                foreach (var g in items
-                    .GroupBy(e => SeasonOf(e.Id) is { } s ? e.Id[..^(s.Length + 1)] : e.Id,
-                        StringComparer.OrdinalIgnoreCase)
-                    .OrderBy(g => g.Key, StringComparer.OrdinalIgnoreCase))
-                {
-                    var baseId = g.Key;
-                    string? baseRel = null;
-                    var seasonRels = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-                    var extras = new List<(string Id, string AssetRel)>();
-                    foreach (var (id, rel) in g)
-                    {
-                        var s = SeasonOf(id);
-                        if (s is not null) seasonRels[s] = rel;
-                        else if (id.Equals(baseId, StringComparison.OrdinalIgnoreCase)) baseRel = rel;
-                        else extras.Add((id, rel));
-                    }
-
-                    if (baseRel is not null)
-                    {
-                        var covered = seasonRels.Keys.ToHashSet(StringComparer.OrdinalIgnoreCase);
-                        var ch = NewEdit(targetPrefix, baseId, baseRel);
-                        if (covered.Count > 0 && covered.Count < seasons.Length)
-                            ch["When"] = new Dictionary<string, string?>
-                            { ["Season"] = string.Join(", ", seasons.Where(s => !covered.Contains(s))) };
-                        changes.Add(ch);
-                    }
-                    foreach (var s in seasons)
-                        if (seasonRels.TryGetValue(s, out var rel))
-                            changes.Add(NewEdit(targetPrefix, baseId, rel,
-                                new Dictionary<string, string?> { ["Season"] = s }));
-                    foreach (var (id, rel) in extras)
-                        changes.Add(NewEdit(targetPrefix, id, rel));
-                }
-            }
-
-            EmitGroup("Portraits", registeredPortraits);
-            EmitGroup("Characters", registeredSprites);
+            var changes = BuildPortraitPackChanges(registeredPortraits, registeredSprites);
 
             // ③ manifest + content.json（UID 按包名稳定哈希，重装不换 UID）
-            // 终检：只写入 FromFile 在 dest/assets 下真实存在的条目 ——
-            // 幽灵引用会让 CP 把资产置 null，游戏绘制崩溃（Gil/Lewis 实测）。
-            var safeChanges = new List<Dictionary<string, object?>>();
-            var ghost = 0;
-            foreach (var chg in changes)
-            {
-                if (chg.TryGetValue("FromFile", out var ffObj)
-                    && ffObj is string ff
-                    && File.Exists(Path.Combine(dest, ff.Replace('/', Path.DirectorySeparatorChar))))
-                {
-                    safeChanges.Add(chg);
-                }
-                else
-                {
-                    ghost++;
-                    AppLog.Warn("Portraits", $"[转换包] {packName}: 跳过幽灵补丁 FromFile={ffObj}");
-                }
-            }
+            var safeChanges = DropGhostPatches(dest, changes, packName);
             if (safeChanges.Count == 0)
-            { TryDelete(dest); return "转换结果里没有可引用的立绘文件，已放弃安装"; }
+            { TryDelete(dest); return LocService.Tr("转换结果里没有可引用的立绘文件，已放弃安装"); }
 
             var uid = "JuniGrid.PortraitPack." + Convert.ToHexString(
                 System.Security.Cryptography.SHA256.HashData(
                     System.Text.Encoding.UTF8.GetBytes(packName.ToLowerInvariant())))[..10];
-            var jsonOpts = new JsonSerializerOptions
-            {
-                WriteIndented = true,
-                Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
-            };
             File.WriteAllText(Path.Combine(dest, "manifest.json"), JsonSerializer.Serialize(
                 new Dictionary<string, object?>
                 {
@@ -1342,15 +1966,13 @@ public sealed class ModService
                     ["UniqueID"] = uid,
                     ["ContentPackFor"] = new Dictionary<string, string>
                     { ["UniqueID"] = "Pathoschild.ContentPatcher" },
-                }, jsonOpts));
-            File.WriteAllText(Path.Combine(dest, "content.json"), JsonSerializer.Serialize(
-                new Dictionary<string, object?>
-                {
-                    ["Format"] = "2.5",
-                    ["Changes"] = safeChanges,
-                }, jsonOpts));
-            if (ghost > 0)
-                AppLog.Warn("Portraits", $"[转换包] {packName}: content.json 共 {safeChanges.Count} 条，跳过幽灵 {ghost} 条");
+                }, PackJsonOpts));
+            File.WriteAllText(Path.Combine(dest, "content.json"), RenderPackContentJson(safeChanges));
+            // 记下"这个包是哪一版转换规则转出来的"，规则再改时启动自愈据此判断要不要重算
+            File.WriteAllText(Path.Combine(dest, ConvertFormatFile), ConvertFormat.ToString());
+            if (safeChanges.Count < changes.Count)
+                AppLog.Warn("Portraits",
+                    $"[转换包] {packName}: content.json 共 {safeChanges.Count} 条，跳过幽灵 {changes.Count - safeChanges.Count} 条");
 
             if (nexusModId is not null) WriteNexusIdSidecar(dest, nexusModId.Value);
             return null;
@@ -1358,7 +1980,7 @@ public sealed class ModService
         catch (Exception ex)
         {
             if (ex is IOException or UnauthorizedAccessException)
-                return "肖像包写入失败（可能被占用）：" + ex.Message;
+                return LocService.Tr("肖像包写入失败（可能被占用）：") + ex.Message;
             return ex.Message;
         }
     }
@@ -1888,24 +2510,20 @@ public sealed class ModService
             if (nexusId is null)
                 nexusId = ReadNexusIdSidecar(Path.GetDirectoryName(manifestPath) ?? modsDir, modsDir);
 
-            // Dependencies：只收"必需"依赖。SMAPI 的 IsRequired(旧名 Required) 默认 true，
-            // 显式标 IsRequired=false 的是可选依赖（可缺但不应报缺失）→ 排除，避免凭空多报。
+            // Dependencies：拆成「必需」与「可选」两份。SMAPI 的 IsRequired(旧名 Required) 默认 true，
+            // 显式标 false 的是可选依赖（可缺但不应报缺失）→ 单独存，别混进缺失红字。
             var deps = new List<string>();
+            var optDeps = new List<string>();
             if (root["Dependencies"] is Newtonsoft.Json.Linq.JArray depsArr)
             {
                 foreach (var item in depsArr)
                 {
-                    if (item is not Newtonsoft.Json.Linq.JObject io
-                        || io["UniqueID"]?.Type != Newtonsoft.Json.Linq.JTokenType.String) continue;
-                    var s = (string)io["UniqueID"]!;
+                    if (item is not Newtonsoft.Json.Linq.JObject io) continue;
+                    var s = DepString(io, "UniqueID");
                     if (string.IsNullOrWhiteSpace(s)) continue;
 
-                    // 显式标了 IsRequired/Required=false 的 → 可选依赖，不算必需
-                    var required = true;
-                    var reqToken = io["IsRequired"] ?? io["Required"];
-                    if (reqToken?.Type == Newtonsoft.Json.Linq.JTokenType.Boolean)
-                        required = (bool)reqToken!;
-                    if (required) deps.Add(s);
+                    if (DepIsRequired(io)) deps.Add(s);
+                    else optDeps.Add(s);
                 }
             }
 
@@ -1951,6 +2569,7 @@ public sealed class ModService
                 NexusModId = nexusId,
                 GitHubRepo = githubRepo,
                 Dependencies = deps,
+                OptionalDependencies = optDeps,
                 ContentPackIds = contentPackHost is not null ? new List<string> { contentPackHost } : new List<string>(),
                 HasManifest = true,
                 Category = category,
@@ -1960,6 +2579,26 @@ public sealed class ModService
         {
             return null;
         }
+    }
+
+    /// <summary>依赖项里的字符串字段，忽略大小写取（作者写 "uniqueId" 的也有）。</summary>
+    private static string? DepString(Newtonsoft.Json.Linq.JObject dep, string key)
+    {
+        var tk = dep.GetValue(key, StringComparison.OrdinalIgnoreCase);
+        return tk?.Type == Newtonsoft.Json.Linq.JTokenType.String ? (string)tk : null;
+    }
+
+    /// <summary>这条依赖是不是必需的（SMAPI 语义：默认必需，显式标 false 才算可选）。
+    /// 作者的写法很杂：真布尔 false、字符串 "false"（[CP] Miku Mod Plus 的 ChaseXavier.Miku 就是）、
+    /// 数字 0 —— SMAPI 用 Newtonsoft 反序列化，这三种都会落成 false；我们原先只认布尔，
+    /// 于是可选依赖被当成硬缺失，在 Mods 页刷一条红字「缺少依赖」。
+    /// 读不懂的写法（"maybe"）按必需处理：宁可多提示一条，不能漏掉真缺的东西。</summary>
+    private static bool DepIsRequired(Newtonsoft.Json.Linq.JObject dep)
+    {
+        var tk = dep.GetValue("IsRequired", StringComparison.OrdinalIgnoreCase)
+                 ?? dep.GetValue("Required", StringComparison.OrdinalIgnoreCase);
+        if (tk is null || tk.Type == Newtonsoft.Json.Linq.JTokenType.Null) return true;
+        try { return (bool)tk; } catch { return true; }
     }
 }
 
@@ -1977,6 +2616,9 @@ public sealed class ModEntry
     public int? NexusModId { get; set; }   // from manifest UpdateKeys "Nexus:<id>"
     public string? GitHubRepo { get; set; }  // from manifest UpdateKeys "GitHub:<owner>/<repo>"（免费直下）
     public List<string> Dependencies { get; set; } = new();  // 本 mod 依赖的 UniqueID（含 ContentPackFor 宿主）
+    /// <summary>manifest 里作者标了 IsRequired=false 的依赖：缺了不影响用，不进「缺少依赖」红字，
+    /// 只在行尾给一条可忽略的浅色提示。</summary>
+    public List<string> OptionalDependencies { get; set; } = new();
     public List<string> ContentPackIds { get; set; } = new(); // 它作为内容包时依赖的宿主 mod UniqueID（合并进 Dependencies 用于缺失检测）
     public bool HasManifest { get; set; } = true;   // false = 该文件夹没有有效 manifest（用文件夹名兜底）
     /// <summary>v0.45.0：分类标签（仿 PCL2），在列表行简介前显示。代码 Mod / 内容包 / 代码·内容包；都不是则为空。</summary>

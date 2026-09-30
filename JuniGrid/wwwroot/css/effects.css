@@ -28,7 +28,7 @@
 @keyframes jg-login-pop {from { opacity: 0; transform: translateY(14px) scale(.96); }to   { opacity: 1; transform: translateY(0) scale(1); }
 }.jg-login-card.success { padding-top: 0; }/* 像素画布顶到卡片上沿 */
 
-.jg-login-title { font-size: 18px; font-weight: 700; letter-spacing: .2px; }.jg-login-sub { font-size: 12.5px; opacity: .6; margin-top: -8px; line-height: 1.5; }.jg-login-options { display: flex; flex-direction: column; gap: 10px; }.jg-login-option {
+.jg-login-title { font-size: 18px; font-weight: 700; letter-spacing: .2px; }.jg-login-options { display: flex; flex-direction: column; gap: 10px; }.jg-login-option {
     display: flex; align-items: center; gap: 13px;
     padding: 13px 14px; border-radius: 14px; text-align: left;
     border: 1.5px solid var(--jg-line); background: var(--jg-card);
@@ -68,6 +68,50 @@
     width: 18px; height: 18px;
     border: 2px solid var(--jg-line-strong); border-top-color: var(--jg-outline);
 }
+.jg-login-waiting {
+    display: flex; align-items: center; justify-content: center; gap: 10px;
+    padding: 22px 0; font-size: 13px; opacity: .75;
+}
+/* 颜色主题选择器 */
+.jg-accent-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+    gap: 12px; margin-top: 12px;
+}
+.jg-accent-card {
+    display: flex; flex-direction: column; align-items: center; gap: 8px;
+    padding: 10px; border-radius: 14px; cursor: pointer; font-family: inherit;
+    border: 1.5px solid var(--jg-line-strong); background: var(--jg-card); color: var(--jg-text);
+    transition: border-color .15s, transform .1s, box-shadow .15s;
+}
+.jg-accent-card:hover { border-color: var(--jg-line-heavy); transform: translateY(-1px); }
+.jg-accent-card.cur { border-color: var(--jg-accent); box-shadow: 0 0 0 2px var(--jg-accent); }
+/* Qoder 式迷你窗口预览：顶部强调色条 + 右上单选点 + 内含「中性灰」占位线的子面板。
+   占位线/子面板刻意用中性色（由 --jg-text 派生），不吃强调色 —— 否则每张卡的线条
+   会跟着「当前主题」变色，而不是各卡自己的样子。 */
+.jg-accent-mock {
+    position: relative; display: block; width: 100%; aspect-ratio: 16 / 10;
+    border-radius: 9px; padding: 8px; overflow: hidden;
+    background: color-mix(in srgb, var(--mock-accent) 12%, var(--jg-card));
+    border: 1px solid color-mix(in srgb, var(--mock-accent) 22%, var(--jg-line));
+}
+.jg-mock-bar { display: block; width: 52%; height: 7px; border-radius: 4px; background: var(--mock-accent); }
+.jg-mock-dot {
+    position: absolute; top: 8px; right: 9px; width: 13px; height: 13px; border-radius: 50%;
+    border: 2px solid var(--mock-accent); box-sizing: border-box;
+}
+.jg-mock-dot.on { background: var(--mock-accent); }
+.jg-mock-dot.on::after {
+    content: ''; position: absolute; inset: 0; margin: auto; width: 4px; height: 4px;
+    border-radius: 50%; background: color-mix(in srgb, var(--mock-accent) 15%, #ffffff);
+}
+.jg-mock-panel {
+    display: block; margin-top: 7px; padding: 7px; border-radius: 7px;
+    background: var(--jg-card);
+    border: 1px solid color-mix(in srgb, var(--jg-text) 10%, transparent);
+}
+.jg-mock-panel i { display: block; height: 6px; border-radius: 3px; background: color-mix(in srgb, var(--jg-text) 24%, transparent); }
+.jg-mock-panel i + i { margin-top: 6px; width: 62%; }
+.jg-accent-name { font-size: 12.5px; font-weight: 600; }
 @keyframes jg-login-spin {to { transform: rotate(360deg); } }
 /* v1.5：扫码授权加载台 —— 模糊码底 + 居中加载环 / 失败感叹号 */
 .jg-qr-stage {
@@ -140,7 +184,7 @@
     display: flex; align-items: center; justify-content: center;
 }.jg-login-success-name { font-size: 16.5px; font-weight: 700; }.jg-login-success-welcome { font-size: 13px; opacity: .65; }/* 成功 toast：顶部黑色浮条 */
 .jg-login-toast {
-    position: fixed; top: 20px; left: 50%; transform: translateX(-50%);
+    position: fixed; top: 92px; left: 50%; transform: translateX(-50%);
     background: var(--jg-ink); color: var(--jg-on-ink); padding: 11px 22px; border-radius: 999px;
     font-size: 13.5px; font-weight: 600; z-index: 999999;
     box-shadow: 0 10px 30px rgba(0,0,0,0.35);
@@ -156,15 +200,15 @@
 
 /* -- v0.43.1：全局 toast（黑底白字默认 / 红底白字报错）-- */
 .jg-toast-live {
-    position: fixed; top: 56px; left: 50%; transform: translateX(-50%);
+    position: fixed; top: 92px; left: 50%; transform: translateX(-50%);
     z-index: 99999; padding: 10px 22px; border-radius: 999px;
     background: rgba(22,22,22,0.94); color: #fff;
     font-size: 13.5px; font-weight: 600; letter-spacing: .2px;
     box-shadow: 0 8px 28px rgba(0,0,0,0.28);
     pointer-events: none; max-width: 72vw;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}.jg-toast-live.err { background: rgba(198,15,31,0.96); color: #fff; }/* v1.1.2：暗色主题下通用 toast 反色 —— 白底黑字（红色失败 toast 不变） */
-html[data-theme="dark"] .jg-toast-live:not(.err) { background: #f2f3f5; color: #17181c; box-shadow: 0 8px 28px rgba(0,0,0,0.5); }/* -- v0.45.0：mod 分类标签（仿 PCL2，简介前的小胶囊）-- */
+}.jg-toast-live.err { background: rgba(198,15,31,0.96); color: #fff; }.jg-toast-live.ok { background: var(--jg-accent, #7aa2ff); color: #fff; }/* v1.1.2：暗色主题下通用 toast 反色 —— 白底黑字（红色失败 / 强调色成功 toast 不变） */
+html[data-theme="dark"] .jg-toast-live:not(.err):not(.ok) { background: #f2f3f5; color: #17181c; box-shadow: 0 8px 28px rgba(0,0,0,0.5); }/* -- v0.45.0：mod 分类标签（仿 PCL2，简介前的小胶囊）-- */
 .jg-cat {
     display: inline-block; padding: 1px 8px; margin-right: 6px;
     border-radius: 999px; background: var(--jg-hover); color: var(--jg-text-2);

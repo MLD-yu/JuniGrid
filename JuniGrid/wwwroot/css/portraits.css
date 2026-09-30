@@ -84,7 +84,7 @@
     inset: 0;
     border-radius: inherit;
     background: radial-gradient(140px circle at var(--mx, 50%) var(--my, 50%),
-        rgba(242, 129, 29, 0.12), transparent 65%);
+        color-mix(in srgb, var(--jg-accent) 12%, transparent), transparent 65%);
     opacity: 0;
     transition: opacity 200ms ease;
     pointer-events: none;
@@ -119,12 +119,12 @@ html[data-theme='light'] .jg-pt-slot.hot > .jg-pt-card::after { opacity: 0.26; m
 .jg-pt-slot.hot > .jg-pt-card {
     background: var(--jg-well);
     border-color: var(--jg-line-strong);
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08), 0 0 0 1px rgba(242, 129, 29, 0.08);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08), 0 0 0 1px color-mix(in srgb, var(--jg-accent) 8%, transparent);
 }
 .jg-pt-card:active { transition-duration: 80ms; }
 .jg-pt-card.locked-card {
-    border-color: rgba(242, 129, 29, 0.45);
-    box-shadow: inset 0 0 0 1px rgba(242, 129, 29, 0.12);
+    border-color: color-mix(in srgb, var(--jg-accent) 45%, transparent);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--jg-accent) 12%, transparent);
 }
 .jg-pt-lockbadge {
     position: absolute;
@@ -136,10 +136,10 @@ html[data-theme='light'] .jg-pt-slot.hot > .jg-pt-card::after { opacity: 0.26; m
     display: flex;
     align-items: center;
     justify-content: center;
-    background: rgba(242, 129, 29, 0.95);
+    background: color-mix(in srgb, var(--jg-accent) 95%, transparent);
     color: #fff;
     z-index: 2;
-    box-shadow: 0 2px 8px rgba(242, 129, 29, 0.35);
+    box-shadow: 0 2px 8px color-mix(in srgb, var(--jg-accent) 35%, transparent);
     pointer-events: none;
 }
 .jg-pt-lockbadge svg {
@@ -211,18 +211,16 @@ html[data-theme='light'] .jg-pt-slot.hot > .jg-pt-card::after { opacity: 0.26; m
     position: relative;
     overflow: visible;
 }
-/* 锁定后整卡压暗，只留锁按钮可点 */
+/* 锁定 = 游戏内四季钉在当前这张肖像。但用户点别的皮肤卡就是要换那张（换 = 顺手解锁），
+   所以这里只压暗作状态提示，不再拦点击（旧写法 pointer-events:none + 整块遮罩，
+   实机被报成"单击没用"）。 */
 .jg-pt-modal.is-locked .jg-pt-skinbox,
 .jg-pt-modal.is-locked .jg-pt-seasons,
 .jg-pt-modal.is-locked .jg-pt-spritepane {
-    opacity: 0.32;
-    filter: grayscale(0.35);
-    pointer-events: none;
-    user-select: none;
+    opacity: 0.55;
 }
 .jg-pt-modal.is-locked .jg-pt-lockveil {
     opacity: 1;
-    pointer-events: auto;
 }
 .jg-pt-lockveil {
     position: absolute;
@@ -280,10 +278,10 @@ html[data-theme="dark"] .jg-pt-lockveil { background: rgba(0, 0, 0, 0.22); }
     background: var(--jg-well);
 }
 .jg-pt-lockbtn.on {
-    border-color: #f2811d;
-    color: #f2811d;
-    background: rgba(242, 129, 29, 0.1);
-    box-shadow: 0 0 0 1px rgba(242, 129, 29, 0.25), 0 4px 14px rgba(242, 129, 29, 0.2);
+    border-color: var(--jg-accent);
+    color: var(--jg-accent);
+    background: color-mix(in srgb, var(--jg-accent) 10%, transparent);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--jg-accent) 25%, transparent), 0 4px 14px color-mix(in srgb, var(--jg-accent) 20%, transparent);
 }
 .jg-pt-lockbtn svg { width: 17px; height: 17px; display: block; }
 
@@ -291,7 +289,7 @@ html[data-theme="dark"] .jg-pt-lockveil { background: rgba(0, 0, 0, 0.22); }
 .jg-pt-active {
     font-size: 13px;
     font-weight: 600;
-    color: #f2811d;
+    color: var(--jg-accent);
 }
 .jg-pt-active.hovering { color: var(--jg-text-3); }
 .jg-pt-packlink { cursor: pointer; }
@@ -306,14 +304,27 @@ html[data-theme="dark"] .jg-pt-lockveil { background: rgba(0, 0, 0, 0.22); }
 .jg-pt-skinbox {
     box-sizing: border-box;
     display: grid;
-    grid-template-columns: repeat(3, 92px);
-    justify-content: start;
+    /* 列宽自适应：固定 repeat(3,92px)=320px 恰好等于容器宽，竖向滚动条（默认 15px，
+       改成 6px 细条后仍占位）一挤，内容就超出 clientWidth ⇒ 冒出横向滚动条。
+       用 minmax(0,1fr) 让三列吸收滚动条宽度，横向永不溢出。 */
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 12px;
     align-content: flex-start;
     max-height: 56vh;
-    overflow: auto;
+    overflow-x: hidden;
+    overflow-y: auto;
     padding: 10px;
 }
+/* 细滚动条：默认 15px 太粗（用户："显示细细的一条就好了"）。
+   WebView2 = Chromium，只靠 ::-webkit-scrollbar 精确控到 6px；
+   别加 scrollbar-width:thin —— 它会反过来把宽度顶成 ~11px，压过 webkit 的 6px。 */
+.jg-pt-skinbox::-webkit-scrollbar { width: 6px; }
+.jg-pt-skinbox::-webkit-scrollbar-track { background: transparent; }
+.jg-pt-skinbox::-webkit-scrollbar-thumb {
+    background: var(--jg-line-strong);
+    border-radius: 999px;
+}
+.jg-pt-skinbox::-webkit-scrollbar-thumb:hover { background: var(--jg-text-3); }
 
 /* 右侧精灵图预览：去掉外框，只留与大头照区的分割线 */
 .jg-pt-spritepane {
@@ -377,10 +388,10 @@ html[data-theme="dark"] .jg-pt-lockveil { background: rgba(0, 0, 0, 0.22); }
     transform: translateY(-1px);
 }
 .jg-pt-season.active {
-    border-color: #f2811d;
-    color: #f2811d;
+    border-color: var(--jg-accent);
+    color: var(--jg-accent);
     font-weight: 600;
-    background: rgba(242, 129, 29, 0.08);
+    background: color-mix(in srgb, var(--jg-accent) 8%, transparent);
 }
 .jg-pt-hint {
     font-size: 10.5px;
@@ -393,8 +404,8 @@ html[data-theme="dark"] .jg-pt-lockveil { background: rgba(0, 0, 0, 0.22); }
 /* 皮肤格 */
 .jg-pt-skin {
     position: relative;
-    width: 92px;
-    height: 92px;
+    width: 100%;
+    aspect-ratio: 1 / 1;
     flex: none;
     display: flex;
     align-items: center;
@@ -411,18 +422,17 @@ html[data-theme="dark"] .jg-pt-lockveil { background: rgba(0, 0, 0, 0.22); }
 .jg-pt-cover img { padding: 5px; box-sizing: border-box; }
 .jg-pt-skin:hover { border-color: var(--jg-text-3); }
 .jg-pt-skin.selected {
-    border-color: #f2811d;
-    box-shadow: 0 0 0 1px #f2811d, 0 4px 16px rgba(242, 129, 29, 0.28);
+    border-color: var(--jg-accent);
+    box-shadow: 0 0 0 1px var(--jg-accent), 0 4px 16px color-mix(in srgb, var(--jg-accent) 28%, transparent);
 }
 .jg-pt-skin.unavailable {
     cursor: not-allowed;
     opacity: .45;
 }
 .jg-pt-skin.busy { opacity: .45; pointer-events: none; }
-.jg-pt-skin.locked { pointer-events: none; }
 .jg-pt-skin.jg-pt-lp-press {
-    border-color: #f2811d;
-    box-shadow: 0 0 0 1px rgba(242, 129, 29, 0.4);
+    border-color: var(--jg-accent);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--jg-accent) 40%, transparent);
     /* 放大由 GSAP 写 transform（这里再写一条会互相覆盖），CSS 只负责压住相邻格子 */
     z-index: 5;
 }
@@ -491,42 +501,6 @@ html[data-theme='light'] .jg-pt-lp-bar {
     mask-position-y: calc(-1 * var(--lp-p) * var(--lp-cycles) * var(--lp-h));
 }
 
-/* 同画面合并角标 */
-.jg-pt-dupes {
-    position: absolute;
-    top: 3px;
-    right: 4px;
-    font-size: 10px;
-    font-weight: 700;
-    line-height: 1.4;
-    padding: 0 4px;
-    border-radius: 6px;
-    background: rgba(0, 0, 0, .55);
-    color: #fff;
-    pointer-events: none;
-    z-index: 2;
-}
-html[data-theme="dark"] .jg-pt-dupes { background: rgba(255, 255, 255, .2); }
-.jg-pt-dupenames {
-    position: absolute;
-    left: 2px;
-    right: 2px;
-    bottom: 2px;
-    font-size: 9px;
-    font-weight: 600;
-    line-height: 1.3;
-    padding: 1px 4px;
-    border-radius: 5px;
-    background: rgba(0, 0, 0, .62);
-    color: #fff;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    pointer-events: none;
-    z-index: 2;
-}
-html[data-theme="dark"] .jg-pt-dupenames { background: rgba(0, 0, 0, .72); }
-
 .jg-pt-members {
     margin: 0 0 8px;
     font-size: 11.5px;
@@ -581,8 +555,8 @@ html[data-theme="dark"] .jg-pt-dupenames { background: rgba(0, 0, 0, .72); }
     transition: border-color 160ms ease, background 160ms ease;
 }
 .jg-pt-packrow:hover {
-    border-color: #f2811d;
-    background: rgba(242, 129, 29, 0.06);
+    border-color: var(--jg-accent);
+    background: color-mix(in srgb, var(--jg-accent) 6%, transparent);
 }
 .jg-pt-packrow .cover {
     flex: none;
@@ -647,7 +621,7 @@ html[data-theme="dark"] .jg-pt-card:hover,
 html[data-theme="dark"] .jg-pt-slot.hot > .jg-pt-card { background: rgba(255, 255, 255, 0.05); }
 html[data-theme="dark"] .jg-pt-card::before {
     background: radial-gradient(140px circle at var(--mx, 50%) var(--my, 50%),
-        rgba(242, 129, 29, 0.16), transparent 65%);
+        color-mix(in srgb, var(--jg-accent) 16%, transparent), transparent 65%);
 }
 html[data-theme="dark"] .jg-pt-skin { border-color: rgba(255, 255, 255, 0.14); }
 html[data-theme="dark"] .jg-pt-skin:hover { border-color: rgba(255, 255, 255, 0.4); }
@@ -676,3 +650,9 @@ html[data-theme="dark"] .jg-pt-cover-empty {
     }
     .jg-pt-lp-bar.on .jg-pt-lp-fill { opacity: 0.9; }
 }
+
+/* 立绘页「肖像换肤」关掉时：整片内容灰掉且点不动（开关本身在头部，不受影响） */
+.jg-pt-dim { opacity:.45; filter:grayscale(.7); pointer-events:none; user-select:none; }
+/* 标题行里的「肖像换肤」开关：宿主是 span（默认 inline），不 blockify 的话 .jg-switch 的
+   40x22 轨道宽高不生效，只剩 18px 圆形滑块 —— 实机就显示成一个黑点（2026-09-30）。 */
+.jg-pt-title-switch { display: inline-flex; align-items: center; }

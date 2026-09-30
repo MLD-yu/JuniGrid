@@ -2,13 +2,29 @@
 // 通用 UI 交互：toast、光标倾斜、
 // scrollSpy、存档/头像/更新/作者气泡 tooltip、聚焦辅助
 // ============================================================
-// ------------------ 全局 toast（黑底白字默认；kind="err" 红底白字；2.6s 自动消失） ------------------
+// ------------------ 全局 toast（默认黑底白字；kind="err" 红底白字；kind="ok" 系统强调色底白字；2.6s 自动消失） ------------------
 // 直接挂 document.body，避开 Blazor 组件树里 transform/filter 祖先破坏 position:fixed 的坑。
 // 同类不叠加：上一个还在就先移除再显示新的。
 (function () {
     window.junigridJs = window.junigridJs || {};
     var current = null;
     var hideTimer = null;
+
+    // 把 Windows 系统强调色注入 CSS 变量 --jg-accent（成功 toast 跟随系统配色）
+    window.junigridJs.setAccent = function (hex) {
+        try { if (hex) document.documentElement.style.setProperty('--jg-accent', hex); } catch (e) { }
+    };
+
+    // 颜色主题：给 <html> 打 data-accent 选色卡；仅 "system" 时用内联 --jg-accent 注入系统色
+    // （内联优先级最高，故非 system 时必须 removeProperty，让 CSS 主题块生效）
+    window.junigridJs.applyAccent = function (mode, sysHex) {
+        try {
+            var r = document.documentElement;
+            r.dataset.accent = mode || 'system';
+            if (mode === 'system' && sysHex) r.style.setProperty('--jg-accent', sysHex);
+            else r.style.removeProperty('--jg-accent');
+        } catch (e) { }
+    };
 
     window.junigridJs.toast = function (msg, kind) {
         try {
@@ -17,7 +33,7 @@
                 if (current.parentNode) current.parentNode.removeChild(current);
             }
             var el = document.createElement('div');
-            el.className = 'jg-toast-live' + (kind === 'err' ? ' err' : '');
+            el.className = 'jg-toast-live' + (kind === 'err' ? ' err' : kind === 'ok' ? ' ok' : '');
             el.textContent = msg;
             document.body.appendChild(el);
             current = el;

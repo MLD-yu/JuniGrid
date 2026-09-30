@@ -17,6 +17,8 @@ public sealed class TaskCenterService
 {
     public ObservableCollection<TaskItem> Items { get; } = new();
     public event Action? OnChanged;
+    /// <summary>单个任务落定（成功/失败）时触发，供全局弹 toast + 置顶主窗。可能来自后台下载线程。</summary>
+    public event Action<TaskItem, bool>? OnFinished;
 
     private readonly object _lock = new();
     private static readonly string PersistPath = Path.Combine(StoragePaths.AppDataDir, "tasks.json");
@@ -225,6 +227,7 @@ public sealed class TaskCenterService
             t.LastLine = finalMsg;
         }
         OnChanged?.Invoke();
+        OnFinished?.Invoke(t, success);
         RequestSave();
     }
 
@@ -281,7 +284,7 @@ public sealed class TaskCenterService
         t.Status = "paused";
         t.SpeedMBps = 0;
         try { t.Cts.Cancel(); } catch { }
-        Report(t, "已暂停", t.Percent);
+        Report(t, LocService.Tr("已暂停"), t.Percent);
     }
 
     /// <summary>继续已暂停任务：重置 Cts，由调用方重新挂 worker。</summary>
@@ -291,7 +294,7 @@ public sealed class TaskCenterService
         t.ResetCts();
         t.Status = "running";
         t.StartedAt = DateTime.Now;   // 「已运行」从这次继续算起，别把停机的那段也计进去
-        Report(t, "继续中…", t.Percent);
+        Report(t, LocService.Tr("继续中…"), t.Percent);
     }
 
     /// <summary>v1.1.7：统一继续入口。有注册 worker 就重挂；历史版本下载走 VersionDownloadService 时由其自行处理。</summary>

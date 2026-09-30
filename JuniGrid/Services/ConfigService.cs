@@ -11,6 +11,9 @@ public sealed class ConfigService
     private static readonly string ConfigDir = StoragePaths.AppDataDir;
     private static readonly string ConfigPath = Path.Combine(ConfigDir, "junigrid.config.json");
 
+    /// <summary>给 App.OnStartup（早于 DI、还没有 Current）用的配置文件路径。</summary>
+    public static string ConfigFilePath => ConfigPath;
+
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
         WriteIndented = true,
@@ -286,7 +289,11 @@ public sealed class JuniGridConfig
     public string GamePath { get; set; } = "";
     public string LaunchMode { get; set; } = "smapi";   // "smapi" | "steam"
     public string SteamAppId { get; set; } = "413150";
-    public string NexusApiKey { get; set; } = "";
+
+    // OAuth2（授权码 + PKCE）持久化 token —— 仅存本机。
+    public string NexusAccessToken { get; set; } = "";
+    public string NexusRefreshToken { get; set; } = "";
+    public DateTime? NexusTokenExpiresAt { get; set; }
 
     // Launch history
     public string? LastLaunchTime { get; set; }          // ISO-8601
@@ -316,6 +323,14 @@ public sealed class JuniGridConfig
     /// 取消备注时用它还原，避免原名丢失。</summary>
     public Dictionary<string, string> ModOriginalNames { get; set; } = new();
 
+    /// <summary>
+    /// 覆盖型包（汉化补丁这类：包内没有 manifest.json，只有若干要盖到别的 mod 上的文件）的落盘记录。
+    /// key = 宿主目录名（规范化、去掉禁用用的点前缀）+ '|' + 相对宿主目录的文件路径，**一个文件一条** ——
+    /// 这样每个被盖文件能独立校验和还原，第二个包盖到同一文件时也不会污染第一条记录留下的原始备份。
+    /// 没有这份记录，覆盖就是不可逆的静默改动，所以它是"敢自动盖"的前提。
+    /// </summary>
+    public Dictionary<string, OverlayRecord> Overlays { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
     /// <summary>v1.01.0：Nexus 页搜索历史（对照官网 Recent Searches，最多 10 条，新词排前）。</summary>
     public List<string> NexusSearchHistory { get; set; } = new();
 
@@ -327,8 +342,13 @@ public sealed class JuniGridConfig
     /// </summary>
     public bool ShowAdultContent { get; set; } = false;
     /// <summary>
-    /// Nexus 一键安装（免弹浏览器、后台直接下载并装进 Mods）。默认开启；
-    /// 关闭后详情页的「安装」按钮改为打开内置浏览器兜底。
+    /// Nexus 一键安装 —— 一个开关管两头：
+    /// ① 应用内：免弹浏览器，详情页「安装」直接后台下载并装进 Mods（关闭则改为打开内置浏览器兜底）；
+    /// ② 系统层：每次启动把 HKCU\Software\Classes\nxm 强行写成自己，浏览器里点
+    ///    「Mod Manager Download」也归 JuniGrid（会从 Vortex / NMM 手里抢走）。
+    /// 关闭时把这条注册交还给被我们压掉的那个管理器（抢注时原值已备份在 HKCU\Software\JuniGrid），
+    /// 交还不了（没备份 / 对方 exe 已不在）才删掉该注册项。
+    /// 默认开启 —— 即默认参与并赢得这场竞争。
     /// </summary>
     public bool EnableOneClickInstall { get; set; } = true;
 
@@ -373,6 +393,7 @@ public sealed class JuniGridConfig
 
     /// <summary>Nexus 登录后缓存的用户信息（来自 /v1/users/validate.json）。</summary>
     public string NexusUserName { get; set; } = "";
+    public string NexusUserEmail { get; set; } = "";
     public string NexusProfileUrl { get; set; } = "";
     public bool   NexusIsPremium { get; set; }
 
@@ -380,6 +401,15 @@ public sealed class JuniGridConfig
     /// 启动时 TitleBar 用它对齐前端（localStorage 为防闪白的同步快路径）。
     /// v1.1.2：默认改为 dark（用户主用暗色观察界面）。</summary>
     public string Theme { get; set; } = "dark";
+
+    /// <summary>i18n 界面语言："zh"（默认，中文即原文）| "en"（英文，从内嵌 en.json 取）。
+    /// 源文本即 key 方案：中文不建目录，英文目录做「中文→英文」映射。</summary>
+    public string Language { get; set; } = "zh";
+
+    /// <summary>颜色主题（强调色预设）："system"（默认，强调色跟随 Windows 系统色，按钮保持中性墨色）
+    /// | forest | mint | honey | parchment | sky | rose。每个预设自带浅色 + 深色两套调色板，
+    /// 由 base.css 的 html[data-accent=…] / html[data-theme=dark][data-accent=…] 块驱动。</summary>
+    public string Accent { get; set; } = "system";
 
     /// <summary>v1.3.9：每季节独立皮肤 —— 角色 id → "spring:包␟summer:包␟fall:包␟winter:包"
     ///（缺季 = 该季用全局选择）。覆盖包按季钉变体资产。</summary>
@@ -433,6 +463,12 @@ public sealed class JuniGridConfig
     /// <summary>v1.3.0 立绘页：每个角色当前生效的皮肤 —— 角色 id → 包 Folder（相对 Mods/）。
     /// v2 规格：只有这一个字典（选中某皮肤 = 大头照+精灵图一起切换）；键为角色 id 或 "Horse"。</summary>
     public Dictionary<string, string> PortraitSkins { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>v1.7.7：同一个内容包里多画风（Donut's 的 assets/Dawn、assets/Donut、…
+    /// 由 CP 配置 token 选一套）—— 角色 id → 画风目录名。
+    /// ⚠ PortraitSkins 的值格式**不能动**（老配置要能原样读），所以画风另存一本；
+    /// 逐季指定画风时键用 "角色 id␟季节"（␟ 不可能出现在角色 id 里，两本不会撞键）。</summary>
+    public Dictionary<string, string> PortraitSkinVariants { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>v1.4 覆盖包机制：用户显式点了「默认」的角色 id。覆盖包会把这些角色的
     /// 原版立绘拷进去以最高优先级 Load，压过其它启用包的同名补丁；不在名单里的角色
@@ -512,6 +548,10 @@ public sealed class DependencyDisplayEntry
     public string Name { get; set; } = "";
     public int ModId { get; set; }
     public string CoverUrl { get; set; } = "";
+    /// <summary>v1.2.4：这条解析结果的 Nexus 上传者名 —— 用来判它到底可不可信
+    /// （与依赖 UID 的作者段对不上就是搜错了，例：ChaseXavier.Miku 曾被认成 lucasedu11 的 4291）。
+    /// 老配置没这个字段＝空串＝不可信，下次会重新解析。</summary>
+    public string Uploader { get; set; } = "";
 }
 
 /// <summary>启动器从 Nexus 安装过的 MAIN 文件快照（更新粘住判定用）。</summary>
@@ -522,4 +562,30 @@ public sealed class NexusInstallRecord
     /// <summary>N 网 MAIN 文件上的版本号（可能与包内 manifest.Version 不一致）。</summary>
     public string RemoteVersion { get; set; } = "";
     public DateTime InstalledAtUtc { get; set; } = DateTime.UtcNow;
+}
+
+/// <summary>覆盖型包盖上去的一个文件 = 一条记录。哈希都存下来，是为了让"还在不在"能被证明，
+/// 而不是靠时间戳猜：宿主 mod 一旦更新，整个目录会被移进回收站重装，我们的覆盖会静默消失。</summary>
+public sealed class OverlayRecord
+{
+    /// <summary>宿主 mod 的目录名，规范化为不带禁用点前缀的形式。</summary>
+    public string Host { get; set; } = "";
+    /// <summary>相对宿主目录的文件路径，固定用 '/' 分隔。</summary>
+    public string RelPath { get; set; } = "";
+    /// <summary>覆盖包自身的名字，只给人看。</summary>
+    public string PackName { get; set; } = "";
+    public int? NexusModId { get; set; }
+    /// <summary>被盖掉的原文件哈希；空串 = 原来没这个文件，属于新增。</summary>
+    public string OriginalSha256 { get; set; } = "";
+    /// <summary>我们放上去那份的哈希，扫描时拿它跟磁盘上的现值比。</summary>
+    public string AppliedSha256 { get; set; } = "";
+    public DateTime AppliedAtUtc { get; set; } = DateTime.UtcNow;
+
+    /// <summary>包里这份文件的副本目录名。有了它，"关掉再打开"才不需要重新下载汉化包。</summary>
+    public string StoreId { get; set; } = "";
+    /// <summary>开关状态：true = 我们的文件在位；false = 已还原，但账和副本都留着。</summary>
+    public bool Enabled { get; set; } = true;
+    /// <summary>从 N 网解析来的 mod 名与封面，只为展示；没解析到就退回 PackName。</summary>
+    public string PackTitle { get; set; } = "";
+    public string PackCover { get; set; } = "";
 }

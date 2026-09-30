@@ -55,7 +55,7 @@ public sealed class VersionDownloadService
         if (existing is not null) return existing;
 
         var task = _center.Start($"下载游戏 {label} ({manifestId})", "gameversion");
-        _center.Report(task, "准备中…", 0);
+        _center.Report(task, LocService.Tr("准备中…"), 0);
 
         var work = async (CancellationToken ct) =>
         {
@@ -65,8 +65,8 @@ public sealed class VersionDownloadService
                 var curVer = _updater.GetGameVersion(cfg.GamePath);
                 if (!applyToGame && _depot.IsStagedComplete(manifestId))
                 {
-                    _center.Report(task, "本地已有完整缓存", 100);
-                    _center.Finish(task, true, $"已下载 {label}，点版本号即可切换");
+                    _center.Report(task, LocService.Tr("本地已有完整缓存"), 100);
+                    _center.Finish(task, true, LocService.Tf("已下载 {0}，点版本号即可切换", label));
                     return;
                 }
                 if (applyToGame && _depot.TryApplyStaged(cfg.GamePath, cfg.SteamAppId, "413151", manifestId, null, currentGameVersion: curVer))
@@ -76,10 +76,10 @@ public sealed class VersionDownloadService
                     cfg.LastHistoricalLabel = label;
                     cfg.LastHistoricalInternalVersion = _updater.GetGameVersion(cfg.GamePath) ?? "";
                     _cfg.Save(cfg);
-                    _center.Report(task, "本地已有完整缓存", 100);
+                    _center.Report(task, LocService.Tr("本地已有完整缓存"), 100);
                     await EnsureSmapiAfterSwitchAsync(task);
                     await EnsureXnaAfterSwitchAsync(task);
-                    _center.Finish(task, true, $"已就绪 {label}（本地缓存）");
+                    _center.Finish(task, true, LocService.Tf("已就绪 {0}（本地缓存）", label));
                     BroadcastPagesAfterSwitch();
                     return;
                 }
@@ -103,7 +103,7 @@ public sealed class VersionDownloadService
                 if (!applyToGame)
                 {
                     // 只下载：不写"最近切换"、不补 SMAPI/XNA、不刷页面 —— 游戏目录没被碰过
-                    _center.Finish(task, true, $"已下载 {label}，点版本号即可切换");
+                    _center.Finish(task, true, LocService.Tf("已下载 {0}，点版本号即可切换", label));
                     return;
                 }
 
@@ -116,17 +116,17 @@ public sealed class VersionDownloadService
                 await EnsureSmapiAfterSwitchAsync(task);
                 await EnsureXnaAfterSwitchAsync(task);
 
-                _center.Finish(task, true, $"已下载 {label}，可在「已下载」里切换");
+                _center.Finish(task, true, LocService.Tf("已下载 {0}，可在「已下载」里切换", label));
                 BroadcastPagesAfterSwitch();
             }
             catch (OperationCanceledException)
             {
                 if (task.Status == "paused")
-                    _center.Report(task, "已暂停", task.Percent);
+                    _center.Report(task, LocService.Tr("已暂停"), task.Percent);
                 else
                 {
                     try { _depot.DeleteStagedPackage(manifestId); } catch { }
-                    _center.Finish(task, false, "已取消");
+                    _center.Finish(task, false, LocService.Tr("已取消"));
                 }
             }
             catch (Exception ex)
@@ -187,11 +187,11 @@ public sealed class VersionDownloadService
             var tag = UpdateService.RecommendSmapiTag(gameVer);
             if (tag is null) return;   // 1.0/1.1、1.2.29- 等无适配版本，不装
 
-            _center.Report(task, $"正在补装 SMAPI {tag}（适配游戏 {gameVer}）…", 99);
+            _center.Report(task, LocService.Tf("正在补装 SMAPI {0}（适配游戏 {1}）…", tag, gameVer), 99);
             var info = await _updater.CheckSmapiForGameAsync(null, gameVer);
             if (info.Error is not null || info.InstallerZipUrl is null)
             {
-                _center.Report(task, "SMAPI 未能自动补装：" + (info.Error ?? "没找到安装包地址") + "，可到 Mod 页一键安装", 99);
+                _center.Report(task, LocService.Tr("SMAPI 未能自动补装：") + (info.Error ?? "没找到安装包地址") + LocService.Tr("，可到 Mod 页一键安装"), 99);
                 return;
             }
             var err = await _updater.RunSmapiInstallerAsync(info, gamePath,
@@ -199,8 +199,8 @@ public sealed class VersionDownloadService
                     _center.Report(task, p.Message, p.Percent)),
                 CancellationToken.None);
             _center.Report(task, err is null
-                ? $"SMAPI {info.LatestVersion ?? tag} 已随游戏版本就位"
-                : "SMAPI 未能自动补装：" + err + "，可到 Mod 页一键安装", 99);
+                ? LocService.Tf("SMAPI {0} 已随游戏版本就位", info.LatestVersion ?? tag)
+                : "SMAPI 未能自动补装：" + err + LocService.Tr("，可到 Mod 页一键安装"), 99);
         }
         catch (Exception ex)
         {
@@ -223,10 +223,10 @@ public sealed class VersionDownloadService
             var gameVer = _updater.GetGameVersion(gamePath);
             if (!XnaRedistService.GameNeedsXna(gameVer) || XnaRedistService.IsInstalled()) return;
 
-            _center.Report(task, "系统缺少 XNA 运行库（老版本游戏依赖），正在安装…", 99);
+            _center.Report(task, LocService.Tr("系统缺少 XNA 运行库（老版本游戏依赖），正在安装…"), 99);
             var err = await XnaRedistService.EnsureInstalledAsync(
                 (m, p) => _center.Report(task, m, p));
-            _center.Report(task, err ?? "XNA 运行库已就绪，老版本游戏可以启动了", 99);
+            _center.Report(task, err ?? LocService.Tr("XNA 运行库已就绪，老版本游戏可以启动了"), 99);
         }
         catch (Exception ex)
         {
@@ -256,7 +256,7 @@ public sealed class VersionDownloadService
         var m = Regex.Match(t.Title, @"\((\d+)\)\s*$");
         if (!m.Success)
         {
-            _center.Finish(t, false, "认不出这个任务要下哪个版本，回版本列表重新点「下载」");
+            _center.Finish(t, false, LocService.Tr("认不出这个任务要下哪个版本，回版本列表重新点「下载」"));
             return;
         }
         var manifestId = m.Groups[1].Value;
@@ -265,12 +265,12 @@ public sealed class VersionDownloadService
             .FirstOrDefault(k => string.Equals(k.ManifestId, manifestId, StringComparison.Ordinal));
         if (kv is null)
         {
-            _center.Finish(t, false, "这个版本已不在列表里，无法继续");
+            _center.Finish(t, false, LocService.Tr("这个版本已不在列表里，无法继续"));
             return;
         }
         if (!IsAuthorized)
         {
-            _center.Finish(t, false, "请先在「设置」里完成 Steam 扫码授权，再点「下载」");
+            _center.Finish(t, false, LocService.Tr("请先在「设置」里完成 Steam 扫码授权，再点「下载」"));
             return;
         }
         _center.Remove(t);
@@ -280,7 +280,7 @@ public sealed class VersionDownloadService
             // 半截包保留：底层 QrDownloadAndApplyAsync 认出「这个目录就是这个 manifest 的」时
             // 不清空，改用 -verify-all 让 DepotDownloader 校验后续传（尾部 chunk 超时是国内常态，
             // 每次从 0 开始就永远下不完）。
-            _center.Report(again, "接着上次没下完的部分继续", again.Percent);
+            _center.Report(again, LocService.Tr("接着上次没下完的部分继续"), again.Percent);
         }
         catch (Exception ex) { AppLog.Warn("VersionDownload", "续传重开失败: " + ex.Message); }
     }

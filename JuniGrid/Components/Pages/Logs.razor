@@ -8,8 +8,8 @@
 <div class="jg-page jg-page-wide">
     <div class="jg-logs-head">
         <div>
-            <h1 style="margin-top:0;margin-bottom:8px">SMAPI 日志</h1>
-            <div class="jg-sort-dd" id="jgLogFilter">
+            <h1 style="margin-top:0;margin-bottom:8px">@Loc.T("SMAPI 日志")</h1>
+            <div class="jg-sort-dd @(_filterOpen ? "open" : "")" id="jgLogFilter" data-dd="logfilter">
                 <button type="button" class="jg-sort-trigger" @onclick="ToggleFilterMenu">
                     @FilterLabel(_filter)
                     <svg class="jg-sort-arrow" width="12" height="12" viewBox="0 0 12 12" fill="none">
@@ -20,14 +20,15 @@
                     @foreach (var f in Filters)
                     {
                         <button type="button" class="jg-sort-item @(_filter == f.Key ? "active" : "")"
-                                @onclick="() => SelectFilter(f.Key)">@f.Label</button>
+                                @onclick="() => SelectFilter(f.Key)">@Loc.T(f.Label)</button>
                     }
                 </div>
             </div>
+            <div class="jg-dd-overlay @(_filterOpen ? "open" : "")" data-dd="logfilter" @onclick="CloseFilter"></div>
         </div>
         <div class="jg-logs-actions">
-            <button type="button" class="jg-pill-dark" @onclick="AskClear">清空</button>
-            <button type="button" class="jg-pill-dark" @onclick="CopyAll">复制全部</button>
+            <button type="button" class="jg-pill-dark" @onclick="AskClear">@Loc.T("清空")</button>
+            <button type="button" class="jg-pill-dark" @onclick="CopyAll">@Loc.T("复制全部")</button>
         </div>
     </div>
 
@@ -35,15 +36,11 @@
         <div class="jg-logview">
             @if (_lines.Count == 0)
             {
-                <div style="padding:20px;opacity:.5;font-size:13px">
-                    暂无日志。点左侧「▶ 启动游戏」（SMAPI 模式）后，输出会实时显示在这里。
-                </div>
+                <div style="padding:20px;opacity:.5;font-size:13px"> @Loc.T("暂无日志。点左侧「▶ 启动游戏」（SMAPI 模式）后，输出会实时显示在这里。") </div>
             }
             else if (_visible.Count == 0)
             {
-                <div style="padding:20px;opacity:.5;font-size:13px">
-                    当前分类没有匹配的日志。
-                </div>
+                <div style="padding:20px;opacity:.5;font-size:13px"> @Loc.T("当前分类没有匹配的日志。") </div>
             }
             @foreach (var line in _visible)
             {
@@ -67,13 +64,13 @@
                 <input type="text" value="@_command"
                        @oninput="e => _command = e.Value?.ToString() ?? string.Empty"
                        @onkeydown="HandleCommandKey"
-                       placeholder="@(Launcher.CanSendCommand ? "输入 SMAPI 命令，回车发送，如 help" : "游戏由本程序启动后可在这里输入 SMAPI 命令")"
+                       placeholder="@(Launcher.CanSendCommand ? Loc.T("输入 SMAPI 命令，回车发送，如 help") : Loc.T("游戏由本程序启动后可在这里输入 SMAPI 命令"))"
                        disabled="@(!Launcher.CanSendCommand)" />
                 <button type="button" class="jg-cmdsend" @onclick="SendCommand"
-                        disabled="@(!Launcher.CanSendCommand)">发送</button>
+                        disabled="@(!Launcher.CanSendCommand)">@Loc.T("发送")</button>
             </div>
         </div>
-        <div class="jg-logfooter">实时输出 · 共 @_visible.Count 行</div>
+        <div class="jg-logfooter">@Loc.F("实时输出 · 共 {0} 行", _visible.Count)</div>
     </div>
 
     @* ─── 清空日志确认弹窗 ─── *@
@@ -81,11 +78,11 @@
     {
         <div class="jg-modal-overlay" @onclick="() => _confirmClear = false">
             <div class="jg-modal" @onclick:stopPropagation>
-                <div class="jg-modal-title">清空日志</div>
-                <div class="jg-modal-body">是否清空日志全部内容？</div>
+                <div class="jg-modal-title">@Loc.T("清空日志")</div>
+                <div class="jg-modal-body">@Loc.T("是否清空日志全部内容？")</div>
                 <div class="jg-modal-actions">
-                    <button type="button" class="jg-pill-ghost" data-modal-close @onclick="() => _confirmClear = false">取消</button>
-                    <button type="button" class="jg-pill-dark" @onclick="DoClear">确定</button>
+                    <button type="button" class="jg-pill-ghost" data-modal-close @onclick="() => _confirmClear = false">@Loc.T("取消")</button>
+                    <button type="button" class="jg-pill-dark" @onclick="DoClear">@Loc.T("确定")</button>
                 </div>
             </div>
         </div>
@@ -106,7 +103,7 @@
         ("all", "全部"), ("err", "错误"), ("upd", "可更新"), ("loaded", "已加载")
     };
     private string FilterLabel(string key) =>
-        Array.Find(Filters, f => f.Key == key).Label;
+        Loc.T(Array.Find(Filters, f => f.Key == key).Label);
 
     protected override void OnInitialized()
     {
@@ -146,10 +143,6 @@
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        if (firstRender)
-        {
-            try { await JS.InvokeVoidAsync("junigridJs.logsFilterInit", "#jgLogFilter"); } catch { }
-        }
         if (_pendingScroll)
         {
             _pendingScroll = false;
@@ -159,14 +152,26 @@
         }
     }
 
-    private async Task ToggleFilterMenu() =>
-        await JS.InvokeVoidAsync("junigridJs.logsFilterToggle", "#jgLogFilter");
+    // 日志筛选下拉：与「排序方式」同款 —— Blazor 状态 + dropdownToggle 的 GSAP 动画 + 遮罩点外关闭
+    private bool _filterOpen;
+    private async Task ToggleFilterMenu()
+    {
+        _filterOpen = !_filterOpen;
+        try { await JS.InvokeVoidAsync("junigridJs.dropdownToggle", "#jgLogFilter", _filterOpen); } catch { }
+    }
+    private async Task CloseFilter()
+    {
+        if (!_filterOpen) return;
+        _filterOpen = false;
+        try { await JS.InvokeVoidAsync("junigridJs.dropdownToggle", "#jgLogFilter", false); } catch { }
+    }
 
     private async Task SelectFilter(string filter)
     {
         _filter = filter;
         _visible = BuildVisible();
-        try { await JS.InvokeVoidAsync("junigridJs.logsFilterClose", "#jgLogFilter"); } catch { }
+        _filterOpen = false;
+        try { await JS.InvokeVoidAsync("junigridJs.dropdownToggle", "#jgLogFilter", false); } catch { }
     }
 
     // 视图 = 服务缓冲快照按分类筛选。TRACE 组已在 LauncherService 读取文件时整组丢弃
@@ -194,11 +199,11 @@
         try
         {
             await JS.InvokeVoidAsync("navigator.clipboard.writeText", string.Join('\n', _visible));
-            await JS.InvokeVoidAsync("junigridJs.toast", "复制成功");
+            await JS.InvokeVoidAsync("junigridJs.toast", LocService.Tr("复制成功"));
         }
         catch
         {
-            await JS.InvokeVoidAsync("junigridJs.toast", "复制失败", "err");
+            await JS.InvokeVoidAsync("junigridJs.toast", LocService.Tr("复制失败"), "err");
         }
     }
 
@@ -267,7 +272,7 @@
         }
         catch
         {
-            _ = JS.InvokeVoidAsync("junigridJs.toast", "无法打开链接", "err");
+            _ = JS.InvokeVoidAsync("junigridJs.toast", LocService.Tr("无法打开链接"), "err");
         }
     }
 }

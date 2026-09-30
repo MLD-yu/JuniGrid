@@ -67,7 +67,7 @@
     cursor: pointer;
     white-space: nowrap;
     transition: background .15s ease, transform .15s ease;
-}.jg-nexus-login-btn:hover { background: #333; transform: translateY(-1px); }.jg-nexus-login-btn:active { transform: translateY(0); }/* 设置页 · Nexus 已登录时的胶囊退出按钮 */
+}.jg-nexus-login-btn:hover { background: var(--jg-ink-hover); transform: translateY(-1px); }.jg-nexus-login-btn:active { transform: translateY(0); }/* 设置页 · Nexus 已登录时的胶囊退出按钮 */
 .jg-nexus-logout-btn {
     border: none;
     border-radius: 999px;
@@ -78,7 +78,7 @@
     cursor: pointer;
     white-space: nowrap;
     transition: background .15s ease, transform .15s ease;
-}.jg-nexus-logout-btn:hover { background: #333; transform: translateY(-1px); }.jg-nexus-logout-btn:active { transform: translateY(0); }/* v0.2.1：设置页游戏目录胶囊按钮 —— 保存为黑底白字 */
+}.jg-nexus-logout-btn:hover { background: var(--jg-ink-hover); transform: translateY(-1px); }.jg-nexus-logout-btn:active { transform: translateY(0); }/* v0.2.1：设置页游戏目录胶囊按钮 —— 保存为黑底白字 */
 .jg-path-btn {
     padding: 6px 18px;
     border-radius: 999px;
@@ -521,6 +521,21 @@
     transform: translateX(-50%);
     border: 6px solid transparent;
     border-top-color: #fffce1;
+}/* 贴在页面左上角的问号（立绘标题旁）：气泡朝下 + 左对齐 ——
+   默认朝上会被导航条/视口上沿裁掉半截，居中又会让气泡左边伸出屏幕外 */
+.jg-help-tip--down .jg-help-tip-bubble {
+    bottom: auto;
+    top: calc(100% + 12px);
+    left: 0;
+    transform: none;
+    transform-origin: top left;
+}.jg-help-tip--down .jg-help-tip-bubble::after {
+    top: auto;
+    bottom: 100%;
+    left: 8px;
+    transform: none;
+    border-top-color: transparent;
+    border-bottom-color: #fffce1;
 }/* ── 返回顶部（左下角；右边留给任务中心悬浮球）── */
 .jg-content { position: relative; }.jg-backtop {
     position: absolute;

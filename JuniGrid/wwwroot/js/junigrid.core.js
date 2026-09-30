@@ -74,7 +74,7 @@ window.junigridJs = {
         document.querySelectorAll('.jg-dd-overlay').forEach(o => o.classList.toggle('open', !!open && o.dataset.dd === ddKey));
         const menu  = wrap.querySelector('.jg-sort-menu');
         const arrow = wrap.querySelector('.jg-sort-arrow');
-        const items = wrap.querySelectorAll('.jg-sort-item');
+        const items = wrap.querySelectorAll('.jg-sort-item, .jg-profile-item');
         if (!menu) return;
         const vis = menu.querySelector(':scope > .jg-sort-menu-in') || menu;
         const fromRight = wrap.classList.contains('jg-dd-right');
