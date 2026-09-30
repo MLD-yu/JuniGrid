@@ -109,7 +109,12 @@ public sealed partial class PortraitSkinService
     /// 底图 128×1024（16 行表情帧），只有第 0 行是我们的原版脸，第 1–15 行仍是 OhoDavi 的女巫
     /// ⇒ 台词取到哪一行就露哪张脸（用户 2026-09-30 报"我选男法师，进游戏两句话变三次脸"）。
     /// ⇒ 旧包里那些只有一格高的默认行钉图必须重建，光改判据不自愈。</summary>
-    public const int OverrideFormat = 25;
+    /// v1.7.36 = 26：<b>场合资产同一条洞补上</b> —— SubstituteNeedsPad 也用 PngSize 量我们自己的
+    /// 源文件，默认行的源是 .xnb ⇒ 0×0 ⇒ 直接 return false ⇒ `Portraits/&lt;id&gt;_Spring` 这类
+    /// 场合图同样只钉一格，而 OhoDavi 的 128×1024 也喂这些资产名 ⇒ 换季/按场合取帧时
+    /// 第 1–15 行仍是别家画（用户 2026-09-30 实测：和法师聊天时「默认 / OhoDavi /
+    /// Donut fifadog」三张来回切）。用例 B66。</summary>
+    public const int OverrideFormat = 26;
 
     /// <summary>覆盖包补丁的优先级。⚠ 必须【严格高于】任何可能被它覆盖的包（包括我们自己
     /// 转出来的 JuniGrid.PortraitPack.* 老包写的 "Late + 10"）—— 同优先级并列时 CP 由加载顺序
@@ -254,13 +259,18 @@ public sealed partial class PortraitSkinService
     /// 不再闪骨架、不再反序列化几百 KB 的 JSON。</summary>
     public PortraitScanResult Scan(string gamePath)
     {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
         // 转换包自愈：必须排在所有快照之前 —— 它会改写 content.json，签名（含 content.json 的
         // mtime）跟着变，旧快照自然作废。放在后面就会出现"这轮命中旧快照、下轮才重扫"的错位。
         HealConvertedPacksOnce(gamePath);
 
         // 内存快照：同一次启动内 Mods 签名没变就直接用
         var mem = TryGetMemoryScan(gamePath);
-        if (mem is not null) return mem;
+        if (mem is not null)
+        {
+            AppLog.Info("Portraits", $"[扫描] 内存快照 {sw.ElapsedMilliseconds}ms");
+            return mem;
+        }
 
         using var lease = ReadLease();
         var cached = TryLoadScanCache(gamePath, out var sig);
@@ -268,6 +278,7 @@ public sealed partial class PortraitSkinService
         {
             RememberScannedCharIds(gamePath, cached.Characters.Select(c => c.Id));
             StoreMemoryScan(gamePath, cached, sig);
+            AppLog.Info("Portraits", $"[扫描] 磁盘快照 {sw.ElapsedMilliseconds}ms chars={cached.Characters.Count}");
             return cached;
         }
 
@@ -441,6 +452,20 @@ public sealed partial class PortraitSkinService
             foreach (var (asset, seasons) in p.BaseSeasonPatches)
                 foreach (var (season, file) in seasons)
                     result.BaseSeasonPatches.Add((p.Folder, asset, season, file));
+
+        // v1.7.37：对手高度汇入 —— 键把 id 归到同义词表的 A 侧（SVE 的 Characters/Magnus
+        // 与原版的 Characters/Wizard 是同一个人的身体，不归并就永远看不见对方；
+        // 实测法师那条"矮表压出残行"漏的就是这个键）。纯信息层，落盘判据一行没动。
+        foreach (var p in packs)
+            foreach (var r in p.RivalDecls)
+            {
+                var sl = r.Asset.IndexOf('/');
+                if (sl <= 0) continue;
+                var key = r.Asset[..sl] + "/" + CanonicalNpcId(r.Asset[(sl + 1)..]);
+                if (!result.RivalSheets.TryGetValue(key, out var rl))
+                    result.RivalSheets[key] = rl = new List<RivalSheet>();
+                rl.Add(r);
+            }
 
         // v1.7.28：HD 肖像通道（Mods/HDPortraits/<角色>）汇入。这类包以前被"目标命名空间不认识"
         // 整条静默丢弃 ⇒ 它照旧画走对话框大头照，而肖像页没有它、日志也不点名（Dacar 实测：
@@ -1584,22 +1609,6 @@ public sealed partial class PortraitSkinService
             if (buf[0] != 0x89 || buf[1] != (byte)'P') return;
             w = (buf[16] << 24) | (buf[17] << 16) | (buf[18] << 8) | buf[19];
             h = (buf[20] << 24) | (buf[21] << 16) | (buf[22] << 8) | buf[23];
-        }
-        catch { }
-    }
-
-    /// <summary>图片尺寸，PNG 与原版 .xnb 都量得出。
-    /// ⚠ 判"我们的图够不够盖住底图"必须用这个而不是 PngSize —— 后者只读 PNG 头，
-    /// 原版那一侧（.xnb）会返回 0×0，于是"矮就纵向平铺补满"整段被跳过（B65 实测）。</summary>
-    private static void ImageSize(string? path, out int w, out int h)
-    {
-        PngSize(path, out w, out h);
-        if (w > 0 && h > 0) return;
-        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return;
-        try
-        {
-            var tex = XnbDecoder.TryDecode(path);
-            if (tex is not null) { w = tex.Width; h = tex.Height; }
         }
         catch { }
     }

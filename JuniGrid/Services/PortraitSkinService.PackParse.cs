@@ -67,6 +67,12 @@ public sealed partial class PortraitSkinService
         /// "春夏秋冬都是裸体"）。这层映射只有包自己知道，必须从 content.json 取，不能猜文件名。</summary>
         public Dictionary<string, Dictionary<string, string>> BaseSeasonPatches
             = new(StringComparer.OrdinalIgnoreCase);
+        /// <summary>v1.7.37：本包在 <c>Portraits/&lt;x&gt;</c> 与 <c>Characters/&lt;x&gt;</c> 上的
+        /// 每一条图像声明，逐条原样留着（含被换肤判据挡掉的装饰叠加、局部补丁、文件缺失）。
+        /// 由 <c>Scan</c> 归并进 <see cref="PortraitScanResult.RivalSheets"/>。
+        /// ⚠ 与 PortraitFiles/SpriteFiles 无关：那两个是"这个包能当皮肤的图"，判据严格；
+        /// 这边是"谁碰过这份资产"，越全越好 —— 混用会让换肤判据被对手高度污染。</summary>
+        public List<RivalSheet> RivalDecls = new();
         /// <summary>包 config.json 的当前值（懒加载）。FromFile 里的 {{配置键}} 靠它代换 ——
         /// Elle's Cuter Horses 的马皮肤是 assets/Horse/{{Horse Skin}}.png，文件名取决于
         /// 玩家在 GMCM 里选的马皮肤（config.json 的当前值）。</summary>
@@ -483,6 +489,13 @@ public sealed partial class PortraitSkinService
                 else if (prefix.Equals("Characters", StringComparison.OrdinalIgnoreCase)) aspect = "sprite";
                 else if (prefix.Equals("Animals", StringComparison.OrdinalIgnoreCase)) aspect = "animal";
                 else continue;
+
+                // v1.7.37：先记账"这份资产上还有谁画了多高的表"，再走换肤判据。
+                // 顺序是重点：装饰叠加、FromArea 局部差分、FromFile 指向不存在文件的声明
+                // 在下面几处都会被判据丢掉，但它们同样会把我们的矮表压出残行。
+                // 纯信息层 —— 下面所有判据、以及落盘一侧一行都没改。
+                if (aspect != "animal")
+                    RecordRivalDecl(pack, packDir, prefix, tail, name, action, c, curFromFile);
 
                 if (aspect == "sprite")
                 {
@@ -939,6 +952,56 @@ public sealed partial class PortraitSkinService
         return false;
     }
 
+    /// <summary>v1.7.37：把一条图像声明记进「这份资产上还有谁」（对手高度取证）。
+    /// 位置是重点 —— 放在换肤判据之前，所以装饰叠加、FromArea 局部差分、FromFile 指向
+    /// 不存在文件的声明全都进账：这些恰恰会把我们的矮表压出残行。
+    /// ⚠ 只记账，不参与任何落盘判据（v4 的 A+C 取舍由用例 B55 守着）。</summary>
+    private static void RecordRivalDecl(PackScan pack, string packDir, string prefix,
+        string tail, string name, string action, JToken c, string? fromFile)
+    {
+        var act = (action ?? "").Trim();
+        // 「整表」= 会把这份资产整体换掉。Load 天然整表；EditImage 是【区域覆盖】语义，
+        // 带 FromArea/ToArea 或作者自认叠加（Overlay / PatchMode:Overlay）的只涂一小块，
+        // 不构成"它比我高"。⚠ 这个字段是 Max(H) 的唯一入口：放宽一格，一张 64×999 的
+        // 表情差分就能把所有 NPC 误报成"矮了 26 行"（变异 M4b 专门打这里）。
+        bool isLoad = act.Equals("Load", StringComparison.OrdinalIgnoreCase);
+        bool isEdit = act.Equals("EditImage", StringComparison.OrdinalIgnoreCase);
+        bool fullSheet = isLoad
+            || (isEdit && c["FromArea"] is null && c["ToArea"] is null
+                && !string.Equals(c["Overlay"]?.ToString(), "true", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(c["PatchMode"]?.ToString(), "Overlay", StringComparison.OrdinalIgnoreCase));
+
+        string abs = "";
+        if (fromFile is { Length: > 0 })
+        {
+            var concrete = ResolveFromFileTokens(fromFile, prefix, tail, pack, noteUnknowns: false);
+            if (concrete is not null)
+                try
+                {
+                    abs = Path.GetFullPath(Path.Combine(packDir,
+                        concrete.Replace('/', Path.DirectorySeparatorChar)));
+                }
+                catch { abs = ""; }
+        }
+        bool exists = abs.Length > 0 && File.Exists(abs);
+        var (w, h) = ImgSize(exists ? abs : null);
+        pack.RivalDecls.Add(new RivalSheet
+        {
+            Pack = pack.Folder,
+            Asset = prefix + "/" + name,
+            Action = act,
+            Priority = c["Priority"]?.ToString(),
+            From = fromFile,
+            // 文件不存在/token 代换不出 ⇒ File 与尺寸都留 0：这条仍是"有人碰过这份资产"的
+            // 证据（M2 打这里），只是撑不起 Max(H)。
+            File = exists ? abs : "",
+            W = w,
+            H = h,
+            When = c["When"]?.ToString(),
+            FullSheet = fullSheet,
+        });
+    }
+
     /// <summary>代换 FromFile 里可静态确定的 CP token（目标已知时是确定值）。
     /// v1.3.4：补上 {{Target}}（完整目标资产名）—— Ridgeside Village 的全部默认立绘
     /// 都写的是 Assets/{{Target}}.png（"Portraits/Aguar" → "Assets/Portraits/Aguar.png"），
@@ -947,7 +1010,7 @@ public sealed partial class PortraitSkinService
     /// TargetName 四个；其余 token（季节、config 值…）代换不了返回 null。
     /// 代换结果不再含 {{ }} 才算成功。</summary>
     private static string? ResolveFromFileTokens(string fromFile, string targetPrefix, string targetName,
-        PackScan? pack = null)
+        PackScan? pack = null, bool noteUnknowns = true)
     {
         var fullTarget = targetPrefix + "/" + targetName;
         // 子路径目标（"AichaSBV/AichaSBV"）的 {{TargetName}} 取末段 —— 与 CP 语义一致
@@ -995,7 +1058,9 @@ public sealed partial class PortraitSkinService
         // 还是解不出来 ⇒ 把剩下的 token 记进"判不了"清单（哪个包卡在哪个 token 上）。
         // ⚠ 但"多值枚举开关"不算盲区：AllowValues ≥2 的键（Donut's 的 AlesiaPortrait）我们
         // 是走画风枚举出卡的，故意不代换 —— 记进来就是噪音，会把真盲区（{{Festival}} 这类）淹掉。
-        if (s.Contains("{{") && pack is not null)
+        // noteUnknowns=false：对手高度记账那条也要代换一次，同一个盲区记两遍会把
+        // --audit-packs 的 40 条上限填满（上限本身就是防噪的）。
+        if (noteUnknowns && s.Contains("{{") && pack is not null)
             foreach (System.Text.RegularExpressions.Match m in
                      System.Text.RegularExpressions.Regex.Matches(s, @"\{\{\s*([^{}]+?)\s*\}\}"))
             {
@@ -1348,6 +1413,10 @@ public sealed partial class PortraitSkinService
         foreach (var e in from.ModsPrivateLoads) into.ModsPrivateLoads.Add(e);
         foreach (var (k, v) in from.HdPortraitPointers) into.HdPortraitPointers[k] = v;
         foreach (var t in from.NeededCrossTokens) into.NeededCrossTokens.Add(t);
+        // 对手高度记账同样在 Include 子文件里（实测：Donut's / SCC-SVE / SVE / Ridgeside / WAG /
+        // LewdDew 六个包的 patch 全在 assets/Code/*.json，不搬 ⇒ RivalSheets 里整个包消失，
+        // 法师那条就是因此看不见 SCC-SVE 的 Magnus 四季表）。
+        foreach (var r in from.RivalDecls) into.RivalDecls.Add(r);
     }
 
     /// <summary>Target=="Data/Characters" 的 EditData：Entries 键名 / Records 键 / Fields 第 2 元素

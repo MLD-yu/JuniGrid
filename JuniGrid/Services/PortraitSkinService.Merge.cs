@@ -78,6 +78,20 @@ public sealed partial class PortraitSkinService
             (a.Equals(p.A, StringComparison.OrdinalIgnoreCase) && b.Equals(p.B, StringComparison.OrdinalIgnoreCase))
             || (a.Equals(p.B, StringComparison.OrdinalIgnoreCase) && b.Equals(p.A, StringComparison.OrdinalIgnoreCase)));
 
+    /// <summary>v1.7.37：把 id 归到同义词表的 A 侧（<c>Magnus</c> → <c>Wizard</c>）；
+    /// 表里没有的原样返回。跨包对账"同一份资产上还有谁"必须走这个键 ——
+    /// 否则 SVE 的 <c>Characters/Magnus</c> 与 Baechu 的 <c>Characters/Wizard</c>
+    /// 各算一套对手，谁也不会发现自己把别人压掉了（实测法师那条就是这么漏的）。
+    /// ⚠ 只认【整名相等】，不按 '_' 拆段归并：<c>Magnus_Winter</c> 与 <c>Wizard_Winter</c>
+    /// 在游戏里是两份不同资产（outfit 表指名哪一个就加载哪一个），并成一个键
+    /// 会凭空造出对手。这类场合资产各自成套，交叉影响留给 Asset 原文自己说。</summary>
+    private static string CanonicalNpcId(string id)
+    {
+        foreach (var (a, b) in SameNpcPairs)
+            if (id.Equals(b, StringComparison.OrdinalIgnoreCase)) return a;
+        return id;
+    }
+
     /// <summary>
     /// 变体分组：两条信号取并集 —— ① DisplayName 相同（v1.3.8 旧口径，只有装了汉化才命中）；
     /// ② 同脸别名（默认立绘同一个文件 + id 互为前缀，与语言无关）。

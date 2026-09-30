@@ -203,4 +203,51 @@ public sealed class PortraitScanResult
     /// 跨包动态 token 能代换之后再算。</summary>
     public List<(string Pack, string Npc, string DataAsset, string PortraitAsset, string File, int Cell)>
         HdSkins { get; init; } = new();
+
+    /// <summary>v1.7.37：同一份立绘/走路表资产上【所有包】的声明（对手高度）。
+    /// 键是规范化的资产名（<c>Characters/Wizard</c>、<c>Portraits/Wizard</c>；
+    /// SVE 的 <c>Magnus</c> 与原版的 <c>Wizard</c> 并进同一键），值按包逐条列出。
+    /// ⚠ 必须参与序列化：这份数据在扫描期才有，落盘/页面上常是快照命中。
+    /// ⚠ 纯信息层 —— 落盘判据一行没动（v4 的 A+C 取舍由 B55 守着），只用来回答
+    /// "我要钉的这张表比游戏里最高的那张矮多少行"。
+    /// 每条各自的声明原文留在 <see cref="RivalSheet.Asset"/> 里（<c>Magnus_Winter</c> 与
+    /// <c>Wizard_Winter</c> 并到一键后仍分得清是谁画的）。</summary>
+    public Dictionary<string, List<RivalSheet>> RivalSheets { get; } = new(StringComparer.OrdinalIgnoreCase);
 }
+
+/// <summary>一条"整表换掉某份立绘/走路表"的声明（可能来自别的包，也可能是同一包的旧分支）。
+/// 用 class 不用 positional record：Newtonsoft 对 record 的反序列化在 net6 上有坑，
+/// 而这个字典必须能进磁盘快照（M5 就是验这条）。</summary>
+public sealed class RivalSheet
+{
+    /// <summary>声明方包目录（相对 Mods/、无点号规范化），与 PackScan.Folder 同口径。</summary>
+    public string Pack { get; set; } = "";
+    /// <summary>补丁声明时的包内资产名原文（<c>Magnus_Winter</c> 这类场合资产在此留痕）。</summary>
+    public string Asset { get; set; } = "";
+    /// <summary>CP Action 原文（Load / EditImage …）。</summary>
+    public string Action { get; set; } = "";
+    /// <summary>Priority 原文（未声明为 null）。CP 的 Load 全部先于 EditImage 执行，
+    /// 所以这个字段【不能】用来判胜负，只作取证。</summary>
+    public string? Priority { get; set; }
+    /// <summary>FromFile 原文（可能带 token）。⚠ 必须留：代换不出或文件不存在时 File 是空的，
+    /// 原文是唯一还能认出"哪一条补丁"的线索（变异 M2 的用例就靠它点名）。</summary>
+    public string? From { get; set; }
+    /// <summary>FromFile 代换后【真实存在】的绝对路径；代换不出或文件不存在时为空串。</summary>
+    public string File { get; set; } = "";
+    public int W { get; set; }
+    public int H { get; set; }
+    /// <summary>When 原文（null = 无条件）。条件是否成立本服务判不了时不猜，原样留着。</summary>
+    public string? When { get; set; }
+    /// <summary>true = 这条会把【整张】资产换掉（Load，或无 FromArea/ToArea/Overlay/PatchMode:Overlay
+    /// 的 EditImage）。只有 true 的条目参与 Max(H)；false 的保留供取证。</summary>
+    public bool FullSheet { get; set; }
+}
+
+/// <summary>v1.7.37 立绘页角标：一个资产格（<c>Characters/Jas_Winter</c> 这种算独立一格）上
+/// 「本包钉的那张覆盖到第几行 / 游戏里最高那张覆盖到第几行」。行距 32px（走路表固定）。</summary>
+public sealed record BodyCoverageAsset(string Key, int OwnRows, int RivalRows);
+
+/// <summary>同一档（我方行数一样、对手也是同几个包）的资产格并成一行显示 ——
+/// 底层数据仍按资产，合并只发生在展示层（用户 2026-10-01 拍板：Jas 三条同包同档不该刷三行，
+/// 而 Wizard 与 Wizard_Beach 对手不同包必须分开）。<see cref="Assets"/> 保留每一格的真实差口。</summary>
+public sealed record BodyCoverageGroup(int OwnRows, string[] RivalPacks, BodyCoverageAsset[] Assets);

@@ -7,8 +7,8 @@ namespace JuniGrid.Services;
 
 public sealed partial class PortraitSkinService
 {
-    /// <summary>这个 NPC 所有卡自带的走路表 = 走路表的「底图清单」，WalkSheetTooShort 的比较对象。
-    /// 拿整份而不是"选中那张"：底图是谁提供的我们说了不算，只能保证盖满最坏情况
+    /// <summary>这个 NPC 所有卡自带的走路表 = 走路表的「底图清单」，场合资产补白（SubstituteNeedsPad）
+    /// 与立绘铺高比的就是它。拿整份而不是"选中那张"：底图是谁提供的我们说了不算，只能保证盖满最坏情况
     ///（与立绘那条 faceSizes 同一个理由）。</summary>
     public static List<string> BodySheetsOf(PortraitCharacter ch)
     {
@@ -20,16 +20,18 @@ public sealed partial class PortraitSkinService
 
     /// <summary>
     /// v1.7.13：皮肤自己没走路表时的身体解析链第二步 —— 沿 manifest Dependencies 广度优先
-    /// （含依赖的依赖）找第一个给这个角色配了精灵表的【已启用】前置包，返回它那一行。
-    /// 一个都没有 → null（= 沿用默认：落盘端不钉 Characters，预览端画默认行）。
+    /// （含依赖的依赖）找第一个给这个角色配了走路表的【已启用】前置包，返回（那张表，它的包目录）。
+    /// 一个都没有 → (null,null)（= 沿用默认：落盘端不钉 Characters，预览端画默认行）。
     /// 只认扫描结果里存在的包：没装/被禁用的前置在游戏里本来就不加载，借它的身体等于钉死图。
     /// 预览窗与写盘共用这一个入口，两边不许各写一套判据（v1.7.12 的教训就是三方各说一套）。
+    /// v1.7.38：前置的判定从"它得出一张卡"放宽成"它声明过这个角色的走路表"——
+    /// 见循环里 DeclaredBodyFile 那段（法师：SCC-SVE 只按季发货 ⇒ 不出卡 ⇒ 链子跳过它）。
     /// </summary>
-    public static PortraitSkinOption? ResolvePrereqBody(PortraitScanResult scan,
+    public static (string? File, string? PackFolder) ResolvePrereqBody(PortraitScanResult scan,
         PortraitCharacter ch, PortraitSkinOption selected)
     {
         if (scan is null || ch is null || selected is null
-            || string.IsNullOrEmpty(selected.PackFolder)) return null;
+            || string.IsNullOrEmpty(selected.PackFolder)) return (null, null);
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { selected.PackFolder };
         var queue = new Queue<string>();
         queue.Enqueue(selected.PackFolder);
@@ -45,11 +47,50 @@ public sealed partial class PortraitSkinService
                     && o.SpriteFile is not null
                     && LooksLikeSprite(o.SpriteFile)
                     && !IsFakeWalkSheet(o.SpriteFile, o.SourceFile, ch.Id));
-                if (hit is not null) return hit;
+                if (hit?.SpriteFile is { Length: > 0 } hitSpr) return (hitSpr, depFolder);
+                // v1.7.38：祖先包【不出卡】但它确实声明了这个角色的走路表 ⇒ 用它的表。
+                // 法师实测形状：Donut 的 fifadog 分支只有脸，它声明的头号前置 SCC-SVE 把
+                // Magnus 的身子按季发（Characters/Magnus ← Magnus_Spring…64×480），而该包对
+                // Magnus 的【基础】文件作者没发货 ⇒ 对这个角色一张卡都不出 ⇒ 旧代码在这里空手，
+                // 链子跳到 dep#2 的 SVE，于是钉的是 SVE 的身子（用户：其它角色都对，就法师不对）。
+                if (DeclaredBodyFile(scan, ch, depFolder) is { Length: > 0 } sheet)
+                    return (sheet, depFolder);
                 queue.Enqueue(depFolder);
             }
         }
-        return null;
+        return (null, null);
+    }
+
+    /// <summary>某个包对【这个角色】声明过哪张走路表 —— 从 RivalSheets 里按包名捞，不看它出不出卡。
+    /// 取最高的那张；同高时按春→夏→秋→冬优先（和弹窗"没点季节 tab 时画春季"同一口径）。</summary>
+    private static string? DeclaredBodyFile(PortraitScanResult scan, PortraitCharacter ch, string packFolder)
+    {
+        if (scan.RivalSheets.Count == 0 || string.IsNullOrEmpty(packFolder)) return null;
+        var keys = new List<string> { "Characters/" + CanonicalNpcId(ch.Id) };
+        foreach (var v in scan.VariantAssets)
+            if (v.Kind.Equals("Characters", StringComparison.OrdinalIgnoreCase)
+                && v.BaseId.Equals(ch.Id, StringComparison.OrdinalIgnoreCase)
+                && !keys.Contains("Characters/" + CanonicalNpcId(v.VariantId), StringComparer.OrdinalIgnoreCase))
+                keys.Add("Characters/" + CanonicalNpcId(v.VariantId));
+        var best = "";
+        var bestH = -1;
+        foreach (var key in keys)
+        {
+            if (!scan.RivalSheets.TryGetValue(key, out var rows)) continue;
+            foreach (var r in rows)
+            {
+                if (!r.FullSheet || r.File.Length == 0) continue;
+                if (!string.Equals(r.Pack, packFolder, StringComparison.OrdinalIgnoreCase)) continue;
+                if (!LooksLikeSprite(r.File) || IsFakeWalkSheet(r.File, null, ch.Id)) continue;
+                var seasonalFirst = key.EndsWith("_Spring", StringComparison.OrdinalIgnoreCase) ? 0 : 1;
+                var rank = (r.H, seasonalFirst);
+                var cur = (bestH, 1);
+                if (best.Length > 0 && rank.CompareTo(cur) <= 0) continue;
+                if (best.Length == 0 && r.H <= 0) continue;
+                best = r.File; bestH = r.H;
+            }
+        }
+        return best.Length > 0 ? best : null;
     }
 
     /// <summary>选中这张卡、而它【自己没有走路图】时，身体该用哪一张 ——
@@ -67,9 +108,9 @@ public sealed partial class PortraitSkinService
     public static (string? File, string? PackFolder) ResolveBody(string? gamePath,
         PortraitScanResult scan, PortraitCharacter ch, PortraitSkinOption selected)
     {
-        var pre = ResolvePrereqBody(scan, ch, selected);
-        if (pre?.SpriteFile is { Length: > 0 } preSpr && LooksLikeSprite(preSpr))
-            return (preSpr, pre.PackFolder);
+        var (preSpr0, preFolder) = ResolvePrereqBody(scan, ch, selected);
+        if (preSpr0 is { Length: > 0 } preSpr && LooksLikeSprite(preSpr))
+            return (preSpr, preFolder);
         var def = ch.IsVanilla ? ch.Vanilla : ch.Native;
         if (def?.SpriteFile is { Length: > 0 } defSpr && LooksLikeSprite(defSpr))
             return (defSpr, def.PackFolder);
@@ -78,6 +119,55 @@ public sealed partial class PortraitSkinService
             && VanillaSpriteXnb(gamePath, ch.Id) is { Length: > 0 } xnb && LooksLikeSprite(xnb))
             return (xnb, null);
         return (null, null);
+    }
+
+    /// <summary>已生效的那张换肤，在【走路表】上比游戏里最高的那张矮几行 —— 立绘页那行提示的数据源。
+    /// 读的就是覆盖包已经钉出去的图（assets/Characters/&lt;资产&gt;.png），【不重跑选表逻辑】：
+    /// 界面说的必须就是盘上那张，否则又是"预览 / 落盘 / 游戏各说一套"（2026-09-29 阿比盖尔实测）；
+    /// 而未选中的卡要预测，就得把落盘那六档出口在只读路径上再走一遍 —— 那是新的漂移源。
+    /// 用户 2026-10-01 拍板：角标只出在已选中的那张 + 详情。
+    /// ⚠ 只碰 Characters/：立绘矮（实测 Henchman 128&lt;192）是 B65/B66 那条「底图候选看不见对手」的账，
+    /// 让走路表角标去说它 = 用 A 的 UI 写 B 的账（变异 A8 守这里）。
+    /// ⚠ 对手只算 RivalSheet.FullSheet（整表声明）且【同宽】的那些 —— 局部差分与叠加层涂不满整行，
+    /// 不同宽 CP 会整条作废；算进来会把一批 NPC 误报成"矮一大截"（变异 A4b、A6 各守一边）。</summary>
+    public static List<BodyCoverageGroup> BodyCoverage(PortraitScanResult scan, string? gamePath, string charId)
+    {
+        var byKey = new Dictionary<string, (BodyCoverageAsset Asset, string[] Packs)>(
+            StringComparer.OrdinalIgnoreCase);
+        if (string.IsNullOrWhiteSpace(gamePath) || scan.RivalSheets.Count == 0) return new();
+        var dir = Path.Combine(gamePath!, "Mods", OverrideFolder, "assets", "Characters");
+        // 覆盖包没生成、或被 Mods 页禁用（点前缀）⇒ 没有"我方钉了哪张"可陈述
+        if (!Directory.Exists(dir)) return new();
+        var canon = CanonicalNpcId(charId);
+        foreach (var file in Directory.GetFiles(dir, "*.png"))
+        {
+            var name = Path.GetFileNameWithoutExtension(file);
+            var us = name.IndexOf('_');
+            // 场合变体（Jas_Winter）与同义词另一侧（SVE_Henchman）都按首段认人
+            if (!CanonicalNpcId(us > 0 ? name[..us] : name)
+                    .Equals(canon, StringComparison.OrdinalIgnoreCase)) continue;
+            var (w, h) = ImgSize(file);
+            if (w <= 0 || h <= 0) continue;                        // 量不出就不判，不报"矮 0 行"
+            var key = "Characters/" + CanonicalNpcId(name);
+            if (!scan.RivalSheets.TryGetValue(key, out var riv)) continue;
+            var sameW = riv.Where(r => r.FullSheet && r.W == w).ToList();
+            if (sameW.Count == 0) continue;
+            var rivalH = sameW.Max(r => r.H);
+            if (rivalH <= h) continue;                             // 我们就是最高那张 ⇒ 没话要说
+            // 同一个键可能钉了两条（Characters/Wizard 与 Characters/Magnus 是同一个人）：
+            // 取更矮的那条，界面才敢用单数口径说"本包覆盖到第 N 行"。
+            if (byKey.TryGetValue(key, out var cur) && cur.Asset.OwnRows * 32 <= h) continue;
+            byKey[key] = (new BodyCoverageAsset(key, h / 32, rivalH / 32),
+                sameW.Where(r => r.H == rivalH).Select(r => r.Pack)
+                    .Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(p => p, StringComparer.Ordinal).ToArray());
+        }
+        // 展示层合并：我方档数相同、对手也是同几个包 ⇒ 一行（Jas 三条）；否则分行（Wizard 与
+        // Wizard_Beach 对手不同包）。每一格的真实差口留在 Assets 里，不为了少写一行而抹平。
+        return byKey.Values
+            .GroupBy(v => v.Asset.OwnRows + "|" + string.Join("|", v.Packs))
+            .Select(g => new BodyCoverageGroup(g.First().Asset.OwnRows, g.First().Packs,
+                g.Select(x => x.Asset).OrderBy(x => x.Key, StringComparer.Ordinal).ToArray()))
+            .OrderBy(x => x.Assets[0].Key, StringComparer.Ordinal).ToList();
     }
 
     /// <summary>
@@ -618,9 +708,7 @@ public sealed partial class PortraitSkinService
                 foreach (var o in ch.AllOptions)
                     if (o.SourceFile is { Length: > 0 } osf && File.Exists(osf))
                     {
-                        // ImageSize 而不是 PngSize：别的包的这一格也可能是原版风格的 .xnb，
-                        // 量成 0 就被踢出候选，底图多出来的行就没人补（B65 同一类）。
-                        ImageSize(osf, out var ow, out var oh);
+                        var (ow, oh) = ImgSize(osf);
                         if (ow > 0 && oh > 0) faceSizes.Add((ow, oh));
                     }
                 // v1.7.20：按文件名找不到季节图时，改用包自己声明的「基资产 + When:{Season}」映射。
@@ -1678,14 +1766,14 @@ public sealed partial class PortraitSkinService
     {
         padW = padH = 0;
         if (file is null || natives is null || natives.Count == 0) return false;
-        PngSize(file, out var w, out var h);
+        var (w, h) = ImgSize(file);          // 不能用 PngSize：场合图的来源也可能是原版 .xnb
         if (w <= 0 || h <= 0) return false;
         // ⚠ 不再"用的就是这张资产自己登记的图 ⇒ 放行"：同一条资产别的包可能登记更高的表，
         // 游戏加载到的就是那张，我们矮 ⇒ 多出来的行仍是它的画（2026-09-28 对账剩 7 张这么漏的）。
         // 只比【同宽度】的底图：加宽会让目标区域超出图像右边界，CP 整条作废。
         foreach (var n in natives)
         {
-            PngSize(n, out var ow, out var oh);
+            var (ow, oh) = ImgSize(n);
             if (ow != w || oh <= h) continue;
             padW = w; padH = Math.Max(padH, oh);
         }
@@ -1716,12 +1804,12 @@ public sealed partial class PortraitSkinService
     private static bool CopyPortraitFull(string? src, string dest, List<(int w, int h)>? faceSizes)
     {
         if (string.IsNullOrWhiteSpace(src) || !File.Exists(src)) return false;
-        // 必须用 ImageSize：PngSize 只读 PNG 头，原版那一侧（.xnb）量出来是 0×0 ⇒ 下面
+        // 必须用 ImgSize：PngSize 只读 PNG 头，原版那一侧（.xnb）量出来是 0×0 ⇒ 下面
         // "比底图矮就纵向平铺补满"整段被跳过 ⇒ 【默认行永远只钉一格】。
         // 2026-09-30 用 CP 的 `patch export "Portraits/Wizard"` 导出游戏真正在用的资产才看清：
         // 底图 128×1024（16 行表情帧），只有第 0 行是我们的原版脸，第 1–15 行仍是 OhoDavi 的
         // 女巫 ⇒ 台词取到哪一行就露哪张脸（用户报的"两句话变三次脸"，用例 B65）。
-        ImageSize(src, out var w, out var h);
+        var (w, h) = ImgSize(src);
         if (w > 0 && h > 0 && faceSizes is { Count: > 0 })
         {
             // 只认【同宽度】的底图：宽度不同就是另一套格子布局，拿它的高度来平铺会把

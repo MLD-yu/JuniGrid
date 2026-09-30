@@ -13,6 +13,31 @@ using JuniGrid.Services;
 //       dotnet run -- --fake-smapi <f> → 充当假 SMAPI 子进程（stdin 逐行落文件）
 // ══════════════════════════════════════════════════════════════════
 
+// ══════════════════════════════════════════════════════════════════
+// 配置写盘隔离（2026-10-01 补）：本测试台里的 ConfigService 原先直接读写
+// %APPDATA%\JuniGrid\junigrid.config.json —— 一轮覆盖包夹具跑完，把玩家 148 条真实
+// 覆盖记录冲成 0（账没了、磁盘上还是汉化态、Mods 页再也看不到那些包）。
+// 现在与 dist-tmp/tsuite 同款：临时目录 + 复制一份真配置进来。测试读到的仍是他那台
+// 机器的真实状态，但写盘只落临时副本；副本目录（overlays）也随同一个变量走。
+// 注意：这意味着「测试台写出去的配置」不再跨运行保留 —— 如果某条用例依赖这一点，
+// 它现在会在同一轮内仍然成立，但下一轮重新开始。
+// ══════════════════════════════════════════════════════════════════
+if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable("JUNIGRID_CONFIG_DIR")))
+{
+    try
+    {
+        var realDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "JuniGrid");
+        var iso = Path.Combine(Path.GetTempPath(), "jg-testharness-appdata");
+        Directory.CreateDirectory(iso);
+        var realCfg = Path.Combine(realDir, "junigrid.config.json");
+        if (File.Exists(realCfg) && !File.Exists(Path.Combine(iso, "junigrid.config.json")))
+            File.Copy(realCfg, Path.Combine(iso, "junigrid.config.json"));
+        Environment.SetEnvironmentVariable("JUNIGRID_CONFIG_DIR", iso);
+        Console.WriteLine($"[隔离] 配置与覆盖副本写盘 → {iso}（真配置只读）");
+    }
+    catch (Exception ex) { Console.WriteLine("[隔离] 失败，按老样子跑: " + ex.Message); }
+}
+
 // 假 SMAPI 子进程：与 SMAPI 同为 .NET 控制台程序，用同样的方式收 stdin，
 // 因此这条管道测的是「我们写出去的东西 + .NET 控制台读进来的东西」，不是 node 的口味。
 if (args.Length == 2 && args[0] == "--fake-smapi")
@@ -453,12 +478,18 @@ if (args.Contains("--diag-prereq"))
             string.Equals(c.Id, kwP, StringComparison.OrdinalIgnoreCase));
         if (chP is null) { Console.WriteLine($"round {round}: char {kwP} not found"); continue; }
         var selP = cfgP.Current.PortraitSkins.TryGetValue(chP.Id, out var sp) ? sp : null;
+        // 第三个参数 = 强制指定"选中的是哪张卡"（验证 fifadog 这种没有身子的卡时用）
+        var forceP = args.SkipWhile(a => a != "--diag-prereq").Skip(3).FirstOrDefault();
+        if (!string.IsNullOrWhiteSpace(forceP)) selP = forceP;
         var optP = chP.AllOptions.FirstOrDefault(o =>
             string.Equals(o.PackName, selP, StringComparison.OrdinalIgnoreCase))
             ?? chP.AllOptions.FirstOrDefault(o =>
-                string.Equals(o.PackFolder, selP, StringComparison.OrdinalIgnoreCase));
-        var pre = optP is null ? null
-            : PortraitSkinService.ResolvePrereqBody(scanP, chP, optP);
+                string.Equals(o.PackFolder, selP, StringComparison.OrdinalIgnoreCase))
+            ?? (string.IsNullOrWhiteSpace(selP) ? null : chP.AllOptions.FirstOrDefault(o =>
+                (o.PackName ?? "").Contains(selP, StringComparison.OrdinalIgnoreCase)
+                || (o.PackFolder ?? "").Contains(selP, StringComparison.OrdinalIgnoreCase)));
+        (string? File, string? PackFolder) pre = (null, null);
+        if (optP is not null) pre = PortraitSkinService.ResolvePrereqBody(scanP, chP, optP);
         Console.WriteLine($"round {round}: sel={selP ?? "(null)"} opt.Pack={(optP?.PackName ?? "(no-opt)")} opt.Folder={(optP?.PackFolder ?? "-")} opt.Sprite={(optP?.SpriteFile ?? "(null)")}");
         if (optP is not null)
         {
@@ -471,10 +502,14 @@ if (args.Contains("--diag-prereq"))
                     var optInDep = chP.AllOptions.FirstOrDefault(o =>
                         string.Equals(o.PackFolder, df, StringComparison.OrdinalIgnoreCase)
                         && o.SpriteFile is not null);
-                    Console.WriteLine($"   dep uid={du} → folder={(okF ? df : "(unresolved)")} depOptionSprite={(optInDep?.SpriteFile ?? "(none)")}");
+                    var sheet = okF && df is not null && scanP.RivalSheets.TryGetValue(
+                            "Characters/" + kwP, out var rowsD)
+                        ? (rowsD.FirstOrDefault(r => string.Equals(r.Pack, df, StringComparison.OrdinalIgnoreCase)
+                            && r.FullSheet && r.File.Length > 0)?.File ?? "(无声明表)") : "(包未解析)";
+                    Console.WriteLine($"   dep uid={du} → folder={(okF ? df : "(unresolved)")} depOptionSprite={(optInDep?.SpriteFile ?? "(none)")} 该包声明的走路表={Path.GetFileName(sheet)}");
                 }
         }
-        Console.WriteLine($"   ResolvePrereqBody → {(pre?.PackName ?? "(null)")} sprite={(pre?.SpriteFile ?? "-")}");
+        Console.WriteLine($"   ResolvePrereqBody → 包={(pre.PackFolder ?? "(null)")} sprite={(pre.File ?? "-")}");
         Console.WriteLine($"   AllOptions(with sprite) for {kwP}: {string.Join(" | ", chP.AllOptions.Where(o => o.SpriteFile is not null).Select(o => o.PackFolder + ":" + Path.GetFileName(o.SpriteFile!)))}");
     }
     return;
@@ -506,30 +541,6 @@ if (args.Contains("--default-audit"))
     Environment.Exit(0);
 }
 
-// ═══════════════ 往运行中的 SMAPI 控制台塞命令（--smapi-send "<命令>"）═══════════════
-// 背景：JuniGrid 用 CreateNoWindow + 重定向 stdin 启动 SMAPI，而 SMAPI 在没有控制台窗口时
-// 根本不读那根管道 ⇒ 日志页的「命令输入框」写进去就石沉大海（2026-09-30 用户实测：
-// 输入后只有 [JuniGrid] > 回显，SMAPI 毫无反应）。
-// 备选通道：AttachConsole(游戏PID) 拿到它的控制台输入缓冲区，用 WriteConsoleInput 直接投
-// 键入事件 —— 这条路不经过 Windows Terminal 界面，也就绕开了中文输入法吃空格/改引号的问题。
-// 本 flag 就是来验这条通道到底通不通的（成功的话 SMAPI 日志里会留下这条命令的执行痕迹）。
-if (args.Contains("--smapi-send"))
-{
-    var cmdSend = args.SkipWhile(a => a != "--smapi-send").Skip(1).FirstOrDefault() ?? "help";
-    var target = System.Diagnostics.Process.GetProcessesByName("StardewModdingAPI")
-        .FirstOrDefault(p => !p.HasExited);
-    if (target is null) { Console.WriteLine("NO-SMAPI-RUNNING"); Environment.Exit(1); }
-    Console.WriteLine("target pid=" + target.Id);
-
-    var okAttach = SmapiConsole.Attach(target.Id);
-    Console.WriteLine("attach=" + okAttach + " err=" + System.Runtime.InteropServices.Marshal.GetLastWin32Error());
-    if (!okAttach) Environment.Exit(2);
-    var sent = SmapiConsole.SendLine(cmdSend);
-    Console.WriteLine("sent=" + sent);
-    SmapiConsole.Detach();
-    Environment.Exit(sent ? 0 : 3);
-}
-
 // ═══════════════ 实目录重钉（--resync-real）═══════════════
 // 与「进肖像页自愈」同一条 SyncToDisk 路径，但打在真实 GamePath 上：
 // 本地复现写盘问题不用反复发布换装。会重写覆盖包与各包 config.json（= 生产操作本身）。
@@ -541,6 +552,481 @@ if (args.Contains("--resync-real"))
     psR.SyncToDisk(cfgR.Current.GamePath, scanR);
     Console.WriteLine("resync done: " + cfgR.Current.GamePath);
     return;
+}
+
+// ═══════════════ 全员覆盖审计（--cover-all）═══════════════
+// 法师那个 bug 的形状是：我们钉的立绘比【别家给同一个资产的那张】矮 ⇒ CP 的 EditImage
+// 只覆盖自己源图那么大的一块，多出来的行仍是别家的脸。要判这个，--audit-apply 不够，
+// 它有两处盲区（2026-09-30 实测）：
+//   ① 循环开头 `if (selPk is null && seasonPk.Count == 0 && lkA is null) continue;`
+//      ⇒ 只看"用户显式选过包"的 6 个人，而 portraitVanillaDefaults 里那 65 个（法师就在里面）
+//      一个都不量 —— 真出事的那个角色恰恰没被检查；
+//   ② 量尺寸用的是 PixelKit.DecodePng ⇒ 原版 .xnb 那张量出来是 0，压根进不了"最高的底图"，
+//      和 B65 修掉的【同一个】错误，只不过错在检查器自己身上。
+// 这里不看我们的扫描逻辑，直接读盘：把覆盖包 content.json 的每条 EditImage 当成"我们会钉什么"，
+// 再把其它启用的包里所有 .json（CP 会 Include 兄弟文件，只读 content.json 会漏）里对同一个
+// Target 的声明当成"别人会钉什么"，同宽度下比高度。
+if (args.Contains("--cover-all"))
+{
+    var cfgC = new ConfigService();
+    var gameC = cfgC.Current.GamePath;
+    var ovRootC = Path.Combine(gameC, "Mods", PortraitSkinService.OverrideFolder);
+    var ovContent = Path.Combine(ovRootC, "content.json");
+    if (!File.Exists(ovContent))
+    {
+        Console.WriteLine("没有覆盖包（" + ovContent + "）—— 先在 Mods 页启用，或跑 --resync-real");
+        Environment.Exit(1);
+    }
+
+    // 生产代码里那个"PNG 头读不出就解 XNB"的尺寸函数，检查器必须和它同一把尺子
+    var mImgSize = typeof(PortraitSkinService)
+        .GetMethod("ImgSize", BindingFlags.NonPublic | BindingFlags.Static)!;
+    (int w, int h) SizeOf(string? f)
+    {
+        if (string.IsNullOrWhiteSpace(f) || !File.Exists(f)) return (0, 0);
+        var t = mImgSize.Invoke(null, new object?[] { f });
+        return t is null ? (0, 0) : ((int, int))t;
+    }
+    var jc = new System.Text.Json.JsonDocumentOptions
+    { CommentHandling = System.Text.Json.JsonCommentHandling.Skip, AllowTrailingCommas = true };
+
+    // ── 别人会钉什么：Target → [(宽,高)]，来源是除覆盖包以外的每一个启用包 ──
+    var theirs = new Dictionary<string, List<(int w, int h, string from)>>(StringComparer.OrdinalIgnoreCase);
+    var modsDirC = Path.Combine(gameC, "Mods");
+    var parsedJson = 0; var unreadableJson = 0;
+    foreach (var packDir in Directory.GetDirectories(modsDirC))
+    {
+        var pname = Path.GetFileName(packDir);
+        if (pname.StartsWith(".") || pname.Equals(PortraitSkinService.OverrideFolder, StringComparison.OrdinalIgnoreCase))
+            continue;                                            // 禁用包（点前缀）不算，它不生效
+        foreach (var jf in Directory.GetFiles(packDir, "*.json", SearchOption.AllDirectories))
+        {
+            System.Text.Json.JsonDocument doc;
+            try { doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(jf), jc); }
+            catch { unreadableJson++; continue; }                // 计数，别把"读不动"当成"没有"
+            parsedJson++;
+            using (doc)
+            {
+                // TryGetProperty 在根是数组时会【抛】而不是返回 false —— 不少包的
+                // config.json 就是顶层数组，这里不挡一下整个模式直接崩。
+                if (doc.RootElement.ValueKind != System.Text.Json.JsonValueKind.Object) continue;
+                if (!doc.RootElement.TryGetProperty("Changes", out var changes)
+                    || changes.ValueKind != System.Text.Json.JsonValueKind.Array) continue;
+                foreach (var ch in changes.EnumerateArray())
+                {
+                    if (ch.ValueKind != System.Text.Json.JsonValueKind.Object) continue;
+                    var act = ch.TryGetProperty("Action", out var a) ? a.GetString() : null;
+                    if (act != "EditImage" && act != "Load") continue;
+                    var tgt = ch.TryGetProperty("Target", out var t) ? t.GetString() : null;
+                    var from = ch.TryGetProperty("FromFile", out var fr) ? fr.GetString() : null;
+                    if (string.IsNullOrWhiteSpace(tgt) || string.IsNullOrWhiteSpace(from)) continue;
+                    var (w, h) = SizeOf(Path.Combine(packDir, from.Replace('/', Path.DirectorySeparatorChar)));
+                    if (w <= 0 || h <= 0) continue;
+                    if (!theirs.TryGetValue(tgt, out var lst)) theirs[tgt] = lst = new();
+                    lst.Add((w, h, pname + "/" + from));
+                }
+            }
+        }
+    }
+
+    // ── 我们会钉什么：覆盖包 content.json 的每一条 ──
+    int shortPin = 0, checkedPin = 0, zeroSize = 0, faceShort = 0, bodyShort = 0;
+    var ourDoc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(ovContent), jc);
+    foreach (var ch in ourDoc.RootElement.GetProperty("Changes").EnumerateArray())
+    {
+        var act = ch.TryGetProperty("Action", out var a) ? a.GetString() : null;
+        if (act != "EditImage") continue;
+        var tgt = ch.TryGetProperty("Target", out var t) ? t.GetString() ?? "" : "";
+        var from = ch.TryGetProperty("FromFile", out var fr) ? fr.GetString() ?? "" : "";
+        if (!tgt.StartsWith("Portraits/") && !tgt.StartsWith("Characters/")) continue;
+        var (ow, oh) = SizeOf(Path.Combine(ovRootC, from.Replace('/', Path.DirectorySeparatorChar)));
+        if (ow <= 0 || oh <= 0) { zeroSize++; continue; }         // 量不出 = 不判，交给别的用例
+        checkedPin++;
+        if (!theirs.TryGetValue(tgt, out var rivals)) continue;
+        var need = 0; string who = "";
+        foreach (var (rw, rh, src) in rivals) if (rw == ow && rh > need) { need = rh; who = src; }
+        if (need > oh)
+        {
+            shortPin++;
+            var isFace = tgt.StartsWith("Portraits/");
+            if (isFace) faceShort++; else bodyShort++;
+            Console.WriteLine($"    覆盖不全 {tgt} 我方 {ow}×{oh} < 别家 {ow}×{need} → "
+                + (isFace ? $"多出来的行仍是 {who} 的画"
+                          : $"第 {oh / 32 + 1}~{need / 32} 行仍是 {who} 的画")
+                + $"（{Path.GetFileName(from)}）");
+        }
+    }
+    ourDoc.Dispose();
+    Console.WriteLine($"◆ 全员覆盖审计：可解析 json={parsedJson}（读不动 {unreadableJson}）"
+        + $" 别家声明的 Target={theirs.Count} 我方立绘钉={checkedPin}（量不出 {zeroSize}）"
+        + $" ⇒ 覆盖不全 {shortPin} 张（立绘 {faceShort}、走路表 {bodyShort}）");
+    Environment.Exit(shortPin == 0 ? 0 : 1);   // 本模式只读盘，不写配置，无需还原
+}
+
+// ═══════════════ 短表命中表（--short-hits）═══════════════
+// 决定"皮肤卡上要不要标『本包走路表仅覆盖 1–N 行』"的那个数。口径：
+//   键 = 同义词规范后的 Characters/<id> / Portraits/<id>（场合变体各算一格）
+//   我方 = 覆盖包 content.json 里对该资产【实际钉出去】的那张（默认行也算，B31/B34）
+//   对手 = 生产 RivalSheets 里 FullSheet=true 的 max(h)
+//   命中 = 我方 h < 对手 max(h)；差几行 = (对手 − 我方) / 32
+// 只读盘：不写配置、不落盘、不改产品码。
+if (args.Contains("--short-hits"))
+{
+    var cfgH = new ConfigService();
+    var gameH = cfgH.Current.GamePath;
+    var ovRootH = Path.Combine(gameH, "Mods", PortraitSkinService.OverrideFolder);
+    var ovFileH = Path.Combine(ovRootH, "content.json");
+    if (!File.Exists(ovFileH))
+    { Console.WriteLine("没有覆盖包（" + ovFileH + "）—— 先在 Mods 页启用，或跑 --resync-real"); Environment.Exit(1); }
+
+    var scanH = new PortraitSkinService(new ModService(), cfgH).Scan(gameH);
+    var rvH = scanH.RivalSheets;
+    var tyH = typeof(PortraitSkinService);
+    var mSzH = tyH.GetMethod("ImgSize", BindingFlags.NonPublic | BindingFlags.Static)!;
+    var mCanH = tyH.GetMethod("CanonicalNpcId", BindingFlags.NonPublic | BindingFlags.Static)!;
+    (int w, int h) SzH(string f)
+    {
+        var t = mSzH.Invoke(null, new object?[] { f });
+        return t is null ? (0, 0) : ((int, int))t;
+    }
+    string CanH(string id) => (string)mCanH.Invoke(null, new object[] { id })!;
+    var jH = new System.Text.Json.JsonDocumentOptions
+    { CommentHandling = System.Text.Json.JsonCommentHandling.Skip, AllowTrailingCommas = true };
+
+    // 用户真动过的角色（选过皮肤 / 按过默认 / 锁过 / 分季选过）
+    var touched = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    foreach (var k in cfgH.Current.PortraitSkins.Keys) touched.Add(k);
+    foreach (var k in cfgH.Current.PortraitSeasonSkins.Keys) touched.Add(k);
+    foreach (var k in cfgH.Current.PortraitLocks.Keys) touched.Add(k);
+    foreach (var k in cfgH.Current.PortraitVanillaDefaults) touched.Add(k);
+
+    var ourPins = new List<(string key, string tgt, string file, int w, int h)>();
+    using (var od = System.Text.Json.JsonDocument.Parse(File.ReadAllText(ovFileH), jH))
+        foreach (var ch in od.RootElement.GetProperty("Changes").EnumerateArray())
+        {
+            var tgt = ch.TryGetProperty("Target", out var t) ? t.GetString() ?? "" : "";
+            var from = ch.TryGetProperty("FromFile", out var f) ? f.GetString() ?? "" : "";
+            var slash = tgt.IndexOf('/');
+            if (slash <= 0) continue;
+            var kind = tgt[..slash];
+            if (!kind.Equals("Portraits", StringComparison.OrdinalIgnoreCase)
+                && !kind.Equals("Characters", StringComparison.OrdinalIgnoreCase)) continue;
+            var tail = tgt[(slash + 1)..];
+            if (tail.Length == 0 || tail.Contains('/')) continue;
+            var (w, h) = SzH(Path.Combine(ovRootH, from.Replace('/', Path.DirectorySeparatorChar)));
+            ourPins.Add((kind + "/" + CanH(tail), tgt, from, w, h));
+        }
+
+    bool Touched(string key)
+    {
+        var tail = key[(key.IndexOf('/') + 1)..];
+        var us = tail.IndexOf('_');
+        var baseId = us > 0 ? tail[..us] : tail;
+        return new[] { tail, baseId, CanH(tail), CanH(baseId) }.Any(touched.Contains);
+    }
+
+    int hitUser = 0, hitAll = 0, faceUser = 0, bodyUser = 0, faceAll = 0, bodyAll = 0;
+    int noRivalKey = 0, unmeasured = 0, widthOnly = 0;
+    var report = new List<string>();
+    foreach (var (key, tgt, file, ow, oh) in ourPins)
+    {
+        if (ow <= 0 || oh <= 0) { unmeasured++; continue; }
+        if (!rvH.TryGetValue(key, out var riv)) { noRivalKey++; continue; }
+        var full = riv.Where(r => r.FullSheet).ToList();
+        var maxAll = full.Select(r => r.H).DefaultIfEmpty(0).Max();
+        var maxSameW = full.Where(r => r.W == ow).Select(r => r.H).DefaultIfEmpty(0).Max();
+        if (maxAll <= oh) continue;
+        var isFace = key.StartsWith("Portraits", StringComparison.OrdinalIgnoreCase);
+        var isUser = Touched(key);
+        hitAll++; if (isFace) faceAll++; else bodyAll++;
+        if (maxSameW <= oh) widthOnly++;                   // 只有更宽的对手 ⇒ CP 会整条拒，不算真命中
+        if (isUser) { hitUser++; if (isFace) faceUser++; else bodyUser++; }
+        var who = string.Join("、", full.Where(r => r.H == maxAll).Select(r => r.Pack).Distinct(StringComparer.OrdinalIgnoreCase));
+        report.Add((isUser ? "★用户 " : "      ") + key.PadRight(30)
+            + " 我方 " + (ow + "×" + oh) + " 对手 " + maxAll
+            + (maxSameW == maxAll ? "" : "（同宽只有 " + maxSameW + "）")
+            + " 差 " + (maxAll - oh) + "px=" + (maxAll - oh) / 32 + " 行 ⇒ " + who
+            + " ‖ 我方文件 " + Path.GetFileName(file));
+    }
+
+    Console.WriteLine("◆ 短表命中表：我方钉 " + ourPins.Count + " 条（量不出 " + unmeasured
+        + "、键上无对手 " + noRivalKey + "）");
+    Console.WriteLine("  用户动过的角色：命中 " + hitUser + " 格（立绘 " + faceUser + "、走路表 " + bodyUser + "）");
+    Console.WriteLine("  全机背景：命中 " + hitAll + " 格（立绘 " + faceAll + "、走路表 " + bodyAll
+        + "），其中对手不同宽（CP 会整条拒，非真命中）" + widthOnly + " 格");
+    Console.WriteLine("  RivalSheets 键 " + rvH.Count + " 个 ‖ 用户动过的角色 id " + touched.Count + " 个");
+    foreach (var l in report.OrderByDescending(x => x.StartsWith("★"))) Console.WriteLine("    " + l);
+    Environment.Exit(0);
+}
+
+if (args.Contains("--rivals"))
+{
+    // 生产侧的「对手高度」读盘口：走 PortraitSkinService.Scan 真扫描（不是另起一套 JSONC 解析，
+    // 那种重写在 --winners 里已经证明会漏 —— 判据漏洞让法师报成 0）。
+    var cfgR = new ConfigService();
+    var psR = new PortraitSkinService(new ModService(), cfgR);
+    var scanR = psR.Scan(cfgR.Current.GamePath);
+    var rvR = scanR.RivalSheets;
+    if (args.Contains("--by-pack"))
+    {
+        // 按包点数直接从产品数据里读，不经过任何文本解析（包名里带 [CP] 会把正则统计骗过两次）
+        var rows = rvR.Values.SelectMany(l => l)
+            .GroupBy(r => r.Pack, StringComparer.OrdinalIgnoreCase)
+            .OrderByDescending(g => g.Count()).ToList();
+        Console.WriteLine("RivalSheets 覆盖的包 " + rows.Count + " 个，条目 "
+            + rvR.Values.Sum(l => l.Count) + " 条：");
+        foreach (var g in rows)
+        {
+            var bsp = scanR.BaseSeasonPatches.Count(x =>
+                string.Equals(x.Pack, g.Key, StringComparison.OrdinalIgnoreCase));
+            Console.WriteLine("  " + g.Count().ToString().PadLeft(5)
+                + "  整表" + g.Count(r => r.FullSheet)
+                + "  解不出文件 " + g.Count(r => r.File.Length == 0)
+                + "  分季表 " + bsp + "  ‖ " + g.Key);
+        }
+        Environment.Exit(0);
+    }
+    Console.WriteLine("RivalSheets 键 " + rvR.Count + " 个 ‖ 整表声明 "
+        + rvR.Values.Sum(l => l.Count(r => r.FullSheet)) + " 条（其中文件解不出 "
+        + rvR.Values.Sum(l => l.Count(r => r.FullSheet && r.File.Length == 0)) + " 条）‖ 全部声明 "
+        + rvR.Values.Sum(l => l.Count) + " 条");
+    var idsR = args.SkipWhile(a => a != "--rivals").Skip(1)
+        .Where(a => !a.StartsWith("--")).ToList();
+    if (idsR.Count == 0) idsR.Add("Wizard");
+    foreach (var id in idsR)
+        foreach (var kv in rvR.Where(kv => kv.Key.Contains('/'))
+                     .Where(kv => kv.Key.Split('/')[1].Contains(id, StringComparison.OrdinalIgnoreCase))
+                     .OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase))
+        {
+            var top = kv.Value.Where(r => r.FullSheet).Select(r => r.H).DefaultIfEmpty(0).Max();
+            var topPack = kv.Value.Where(r => r.FullSheet && r.H == top)
+                .Select(r => r.Pack).FirstOrDefault() ?? "(无)";
+            Console.WriteLine("  " + kv.Key + "  整表最高=" + top + "px 由 " + topPack + " 提供");
+            foreach (var r in kv.Value.OrderByDescending(x => x.H))
+                Console.WriteLine("      " + r.H.ToString().PadLeft(4) + " " + (r.W + "×" + r.H).PadLeft(9)
+                    + " " + r.Action.PadLeft(9) + (r.FullSheet ? " 整表  " : " 非整表")
+                    + " [" + r.Pack + "] " + (r.From ?? "(无FromFile)")
+                    + (r.File.Length == 0 ? " ←文件解不出" : "")
+                    + (r.Priority is { Length: > 0 } ? " P:" + r.Priority : ""));
+        }
+    Environment.Exit(0);
+}
+
+// ═══════════════ 资产胜负表（--winners <id…> / --winners --all）═══════════════
+// 法师那一格查到的因果是：选中卡自己没身子 → 声明的前置包（SCC）对 Magnus 没有 base、
+// 也就没出卡 → 前置链落空 → 我们预览画默认身、【不钉 Characters】；而游戏里真正赢下
+// Characters/Magnus 的是第三个包（Rasmodia，它把依赖包的 assets 直接打进自己包里），
+// 它压根不在 Donut 的 Dependencies 里 ⇒ 界面 / 落盘 / 游戏三方各说一套。
+//
+// 所以这张表【不看我们的扫描模型】，只看盘：把每个启用包 json 里对某个资产的声明
+// （Action / Priority / When / FromFile 是否真存在 / 是不是走跑表）原样摊开，
+// 再按 CP 的有效序近似排个"谁赢"。它既是修法的依据，也是对扫描器的交叉校验。
+//
+// ⚠ 排序是【近似】：CP 的真实序是 Priority 档位 + 数值 + 包加载序，这里只做到
+//   档位+数值，同级按包目录名字典序。判"谁赢"时只看有没有明显赢家，别拿名次当结论。
+// ⚠ 它【不看扫描模型】这一点是刻意的：--cover-all / --winners 自写一套 JSONC 解析，
+//   判据和扫描器不同（法师那格就是它报 0 的），所以它只能当盘面对账，不能当结论。
+if (args.Contains("--winners"))
+{
+    var cfgW = new ConfigService();
+    var gameW = cfgW.Current.GamePath;
+    var modsW = Path.Combine(gameW, "Mods");
+    var ovRootW = Path.Combine(modsW, PortraitSkinService.OverrideFolder);
+    var jw = new System.Text.Json.JsonDocumentOptions
+    { CommentHandling = System.Text.Json.JsonCommentHandling.Skip, AllowTrailingCommas = true };
+
+    var mSzW = typeof(PortraitSkinService)
+        .GetMethod("ImgSize", BindingFlags.NonPublic | BindingFlags.Static)!;
+    (int w, int h) SzW(string? f)
+    {
+        if (string.IsNullOrWhiteSpace(f) || !File.Exists(f)) return (0, 0);
+        var t = mSzW.Invoke(null, new object?[] { f });
+        return t is null ? (0, 0) : ((int, int))t;
+    }
+    // CP 的 Priority：Early < None(默认) < Late，可带 "+N" 数值。我们覆盖包自己用 Late+100 压场。
+    int Rank(string? pr)
+    {
+        var s = (pr ?? "").Trim();
+        var n = 0;
+        var plus = s.IndexOf('+');
+        if (plus >= 0) int.TryParse(s[(plus + 1)..].Trim(), out n);
+        var base0 = s.Contains("Early", StringComparison.OrdinalIgnoreCase) ? 0
+            : s.Contains("Late", StringComparison.OrdinalIgnoreCase) ? 2 : 1;
+        return base0 * 1000 + n;
+    }
+
+    // asset → 声明者列表（"Portraits/Wizard" / "Characters/Magnus_Spring" 这种全名）
+    var decls = new Dictionary<string, List<(string pack, string action, int rank, string when,
+        string from, bool exists, int w, int h)>>(StringComparer.OrdinalIgnoreCase);
+    // 我们覆盖包自己对某个资产钉了什么（可能多条：base + 各季节/场合）
+    var oursByAsset = new Dictionary<string, List<(string file, int w, int h)>>(StringComparer.OrdinalIgnoreCase);
+    foreach (var packDir in Directory.GetDirectories(modsW))
+    {
+        var pn = Path.GetFileName(packDir);
+        if (pn.StartsWith(".")) continue;                       // 禁用包 / 回收站
+        var isOurs = string.Equals(pn, PortraitSkinService.OverrideFolder, StringComparison.OrdinalIgnoreCase);
+        foreach (var jf in Directory.GetFiles(packDir, "*.json", SearchOption.AllDirectories))
+        {
+            System.Text.Json.JsonDocument d;
+            try { d = System.Text.Json.JsonDocument.Parse(File.ReadAllText(jf), jw); } catch { continue; }
+            using (d)
+            {
+                if (d.RootElement.ValueKind != System.Text.Json.JsonValueKind.Object) continue;
+                if (!d.RootElement.TryGetProperty("Changes", out var cs)
+                    || cs.ValueKind != System.Text.Json.JsonValueKind.Array) continue;
+                foreach (var c in cs.EnumerateArray())
+                {
+                    if (c.ValueKind != System.Text.Json.JsonValueKind.Object) continue;
+                    var act = c.TryGetProperty("Action", out var a) ? a.GetString() : null;
+                    if (act != "EditImage" && act != "Load") continue;
+                    var tgt = c.TryGetProperty("Target", out var t) ? t.GetString() ?? "" : "";
+                    var fromRaw = c.TryGetProperty("FromFile", out var fr) ? fr.GetString() ?? "" : "";
+                    if (tgt.Length == 0 || fromRaw.Length == 0 || fromRaw.Contains("{{")) continue;
+                    var when = c.TryGetProperty("When", out var wn) ? wn.GetRawText() : "";
+                    if (when.Length > 46) when = when[..43] + "…";
+                    foreach (var one in tgt.Split(','))
+                    {
+                        var asset = one.Trim();
+                        if (asset.Length == 0 || !asset.StartsWith("Portraits/") && !asset.StartsWith("Characters/"))
+                            continue;
+                        var abs = Path.Combine(packDir, fromRaw.Replace('/', Path.DirectorySeparatorChar));
+                        var (w, h) = SzW(abs);
+                        if (!isOurs)
+                        {
+                            if (!decls.TryGetValue(asset, out var lst)) decls[asset] = lst = new();
+                            lst.Add((pn, act!, Rank(c.TryGetProperty("Priority", out var p) ? p.GetString() : null),
+                                when, fromRaw, File.Exists(abs), w, h));
+                        }
+                        else
+                        {
+                            if (!oursByAsset.TryGetValue(asset, out var o)) oursByAsset[asset] = o = new();
+                            o.Add((Path.Combine(ovRootW, fromRaw.Replace('/', Path.DirectorySeparatorChar)), w, h));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    var onlyIds = args.SkipWhile(x => x != "--winners").Skip(1)
+        .Where(x => !x.StartsWith("--")).ToList();
+
+    void PrintOne(string asset)
+    {
+        decls.TryGetValue(asset, out var rs);
+        oursByAsset.TryGetValue(asset, out var ours);
+        rs ??= new(); ours ??= new();
+        Console.WriteLine($"◆ {asset}   我们={(ours.Count > 0 ? "钉了 " + string.Join("/", ours.Select(x => x.w + "×" + x.h)) : "【没钉】")}");
+        foreach (var r in rs.OrderBy(r => r.rank).ThenBy(r => r.pack, StringComparer.OrdinalIgnoreCase))
+            Console.WriteLine($"    {r.pack,-46} {r.action,-9} rank={r.rank,-5} {(r.exists ? r.w + "×" + r.h : "文件不存在")} "
+                + (r.when.Length > 0 ? " When=" + r.when : "") + "  ← " + r.from);
+        var winQ = rs.Where(r => r.exists)
+            .OrderBy(r => r.rank).ThenBy(r => r.pack, StringComparer.OrdinalIgnoreCase).ToList();
+        var hasWin = winQ.Count > 0; var win = hasWin ? winQ[^1] : default;
+        if (ours.Count == 0 && hasWin)
+            Console.WriteLine($"    ⇒ 我们没钉，游戏里这一格由【{win.pack}】说了算（{win.w}×{win.h}）");
+        else if (ours.Count == 0) Console.WriteLine("    ⇒ 没人声明，游戏用原版");
+    }
+
+    if (onlyIds.Count > 0)
+    {
+        foreach (var id in onlyIds)
+            foreach (var kind in new[] { "Portraits", "Characters" })
+            {
+                PrintOne($"{kind}/{id}");
+                foreach (var kv in decls.Keys.Where(k =>
+                    k.StartsWith(kind + "/" + id + "_", StringComparison.OrdinalIgnoreCase)).OrderBy(x => x))
+                    PrintOne(kv);
+            }
+        Environment.Exit(0);
+    }
+
+    // --all：只扫【用户真的动过】的角色 —— 上一版按"别人声明了我们没钉"来筛，结果 50 条
+    // 全是 Adventurer's Guild Expanded 这类 mod 自带 NPC，用户根本没碰过它们，不钉才是对的。
+    // 真正要找的形状是法师那个：用户给这个人做过选择，但选中那张卡【自己没有走路表】，
+    // 于是我们不钉 Characters/<id>，而盘上有别的包在钉 ⇒ 界面说默认、游戏里是别人。
+    // 一个角色在盘上可能有几个资产名：角色 id、游戏真实资产名（Leo→ParrotBoy）、
+    // 以及硬同义词（法师 = Wizard + Magnus）。这几个 helper 都是 private static，
+    // 只能反射拿 —— 为的是和落盘端用同一套名字候选，不要自己再猜一遍。
+    var mAlias = typeof(PortraitSkinService)
+        .GetMethod("VanillaAssetAliases", BindingFlags.NonPublic | BindingFlags.Static)!;
+    var mAssetId = typeof(PortraitSkinService)
+        .GetMethod("GameAssetId", BindingFlags.NonPublic | BindingFlags.Static)!;
+    List<string> CandIds(string id)
+    {
+        var set = new List<string> { id };
+        try { set.Add((string)mAssetId.Invoke(null, new object?[] { id })!); } catch { }
+        try
+        {
+            if (mAlias.Invoke(null, new object?[] { id }) is System.Collections.IEnumerable en)
+                foreach (var o in en) set.Add((string)o!);
+        }
+        catch { }
+        // ⚠ 硬同义词不在 VanillaAssetAliases 里（那个只有 Leo→ParrotBoy / Gil→GilSprite），
+        // 法师↔Magnus 只存在于 SameNpcPairs。少了这一跳，扫 Wizard 就永远看不到
+        // Characters/Magnus —— 而法师那格"我们钉 64×192、Rasmodia 钉 64×480"恰恰在 Magnus 名下。
+        try
+        {
+            var pairs = typeof(PortraitSkinService)
+                .GetField("SameNpcPairs", BindingFlags.NonPublic | BindingFlags.Static)!.GetValue(null) as System.Collections.IEnumerable;
+            foreach (var o in pairs ?? Array.Empty<object>())
+            {
+                var t = o.GetType();
+                var a = t.GetField("Item1")?.GetValue(o) as string;
+                var b = t.GetField("Item2")?.GetValue(o) as string;
+                if (string.Equals(a, id, StringComparison.OrdinalIgnoreCase)) set.Add(b!);
+                else if (string.Equals(b, id, StringComparison.OrdinalIgnoreCase)) set.Add(a!);
+            }
+        }
+        catch { }
+        return set.Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
+    var psAll = new PortraitSkinService(new ModService(), cfgW);
+    var scanAll = psAll.Scan(gameW);
+    var selAll = cfgW.Current.PortraitSkins;
+    var defAll = new HashSet<string>(cfgW.Current.PortraitVanillaDefaults ?? new(), StringComparer.OrdinalIgnoreCase);
+    int gap = 0, shortPin = 0, total = 0;
+    foreach (var ch in scanAll.Characters.Where(c => !c.Hidden))
+    {
+        var touched = selAll.ContainsKey(ch.Id) || defAll.Contains(ch.Id);
+        if (!touched) continue;
+        // 同义词（法师=Wizard+Magnus）两边都要看，游戏读哪个由 Data/Characters 决定
+        foreach (var id in CandIds(ch.Id))
+        {
+            var asset = "Characters/" + id;
+            if (!decls.TryGetValue(asset, out var rs)) continue;
+            var live = rs.Where(r => r.exists && r.h > 0).ToList();
+            if (live.Count == 0) continue;                       // 没人真钉这具身子
+            total++;
+            var opt = selAll.TryGetValue(ch.Id, out var pk)
+                ? ch.AllOptions.FirstOrDefault(o => string.Equals(o.PackFolder, pk, StringComparison.OrdinalIgnoreCase))
+                : ch.Vanilla;
+            oursByAsset.TryGetValue(asset, out var pinned);
+            var win = live.OrderBy(r => r.rank).ThenBy(r => r.pack, StringComparer.OrdinalIgnoreCase).Last();
+            if (pinned is { Count: > 0 })
+            {
+                // 钉了但比自然赢家矮 ⇒ 走路表【不会】像立绘那样纵向铺满（32px 行距那条实测过，
+                // 硬拉会把人拉成一个长头），所以矮下去的那几行仍是别人的身子。
+                // 这不是"漏钉"，是"钉不满"——法师选 Donut 时就是这样：我们 64×192，
+                // Rasmodia 64×480 ⇒ 第 7 行往后是她的绿身子。分开计，别混进"没钉"。
+                var ourH = pinned.Max(p => p.h);
+                if (win.w == 0 || win.h <= ourH) continue;
+                shortPin++;
+                Console.WriteLine($"  钉矮了：{ch.Id,-20} {asset,-26} 我们 {win.w}×{ourH} < 赢家 {win.pack} 的 "
+                    + $"{win.w}×{win.h} ⇒ 第 {ourH / 32 + 1}~{win.h / 32} 行仍是它的画（选中={opt?.PackName ?? "默认"}）");
+                continue;
+            }
+            var ownBody = opt?.SpriteFile is { Length: > 0 } sf && File.Exists(sf);
+            if (ownBody) continue;                               // 选中卡自己有身 ⇒ 走正常钉法
+            gap++;
+            Console.WriteLine($"  差一口：{ch.Id,-20} {asset,-26} 选中={(opt?.PackName ?? "默认")} 自己没身 ⇒ "
+                + $"我们没钉，游戏里由【{win.pack}】赢（{win.w}×{win.h}）");
+        }
+    }
+    Console.WriteLine($"◆ 用户动过的角色里，走路表被别家声明 {total} 格：完全没钉 {gap} 格、"
+        + $"钉了但比自然赢家矮 {shortPin} 格");
+    Environment.Exit(0);
 }
 
 // ═══════════════ 单角色钉图取证（--why <角色id>）═══════════════
@@ -766,6 +1252,10 @@ if (args.Contains("--audit-apply"))
     // 立绘现在会被纵向平铺补满底图（盖住别的包多出来的行）⇒ 整张哈希必然不等。
     // 对账改比"源图那么大的一块"是否逐像素一致，用同一个解码器，不引入第二套口径。
     var decMiA = typeof(PixelKit).GetMethod("DecodePng", BindingFlags.Public | BindingFlags.Static)!;
+    // 落盘端量尺寸用的那把尺子（PNG 头读不出就解 XNB，带缓存）。审计要和它同一把尺子，
+    // 否则原版 .xnb 在审计里是 0×0，检查器会自信地报"0 张"。
+    var mImgSizeA = typeof(PortraitSkinService)
+        .GetMethod("ImgSize", BindingFlags.NonPublic | BindingFlags.Static)!;
     bool Covers(string? pinPath, string? srcPath)
     {
         if (string.IsNullOrWhiteSpace(pinPath) || string.IsNullOrWhiteSpace(srcPath)) return false;
@@ -897,6 +1387,10 @@ if (args.Contains("--audit-apply"))
             (int)t.GetType().GetProperty("Height")!.GetValue(t)!));
     }
     int bad = 0, rows = 0, missingOcc = 0, shortCover = 0;
+    // 这条对账只量"有显式选择/锁定"的角色，默认行那批（portraitVanillaDefaults）会被下面的
+    // continue 跳过 —— 报数时必须把范围一起报，否则"覆盖不全 0 张"会被读成"全机没事"。
+    int auditedChars = 0;
+    int auditTotalChars = scanA.Characters.Count(c => !c.Hidden);
     foreach (var ch in scanA.Characters.Where(c => !c.Hidden))
     {
         if (kwA.Length > 0 && !ch.Id.Contains(kwA, StringComparison.OrdinalIgnoreCase)
@@ -913,6 +1407,7 @@ if (args.Contains("--audit-apply"))
                 if (i > 0) seasonPk[seg[..i].Trim()] = seg[(i + 1)..].Trim();
             }
         if (selPk is null && seasonPk.Count == 0 && lkA is null) continue;
+        auditedChars++;
         PortraitSkinOption? Find(string? pk, string? forSeason)
         {
             if (pk is null) return null;
@@ -940,7 +1435,7 @@ if (args.Contains("--audit-apply"))
         foreach (var o in ch.AllOptions)
         {
             AddBodies(o.SpriteFile);
-            AddBodies(PortraitSkinService.ResolvePrereqBody(scanA, ch, o)?.SpriteFile);
+            AddBodies(PortraitSkinService.ResolvePrereqBody(scanA, ch, o).File);
         }
         var line = new List<string>();
         var occReported = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -1063,10 +1558,15 @@ if (args.Contains("--audit-apply"))
         {
             w = 0;
             if (file is not { Length: > 0 } || !File.Exists(file)) return 0;
-            var t = decMiA.Invoke(null, new object?[] { file });
+            // 必须用生产的 ImgSize，不能用 PixelKit.DecodePng：后者只认 PNG，
+            // 原版那一侧的 .xnb 量出来是 0 ⇒ 永远进不了"最高的底图"，于是这条检查
+            // 会以"覆盖不全 0 张"的名义漏掉整个默认行 —— 和 B65 修掉的是同一个错误，
+            // 只不过错在检查器自己身上（2026-09-30）。
+            var t = mImgSizeA.Invoke(null, new object?[] { file });
             if (t is null) return 0;
-            w = (int)t.GetType().GetProperty("Width")!.GetValue(t)!;
-            return (int)t.GetType().GetProperty("Height")!.GetValue(t)!;
+            var vals = ((int, int))t;
+            w = vals.Item1;
+            return vals.Item2;
         }
         var tallestFaceByW = new Dictionary<int, int>();
         var tallestBodyByW = new Dictionary<int, int>();
@@ -1123,7 +1623,9 @@ if (args.Contains("--audit-apply"))
         CoverCheck("Characters", tallestBodyByW);
         Console.WriteLine("    " + string.Join(" ", line));
     }
-    Console.WriteLine($"◆ 对账完成：核 {rows} 格（每格=一季×脸或身），不一致 {bad} 格，场合资产漏钉 {missingOcc} 条，覆盖不全 {shortCover} 张，落盘撞名 {collide} 处");
+    Console.WriteLine($"◆ 对账完成：核 {rows} 格（每格=一季×脸或身），不一致 {bad} 格，场合资产漏钉 {missingOcc} 条，"
+        + $"落盘撞名 {collide} 处；覆盖不全 {shortCover} 张 —— ⚠ 这个数只量了【有显式选择/锁定】的 {auditedChars} 个角色"
+        + $"（机子上共 {auditTotalChars} 个），其余按默认行钉的角色不在里面，全员请用 --cover-all");
 
     // ② 钉对了但游戏里不是它 ⇒ 只有别人盖过来。列出【同一条资产上所有竞争者】及其优先级/条件，
     //    这把"谁赢"从猜变成读得出来的数字（Early=-100 / Normal=0 / Late=100 + 偏移；同分=加载顺序掷硬币）。
@@ -1229,7 +1731,7 @@ if (args.Contains("--dump-portraits"))
                 string.Equals(o.PackFolder, selD, StringComparison.OrdinalIgnoreCase));
             Console.WriteLine($"    → 选中行精灵={(selOpt?.SpriteFile ?? "(无)")}  deps=["
                 + string.Join(",", scanD.PackDeps.TryGetValue(selD, out var dd) ? dd : Array.Empty<string>())
-                + "]  前置身体=" + (PortraitSkinService.ResolvePrereqBody(scanD, ch, selOpt)?.PackFolder ?? "(无→默认)"));
+                + "]  前置身体=" + (PortraitSkinService.ResolvePrereqBody(scanD, ch, selOpt).PackFolder ?? "(无→默认)"));
         }
         foreach (var (cid, msg) in scanD.Diagnostics.Where(d => d.Item1 == ch.Id))
             Console.WriteLine($"        诊断: {msg}");
@@ -2477,11 +2979,6 @@ if (!portraitOnly && !guardOnly && !qrOnly && !savesOnly)
     }
     string Q(string s) => "\"" + s.Replace("\r", "\\r").Replace("\n", "\\n") + "\"";
 
-    // C0 输入框的可用性必须说实话
-    var idle = new LauncherService(cfgSvc);
-    Check("C0 未启动游戏 → CanSendCommand=false 且 SendCommand 不假装成功",
-        !idle.CanSendCommand && !idle.SendCommand("help"));
-
     // C0b 日志上限：RaiseLog 连灌 2500 行只留最后 2000
     var capped = new LauncherService(cfgSvc);
     for (var i = 1; i <= 2500; i++) raiseLog.Invoke(capped, new object[] { "line" + i });
@@ -2490,91 +2987,13 @@ if (!portraitOnly && !guardOnly && !qrOnly && !savesOnly)
         csnap.Count == 2000 && csnap[0] == "line501" && csnap[^1] == "line2500",
         "缓冲 " + csnap.Count + " 行，首=" + csnap.FirstOrDefault() + " 末=" + csnap.LastOrDefault());
 
-    var fakeOut = Path.Combine(Path.GetTempPath(), $"jg-fake-smapi-{Guid.NewGuid():N}.txt");
-    var psi = new ProcessStartInfo
-    {
-        FileName = Environment.ProcessPath,
-        UseShellExecute = false,
-        RedirectStandardInput = true,
-        RedirectStandardOutput = false,
-        RedirectStandardError = false,
-        CreateNoWindow = true,
-    };
-    psi.ArgumentList.Add("--fake-smapi");
-    psi.ArgumentList.Add(fakeOut);
-    // 用产品自己选定的管道编码，而不是测试进程默认的 —— 否则测的是「dotnet run 的口味」
-    var pipeEnc = typeof(LauncherService).GetField("SmapiPipeEncoding", st).GetValue(null) as Encoding;
-    if (pipeEnc is not null) psi.StandardInputEncoding = pipeEnc;
-    Process fake;
-    try { fake = Process.Start(psi)!; }
-    catch (Exception ex) { Check("C1 假 SMAPI 子进程能起来", false, ex.Message); fake = null!; }
-
-    if (fake is not null)
-    {
-        // 预检：完全绕开 LauncherService，直接往同一条管道写一行。
-        // 预检通 → 问题在 LauncherService 的写法；预检不通 → 这个 StartInfo 形状本身收不到。
-        try
-        {
-            fake.StandardInput.WriteLine("PREFLIGHT");
-            fake.StandardInput.Flush();
-        }
-        catch (Exception ex) { Note("预检直接写 StandardInput 抛异常", ex.Message); }
-        var pre = WaitForLines(fakeOut, 1, 5000);
-        Check("C1a 预检：不经 LauncherService 直接写管道，子进程收得到",
-            pre.Count >= 1 && pre[0] == "PREFLIGHT",
-            $"文件存在={File.Exists(fakeOut)} 子进程存活={!fake.HasExited} 收到 {pre.Count} 行 {Q(pre.FirstOrDefault() ?? "")}");
-        var nBase = pre.Count;
-
-        var lc = new LauncherService(cfgSvc);
-        fldProc.SetValue(lc, fake);
-        Check("C1 游戏进程存活 → CanSendCommand=true", lc.CanSendCommand);
-
-        const string c1 = "player_add Abigail";
-        const string c2 = "  time 1200  ";
-        const string c3 = "set 技能 10";
-        var s1 = lc.SendCommand(c1);
-        var s2 = lc.SendCommand(c2);
-        var s3 = lc.SendCommand(c3);
-        var got = WaitForLines(fakeOut, nBase + 3);
-        string At(int i) => got.Count > nBase + i ? got[nBase + i] : "(没收到)";
-        Check("C1b 三条命令全部写进管道并被子进程读到",
-            s1 && s2 && s3 && got.Count >= nBase + 3,
-            "SendCommand 返回 " + s1 + "/" + s2 + "/" + s3 + "，预检后共 " + got.Count + " 行（应有 " + (nBase + 3) + "）");
-        Check("C2 原样转发，不加 debug 前缀（v1.3.4 语义）", At(0) == c1, "第1行=" + Q(At(0)));
-        Check("C3 前后空白裁掉后写入", At(1) == "time 1200", "第2行=" + Q(At(1)));
-        Check("C4 中文参数原样往返（管道编码已与解码端对齐）", At(2) == c3,
-            "第3行=" + Q(At(2)) + " | 期望=" + Q(c3)
-            + " | 实际字节=" + (At(2) != "(没收到)" ? BitConverter.ToString(Encoding.UTF8.GetBytes(At(2))) : ""));
-        // 中文参数能不能原样回来，取决于两端编码是否一致；不钉死的话父端会随启动方式
-        // 在 utf-8 / 936 之间漂（有无控制台），子端恒按系统 ANSI 码页解 → 必须显式对齐。
-        Note("C4a 管道两端编码", "产品指定 StandardInputEncoding = " + (pipeEnc?.WebName ?? "(未指定，退回 .NET 默认)")
-            + "，子进程侧实测按 " + fake.StandardInput.Encoding.WebName + " 收（--probe-enc 取证：不钉编码时父进程会随启动方式在 utf-8/936 之间漂，而子进程恒按系统 ANSI 码页解）");
-
-        var snap = lc.GetLogSnapshot();
-        Check("C5 每条命令在日志里留 [JuniGrid] > 回显（面板看得见自己发过什么）",
-            snap.Contains("[JuniGrid] > player_add Abigail") && snap.Contains("[JuniGrid] > set 技能 10")
-            && snap.Last().StartsWith("[JuniGrid] > "),
-            "缓冲 " + snap.Count + " 行，末行=" + Q(snap.LastOrDefault() ?? ""));
-
-        var nBefore = CountLines(fakeOut);
-        Check("C6 空串/纯空白被拦下，不往管道写空行",
-            !lc.SendCommand("") && !lc.SendCommand("   ") && nBefore == nBase + 3,
-            "管道行数 " + nBefore + "（预期 " + (nBase + 3) + "）");
-
-        lc.SendCommand("help\nplayer_remove Haley");
-        var gotNl = WaitForLines(fakeOut, nBefore + 2, 3000);
-        Note("C7 一条输入里含换行 = SMAPI 收到 2 条命令（UI 是单行 input、浏览器粘贴会剥换行，实际不可达，仅记行为）",
-            "行数 " + nBefore + " → " + gotNl.Count);
-
-        try { fake.Kill(true); } catch { }
-        try { fake.WaitForExit(5000); } catch { }
-        Check("C8 游戏退出 → CanSendCommand=false、SendCommand=false",
-            !lc.CanSendCommand && !lc.SendCommand("help"));
-        fldProc.SetValue(lc, null);
-        Check("C9 游戏由外部启动（Steam 直接进 / 别的启动器）→ 没有我们这条管道，输入框置灰",
-            !lc.CanSendCommand);
-        try { if (File.Exists(fakeOut)) File.Delete(fakeOut); } catch { }
-    }
+    // 这里原来有一整段「假 SMAPI 子进程 + stdin 管道」的用例（C1~C9：能不能写进去、
+    // 编码对不对、debug 前缀、[JuniGrid] 回显、进程死了要不要置灰……）。全部删除：
+    // 那套机制测的是「管道 transport 通不通」，而 2026-09-30 实测 SMAPI 根本不读重定向
+    // 进来的 stdin（带控制台窗口、不带控制台窗口两种启动都试过），跨进程注入控制台按键
+    // 在 ConPTY 下也不投递。⇒ 管道本身从来没有骗过测试，是它证明的东西与现实无关。
+    // 日志页的命令框因此改成【真发送】：随包带一个 helper 反射 SMAPI 的 CommandManager 执行
+    // （见 Services/CommandBridgeService.cs + smapi-bridge/），剪贴板那条兜底已经删掉了。
 
     // C10 无窗口 + 重定向 stdin 的前提：SMAPI 的「按任意键」崩溃恢复提示必须先清掉
     var tmpGame = Path.Combine(Path.GetTempPath(), "jg-crash-" + Guid.NewGuid().ToString("N")[..8]);
@@ -5235,9 +5654,11 @@ if (!realMode)
     // 作者更新后把 Donut 目录删了 → 回落现有第一张，且**不清用户配置**（对齐 StalePack 做法）
     var donutDirSt = Path.Combine(stylePackDir, "assets", "Donut");
     try { Directory.Delete(donutDirSt, true); } catch { }
-    // 换一个新的服务实例再扫：进程内快照 15 秒内直接信任（切页来回不重扫），
-    // 复用 psSt 拿到的是删目录**之前**的结果，测不到回落这条路径
+    // 换一个新的服务实例 + 显式作废内存快照再扫：目录签名的信任窗是【static、45 秒】
+    // （PortraitSkinService.Cache.cs 的 _sigCache/_sigCacheAt），换实例绕不过静态字段 ——
+    // 之前这个用例只在"前半段跑得够慢"时才绿，快起来就拿到删目录之前的结果（2026-10-01 实测翻红）。
     var psSt2 = new PortraitSkinService(new ModService(), cfgSvc);
+    psSt2.InvalidateMemoryScan();
     var scanSt2 = psSt2.Scan(stDir);
     var npcSt2 = scanSt2.Characters.FirstOrDefault(c => c.Id == "JgTestNpc");
     psSt2.SyncToDisk(stDir, scanSt2, new[] { "JgTestNpc" });
@@ -7447,10 +7868,17 @@ if (!realMode)
     var tallPng = Path.Combine(tsDir, "Mods", "JGTest Tall Sheet", "assets", "Tall.png");
     Directory.CreateDirectory(Path.Combine(tsDir, "Mods", "JGTest Tall Sheet", "assets"));
     File.WriteAllBytes(tallPng, BuildPng(128, 1024, 161));                       // 别家 16 行表情表
+    // 场合资产那条也要测：OhoDavi 的 128×1024 同样喂 Portraits/Wizard_Spring，
+    // 场合图只钉 64 行的话，游戏按场合取帧时第 1–15 行仍是它的画（用户 2026-09-30 实测：
+    // 和法师聊天时「默认 / OhoDavi / Donut fifadog」三张来回切）。
+    File.WriteAllBytes(Path.Combine(tsDir, "Mods", "JGTest Tall Sheet", "assets", "TallSpring.png"),
+        BuildPng(128, 1024, 162));
     File.WriteAllText(Path.Combine(tsDir, "Mods", "JGTest Tall Sheet", "manifest.json"),
         """{"Name":"JGTest Tall Sheet","UniqueID":"JuniGrid.Test.TallSheet","Version":"1.0.0","ContentPackFor":{"UniqueID":"Pathoschild.ContentPatcher"}}""");
     File.WriteAllText(Path.Combine(tsDir, "Mods", "JGTest Tall Sheet", "content.json"), """
-        {"Format":"2.5","Changes":[{"Action":"Load","Target":"Portraits/Wizard","FromFile":"assets/Tall.png"}]}
+        {"Format":"2.5","Changes":[
+          {"Action":"Load","Target":"Portraits/Wizard","FromFile":"assets/Tall.png"},
+          {"Action":"Load","Target":"Portraits/Wizard_Spring","FromFile":"assets/TallSpring.png"}]}
         """);
     var haveXnb = File.Exists(realXnb);
     if (haveXnb)
@@ -7460,7 +7888,16 @@ if (!realMode)
         File.WriteAllBytes(Path.Combine(tsDir, "Content", "Characters", "Wizard.xnb"), File.ReadAllBytes(realSpr));
 
     var pngH = -1;
+    var occH = -1;
     var dbg = "";
+    int HOf(string p)
+    {
+        if (!File.Exists(p)) return -1;
+        var head = new byte[24];
+        using var fs = File.OpenRead(p);
+        if (fs.Read(head, 0, 24) < 24) return -1;
+        return (head[20] << 24) | (head[21] << 16) | (head[22] << 8) | head[23];
+    }
     if (haveXnb)
     {
         var psTs = new PortraitSkinService(new ModService(), cfgSvc);
@@ -7470,15 +7907,13 @@ if (!realMode)
         var ovRootTs = Path.Combine(tsDir, "Mods", PortraitSkinService.OverrideFolder);
         var pinDir = Path.Combine(ovRootTs, "assets", "Portraits");
         var chTs = scanTs.Characters.FirstOrDefault(c => c.Id == "Wizard");
-        var pinnedTs = Path.Combine(pinDir, "Wizard.png");
-        if (File.Exists(pinnedTs))
-        {
-            var head = new byte[24];
-            using (var fs = File.OpenRead(pinnedTs)) fs.Read(head, 0, 24);
-            pngH = (head[20] << 24) | (head[21] << 16) | (head[22] << 8) | head[23];
-        }
+        pngH = HOf(Path.Combine(pinDir, "Wizard.png"));
+        occH = HOf(Path.Combine(pinDir, "Wizard_Spring.png"));
         dbg = "卡数=" + (chTs?.AllOptions.Count() ?? -1)
             + " 默认行脸=" + Path.GetFileName(chTs?.Vanilla?.SourceFile ?? "(无)")
+            + " 场合资产登记=" + string.Join(",", scanTs.VariantAssets
+                .Where(v => v.Kind == "Portraits" && v.VariantId.StartsWith("Wizard", StringComparison.OrdinalIgnoreCase))
+                .Select(v => v.VariantId + ":" + Path.GetFileName(v.File)))
             + " 覆盖包Portraits=[" + (Directory.Exists(pinDir)
                 ? string.Join(",", Directory.GetFiles(pinDir, "*.png").Select(Path.GetFileName)!) : "(无目录)") + "]";
         RestoreConfig();
@@ -7490,7 +7925,494 @@ if (!realMode)
               + "游戏取到别的行就是别人家的脸） ‖ " + dbg
             : "跳过：找不到真机原版 xnb（" + realXnb + "），无法构造可解码的 .xnb 夹具");
 
+    // B66 场合资产同一条洞：SubstituteNeedsPad 也用 PngSize 量我们自己的源文件，
+    // 默认行的源是 .xnb ⇒ 0×0 ⇒ 直接 return false ⇒ 场合图也只钉一格。
+    Check("B66 场合资产（Portraits/<id>_Spring 这类）也必须铺满同宽度里最高的那张底图",
+        !haveXnb || occH >= 1024,
+        haveXnb
+            ? "钉出的场合 PNG 高=" + occH + "px（OhoDavi 那张喂的就是 1024px 的表） ‖ " + dbg
+            : "跳过：同上，缺真机原版 xnb 夹具");
+
     try { Directory.Delete(tsDir, true); } catch { }
+}
+
+// ── B67…B73 对手高度记账（RivalSheets，v1.7.37 纯信息层）──
+// 为什么要有这一层：覆盖包钉的走路表如果比游戏里真正加载到的那张矮，多出来的行
+// 就是别人家的画（2026-09-30 法师：我们的 64×192 钉在 64×480 的画布上，第 4–7 行仍是 SCC-SVE）。
+// 生产端过去【看不见】对手高度 —— BodyCanvas 只看得到本包那一份。这一层先把"谁在这份资产上
+// 画了多高"记下来，落盘判据一行不动（v4 的 A+C 取舍由 B55 守着；把决定钉进套件的契约是 B55，
+// 这组用例钉的是【数据层】的六个契约：同义词归并 / 类别前缀 / 多条并存 / 缺文件留痕 /
+// 整表筛选 / 原文字段与快照往返）。
+{
+    var rvDir = Path.Combine(Path.GetTempPath(), "jg-rival-test");
+    try { if (Directory.Exists(rvDir)) Directory.Delete(rvDir, true); } catch { }
+    Directory.CreateDirectory(Path.Combine(rvDir, "Mods"));
+    void RvPack(string folder, string uid, string content)
+    {
+        var root = Path.Combine(rvDir, "Mods", folder);
+        Directory.CreateDirectory(Path.Combine(root, "assets"));
+        File.WriteAllText(Path.Combine(root, "manifest.json"),
+            "{\"Name\":\"" + folder + "\",\"UniqueID\":\"" + uid
+            + "\",\"Version\":\"1.0.0\",\"ContentPackFor\":{\"UniqueID\":\"Pathoschild.ContentPatcher\"}}");
+        File.WriteAllText(Path.Combine(root, "content.json"), content);
+    }
+    string RvAssets(string folder) => Path.Combine(rvDir, "Mods", folder, "assets");
+    // 目录必须先建：WriteAllBytes 不认不存在的目录，会抛断整个测试舱。
+    Directory.CreateDirectory(RvAssets("JGTest Rival Short"));
+    Directory.CreateDirectory(RvAssets("JGTest Rival Tall"));
+    Directory.CreateDirectory(RvAssets("JGTest Rival Decoy"));
+    // 短表方：同一份 Characters/Wizard 上三条声明（两条真文件 + 一条指向不存在的文件）
+    var shortAssets = RvAssets("JGTest Rival Short");
+    File.WriteAllBytes(Path.Combine(shortAssets, "Face.png"), BuildPng(128, 64, 71));
+    File.WriteAllBytes(Path.Combine(shortAssets, "Body192.png"), BuildPng(64, 192, 72));
+    File.WriteAllBytes(Path.Combine(shortAssets, "Body128.png"), BuildPng(64, 128, 73));
+    RvPack("JGTest Rival Short", "JuniGrid.Test.RivalShort", """
+        {"Format":"2.5","Changes":[
+          {"Action":"Load","Target":"Portraits/Wizard","FromFile":"assets/Face.png"},
+          {"Action":"Load","Target":"Characters/Wizard","FromFile":"assets/Body192.png"},
+          {"Action":"Load","Target":"Characters/Wizard","FromFile":"assets/Body128.png"},
+          {"Action":"Load","Target":"Characters/Wizard","FromFile":"assets/Gone.png"}]}
+        """);
+    // 高表方：SVE 的写法 —— 同一个人换了 id（Magnus），资产名跟着改
+    var tallAssets = Path.Combine(rvDir, "Mods", "JGTest Rival Tall", "assets");
+    File.WriteAllBytes(Path.Combine(tallAssets, "MagFace.png"), BuildPng(128, 64, 74));
+    File.WriteAllBytes(Path.Combine(tallAssets, "Mag480.png"), BuildPng(64, 480, 75));
+    RvPack("JGTest Rival Tall", "JuniGrid.Test.RivalTall", """
+        {"Format":"2.5","Changes":[
+          {"Action":"Load","Target":"Portraits/Magnus","FromFile":"assets/MagFace.png"},
+          {"Action":"Load","Target":"Characters/Magnus","FromFile":"assets/Mag480.png",
+           "Priority":"Late+100","When":{"season":"winter"}}]}
+        """);
+    // 干扰方：局部差分（FromArea/ToArea）+ 自认叠加（PatchMode:Overlay）+ 一条真整表
+    var decoyAssets = Path.Combine(rvDir, "Mods", "JGTest Rival Decoy", "assets");
+    File.WriteAllBytes(Path.Combine(decoyAssets, "Huge.png"), BuildPng(64, 999, 76));
+    File.WriteAllBytes(Path.Combine(decoyAssets, "Aba320.png"), BuildPng(64, 320, 77));
+    File.WriteAllBytes(Path.Combine(decoyAssets, "Nose.png"), BuildPng(64, 32, 78));
+    RvPack("JGTest Rival Decoy", "JuniGrid.Test.RivalDecoy", """
+        {"Format":"2.5","Changes":[
+          {"Action":"EditImage","Target":"Characters/Abigail","FromFile":"assets/Huge.png",
+           "FromArea":{"X":0,"Y":0,"Width":64,"Height":64},"ToArea":{"X":0,"Y":64,"Width":64,"Height":64}},
+          {"Action":"EditImage","Target":"Characters/Abigail","FromFile":"assets/Aba320.png",
+           "Priority":"Early"},
+          {"Action":"EditImage","Target":"Characters/Wizard","FromFile":"assets/Nose.png",
+           "PatchMode":"Overlay","Priority":"Late+100"}]}
+        """);
+
+    var psRv = new PortraitSkinService(new ModService(), cfgSvc);
+    var rv = psRv.Scan(rvDir).RivalSheets;
+    List<RivalSheet> At(string key) => rv.TryGetValue(key, out var l) ? l : new();
+    RivalSheet? Of(List<RivalSheet> l, string from) =>
+        l.FirstOrDefault(r => string.Equals(r.From, from, StringComparison.OrdinalIgnoreCase));
+    string From(List<RivalSheet> l, string f) => Of(l, f)?.File ?? "(无)";
+    int MaxFull(List<RivalSheet> l) => l.Where(r => r.FullSheet).Select(r => r.H).DefaultIfEmpty(0).Max();
+    string Dump(List<RivalSheet> l) => string.Join(" | ",
+        l.Select(r => r.Pack + " " + r.Action + " " + r.From + " " + r.W + "×" + r.H
+            + (r.FullSheet ? "" : " 非整表")));
+
+    var wizBody = At("Characters/Wizard");
+    Check("B67 对手高度：SVE 的 Characters/Magnus 与原版 Characters/Wizard 并进同一个键（同义词不归并＝看不见对方）",
+        wizBody.Count == 5 && MaxFull(wizBody) == 480
+        && From(wizBody, "assets/Mag480.png") != "(无)"
+        && !rv.ContainsKey("Characters/Magnus"),
+        "Characters/Wizard 条数=" + wizBody.Count + " Max整表=" + MaxFull(wizBody)
+        + " ‖ " + Dump(wizBody));
+
+    var wizFace = At("Portraits/Wizard");
+    Check("B68 键带类别前缀：立绘与走路表是两份资产，并成一键会把 64 宽的身体算进 128 宽的脸",
+        wizFace.Count == 2 && MaxFull(wizFace) == 64 && wizFace.All(r => r.W == 128)
+        && wizFace.Any(r => r.From == "assets/MagFace.png"),
+        "Portraits/Wizard 条数=" + wizFace.Count + " Max整表=" + MaxFull(wizFace) + " ‖ " + Dump(wizFace));
+
+    Check("B69 同一份资产上的多条声明全部并存（字典后盖前会只剩最后一条，而 CP 是逐条叠加的）",
+        wizBody.Count(r => r.Pack == "JGTest Rival Short") == 3
+        && From(wizBody, "assets/Body192.png") != "(无)" && From(wizBody, "assets/Body128.png") != "(无)",
+        "本包条数=" + wizBody.Count(r => r.Pack == "JGTest Rival Short") + " ‖ " + Dump(wizBody));
+
+    var gone = wizBody.FirstOrDefault(r => r.From == "assets/Gone.png");
+    Check("B70 FromFile 指向不存在的文件也要留痕（它仍是「有人碰过这份资产」的证据），但撑不起 Max",
+        gone is not null && gone.File.Length == 0 && gone.H == 0 && gone.FullSheet
+        && MaxFull(wizBody) == 480,
+        "缺文件条目=" + (gone is null ? "(整条被丢了)" : $"File='{gone.File}' H={gone.H} FullSheet={gone.FullSheet}")
+        + " Max整表=" + MaxFull(wizBody));
+
+    var aba = At("Characters/Abigail");
+    // ⚠ 一律 FirstOrDefault：条目缺席本身就是用例要报的红，用 First() 会把整个测试舱
+    // 抛死（后面的用例全不跑、RestoreConfig 也轮不到 —— 09-22 那次就是这个坑清了用户配置）。
+    var huge = Of(aba, "assets/Huge.png");
+    var aba320 = Of(aba, "assets/Aba320.png");
+    var nose = Of(wizBody, "assets/Nose.png");
+    Check("B70b 只有整表声明进 Max：64×999 的表情差分（FromArea/ToArea）与 PatchMode:Overlay 都不算",
+        aba.Count == 2 && MaxFull(aba) == 320
+        && huge is { FullSheet: false } && aba320 is { FullSheet: true } && nose is { FullSheet: false },
+        "Characters/Abigail Max整表=" + MaxFull(aba) + "（含差分会报 999） ‖ " + Dump(aba)
+        + " ‖ 差分整表标记=" + huge?.FullSheet + " 鼻子叠加整表标记=" + nose?.FullSheet);
+
+    var mag = Of(wizBody, "assets/Mag480.png");
+    Check("B70c Priority / When 原文照抄（CP 的 Load 全部先于 EditImage，Priority 跨不了阶段 ⇒ 只能留作文献）",
+        mag is not null && mag.Priority == "Late+100"
+        && (mag.When ?? "").Contains("winter", StringComparison.OrdinalIgnoreCase),
+        "Priority='" + (mag?.Priority ?? "(无条目)") + "' When='" + mag?.When + "'");
+
+    // M5：这份数据只有扫描期才有，落盘/页面常在快照命中时跑 ⇒ 必须活过 Newtonsoft 往返。
+    // （PackDeps 当年就是标了 JsonIgnore 才让法师身体永远解析不出，见 U11。）
+    {
+        var src = new PortraitScanResult();
+        src.RivalSheets["Characters/Wizard"] = new List<RivalSheet>
+        {
+            new() { Pack = "JGTest Rival Tall", Asset = "Characters/Magnus", Action = "Load",
+                    Priority = "Late+100", From = "assets/Mag480.png",
+                    File = @"C:\x\Mag480.png", W = 64, H = 480, When = "{\"season\":\"winter\"}",
+                    FullSheet = true },
+        };
+        var tok = Newtonsoft.Json.Linq.JToken.FromObject(src);
+        var back = tok.ToObject<PortraitScanResult>(new Newtonsoft.Json.JsonSerializer
+        {
+            ContractResolver = new Newtonsoft.Json.Serialization.DefaultContractResolver(),
+            TypeNameHandling = Newtonsoft.Json.TypeNameHandling.Auto,
+            ReferenceLoopHandling = Newtonsoft.Json.ReferenceLoopHandling.Ignore,
+        })!;
+        var rt = back.RivalSheets.TryGetValue("characters/wizard", out var bl) ? bl : new();
+        Check("B71 对手高度必须活过扫描快照的序列化往返（含大小写不敏感的键）—— 否则缓存命中后这张表恒空",
+            rt.Count == 1 && rt[0].H == 480 && rt[0].FullSheet && rt[0].Pack == "JGTest Rival Tall"
+            && rt[0].From == "assets/Mag480.png" && rt[0].Priority == "Late+100",
+            "往返后条数=" + rt.Count + " 键数=" + back.RivalSheets.Count);
+    }
+
+    try { Directory.Delete(rvDir, true); } catch { }
+}
+
+// ── B80 前置包只按季发货（不出卡）时，身体链仍要用它那张 ──
+// 法师真机形状：Donut 的 fifadog 分支只有脸；它 manifest 里排在第一位的前置 SCC-SVE 对
+// Magnus 只发四季表、不发基础文件 ⇒ 该包对这个角色一张卡都不出 ⇒ 旧链子在这里空手，
+// 跳到第二个前置 SVE，钉了 SVE 的身子（用户 2026-10-01：其它角色都对，就法师这个皮肤不对）。
+{
+    var chDir = Path.Combine(Path.GetTempPath(), "jg-chain-test");
+    try { if (Directory.Exists(chDir)) Directory.Delete(chDir, true); } catch { }
+    Directory.CreateDirectory(Path.Combine(chDir, "Mods"));
+    void ChManifest(string fold, string uid, string deps = "") => File.WriteAllText(
+        Path.Combine(chDir, "Mods", fold, "manifest.json"),
+        "{\"Name\":\"" + fold + "\",\"UniqueID\":\"" + uid
+        + "\",\"Version\":\"1.0.0\",\"ContentPackFor\":{\"UniqueID\":\"Pathoschild.ContentPatcher\"}"
+        + (deps.Length > 0 ? ",\"Dependencies\":[" + deps + "]" : "") + "}");
+    string ChP(string fold, params string[] rel) =>
+        Path.Combine(chDir, "Mods", fold, string.Join(Path.DirectorySeparatorChar.ToString(), rel));
+
+    // 娘家包：基础脸 + 基础走路表 64×448（链子彻底落空时才会用到它）
+    Directory.CreateDirectory(Path.Combine(chDir, "Mods", "JGTest Chain Home"));
+    Directory.CreateDirectory(ChP("JGTest Chain Home", "assets"));
+    File.WriteAllBytes(ChP("JGTest Chain Home", "assets", "Face.png"), BuildPng(128, 256, 131));
+    File.WriteAllBytes(ChP("JGTest Chain Home", "assets", "Body448.png"), BuildPng(64, 448, 132));
+    ChManifest("JGTest Chain Home", "JuniGrid.Test.ChainHome");
+    File.WriteAllText(ChP("JGTest Chain Home", "content.json"),
+        """{"Format":"2.5","Changes":[{"Action":"EditData","Target":"Data/Characters","Entries":{"JgChain":{"DisplayName":"JgChain","HomeRegion":"Town"}}},"""
+        + """{"Action":"Load","Target":"Portraits/JgChain","FromFile":"assets/Face.png"},"""
+        + """{"Action":"Load","Target":"Characters/JgChain","FromFile":"assets/Body448.png"}]}""");
+
+    // 前置包：只有【春季】那一份，且从不声明基础资产 ⇒ 它对 JgChain 不出卡
+    Directory.CreateDirectory(ChP("JGTest Chain Pre", "assets"));
+    File.WriteAllBytes(ChP("JGTest Chain Pre", "assets", "PreFaceSpring.png"), BuildPng(128, 64, 133));
+    File.WriteAllBytes(ChP("JGTest Chain Pre", "assets", "PreBodySpring.png"), BuildPng(64, 480, 134));
+    ChManifest("JGTest Chain Pre", "JuniGrid.Test.ChainPre");
+    // 只发走路表、【不发脸】，而且打在基础资产名上按季门控 —— 真机 SCC-SVE 对 Magnus 就是这样：
+    // 基础脸文件作者没发货（FromFile: assets/{{TargetPathOnly}}/Magnus/Magnus.png 盘上不存在），
+    // 于是这个包对该角色一张卡都不出，但它的身体声明真实存在 ⇒ 链子必须用它。
+    File.WriteAllText(ChP("JGTest Chain Pre", "content.json"),
+        """{"Format":"2.5","Changes":[{"Action":"EditImage","Target":"Characters/JgChain","FromFile":"assets/PreBodySpring.png","When":{"Season":"spring"}}]}""");
+
+    // 皮肤包：只有脸，manifest 声明依赖上面那个前置（Donut/fifadog 的写法）
+    Directory.CreateDirectory(ChP("JGTest Chain Skin", "assets"));
+    File.WriteAllBytes(ChP("JGTest Chain Skin", "assets", "SkinFace.png"), BuildPng(128, 64, 135));
+    ChManifest("JGTest Chain Skin", "JuniGrid.Test.ChainSkin", """{"UniqueID":"JuniGrid.Test.ChainPre"}""");
+    File.WriteAllText(ChP("JGTest Chain Skin", "content.json"),
+        """{"Format":"2.5","Changes":[{"Action":"Load","Target":"Portraits/JgChain","FromFile":"assets/SkinFace.png"}]}""");
+
+    var psCh = new PortraitSkinService(new ModService(), cfgSvc);
+    var scanCh = psCh.Scan(chDir);
+    var chNpc = scanCh.Characters.FirstOrDefault(c => c.Id == "JgChain");
+    var chSkin = chNpc?.AllOptions.FirstOrDefault(o => o.PackFolder == "JGTest Chain Skin");
+    // 前置：这张皮肤确实没身子，且那个前置包对这个角色【不出卡】—— 否则用例是空的
+    var chPre = chSkin is not null && chSkin.SpriteFile is null
+        && !chNpc!.AllOptions.Any(o => o.PackFolder == "JGTest Chain Pre");
+    var (chFile, chFolder) = chPre
+        ? PortraitSkinService.ResolveBody(chDir, scanCh, chNpc!, chSkin!)
+        : (null, null);
+    Check("B80 前置包只按季发货（对该角色不出卡）⇒ 身体链仍要用它那张，不许跳到下一个前置/默认",
+        chPre && chFolder == "JGTest Chain Pre"
+        && chFile is not null && Path.GetFileName(chFile) == "PreBodySpring.png",
+        "皮肤卡=" + (chSkin is null ? "(没出卡)" : "有")
+        + " 皮肤身子=" + (chSkin?.SpriteFile is null ? "(无)" : Path.GetFileName(chSkin.SpriteFile!))
+        + " 前置的卡=" + string.Join("|", (chNpc is null
+            ? new[] { "(没这个角色)" }
+            : chNpc.AllOptions.Where(o => o.PackFolder == "JGTest Chain Pre")
+                .Select(o => Path.GetFileName(o.SpriteFile ?? "(无身子)").ToString()).ToArray())
+            .DefaultIfEmpty("(不出卡)"))
+        + " 全部卡=" + (chNpc is null ? "(没这个角色)" : string.Join(",",
+            chNpc.AllOptions.Select(o => (o.PackFolder ?? "?") + ":" + Path.GetFileName(o.SpriteFile ?? "-"))))
+        + " ‖ 链子给的包=" + (chFolder ?? "(null→默认行)")
+        + " ‖ 文件=" + (chFile is null ? "-" : Path.GetFileName(chFile)));
+
+    // 决定对了还不算：走真实用户动作 SelectSkin（内含 SyncToDisk），逐字节比覆盖包钉的那张。
+    // 没有这一条，"链子指向前置"与"游戏里真是前置的身子"之间是断的（v1.7.12 的教训）。
+    if (chPre && chSkin is not null)
+    {
+        psCh.SelectSkin(chDir, scanCh, "JgChain", "JGTest Chain Skin");
+        var chOvBody = Path.Combine(chDir, "Mods", PortraitSkinService.OverrideFolder,
+            "assets", "Characters", "JgChain.png");
+        var chWant = ChP("JGTest Chain Pre", "assets", "PreBodySpring.png");
+        var chHome = ChP("JGTest Chain Home", "assets", "Body448.png");
+        Check("B80b 链子决定的那张必须真的钉进覆盖包（逐字节=前置那张春季表，不是默认行的 448）",
+            File.Exists(chOvBody)
+            && File.ReadAllBytes(chOvBody).AsSpan().SequenceEqual(File.ReadAllBytes(chWant))
+            && !File.ReadAllBytes(chOvBody).AsSpan().SequenceEqual(File.ReadAllBytes(chHome)),
+            "钉了=" + (File.Exists(chOvBody) ? new FileInfo(chOvBody).Length + "字节" : "(没这个文件)")
+            + " ‖ 前置那张=" + new FileInfo(chWant).Length + "字节"
+            + " ‖ 默认行那张=" + new FileInfo(chHome).Length + "字节");
+    }
+
+    RestoreConfig();
+    try { Directory.Delete(chDir, true); } catch { }
+}
+
+// ── B79 对手声明写在 Include 子文件里也要进账 ──
+// 真机教训：Donut's / [CP] Seasonal Cute Characters SVE / SVE / Ridgeside / WAG / LewdDew
+// 的立绘 patch 全在 assets/Code/*.json（CP 的 Include 机制）。ParseContentPack 对子文件用的是
+// 一个临时 PackScan + Absorb 并回，Absorb 少搬一个字段 ⇒ 整个包在 RivalSheets 里凭空消失
+// （实测 21 个包 vs 应有 25 个，法师那条因此看不见 SCC-SVE 的 Magnus 四季表）。
+{
+    var inDir = Path.Combine(Path.GetTempPath(), "jg-include-rival-test");
+    try { if (Directory.Exists(inDir)) Directory.Delete(inDir, true); } catch { }
+    Directory.CreateDirectory(Path.Combine(inDir, "Mods"));
+    void InManifest(string fold, string uid) => File.WriteAllText(
+        Path.Combine(inDir, "Mods", fold, "manifest.json"),
+        "{\"Name\":\"" + fold + "\",\"UniqueID\":\"" + uid
+        + "\",\"Version\":\"1.0.0\",\"ContentPackFor\":{\"UniqueID\":\"Pathoschild.ContentPatcher\"}}");
+    // 娘家包：直写 content.json
+    Directory.CreateDirectory(Path.Combine(inDir, "Mods", "JGTest In Home", "assets"));
+    File.WriteAllBytes(Path.Combine(inDir, "Mods", "JGTest In Home", "assets", "Abigail.png"), BuildPng(128, 64, 91));
+    File.WriteAllBytes(Path.Combine(inDir, "Mods", "JGTest In Home", "assets", "Abigail_body.png"), BuildPng(64, 192, 92));
+    InManifest("JGTest In Home", "JuniGrid.Test.InHome");
+    File.WriteAllText(Path.Combine(inDir, "Mods", "JGTest In Home", "content.json"),
+        """{"Format":"2.5","Changes":[{"Action":"EditData","Target":"Data/Characters","Entries":{"Abigail":{"DisplayName":"Abigail","HomeRegion":"Town"}}},"""
+        + """{"Action":"Load","Target":"Portraits/Abigail","FromFile":"assets/Abigail.png"},"""
+        + """{"Action":"Load","Target":"Characters/Abigail","FromFile":"assets/Abigail_body.png"}]}""");
+    // 对手包：主文件只写 Include，真 patch 在子文件里（SVE / Donut 的写法）
+    Directory.CreateDirectory(Path.Combine(inDir, "Mods", "JGTest In Rival", "assets", "Code"));
+    File.WriteAllBytes(Path.Combine(inDir, "Mods", "JGTest In Rival", "assets", "Tall480.png"), BuildPng(64, 480, 93));
+    InManifest("JGTest In Rival", "JuniGrid.Test.InRival");
+    File.WriteAllText(Path.Combine(inDir, "Mods", "JGTest In Rival", "content.json"),
+        """{"Format":"2.5","Changes":[{"Action":"Include","FromFile":"assets/Code/*.json"}]}""");
+    File.WriteAllText(Path.Combine(inDir, "Mods", "JGTest In Rival", "assets", "Code", "Abigail.json"),
+        """{"Format":"2.5","Changes":[{"Action":"Load","Target":"Characters/Abigail","FromFile":"assets/Tall480.png"}]}""");
+
+    var scanIn = new PortraitSkinService(new ModService(), cfgSvc).Scan(inDir);
+    var inAbi = scanIn.RivalSheets.TryGetValue("Characters/Abigail", out var il) ? il : new();
+    Check("B79 对手声明写在 Include 子文件里也要进账（变异：删掉 Absorb 里那句 ⇒ 整包从 RivalSheets 消失）",
+        inAbi.Count(r => r.Pack == "JGTest In Rival") == 1
+        && inAbi.Single(r => r.Pack == "JGTest In Rival").H == 480
+        && inAbi.Single(r => r.Pack == "JGTest In Rival").FullSheet
+        && inAbi.Count(r => r.Pack == "JGTest In Home") == 1,
+        "Characters/Abigail 条目=" + string.Join(" | ",
+            inAbi.Select(r => r.Pack + ":" + r.W + "×" + r.H + (r.FullSheet ? "整表" : "非整表"))));
+
+    try { Directory.Delete(inDir, true); } catch { }
+}
+
+// ── B72…B78 走路表矮口角标（PortraitSkinService.BodyCoverage）──
+// 变异清单 A2–A8 逐条钉在这里（A1 是渲染层，控制台测不到，走 WebView2 CDP 黑盒）。
+// 七个人各管一件事，互不牵连：改坏一条只红它自己那条。
+{
+    var bcDir = Path.Combine(Path.GetTempPath(), "jg-bodycover-test");
+    try { if (Directory.Exists(bcDir)) Directory.Delete(bcDir, true); } catch { }
+    Directory.CreateDirectory(Path.Combine(bcDir, "Mods"));
+    var bcSeed = 200;
+    void BcPack(string fold, string uid, (string T, string A, int W, int H, string E)[] decls,
+        params string[] extra)
+    {
+        var root = Path.Combine(bcDir, "Mods", fold);
+        Directory.CreateDirectory(Path.Combine(root, "assets"));
+        File.WriteAllText(Path.Combine(root, "manifest.json"),
+            "{\"Name\":\"" + fold + "\",\"UniqueID\":\"" + uid
+            + "\",\"Version\":\"1.0.0\",\"ContentPackFor\":{\"UniqueID\":\"Pathoschild.ContentPatcher\"}}");
+        var parts = new List<string>();
+        foreach (var d in decls)
+        {
+            File.WriteAllBytes(Path.Combine(root, "assets", d.A), BuildPng(d.W, d.H, bcSeed++));
+            parts.Add("{\"Action\":\"Load\",\"Target\":\"" + d.T + "\",\"FromFile\":\"assets/"
+                + d.A + "\"" + d.E + "}");
+        }
+        parts.AddRange(extra);
+        var json = "{\"Format\":\"2.5\",\"Changes\":[" + string.Join(",", parts) + "]}";
+        // 夹具自己写坏的 json 会被扫描器【静默丢掉整个包】—— 那会让用例红得像产品坏了。
+        // 所以这里先解析一遍，写坏就当场抛，别让红点去找产品的错。
+        using (System.Text.Json.JsonDocument.Parse(json)) { }
+        File.WriteAllText(Path.Combine(root, "content.json"), json);
+    }
+    // 场合资产的唯一登记通道：1.6 的 Data/Characters Appearance 条目，且【必须由同一个包自己
+    // Load 出那张文件】（PackParse.RegisterAppearanceVariants）。只声明文件名不登记 ⇒ 落盘不会扇出。
+    string Appear(string npc, string season, string sprite) =>
+        "{\"Action\":\"EditData\",\"Target\":\"Data/Characters\",\"TargetField\":[\"" + npc
+        + "\",\"Appearance\"],\"Entries\":{\"[Append]\":[{\"Season\":\"" + season
+        + "\",\"Portrait\":\"Portraits/" + npc + "\",\"Sprite\":\"" + sprite + "\"}]}}";
+    (string T, string A, int W, int H, string E) Dc(string t, string a, int w, int h, string e = "") => (t, a, w, h, e);
+
+    // 娘家包：7 个人的默认行，走路表一律 64×448（不高不矮的参照物）
+    var bcIds = new[] { "JgBcMerge", "JgBcSplit", "JgBcMulti", "JgBcWidth",
+                        "JgBcArea", "JgBcTallest", "JgBcFace" };
+    var homeRoot = Path.Combine(bcDir, "Mods", "JGTest BC Home");
+    Directory.CreateDirectory(Path.Combine(homeRoot, "assets"));
+    var homeChanges = new List<string>();
+    foreach (var id in bcIds)
+    {
+        File.WriteAllBytes(Path.Combine(homeRoot, "assets", id + ".png"), BuildPng(128, 256, bcSeed++));
+        File.WriteAllBytes(Path.Combine(homeRoot, "assets", id + "_body.png"), BuildPng(64, 448, bcSeed++));
+        homeChanges.Add("{\"Action\":\"Load\",\"Target\":\"Portraits/" + id + "\",\"FromFile\":\"assets/"
+            + id + ".png\"}");
+        homeChanges.Add("{\"Action\":\"Load\",\"Target\":\"Characters/" + id + "\",\"FromFile\":\"assets/"
+            + id + "_body.png\"}");
+    }
+    File.WriteAllText(Path.Combine(homeRoot, "manifest.json"),
+        "{\"Name\":\"JGTest BC Home\",\"UniqueID\":\"JuniGrid.Test.BcHome\",\"Version\":\"1.0.0\","
+        + "\"ContentPackFor\":{\"UniqueID\":\"Pathoschild.ContentPatcher\"}}");
+    File.WriteAllText(Path.Combine(homeRoot, "content.json"),
+        "{\"Format\":\"2.5\",\"Changes\":[{\"Action\":\"EditData\",\"Target\":\"Data/Characters\",\"Entries\":{"
+        + string.Join(",", bcIds.Select(i => "\"" + i + "\":{\"DisplayName\":\"" + i + "\",\"HomeRegion\":\"Town\"}"))
+        + "}}," + string.Join(",", homeChanges) + "]}");
+
+    // 所选皮肤包：各人自己的身体高度按用例给（矮 = 该出角标，448/1280 = 不该出）
+    BcPack("JGTest BC Skin", "JuniGrid.Test.BcSkin", new[] {
+        Dc("Portraits/JgBcMerge", "m.png", 128, 64), Dc("Characters/JgBcMerge", "mb.png", 64, 224),
+        Dc("Portraits/JgBcSplit", "s.png", 128, 64), Dc("Characters/JgBcSplit", "sb.png", 64, 192),
+        Dc("Portraits/JgBcMulti", "u.png", 128, 64), Dc("Characters/JgBcMulti", "ub.png", 64, 224),
+        Dc("Portraits/JgBcWidth", "w.png", 128, 64), Dc("Characters/JgBcWidth", "wb.png", 64, 448),
+        Dc("Portraits/JgBcArea", "a.png", 128, 64), Dc("Characters/JgBcArea", "ab.png", 64, 224),
+        Dc("Portraits/JgBcTallest", "t.png", 128, 64), Dc("Characters/JgBcTallest", "tb.png", 64, 1280),
+        Dc("Portraits/JgBcFace", "f.png", 128, 128), Dc("Characters/JgBcFace", "fb.png", 64, 448) });
+
+    // 对手：更高那张来自谁（Merge 的三个资产同包同档 / Split 的冬季另有其人 / Multi 两家并列最高 …）
+    BcPack("JGTest BC Tall", "JuniGrid.Test.BcTall", new[] {
+        Dc("Characters/JgBcMerge", "m.png", 64, 1280), Dc("Characters/JgBcMerge_Winter", "mw.png", 64, 1280),
+        Dc("Characters/JgBcMerge_Spring", "ms.png", 64, 1280),
+        Dc("Characters/JgBcSplit", "s.png", 64, 1280), Dc("Characters/JgBcMulti", "u.png", 64, 1280),
+        Dc("Characters/JgBcArea", "a.png", 64, 1280) },
+        Appear("JgBcMerge", "winter", "Characters/JgBcMerge_Winter"),
+        Appear("JgBcMerge", "spring", "Characters/JgBcMerge_Spring"));
+    BcPack("JGTest BC Tall B", "JuniGrid.Test.BcTallB",
+        new[] { Dc("Characters/JgBcSplit_Winter", "b.png", 64, 1280) },
+        Appear("JgBcSplit", "winter", "Characters/JgBcSplit_Winter"));
+    BcPack("JGTest BC Tall C", "JuniGrid.Test.BcTallC",
+        new[] { Dc("Characters/JgBcMulti", "c.png", 64, 1280) });
+    BcPack("JGTest BC Wide", "JuniGrid.Test.BcWide",
+        new[] { Dc("Characters/JgBcWidth", "w.png", 96, 1280) });
+    BcPack("JGTest BC Face Tall", "JuniGrid.Test.BcFaceTall",
+        new[] { Dc("Portraits/JgBcFace", "f.png", 128, 192) });
+    // A4b 的干扰项必须真的存在，否则 B77 是一条空断言（第一轮就是这么绿的）：
+    // 同一条资产上再叠一张 64×1536 的局部差分（FromArea/ToArea）—— 它不该参与取高。
+    BcPack("JGTest BC Area Decoy", "JuniGrid.Test.BcAreaDecoy",
+        Array.Empty<(string, string, int, int, string)>(),
+        "{\"Action\":\"EditImage\",\"Target\":\"Characters/JgBcArea\",\"FromFile\":\"assets/big.png\","
+        + "\"FromArea\":{\"X\":0,\"Y\":0,\"Width\":64,\"Height\":64},"
+        + "\"ToArea\":{\"X\":0,\"Y\":64,\"Width\":64,\"Height\":64}}");
+    File.WriteAllBytes(Path.Combine(bcDir, "Mods", "JGTest BC Area Decoy", "assets", "big.png"),
+        BuildPng(64, 1536, bcSeed++));
+
+    var psBc = new PortraitSkinService(new ModService(), cfgSvc);
+    var scanBc = psBc.Scan(bcDir);
+    foreach (var id in new[] { "JgBcMerge", "JgBcSplit", "JgBcMulti", "JgBcWidth",
+                  "JgBcArea", "JgBcTallest", "JgBcFace" })
+        psBc.SelectSkin(bcDir, scanBc, id, "JGTest BC Skin");
+    var bcHomeBody = Path.Combine(bcDir, "Mods", "JGTest BC Home", "assets", "JgBcMerge_body.png");
+    var bcOvChars = Path.Combine(bcDir, "Mods", PortraitSkinService.OverrideFolder, "assets", "Characters");
+    // 场合资产的【钉法】是 B55/B56 的契约（那边用真·原版角色 Haley 复现，mod 角色进不了那条
+    // VanillaNames/ModNames 门）。这里要测的是读的一侧：盘上已经有几条同族资产时怎么归并、
+    // 怎么说行数 —— 所以直接按落盘的同款形状（场合资产钉的就是所选包自己那具身子，逐字节相同）
+    // 把变体补齐，不再重跑一遍扇出。
+    foreach (var (id, occ) in new[] { ("JgBcMerge", new[] { "Winter", "Spring" }),
+                                      ("JgBcSplit", new[] { "Winter" }) })
+    {
+        var src = Path.Combine(bcOvChars, id + ".png");
+        if (!File.Exists(src)) continue;
+        foreach (var o in occ)
+            File.Copy(src, Path.Combine(bcOvChars, id + "_" + o + ".png"), true);
+    }
+    string BcDump(string id) => string.Join(" / ",
+        PortraitSkinService.BodyCoverage(scanBc, bcDir, id)
+            .Select(g => "1–" + g.OwnRows + "行[" + string.Join("+", g.RivalPacks) + "]"
+                + "(" + string.Join(",", g.Assets.Select(a => a.Key + "→" + a.RivalRows)) + ")"));
+
+    // A2 + A4 + A7合并：Jas 那种形状（本人 + 冬季 + 春季，同包同档）并成一行，行数是算出来的
+    var gMerge = PortraitSkinService.BodyCoverage(scanBc, bcDir, "JgBcMerge");
+    Check("B72 矮口角标的行数是算出来的：我方 64×224 ⇒ 1–7 行，对手 64×1280 ⇒ 到第 40 行（变异 A2 写死 N 就红）",
+        gMerge.Count == 1 && gMerge[0].OwnRows == 7
+        && gMerge[0].RivalPacks.SequenceEqual(new[] { "JGTest BC Tall" }, StringComparer.Ordinal),
+        "组=" + BcDump("JgBcMerge"));
+    Check("B73 场合变体同包同档并成一行、逐资产仍留着（变异 A7：把 RivalRows 也比作分组键 ⇒ 拆成三行）",
+        gMerge.Count == 1 && gMerge[0].Assets.Length == 3
+        && gMerge[0].Assets.All(a => a.RivalRows == 40)
+        && gMerge[0].Assets.Any(a => a.Key == "Characters/JgBcMerge_Winter")
+        && gMerge[0].Assets.Any(a => a.Key == "Characters/JgBcMerge_Spring"),
+        "格数=" + (gMerge.Count > 0 ? gMerge[0].Assets.Length : 0) + " ‖ " + BcDump("JgBcMerge")
+        + " ‖ 覆盖包已钉=" + string.Join(",", Directory
+            .GetFiles(Path.Combine(bcDir, "Mods", PortraitSkinService.OverrideFolder, "assets", "Characters"), "*.png")
+            .Select(Path.GetFileNameWithoutExtension).Where(n => n.StartsWith("JgBcMerge", StringComparison.Ordinal))));
+
+    // A7分行：冬季那条的对手是另一个包 ⇒ 绝不与本体并成一行
+    var gSplit = PortraitSkinService.BodyCoverage(scanBc, bcDir, "JgBcSplit");
+    Check("B74 对手不同包就必须分行（变异 A7 反向：只按 OwnRows 分组 ⇒ 把两个包说成一个）",
+        gSplit.Count == 2 && gSplit.All(g => g.RivalPacks.Length == 1)
+        && gSplit.SelectMany(g => g.RivalPacks).Distinct().Count() == 2
+        && gSplit.All(g => g.OwnRows == 6),
+        "组=" + BcDump("JgBcSplit"));
+
+    // A5：两家并列最高 ⇒ 不许冒充赢家
+    var gMulti = PortraitSkinService.BodyCoverage(scanBc, bcDir, "JgBcMulti");
+    Check("B75 两家并列更高时 RivalPacks 给两条（界面只能写「更高声明：A、B」，不许写「由 X 提供」）",
+        gMulti.Count == 1 && gMulti[0].RivalPacks.Length == 2
+        && gMulti[0].RivalPacks.Contains("JGTest BC Tall") && gMulti[0].RivalPacks.Contains("JGTest BC Tall C"),
+        "组=" + BcDump("JgBcMulti"));
+
+    // A6：只有更宽的对手 ⇒ CP 整条作废，不算矮口
+    Check("B76 对手不同宽（96×1280）不算矮口（变异 A6：去掉同宽这道门 ⇒ 全员误报）",
+        PortraitSkinService.BodyCoverage(scanBc, bcDir, "JgBcWidth").Count == 0,
+        "组=" + BcDump("JgBcWidth"));
+
+    // A4b：1536 那条是 FromArea/ToArea 局部差分 ⇒ 赢家仍是 1280
+    var gArea = PortraitSkinService.BodyCoverage(scanBc, bcDir, "JgBcArea");
+    var areaRiv = scanBc.RivalSheets.TryGetValue("Characters/JgBcArea", out var arL) ? arL : new();
+    Check("B77 局部差分（64×1536 带 FromArea/ToArea）不参与对手取高（变异 A4b：放它进来 ⇒ 报成第 48 行）",
+        areaRiv.Any(r => r.H == 1536 && !r.FullSheet)          // 干扰项确实在表里，否则这条是空的
+        && gArea.Count == 1 && gArea[0].Assets.Single().RivalRows == 40
+        && gArea[0].RivalPacks.SequenceEqual(new[] { "JGTest BC Tall" }, StringComparer.Ordinal),
+        "1536 那条在表里=" + areaRiv.Any(r => r.H == 1536 && !r.FullSheet)
+        + " ‖ 组=" + BcDump("JgBcArea"));
+
+    // A3：本包就是最高那张 ⇒ 一个字都不许说
+    Check("B78 本包那张就是最高 ⇒ 不出角标（变异 A3：去掉「我方 < 对手」这道门 ⇒ 全员刷提示）",
+        PortraitSkinService.BodyCoverage(scanBc, bcDir, "JgBcTallest").Count == 0,
+        "组=" + BcDump("JgBcTallest"));
+
+    // A8：立绘矮（Henchman 那种 128<192）不许由走路表角标来说
+    var faceRiv = scanBc.RivalSheets.TryGetValue("Portraits/JgBcFace", out var frL)
+        ? frL.Where(r => r.FullSheet).Select(r => r.H).DefaultIfEmpty(0).Max() : 0;
+    var facePinPath = Path.Combine(bcDir, "Mods", PortraitSkinService.OverrideFolder,
+        "assets", "Portraits", "JgBcFace.png");
+    int PngH(string p)
+    {
+        if (!File.Exists(p)) return -1;
+        var head = new byte[24];
+        using var fs = File.OpenRead(p);
+        return fs.Read(head, 0, 24) < 24 ? -1 : (head[20] << 24) | (head[21] << 16) | (head[22] << 8) | head[23];
+    }
+    Check("B78b 立绘那一侧在【这套夹具里】不会矮（落盘本来就铺满同宽最高底图，B65/B66），角标也不说它",
+        faceRiv == 256 && PngH(facePinPath) == 256
+        && PortraitSkinService.BodyCoverage(scanBc, bcDir, "JgBcFace").Count == 0,
+        "立绘对手最高=" + faceRiv + " ‖ 我方钉出的立绘高=" + PngH(facePinPath)
+        + " ‖ 组=" + BcDump("JgBcFace")
+        + " ‖ ⚠ 变异 A8 在这套夹具里打不红：钉图已被 B65/B66 铺满到 256，没有矮口可报。"
+        + "能触发它的形状是真机那条 Portraits/Henchman（我方 128 < Nyapu 192）—— "
+        + "Nyapu 的 FromFile 写成 assets/{{TargetWithoutPath}}.png，铺高那条看不见它，所以那侧的账归 ③。");
+
+    RestoreConfig();
+    try { Directory.Delete(bcDir, true); } catch { }
 }
 
 // ── DP 依赖解析两处修正：同包子模块判定 + 依赖搜索不再被成人过滤掐掉 ──
@@ -7596,6 +8518,26 @@ if (!realMode)
         + " ‖ helper=" + (File.Exists(help2) ? "在" : "不在")
         + " ‖ 主包被提到顶层=" + hoisted + " ‖ 现在的条目=[" + uidsAfter + "]");
 
+    // ③ 更新「子包那一行」：targetFolderName 带父路径，而 zip 根是整个捆绑包。
+    //    真机症状（用户 2026-09-30）：更新 LewdDew Valley 的子包后，
+    //    Mods/zLewdDewValley/LewdDew_Valley/ 里面变成 LewdDew_Valley + LewdDew_Valley_helper
+    //    两个孙子目录 —— 顶层没有 manifest.json，SMAPI 认不出这个 mod，"直接导致用不了"。
+    var bdZip2 = BdZip("zBundleV2",
+        ("zBundleV2/LewdDew_Valley/manifest.json", BdManifest("LewdDew Valley", "shurmash.LewdDew_Valley")),
+        ("zBundleV2/LewdDew_Valley_helper/manifest.json", BdManifest("LewdDew_Valley_helper", "shurmash.LewdDew_Valley_helper")));
+    var bdUpdErr = bdMod.InstallUpdate(bdGame, "zBundle/LewdDew_Valley", bdZip2, out var bdVer);
+    var bdNestMain = Path.Combine(bdGame, "Mods", "zBundle", "LewdDew_Valley", "LewdDew_Valley");
+    var bdNestHelp = Path.Combine(bdGame, "Mods", "zBundle", "LewdDew_Valley", "LewdDew_Valley_helper");
+    var bdTopManifest = Path.Combine(bdGame, "Mods", "zBundle", "LewdDew_Valley", "manifest.json");
+    var bdSiblingAlive = File.Exists(Path.Combine(bdGame, "Mods", "zBundle", "LewdDew_Valley_helper", "manifest.json"));
+    Check("BD3 更新子包行不许把整个捆绑包根搬进子包路径（顶层没了 manifest 就等于 mod 用不了）",
+        bdUpdErr is null && !Directory.Exists(bdNestMain) && !Directory.Exists(bdNestHelp)
+        && File.Exists(bdTopManifest) && bdSiblingAlive,
+        "err=" + (bdUpdErr ?? "null") + " ‖ 版本=" + (bdVer ?? "(null)")
+        + " ‖ 出现嵌套=" + (Directory.Exists(bdNestMain) || Directory.Exists(bdNestHelp))
+        + " ‖ 子包顶层 manifest=" + (File.Exists(bdTopManifest) ? "在" : "没了")
+        + " ‖ 兄弟子包=" + (bdSiblingAlive ? "在" : "没了"));
+
     try { Directory.Delete(bdRoot, true); } catch { }
 }
 
@@ -7607,6 +8549,13 @@ if (!realMode)
     try { if (Directory.Exists(ovRoot)) Directory.Delete(ovRoot, true); } catch { }
     var ovGame = Path.Combine(ovRoot, "game");
     var ovCfg = new ConfigService();
+    // 必须清空：ConfigService 读的是【真机】%APPDATA%\JuniGrid\junigrid.config.json（这个目录
+    // 没有测试隔离开关，ConfigPath 是 static readonly）。用户 9/30 真装了一条
+    // 「LookupAnything|i18n/zh.json」汉化覆盖，于是 ovCfg 一出生就带 1 条记录 ⇒
+    // OV1 数到 2 条、OV4/5/6 拿 Keys.First() 恰好拿到那条 LookupAnything（宿主在沙箱 ovGame 里
+    // 当然不存在 → 「找不到宿主 mod「LookupAnything」」）、OV2 的 StaleKeys 也非 0。
+    // 6 个 FAIL 全是这里来的，与 ModService 的逻辑无关 —— 用例的成败不能取决于用户装了什么。
+    ovCfg.Current.Overlays.Clear();
     var ovMod = new ModService();
 
     string OvHost(string name)
@@ -7793,6 +8742,17 @@ if (!realMode)
     ovCfg.Current.Overlays.Clear();
     try { Directory.Delete(ovRoot, true); } catch { }
 }
+
+// 走路表三难（A 用所选包的身子 / B 不混画 / C 不换人）在"所选包比机上最高的那包矮"时
+// 三者不可兼得 —— 2026-09-29 实机实验判死，选了 A+C、接受 B。刻痕见
+// PortraitSkinService.Override.cs 里 PinOverrideAsset 的 ⚠ 注释，方案见
+// docs/方案-20260929-走路表落盘-v3.md（标题 v4）。
+// 这条决定【已经有会咬人的用例守着】= B55「走路表六个出口一律原样钉」。
+// 2026-10-01 曾在此另加 R1-rev/R2/R3-rev 三条，随后把它们全删了：把 (b)「矮于对手就不钉」
+// 实现进落盘做变异测试时，B55 立刻红，而那三条【全绿】—— 因为生产端 BodyCanvas 只按
+// 单一 assetId 取 natByAsset/bodySheets，压根看不见别家那张更高的表，canvas 恒等于我方高度，
+// 于是"矮于对手"这个条件在夹具里永远不成立。空用例比没有用例更糟（给人虚假的安全感）。
+// 要真守住 v4，改的是让生产端看得见对手高度（同义词/跨包那一层），不是再加一条断言。
 
 // 覆盖包按「用户真实选择」重同步一遍（测试期钉入的 Abigail/Emily 会被冲掉），
 // 然后把配置文件按备份字节整体还原 —— 旧版只手工 Remove 几个键，

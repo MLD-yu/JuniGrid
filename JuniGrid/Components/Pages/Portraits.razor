@@ -116,7 +116,7 @@
                         }
                         @if (cover is not null)
                         {
-                            <img src="@cover" alt="" draggable="false" />
+                            <img src="@cover" alt="" draggable="false" loading="lazy" decoding="async" />
                         }
                         else
                         {
@@ -330,6 +330,29 @@
                         @if (spriteThumb is not null)
                         {
                             <img src="@spriteThumb" alt="" draggable="false" />
+                        }
+                        @* v1.7.37：走路表矮于游戏里最高那张时，据实说清"下半截不由本包提供"。
+                           数据读的就是覆盖包已经钉出去的那几张图（不是预测），所以这行、界面预览、
+                           游戏里三方不会各说一套。只说 Characters/，立绘那侧是另一本账。 *@
+                        @foreach (var g in Shortfalls(_modalChar.Id))
+                        {
+                            var rivals = g.RivalPacks;
+                            <div class="jg-pt-note"
+                                 data-tip="@Loc.F("逐资产：{0}", string.Join("、", g.Assets.Select(a =>
+                                     a.Key + " 第 " + (a.OwnRows + 1) + "~" + a.RivalRows + " 行")))">
+                                @Loc.F("走路表仅覆盖 1–{0} 行", g.OwnRows)
+                                <span>
+                                    @if (rivals.Length == 1)
+                                    {@Loc.F("第 {0} 行以下由 {1} 提供", g.OwnRows + 1, rivals[0])}
+                                    else
+                                    {@Loc.F("更高声明：{0}", string.Join("、", rivals))}
+                                </span>
+                                @if (g.Assets.Length > 1)
+                                {
+                                    <span class="keys">@Loc.F("（{0}）", string.Join("、",
+                                        g.Assets.Select(a => a.Key[(a.Key.IndexOf('/') + 1)..])))</span>
+                                }
+                            </div>
                         }
                     </div>
                 </div>
@@ -676,6 +699,10 @@
             });
         });
     }
+
+    // ── 走路表矮口（读盘上已钉的那几张，不预测）──
+    private List<BodyCoverageGroup> Shortfalls(string charId)
+        => _scan is null ? new() : PortraitSkinService.BodyCoverage(_scan, GamePath, charId);
 
     // ── 选择状态 ──
     private string? SelectedFolder(PortraitCharacter ch) =>

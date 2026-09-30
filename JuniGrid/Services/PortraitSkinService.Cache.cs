@@ -21,14 +21,23 @@ public sealed partial class PortraitSkinService
         if (!string.Equals(_memScanGame, gamePath, StringComparison.OrdinalIgnoreCase)) return null;
         // 15 秒内直接信任（切页来回点）；超过则核对签名（一次目录 stat，仍远快于重扫）
         if (Environment.TickCount64 - _memScanAt < 15_000) return _memScan;
-        try
+        // v1.7.37：过期但内存里还有 ⇒ 先上屏、后台再核对签名。以前这里同步算
+        // ModsSignature（大 Mods 树要遍历几千个文件），OnInitialized 卡在 UI 线程上，
+        // 表现就是「每次进肖像页都要转半天」。签名若变就作废，下次进页/刷新重扫。
+        var stale = _memScan;
+        _ = Task.Run(() =>
         {
-            var sig = ModsSignature(Path.Combine(gamePath, "Mods"));
-            if (!string.Equals(sig, _memScanSig, StringComparison.Ordinal)) return null;
-            _memScanAt = Environment.TickCount64;
-            return _memScan;
-        }
-        catch { return _memScan; }
+            try
+            {
+                var sig = ModsSignature(Path.Combine(gamePath, "Mods"));
+                if (!string.Equals(sig, _memScanSig, StringComparison.Ordinal))
+                    InvalidateMemoryScan();
+                else
+                    _memScanAt = Environment.TickCount64;
+            }
+            catch { /* 核对失败就继续用旧快照 */ }
+        });
+        return stale;
     }
 
     private void StoreMemoryScan(string gamePath, PortraitScanResult scan, string? sig)
@@ -44,6 +53,9 @@ public sealed partial class PortraitSkinService
     {
         _memScan = null;
         _prewarmedSig = null;
+        // 签名缓存一并丢掉 —— 启停/装卸已经改了树，下一次必须重新 stat
+        _sigCache = null;
+        _sigCacheDir = null;
     }
 
     /// <summary>
@@ -137,8 +149,11 @@ public sealed partial class PortraitSkinService
     /// v18=分组与佐证 E1 的长度门槛 4→3：Sam 只有三个字母被挡在外面，SamLewd 单独挂在页面上
     ///（用户 2026-09-30 实测）。同样要抬版本才看得到并进去。
     /// v19=硬同义词的另一侧（法师在 SVE 里叫 Magnus）补上「默认行」= 主 id 的原版 xnb。
-    /// 缓存里存的就是 Vanilla 那一行，不抬版本它仍是空的 ⇒ 落盘照旧走娘家行（SVE 的女巫脸）。</summary>
-    private const int ScanCacheVer = 19;
+    /// 缓存里存的就是 Vanilla 那一行，不抬版本它仍是空的 ⇒ 落盘照旧走娘家行（SVE 的女巫脸）。
+    /// v20=扫描结果新增 RivalSheets（同一份资产上所有包的声明 + 尺寸）。这个字段只在扫描期
+    /// 从 content.json 生成，旧快照命中 ⇒ 字典恒空，页面上的"你的表只有 1–N 行"永远不出。
+    /// ⚠ 与 PackDeps/PackFolderByUid 同一个坑：快照里缺字段就是静默空，不报错也不重扫。</summary>
+    private const int ScanCacheVer = 20;
 
     /// <summary>Content\Portraits\*.xnb 的角色名前缀（Abigail_Winter → Abigail），按游戏目录缓存。
     /// 用来判「这张裸图是不是给某个已知角色的」。</summary>
@@ -226,6 +241,13 @@ public sealed partial class PortraitSkinService
     /// 那本来就该命中缓存）。scan-algo 版本号跟扫描语义走，算法变更必须作废旧快照。</summary>
     private static string ModsSignature(string modsDir)
     {
+        // v1.7.37：结果缓存 45 秒 —— 进页/扫描/快照命中都会算签名，大 Mods 树（尤其
+        // OneDrive）一次全量 stat 要秒级。应用内启停/装卸会走 InvalidateMemoryScan，
+        // 顺带清掉这里；纯手改文件最迟 45 秒后也能被看见。
+        if (_sigCache is not null
+            && string.Equals(_sigCacheDir, modsDir, StringComparison.OrdinalIgnoreCase)
+            && Environment.TickCount64 - _sigCacheAt < 45_000)
+            return _sigCache;
         try
         {
             // v1.7.7：画风卡改了扫描产出（同包多画风从 1 条变 N 条）→ 必须让历史快照全部作废，
@@ -270,11 +292,19 @@ public sealed partial class PortraitSkinService
             }
             parts.Sort(StringComparer.Ordinal);
             using var sha = System.Security.Cryptography.SHA1.Create();
-            return Convert.ToHexString(sha.ComputeHash(
+            var sig = Convert.ToHexString(sha.ComputeHash(
                 System.Text.Encoding.UTF8.GetBytes(string.Join("\n", parts))));
+            _sigCache = sig;
+            _sigCacheDir = modsDir;
+            _sigCacheAt = Environment.TickCount64;
+            return sig;
         }
         catch { return ""; }
     }
+
+    private static string? _sigCache;
+    private static string? _sigCacheDir;
+    private static long _sigCacheAt;
 
     /// <summary>尝试读快照：签名一致才命中。损坏/版本不符静默返回 null 走重扫。</summary>
     private PortraitScanResult? TryLoadScanCache(string gamePath, out string sig)
