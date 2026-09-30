@@ -607,6 +607,13 @@ public sealed class InstallService
                 if (batch.Count == 0) break;
 
                 var total = processed.Count + batch.Count;
+                // 每轮重取一次已装 UID → 名字/N网id 的映射：本轮刚装上的依赖下一轮就该认得，
+                // 而且「同包子模块」判定必须有这张表（子模块在 Nexus 上没有独立页面可搜）。
+                var installedMap = new Dictionary<string, (string Name, int? NexusId)>(StringComparer.OrdinalIgnoreCase);
+                foreach (var e in _mods.Scan(cfg.GamePath))
+                    if (!string.IsNullOrWhiteSpace(e.UniqueID))
+                        installedMap[e.UniqueID.Trim()] = (string.IsNullOrWhiteSpace(e.Name) ? e.Folder : e.Name, e.NexusModId);
+
                 foreach (var dep in batch)
                 {
                     task.Cts.Token.ThrowIfCancellationRequested();
@@ -619,6 +626,20 @@ public sealed class InstallService
                     {
                         outcomes.Add(new DependencyRunItem(dep, "framework", "SMAPI", null,
                             "SMAPI 是 mod 加载器本体，无法作为普通 mod 安装 —— 请用 SMAPI 安装器（启动器首页可检查/更新 SMAPI）"));
+                        continue;
+                    }
+
+                    // ①b 同包子模块：它不是独立 mod，Nexus 上没有它的页面（实测 shurmash 名下只有
+                    // 2 个 mod，没有 LewdDew_Valley_helper）。发搜索等于白费一次请求，再把人领到
+                    // 一个不存在的页面上 —— 该领他去的是宿主 mod 的页面。
+                    if (ModService.BundledParentOf(dep, installedMap.Keys) is string parentUid
+                        && installedMap.TryGetValue(parentUid, out var parent))
+                    {
+                        outcomes.Add(new DependencyRunItem(dep, "manual", parent.Name, parent.NexusId,
+                            LocService.Tf("「{0}」是「{1}」包内的子模块，Nexus 上没有它的独立页面 —— 重装或更新「{1}」就会带上它。", dep, parent.Name)));
+                        if (parent.NexusId is int pid)
+                            toOpen.Add($"https://www.nexusmods.com/stardewvalley/mods/{pid}");
+                        Step(LocService.Tf("⏭ {0}：「{1}」包内子模块，随宿主一起装", dep, parent.Name));
                         continue;
                     }
 
@@ -936,7 +957,14 @@ public sealed class InstallService
         foreach (var term in UidSearchTerms(uid))
         {
             List<NexusModListEntry>? hits = null;
-            try { hits = await _nexus.BrowseModsAsync("downloads", 0, 8, "stardewvalley", searchText: term); }
+            try
+            {
+                // forceIncludeAdult：这是"能不能解析到依赖"，不是"给用户看什么列表"。
+                // 带上展示偏好的话，不开「显示成人内容」的人永远装不上成人 mod 的依赖
+                // （实测搜 "LewdDew" 带过滤 0 条、不带 12 条）。
+                hits = await _nexus.BrowseModsAsync("downloads", 0, 8, "stardewvalley",
+                    searchText: term, forceIncludeAdult: true);
+            }
             catch { }
             if (hits is null) continue;
             foreach (var h in hits)

@@ -433,7 +433,7 @@ public sealed class ModService
 
     /// <param name="toTrash">true = 移入 Mods/.junigrid_trash 常驻回收站（可手动还原）；
     /// false = 沿用旧"原子化"流程：先进回收站验证可删，再彻底删除。</param>
-    public string? Uninstall(string gamePath, string folderName, bool toTrash = false)
+    public string? Uninstall(string gamePath, string folderName, bool toTrash = false, ConfigService? cfg = null)
     {
         try
         {
@@ -508,6 +508,8 @@ public sealed class ModService
             // 否则 Mods 里会留一个无 manifest 的孤儿空目录（SMAPI 也会报它没法加载）
             if (folderName.Contains('/'))
                 TryRemoveEmptyTopShell(gamePath, folderName.Split('/')[0]);
+            // 宿主都没了，覆盖记录留着只会变成"找不到宿主"的死账 + AppData 里永远清不掉的副本
+            if (cfg is not null) PurgeOverlaysOf(folderName, cfg);
             return null;
         }
         catch (Exception ex)
@@ -808,6 +810,35 @@ public sealed class ModService
     /// </summary>
     public const string UidMismatchError = "uniqueid-mismatch";
 
+    /// <summary>
+    /// 判断一个"缺失依赖"其实是某个<b>已装 mod 包内的子模块</b>：作者段相同，且去掉作者段后
+    /// 以「已装 UID 的名字段 + 分隔符」开头（<c>shurmash.LewdDew_Valley</c> → <c>shurmash.LewdDew_Valley_helper</c>）。
+    /// 这类东西在 Nexus 上没有独立页面（实测搜 shurmash 只有 2 个 mod，没有 helper），
+    /// 拿它去搜等于白费一次请求，再把人领到一个不存在的页面。命中返回那个已装 UID，否则 null。
+    /// 多个候选取最长前缀；末字符必须是分隔符，否则 <c>A.Mod</c> 会误命中 <c>A.ModHelper</c>。
+    /// </summary>
+    public static string? BundledParentOf(string missingUid, IEnumerable<string> installedUids)
+    {
+        if (string.IsNullOrWhiteSpace(missingUid)) return null;
+        var dot = missingUid.IndexOf('.');
+        if (dot <= 0 || dot >= missingUid.Length - 1) return null;
+        var author = missingUid[..dot];
+        var rest = missingUid[(dot + 1)..];
+        string? best = null;
+        foreach (var raw in installedUids)
+        {
+            var uid = (raw ?? "").Trim();
+            if (uid.Length == 0 || uid.Equals(missingUid, StringComparison.OrdinalIgnoreCase)) continue;
+            var d = uid.IndexOf('.');
+            if (d <= 0 || !string.Equals(uid[..d], author, StringComparison.OrdinalIgnoreCase)) continue;
+            var head = uid[(d + 1)..];
+            if (head.Length == 0 || !rest.StartsWith(head, StringComparison.OrdinalIgnoreCase)) continue;
+            if (rest[head.Length] is not ('_' or '-' or '.')) continue;
+            if (best is null || uid.Length > best.Length) best = uid;
+        }
+        return best;
+    }
+
     // ------------------------------------------------------------------
     // 覆盖型包（汉化补丁这类没有 manifest.json、只往别的 mod 上盖文件的包）
     // ------------------------------------------------------------------
@@ -1000,6 +1031,28 @@ public sealed class ModService
     /// 放 AppDataDir 而不是缓存目录 —— 缓存是「缓存与存储」页能一键清掉的，清了就等于弄丢用户的包。</summary>
     public static string OverlayStoreDir(string storeId)
         => Path.Combine(StoragePaths.AppDataDir, "overlays", storeId);
+
+    /// <summary>卸载宿主时清掉它名下的覆盖记录与副本目录。
+    /// <b>不做还原</b>：宿主目录本身就要没了，把原版拷回去毫无意义，而副本留在 AppData 里
+    /// 就再也无人引用 —— 记录也会变成一条永远"找不到宿主"的死账。</summary>
+    private static void PurgeOverlaysOf(string folderName, ConfigService cfg)
+    {
+        var c = cfg.Current;
+        if (c.Overlays.Count == 0) return;
+        var host = folderName.Replace('\\', '/').Split('/')[0].TrimStart('.');
+        var doomed = c.Overlays
+            .Where(kv => kv.Value.Host.Equals(host, StringComparison.OrdinalIgnoreCase))
+            .Select(kv => kv.Key).ToList();
+        foreach (var key in doomed)
+        {
+            if (c.Overlays[key].StoreId is { Length: > 0 } sid)
+                try { Directory.Delete(OverlayStoreDir(sid), recursive: true); } catch { }
+            c.Overlays.Remove(key);
+        }
+        if (doomed.Count == 0) return;
+        cfg.Save(c);
+        AppLog.Info("Mods", $"[覆盖包] 宿主 {host} 被卸载，连带清除 {doomed.Count} 条覆盖记录与副本");
+    }
 
     /// <summary>开 / 关一条覆盖。开着 = 我们的文件在位；关掉 = 把原文件放回去，<b>但账和副本都留着</b>，
     /// 所以随时能再打开，不需要重新下载汉化包。彻底删账走 <see cref="RevertOverlay"/>。</summary>

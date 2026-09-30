@@ -862,5 +862,8 @@
   "开关只是换文件，不删东西：关掉时把原版放回去，打开时再把汉化版盖上去（原版一直留一份备份）。删除才会清掉备份和这份汉化包。宿主 mod 更新过一次的话汉化会失效，打开一次开关就能重新应用。": "The switch only swaps files, it deletes nothing: off puts the original back, on lays the translation over it again (a backup of the original is kept all along). Only Delete clears the backup and this pack’s copy. If the host mod was updated since, the translation is gone — flip the switch once to re-apply it.",
   "找不到宿主 mod「{0}」": "Cannot find the host mod 「{0}」",
   "文件正被占用，操作失败": "File is in use, operation failed",
-  "覆盖包的文件副本已丢失，无法重新开启。请重新安装该汉化包。": "The overlay pack’s stored copy is gone, so it cannot be switched back on. Please reinstall the translation pack."
+  "覆盖包的文件副本已丢失，无法重新开启。请重新安装该汉化包。": "The overlay pack’s stored copy is gone, so it cannot be switched back on. Please reinstall the translation pack.",
+  "{0}（随「{1}」一起装）": "{0} (ships inside 「{1}」)",
+  "⏭ {0}：「{1}」包内子模块，随宿主一起装": "⏭ {0}: a sub-module of 「{1}」 — it installs with its host",
+  "「{0}」是「{1}」包内的子模块，Nexus 上没有它的独立页面 —— 重装或更新「{1}」就会带上它。": "「{0}」 is a sub-module inside 「{1}」 — Nexus has no standalone page for it. Reinstalling or updating 「{1}」 brings it along."
 }

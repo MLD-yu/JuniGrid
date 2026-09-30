@@ -1703,10 +1703,19 @@
     }
 
     /// <summary>行内展示：有名字就用名字；搜过却没搜到就带着 UID 明说"未找到对应 mod"，
-    /// 而不是甩一串玩家看不懂的字符；还在搜就先给 UID。</summary>
+    /// 而不是甩一串玩家看不懂的字符；还在搜就先给 UID。
+    /// 同包子模块单独一条 —— 它压根没有 N 网页面，报"未找到"会让人以为我们搜过了却没有。</summary>
     private string DepLabel(string uid)
     {
         if (_depNames.TryGetValue(uid, out var di) && !string.IsNullOrWhiteSpace(di.Name)) return di.Name!;
+        if (ModService.BundledParentOf(uid, InstalledUids) is string parentUid)
+        {
+            var pe = _mods.FirstOrDefault(m => string.Equals(m.UniqueID.Trim(), parentUid,
+                StringComparison.OrdinalIgnoreCase));
+            if (pe is not null)
+                return Loc.F("{0}（随「{1}」一起装）", uid,
+                    string.IsNullOrWhiteSpace(pe.Name) ? pe.Folder : pe.Name);
+        }
         return _depNameTried.Contains(uid)
             ? Loc.F("{0}（未找到对应 mod）", uid)
             : uid;
@@ -2744,7 +2753,7 @@
 
     private void Uninstall(ModEntry m, bool toTrash)
     {
-        var err = ModSvc.Uninstall(Cfg.Current.GamePath, m.Folder, toTrash);
+        var err = ModSvc.Uninstall(Cfg.Current.GamePath, m.Folder, toTrash, Cfg);
         if (err is not null) ShowNotice("err", err);
         else ShowNotice("ok", toTrash ? LocService.Tf("已移入回收站 {0}", m.Name) : $"已删除 {m.Name}");
         Rescan();
@@ -2908,7 +2917,7 @@
         var count = _selected.Count;
         var failed = 0;
         foreach (var folder in _selected.ToList())
-            if (ModSvc.Uninstall(Cfg.Current.GamePath, folder, toTrash) is not null)
+            if (ModSvc.Uninstall(Cfg.Current.GamePath, folder, toTrash, Cfg) is not null)
                 failed++;
 
         ShowNotice(failed == 0 ? "ok" : "err",

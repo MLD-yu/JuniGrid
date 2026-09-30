@@ -920,14 +920,20 @@ public sealed class NexusService
     /// 过滤下移服务端后每页都是单次精确查询：totalCount 全时段可用（分页器时间筛选也能显示尾页）。
     /// v1.04.0：去掉「自定义时间区间」（UI 已移除）；新增 direction（ASC/DESC，正序/倒序下拉）。
     /// </summary>
+    /// <param name="forceIncludeAdult">
+    /// 依赖解析专用：置 true 时<b>无视「显示成人内容」这个展示偏好</b>，成人 mod 也进候选。
+    /// 展示偏好只该管给用户看什么列表，不该管我们能不能解析到一个人的依赖 ——
+    /// 实测开着过滤搜 "LewdDew" 得 0 条、关掉得 12 条，等于不开那个开关就永远装不上成人 mod 的依赖。
+    /// 浏览/搜索页一律不传，行为不变。
+    /// </param>
     public async Task<List<NexusModListEntry>?> BrowseModsAsync(string kind, int offset, int count,
         string gameDomain = "stardewvalley", string? searchText = null, string? categoryName = null,
-        string timeRange = "all", string direction = "DESC")
+        string timeRange = "all", string direction = "DESC", bool forceIncludeAdult = false)
     {
         // ─── Surprise 特殊路径：官网同款服务端 random 排序（seed 由 UI「换一批」控制）───
         if (kind == "surprise")
             return await FetchChunkedAsync(kind, offset, count, gameDomain, searchText, categoryName,
-                randomSeed: SurpriseSeed);
+                randomSeed: SurpriseSeed, forceIncludeAdult: forceIncludeAdult);
 
         // ─── 时间窗口 → epoch 过滤条件（Updated tab 过滤更新时间，其余过滤发布时间，对照官网）───
         long? sinceEpoch = null;
@@ -939,14 +945,15 @@ public sealed class NexusService
         }
 
         return await FetchChunkedAsync(kind, offset, count, gameDomain, searchText, categoryName,
-            sinceEpoch: sinceEpoch, dateOnUpdatedAt: dateOnUpdatedAt, direction: direction);
+            sinceEpoch: sinceEpoch, dateOnUpdatedAt: dateOnUpdatedAt, direction: direction,
+            forceIncludeAdult: forceIncludeAdult);
     }
 
     /// <summary>v0.77.0：按 CHUNK 循环补齐到 count 条（服务端截断时续拉凑满）。</summary>
     private async Task<List<NexusModListEntry>?> FetchChunkedAsync(string kind, int offset, int count,
         string gameDomain, string? searchText, string? categoryName,
         long? sinceEpoch = null, bool dateOnUpdatedAt = false,
-        string direction = "DESC", int? randomSeed = null)
+        string direction = "DESC", int? randomSeed = null, bool forceIncludeAdult = false)
     {
         var all = new List<NexusModListEntry>();
         var seen = new HashSet<int>();
@@ -958,16 +965,16 @@ public sealed class NexusService
             var want = Math.Min(CHUNK, count - all.Count);   // v0.88.0：不多要 —— 每页精确条数，末排不再缺
             var batch = await BrowseModsChunkAsync(kind, cur, want, gameDomain, searchText, categoryName,
                 sinceEpoch: sinceEpoch, dateOnUpdatedAt: dateOnUpdatedAt,
-                direction: direction, randomSeed: randomSeed);
+                direction: direction, randomSeed: randomSeed, forceIncludeAdult: forceIncludeAdult);
             if (batch is null)
             {
                 await Task.Delay(400);
                 batch = await BrowseModsChunkAsync(kind, cur, want, gameDomain, searchText, categoryName,
                     sinceEpoch: sinceEpoch, dateOnUpdatedAt: dateOnUpdatedAt,
-                    direction: direction, randomSeed: randomSeed);
+                    direction: direction, randomSeed: randomSeed, forceIncludeAdult: forceIncludeAdult);
                 if (batch is null) { await Task.Delay(900); batch = await BrowseModsChunkAsync(kind, cur, want, gameDomain, searchText, categoryName,
                     sinceEpoch: sinceEpoch, dateOnUpdatedAt: dateOnUpdatedAt,
-                    direction: direction, randomSeed: randomSeed); }
+                    direction: direction, randomSeed: randomSeed, forceIncludeAdult: forceIncludeAdult); }
             }
             if (batch is null) return all.Count > 0 ? all : null;
             var added = 0;
@@ -985,7 +992,7 @@ public sealed class NexusService
     private async Task<List<NexusModListEntry>?> BrowseModsChunkAsync(string kind, int offset, int count,
         string gameDomain = "stardewvalley", string? searchText = null, string? categoryName = null,
         long? sinceEpoch = null, bool dateOnUpdatedAt = false,
-        string direction = "DESC", int? randomSeed = null)
+        string direction = "DESC", int? randomSeed = null, bool forceIncludeAdult = false)
     {
         try
         {
@@ -1013,7 +1020,8 @@ public sealed class NexusService
             };
             // 成人内容：默认隐藏（显式过滤）；用户主动开启后不加条件 ——
             // 请求随登录用户 Nexus 账号的成人内容设置执行（服务端强制），应用永不覆盖账号偏好
-            if (!IncludeAdultContent)
+            // forceIncludeAdult：依赖解析这条内部链路不带该条件（见 BrowseModsAsync 注释）
+            if (!IncludeAdultContent && !forceIncludeAdult)
                 conds.Add("{adultContent:{value:false, op:EQUALS}}");
             if (!string.IsNullOrWhiteSpace(categoryName))
                 conds.Add("{categoryName:{value:\"" + categoryName.Replace("\"", "") + "\", op:EQUALS}}");
