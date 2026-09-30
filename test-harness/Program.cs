@@ -506,6 +506,30 @@ if (args.Contains("--default-audit"))
     Environment.Exit(0);
 }
 
+// ═══════════════ 往运行中的 SMAPI 控制台塞命令（--smapi-send "<命令>"）═══════════════
+// 背景：JuniGrid 用 CreateNoWindow + 重定向 stdin 启动 SMAPI，而 SMAPI 在没有控制台窗口时
+// 根本不读那根管道 ⇒ 日志页的「命令输入框」写进去就石沉大海（2026-09-30 用户实测：
+// 输入后只有 [JuniGrid] > 回显，SMAPI 毫无反应）。
+// 备选通道：AttachConsole(游戏PID) 拿到它的控制台输入缓冲区，用 WriteConsoleInput 直接投
+// 键入事件 —— 这条路不经过 Windows Terminal 界面，也就绕开了中文输入法吃空格/改引号的问题。
+// 本 flag 就是来验这条通道到底通不通的（成功的话 SMAPI 日志里会留下这条命令的执行痕迹）。
+if (args.Contains("--smapi-send"))
+{
+    var cmdSend = args.SkipWhile(a => a != "--smapi-send").Skip(1).FirstOrDefault() ?? "help";
+    var target = System.Diagnostics.Process.GetProcessesByName("StardewModdingAPI")
+        .FirstOrDefault(p => !p.HasExited);
+    if (target is null) { Console.WriteLine("NO-SMAPI-RUNNING"); Environment.Exit(1); }
+    Console.WriteLine("target pid=" + target.Id);
+
+    var okAttach = SmapiConsole.Attach(target.Id);
+    Console.WriteLine("attach=" + okAttach + " err=" + System.Runtime.InteropServices.Marshal.GetLastWin32Error());
+    if (!okAttach) Environment.Exit(2);
+    var sent = SmapiConsole.SendLine(cmdSend);
+    Console.WriteLine("sent=" + sent);
+    SmapiConsole.Detach();
+    Environment.Exit(sent ? 0 : 3);
+}
+
 // ═══════════════ 实目录重钉（--resync-real）═══════════════
 // 与「进肖像页自愈」同一条 SyncToDisk 路径，但打在真实 GamePath 上：
 // 本地复现写盘问题不用反复发布换装。会重写覆盖包与各包 config.json（= 生产操作本身）。
@@ -7469,6 +7493,52 @@ if (!realMode)
     try { Directory.Delete(tsDir, true); } catch { }
 }
 
+// ── DP 依赖解析两处修正：同包子模块判定 + 依赖搜索不再被成人过滤掐掉 ──
+{
+    var inst = new[] { "shurmash.LewdDew_Valley", "Pathoschild.ContentPatcher", "A.Mod" };
+    Check("DP1 同包子模块命中（作者段相同 + 以已装 UID 名字段 + '_' 开头）",
+        ModService.BundledParentOf("shurmash.LewdDew_Valley_helper", inst) == "shurmash.LewdDew_Valley",
+        "结果=" + (ModService.BundledParentOf("shurmash.LewdDew_Valley_helper", inst) ?? "(null)"));
+
+    Check("DP2 没有分隔符就不算子模块：A.ModHelper 是独立 mod，不能并到 A.Mod 头上",
+        ModService.BundledParentOf("A.ModHelper", inst) is null,
+        "结果=" + (ModService.BundledParentOf("A.ModHelper", inst) ?? "(null)"));
+
+    Check("DP3 作者段不同一律不算",
+        ModService.BundledParentOf("other.LewdDew_Valley_helper", inst) is null, "命中即误判");
+
+    Check("DP4 多个候选取最长前缀（A.Mod_x 应归 A.Mod_x 而不是 A）",
+        ModService.BundledParentOf("shurmash.LewdDew_Valley_helper_assets",
+            new[] { "shurmash.LewdDew", "shurmash.LewdDew_Valley" }) == "shurmash.LewdDew_Valley",
+        "结果=" + (ModService.BundledParentOf("shurmash.LewdDew_Valley_helper_assets",
+            new[] { "shurmash.LewdDew", "shurmash.LewdDew_Valley" }) ?? "(null)"));
+
+    // 成人过滤：这是今天实测出来的真 bug —— 不开「显示成人内容」时，成人 mod 的依赖永远搜不到。
+    // 走真实网络，失败按跳过处理（离线不该把测试舱判红）。
+    var savedAdult = NexusService.IncludeAdultContent;
+    NexusService.IncludeAdultContent = false;
+    try
+    {
+        var nx = new NexusService();
+        var blocked = await nx.BrowseModsAsync("downloads", 0, 8, "stardewvalley", searchText: "LewdDew");
+        var opened = await nx.BrowseModsAsync("downloads", 0, 8, "stardewvalley",
+            searchText: "LewdDew", forceIncludeAdult: true);
+        if (blocked is null || opened is null)
+            Console.WriteLine("NOTE  DP5 跳过：Nexus 不可达（离线）");
+        else
+            Check("DP5 依赖搜索带成人过滤时 0 条、放开后有结果（展示偏好不再掐断依赖解析）",
+                blocked.Count == 0 && opened.Count > 0,
+                "带过滤=" + blocked.Count + " ‖ 放开=" + opened.Count);
+        var control = await nx.BrowseModsAsync("downloads", 0, 4, "stardewvalley", searchText: "Content Patcher");
+        if (control is not null)
+            Check("DP6 对照：普通 mod 的搜索不受影响（证明 DP5 不是查询写坏）",
+                control.Count > 0 && control.Any(e => (e.Name ?? "").Contains("Content Patcher", StringComparison.Ordinal)),
+                "count=" + control.Count + " ‖ 首条=" + (control.FirstOrDefault()?.Name ?? "(空)"));
+    }
+    catch (Exception ex) { Console.WriteLine("NOTE  DP5/DP6 异常跳过：" + ex.Message); }
+    finally { NexusService.IncludeAdultContent = savedAdult; }
+}
+
 // ── BD 捆绑包重复安装：装两次不许把自己的子包扫进回收站（用户 2026-09-30 实测被拆散）──
 // 真机症状：下载 LewdDew Valley（一个 zip 里含 LewdDew_Valley + LewdDew_Valley_helper 两个子包），
 // 装完后日志出现「[判重清理] 同 UniqueID 旧副本子包 zLewdDewValley/LewdDew_Valley 已移入回收站」，
@@ -7630,6 +7700,24 @@ if (!realMode)
         && !Directory.Exists(ModService.OverlayStoreDir(sidR))
         && ovCfg.Current.Overlays.Count == 0,
         "err=" + (e2 ?? "null"));
+
+    // 卸载宿主：覆盖记录与 AppData 里的副本必须一起走，否则留下永远"找不到宿主"的死账和没人引用的目录
+    OvHost("ModU");
+    var hU = Path.Combine(ovGame, "Mods", "ModU", "i18n");
+    ovMod.InstallNew(ovGame, OvZip("packU", ("ModU/i18n/zh.json", "OVERLAY-U")), out _, cfg: ovCfg);
+    var keyU = ovCfg.Current.Overlays.Keys.First();
+    var sidU = ovCfg.Current.Overlays[keyU].StoreId;
+    var storeU = ModService.OverlayStoreDir(sidU);
+    Check("OV7b 前置：副本确实落在 AppData 下（否则下面那条断言是空的）",
+        Directory.Exists(storeU) && ovCfg.Current.Overlays.Count == 1,
+        "副本目录=" + (Directory.Exists(storeU) ? "在" : "不在") + " ‖ 记录=" + ovCfg.Current.Overlays.Count);
+    var eU = ovMod.Uninstall(ovGame, "ModU", true, ovCfg);
+    Check("OV7c 卸载宿主 mod：连带清掉覆盖记录与副本目录，不留死账",
+        eU is null && !ovCfg.Current.Overlays.ContainsKey(keyU)
+        && !Directory.Exists(storeU) && !Directory.Exists(Path.Combine(ovGame, "Mods", "ModU")),
+        "err=" + (eU ?? "null") + " ‖ 记录还在=" + ovCfg.Current.Overlays.ContainsKey(keyU)
+        + " ‖ 副本还在=" + Directory.Exists(storeU));
+    ovCfg.Current.Overlays.Clear();
 
     // 第二个包盖同一文件时，不许用"第一个覆盖版"冒充原版
     OvHost("ModB");
