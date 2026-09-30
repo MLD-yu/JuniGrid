@@ -238,35 +238,6 @@
                 </div>
             }
         </section>
-
-        @* ─── v1.10：作者推荐 —— 首页最下面的无限循环画廊（对照 reactbits 的 logo-loop：
-               轨道放两份、平移到 -50% 正好接回起点；悬停暂停）。当前取下载数前 10 ─── *@
-        @if (_picks.Count > 0)
-        {
-            <div class="jg-picks">
-                <div class="jg-picks-head">
-                    <span class="jg-picks-star" aria-hidden="true"></span>
-                    <span class="jg-picks-title">@Loc.T("作者推荐")</span>
-                </div>
-                @* 第二份卡片只是用来接续起点（JS 把轨道平移到 -50% 时正好无缝），读屏不要念两遍。
-                   滚动/悬停暂停都在 junigridJs.picksLoopInit 里做 —— 用 CSS animation 的话
-                   滚轮就没法接手同一个偏移量。 *@
-                <div class="jg-picks-rail">
-                    <div class="jg-picks-track">
-                        @for (var copy = 0; copy < 2; copy++)
-                        {
-                            var hidden = copy > 0;
-                            @foreach (var mod in _picks)
-                            {
-                                <div class="jg-picks-item" aria-hidden="@hidden">
-                                    <NexusModCard Mod="mod" Installed="_installedIds.Contains(mod.Id)" OnOpen="OpenDetail" />
-                                </div>
-                            }
-                        }
-                    </div>
-                </div>
-            </div>
-        }
     }
 
     @* ─── v1.02.0：搜索页（独立视图，不再复用查看全部页；尾号命中显示「精确匹配」卡）─── *@
@@ -538,8 +509,6 @@
                     </div>
                 }
             }
-
-            @* ─── v1.10：作者推荐已搬到「首页」最下面（_viewMode == "home" 那块末尾）─── *@
         </section>
     }
 
@@ -880,8 +849,6 @@
         try { await JS.InvokeVoidAsync("junigridJs.userTipInit", "jgUserTip", "jgUserTipBubble"); } catch { }
         try { await JS.InvokeVoidAsync("junigridJs.searchIslandInit", "jgNexusIsland", "jgNexusIslandBtn", "jgNexusIslandInput"); } catch { }
         try { await JS.InvokeVoidAsync("junigridJs.grainientInit", "#jgTrendGrain"); } catch { }
-        // 作者推荐跑马灯：数据是异步回来的，所以每次渲染后都调一次（内部 dataset 幂等）
-        try { await JS.InvokeVoidAsync("junigridJs.picksLoopInit"); } catch { }
     }
     // ─── v0.74.0：官网风首页模式（home=两板块 / browse=完整浏览页）───
     private string _viewMode = "home";
@@ -909,7 +876,6 @@
             // v0.75.0：Mods 模块首页显示 20 个
             var m = mTask.Result;
             if (m is not null) _homeMods = m.Take(20).ToList();   // v0.84.0
-            await LoadPicksAsync();
         }
         catch { }
         finally { _homeLoading = false; StateHasChanged(); }
@@ -1302,9 +1268,6 @@ protected override async Task OnInitializedAsync()
     {
         _browseLoading = true;
         StateHasChanged();
-        // 作者推荐先拉、浏览列表后拉：BrowseModsAsync 每次都会改写 LastBrowseTotalCount，
-        // 顺序反了分页器的「共 N 个」就会跳成推荐列表的 10。
-        await LoadPicksAsync();
         try
         {
             _browse = await NexusApi.BrowseModsAsync(_browseKind, (_page - 1) * _pageSize, _pageSize,
@@ -1312,23 +1275,6 @@ protected override async Task OnInitializedAsync()
         }
         catch { _browse = new(); }
         _browseLoading = false;
-        StateHasChanged();
-    }
-
-    /// <summary>v1.10：作者推荐 —— 横向画廊的数据（当前 = 下载数前 10），整页只拉一次。</summary>
-    private List<NexusModListEntry> _picks = new();
-    private bool _picksLoaded;
-
-    private async Task LoadPicksAsync()
-    {
-        if (_picksLoaded) return;
-        _picksLoaded = true;
-        try
-        {
-            _picks = (await NexusApi.BrowseModsAsync("downloads", 0, 10,
-                searchText: "", timeRange: "all", direction: "DESC")) ?? new();
-        }
-        catch { _picks = new(); }
         StateHasChanged();
     }
 
