@@ -2,13 +2,27 @@
 @page "/logs"
 @using System.Text.RegularExpressions
 @inject LauncherService Launcher
+@inject CommandBridgeService Bridge
 @inject IJSRuntime JS
 @implements IDisposable
 
 <div class="jg-page jg-page-wide">
     <div class="jg-logs-head">
         <div>
-            <h1 style="margin-top:0;margin-bottom:8px">@Loc.T("SMAPI 日志")</h1>
+            <div class="jg-logs-title">
+                <h1 style="margin-top:0;margin-bottom:8px">@Loc.T("SMAPI 日志")</h1>
+                @* 开关状态 = Mods 里那个目录在不在（不带点=开、点前缀=关、没有=从没开），
+                   和立绘页那个换肤开关同一套语义，所以 markup 也直接复用。 *@
+                <span class="jg-squish-host jg-logs-switch @(_bridgeOn ? "on" : "")" role="switch" aria-checked="@_bridgeOn"
+                      aria-label='@Loc.T("命令桥")' data-tip="@(_bridgeOn ? Loc.T("禁用 SMAPI 命令输入") : Loc.T("启用 SMAPI 命令输入"))"
+                      @onclick="OnToggleBridge">
+                    <span class="jg-switch"><span class="jg-switch-knob"></span></span>
+                </span>
+                <span class="jg-help-tip jg-help-tip--down">
+                    <span class="jg-help-tip-btn">?</span>
+                    <span class="jg-help-tip-bubble">@Loc.T("命令桥 = 让本页底部的输入框能把命令直接交给 SMAPI 执行。关闭时输入框不可用；开关改动要重启游戏才生效。")</span>
+                </span>
+            </div>
             <div class="jg-sort-dd @(_filterOpen ? "open" : "")" id="jgLogFilter" data-dd="logfilter">
                 <button type="button" class="jg-sort-trigger" @onclick="ToggleFilterMenu">
                     @FilterLabel(_filter)
@@ -64,11 +78,14 @@
                 <input type="text" value="@_command"
                        @oninput="e => _command = e.Value?.ToString() ?? string.Empty"
                        @onkeydown="HandleCommandKey"
-                       placeholder="@(Launcher.CanSendCommand ? Loc.T("输入 SMAPI 命令，回车发送，如 help") : Loc.T("游戏由本程序启动后可在这里输入 SMAPI 命令"))"
-                       disabled="@(!Launcher.CanSendCommand)" />
-                <button type="button" class="jg-cmdsend" @onclick="SendCommand"
-                        disabled="@(!Launcher.CanSendCommand)">@Loc.T("发送")</button>
+                       disabled="@(!_bridgeOn)"
+                       placeholder='@(_bridgeOn ? Loc.T("输入 SMAPI 命令，回车发送，如 help")
+                                                : Loc.T("命令桥已关闭 · 打开页头「SMAPI 日志」旁的开关后才能输入"))' />
+                <button type="button" class="jg-cmdsend" @onclick="SubmitCommand"
+                        disabled="@(_sending || !_bridgeOn)">@Loc.T("发送")</button>
             </div>
+            @* 命令桥的开关在页头（和立绘页换肤开关同一位置、同一套 markup）。
+               桥不可用时输入框直接禁用（关闭态），或只报"为什么没发出去"（开着但游戏没跑等）。 *@
         </div>
         <div class="jg-logfooter">@Loc.F("实时输出 · 共 {0} 行", _visible.Count)</div>
     </div>
@@ -112,6 +129,7 @@
         _pendingScroll = _lines.Count > 0;
         _pendingScrollForce = true;
         Launcher.OnLogLine += HandleLog;
+        _bridgeOn = Bridge.Enabled;
     }
 
     public void Dispose() => Launcher.OnLogLine -= HandleLog;
@@ -207,19 +225,64 @@
         }
     }
 
-    // ---- SMAPI 命令输入 ----
+    // ---- SMAPI 命令输入：桥就绪才发送，发不出去只报原因（复制兜底已删）----
     private string _command = string.Empty;
+    private bool _bridgeOn;
+    private bool _sending;
 
     private void HandleCommandKey(KeyboardEventArgs e)
     {
-        if (e.Key == "Enter") SendCommand();
+        if (e.Key == "Enter") _ = SubmitCommand();
     }
 
-    private void SendCommand()
+    private async Task SubmitCommand()
     {
         var cmd = _command.Trim();
-        if (cmd.Length == 0) return;
-        if (Launcher.SendCommand(cmd)) _command = string.Empty;
+        if (cmd.Length == 0 || _sending || !_bridgeOn) return;
+
+        // 发不出去就只说清"为什么发不出去"，文字留在框里等他处理。
+        // 这里原来还有一条"退回复制到剪贴板"的路，已删：按钮写着「发送」却偷偷复制，
+        // 用户报过一次"我点回车怎么是复制"；而且 toast 会把原因和"已复制"叠成一句废话。
+        var (state, detail) = Bridge.State();
+        if (state != CommandBridgeService.BridgeState.Ready)
+        {
+            await JS.InvokeVoidAsync("junigridJs.toast", state switch
+            {
+                CommandBridgeService.BridgeState.Incompatible =>
+                    LocService.Tr("当前 SMAPI 版本暂不支持命令桥") + (detail.Length > 0 ? " · " + detail : ""),
+                CommandBridgeService.BridgeState.NoSmapi =>
+                    LocService.Tr("这个游戏还没装 SMAPI"),
+                CommandBridgeService.BridgeState.GameNotRunning =>
+                    LocService.Tr("游戏没在跑，命令没有发出"),
+                _ => LocService.Tr("命令桥未开启，命令没有发出"),
+            }, "err");
+            return;
+        }
+
+        _sending = true;
+        _command = string.Empty;
+        Launcher.AppendLogLines("[JuniGrid] > " + cmd);
+        StateHasChanged();
+
+        var r = await Bridge.SendAsync(cmd);
+        _sending = false;
+        if (!r.Ok) Launcher.AppendLogLines("[JuniGrid] " + (r.Error.Length > 0 ? r.Error : LocService.Tr("命令执行失败")));
+        StateHasChanged();
+        await JS.InvokeVoidAsync("junigridJs.toast",
+            r.Ok ? LocService.Tr("已在 SMAPI 执行") : LocService.Tr("命令桥报错") + "：" + r.Error,
+            r.Ok ? "ok" : "err");
+    }
+
+    private async Task OnToggleBridge()
+    {
+        var want = !Bridge.Enabled;
+        var err = Bridge.SetEnabled(want);
+        await JS.InvokeVoidAsync("junigridJs.toast",
+            err ?? (want ? LocService.Tr("命令桥已开启 · 重启游戏后生效")
+                         : LocService.Tr("命令桥已关闭")),
+            err is null ? "ok" : "err");
+        _bridgeOn = Bridge.Enabled;
+        StateHasChanged();
     }
 
     // ---- 日志行内链接：拆出 URL 渲染成 <a>，点击用系统浏览器打开 ----

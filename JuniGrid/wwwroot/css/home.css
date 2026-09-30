@@ -39,10 +39,14 @@
     padding: 8px 10px;
 }.jg-logview { height: calc(100vh - 350px); min-height: 220px; margin: 0; border-radius: 8px 8px 0 0; }/* v1.07.0：SMAPI 命令胶囊输入 —— 发送键内嵌右侧；聚焦黑色描边（深色主题描边用近白） */
 .jg-loginput {
-    display: flex;
+    display: block;
     padding: 8px 10px;
     border-top: 1px solid var(--jg-line);
-}.jg-cmdcaps {
+}.jg-logs-title {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}.jg-logs-switch { display: inline-flex; align-items: center; cursor: pointer; }.jg-cmdcaps {
     flex: 1;
     min-width: 0;
     display: flex;
@@ -75,7 +79,10 @@
     padding: 7px 18px;
     cursor: pointer;
     transition: background 120ms ease, transform 100ms ease;
-}.jg-cmdsend:hover:not(:disabled) { background: var(--jg-ink-hover); transform: translateY(-1px); }.jg-cmdsend:disabled { opacity: .45; cursor: not-allowed; }/* 日志框底部状态条（行数统计） */
+}.jg-cmdsend:hover:not(:disabled) { background: var(--jg-ink-hover); transform: translateY(-1px); }
+/* 命令桥没开时发送键是 disabled 的（Logs.razor 上绑的是 _sending || !_bridgeOn）：
+   不给灰掉的话它看着能点，点了只弹一句提示 —— 用户只会以为按钮坏了。 */
+.jg-cmdsend:disabled { opacity: .45; cursor: not-allowed; }/* 日志框底部状态条（行数统计） */
 .jg-logfooter {
     padding: 6px 12px;
     font-size: 12px;

@@ -1,0 +1,47 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    这是随 JuniGrid 一起发给用户的一个 SMAPI mod，不是 JuniGrid 的一部分。
+    它必须编成 net6.0：游戏进程自己跑在 .NET 6 上（实测 StardewModdingAPI.dll 的
+    TargetFrameworkAttribute = .NETCoreApp,Version=v6.0），本机只有 net10 的引用包，
+    所以下面【不】用 TargetFramework=net6.0 的隐式框架引用（那会去 NuGet 下载
+    Microsoft.NETCore.App.Ref 6.0），而是直接拿游戏根目录里自带的那 244 个框架
+    程序集当引用 —— 游戏是自包含发布，System.Runtime.dll / netstandard.dll 都在。
+    这样克隆仓库后不需要联网，也不会把 net10 的 API 混进 mod 里。
+  -->
+  <PropertyGroup>
+    <TargetFramework>net6.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AssemblyName>JuniGridCommandBridge</AssemblyName>
+    <RootNamespace>JuniGrid.CommandBridge</RootNamespace>
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <!-- 没有这个就去找 net6 的引用包，本机没有 ⇒ NU1100/MSB3644 -->
+    <DisableImplicitFrameworkReferences>true</DisableImplicitFrameworkReferences>
+    <NoWarn>$(NoWarn);CS0618</NoWarn>
+  </PropertyGroup>
+
+  <!-- 游戏路径：仓库里不写死个人盘符，可用环境变量或 -p:GamePath= 覆盖。 -->
+  <PropertyGroup>
+    <GamePath Condition="'$(GamePath)' == ''">$(JUNIGRID_GAME_PATH)</GamePath>
+    <GamePath Condition="'$(GamePath)' == ''">E:\Steam\steamapps\common\Stardew Valley</GamePath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 游戏根目录的全部程序集只当编译期引用，一个都不复制到输出目录 -->
+    <Reference Include="$(GamePath)\*.dll">
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="manifest.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+</Project>

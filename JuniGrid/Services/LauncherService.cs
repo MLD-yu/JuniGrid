@@ -67,6 +67,19 @@ public sealed class LauncherService
         lock (_logLock) _logBuffer.Clear();
     }
 
+    /// <summary>把命令桥收回来的输出并进日志视图。
+    /// SMAPI 的控制台输出【不】写进 SMAPI-latest.txt（实测：日志里搜不到任何命令回显），
+    /// 而日志页只尾随那个文件，所以命令结果只能由桥自己送回来。</summary>
+    public void AppendLogLines(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return;
+        foreach (var line in text.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n'))
+        {
+            var t = line.TrimEnd();
+            if (t.Trim().Length > 0) RaiseLog(t);
+        }
+    }
+
     // ------------------------------------------------------------------
     // SMAPI log-file tailing
     // ------------------------------------------------------------------

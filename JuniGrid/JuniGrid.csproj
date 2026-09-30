@@ -23,6 +23,37 @@
     <InternalsVisibleTo Include="JuniGridTestHarness" />
   </ItemGroup>
 
+  <!--
+    命令桥（smapi-bridge/，net6 的 SMAPI mod）要随应用发到用户机器上：日志页的
+    「启用命令桥」把 <应用目录>\bridge-mod\ 整个复制进 Mods。
+    ReferenceOutputAssembly=false + Private=false ⇒ 只借它的构建顺序，不把 net6 程序集
+    当依赖塞进应用（塞了会被 .NET 10 的 deps.json 认成加载项）。
+  -->
+  <ItemGroup>
+    <ProjectReference Include="..\smapi-bridge\JuniGridCommandBridge.csproj">
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+      <Private>false</Private>
+    </ProjectReference>
+  </ItemGroup>
+
+  <Target Name="StageBridgeMod" AfterTargets="Build">
+    <ItemGroup>
+      <_BridgeFiles Include="..\smapi-bridge\bin\$(Configuration)\*.*"
+                    Exclude="..\smapi-bridge\bin\$(Configuration)\*.pdb;..\smapi-bridge\bin\$(Configuration)\*.deps.json;..\smapi-bridge\bin\$(Configuration)\*.runtimeconfig.json" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_BridgeFiles)" DestinationFolder="$(OutDir)bridge-mod"
+          SkipUnchangedFiles="true" Condition="'@(_BridgeFiles)' != ''" />
+  </Target>
+
+  <Target Name="StageBridgeModOnPublish" AfterTargets="Publish">
+    <ItemGroup>
+      <_BridgePub Include="..\smapi-bridge\bin\$(Configuration)\*.*"
+                  Exclude="..\smapi-bridge\bin\$(Configuration)\*.pdb;..\smapi-bridge\bin\$(Configuration)\*.deps.json;..\smapi-bridge\bin\$(Configuration)\*.runtimeconfig.json" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_BridgePub)" DestinationFolder="$(PublishDir)bridge-mod"
+          SkipUnchangedFiles="true" Condition="'@(_BridgePub)' != ''" />
+  </Target>
+
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.Components.WebView.Wpf" Version="10.0.*" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.*" />

@@ -1,0 +1,12 @@
+{
+  "Name": "JuniGrid Command Bridge",
+  "Author": "JuniGrid",
+  "Version": "1.0.0",
+  "Description": "让 JuniGrid 启动器的日志页能直接向 SMAPI 控制台发命令（不装它就只能复制到剪贴板自己粘贴）。",
+  "UniqueID": "junigrid.CommandBridge",
+  "EntryDll": "JuniGridCommandBridge.dll",
+  "MinimumApiVersion": "4.0.0",
+  "MinimumGameVersion": "1.6.0",
+  "UpdateCheckUrl": "",
+  "UpdateCheckManifest": ""
+}

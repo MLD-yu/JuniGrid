@@ -225,6 +225,8 @@ public partial class MainWindow : Window
             services.AddSingleton<TranslationService>();
             // v1.3.0：立绘页（CP 皮肤包归类 / Portraiture 素材包 / 选择同步磁盘）
             services.AddSingleton<PortraitSkinService>();
+            // 命令桥：日志页的输入框要能把命令真的交给 SMAPI（详见 CommandBridgeService）
+            services.AddSingleton<CommandBridgeService>();
             // i18n：源文本即 key 的轻量本地化服务（中/EN）
             services.AddSingleton<LocService>();
             var provider = services.BuildServiceProvider();
@@ -235,8 +237,13 @@ public partial class MainWindow : Window
             // 启动恢复 OAuth2 持久会话（有 token 则挂上 Bearer，过期则后台刷新）
             provider.GetRequiredService<NexusOAuthService>().RestoreSession();
 
+
             // 游戏在运行但不是本程序启动的（如 JuniGrid 重启）→ 接上现有 SMAPI 日志
             provider.GetRequiredService<LauncherService>().AttachIfGameRunning();
+
+            // 命令桥的"期望状态 = 目录在不在"这条对齐：用户开着桥、而我们这次发版换了桥的
+            // DLL，就在他下次启动 JuniGrid 时把 Mods 里那份覆盖成新的（游戏在跑则跳过）。
+            provider.GetRequiredService<CommandBridgeService>().ReconcileOnStartup();
 
             // v0.2.1：内存管理后台循环随启动常驻 —— 定时/阈值自动压缩不依赖设置页是否打开过
             _ = provider.GetRequiredService<MemoryService>();
