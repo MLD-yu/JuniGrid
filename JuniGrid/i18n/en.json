@@ -914,9 +914,5 @@
   "依赖被禁": "Dep disabled",
   "{0} 依赖的 {1} 当前被禁用 —— 游戏里 SMAPI 会跳过 {0}（不是没装，是装着但关了）。点一下把依赖打开。": "{1} that {0} depends on is currently disabled - SMAPI will skip {0} in-game (it is installed, just switched off). Click to enable the dependency.",
   "{0} 依赖的 {1} 是捆绑包里不单独成行的子包 —— 启用它的整包就行": "{1} that {0} depends on is a sub-package inside a bundle with no row of its own - just enable its whole bundle.",
-  "走路表仅覆盖 1–{0} 行": "This pack's walk sheet only covers rows 1-{0}",
-  "第 {0} 行以下由 {1} 提供": "Rows {0} and below are supplied by {1}",
-  "更高声明：{0}": "Taller declarations: {0}",
-  "逐资产：{0}": "Per asset: {0}",
   "（{0}）": "({0})"
 }

@@ -401,22 +401,6 @@ html[data-theme="dark"] .jg-pt-lockveil { background: rgba(0, 0, 0, 0.22); }
     white-space: nowrap;
 }
 
-/* 走路表矮口提示（精灵窗下方）：一句陈述事实的话，不抢主视觉 */
-.jg-pt-note {
-    font-size: 11px;
-    line-height: 1.45;
-    color: var(--jg-text-3);
-    max-width: 210px;
-    text-align: center;
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-}
-.jg-pt-note .keys {
-    opacity: .75;
-    font-size: 10.5px;
-}
-
 /* 皮肤格 */
 .jg-pt-skin {
     position: relative;
