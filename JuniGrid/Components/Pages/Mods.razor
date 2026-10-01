@@ -408,7 +408,8 @@
                                           @onclick="() => OpenBrokenFix(m)" @onclick:stopPropagation="true">@broken</span>
                                 }
                                 @* 上游的建议早已兑现（你跑的就是它指的那一版）→ 不报警告，但也不能变成"什么都没说过"：
-                                   挂一条中性标签留着"原作者不干了、这是接手版"这条信息。不进「维护存疑」计数。 *@
+                                   挂一条中性标签留着"原作者不干了、这是接手版"这条信息。
+                                   这些行照样算进「维护存疑」，只是不用警告色。 *@
                                 @if (UnofficialTag(m) is { } unof)
                                 {
                                     <span class="jg-tag" data-tip="@UnofficialTip(m)"
@@ -1483,10 +1484,14 @@
     private static bool IsBadCompatStatus(string? s) =>
         !string.IsNullOrEmpty(s) && s is not ("ok" or "unknown" or "optional");
 
+    /// <summary>「维护存疑」的口径 = 上游清单点名过的那些行，<b>包括已经在跑社区接手版的</b>：
+    /// "原作者不 maintenance 了"这件事与"你还有没有东西要下"是两个事实，前者一条都不能漏，
+    /// 否则这个筛选就成了"只列还能去装的那几个"。区别只在行上挂什么 —— 还有得装的给警告徽标
+    /// （<see cref="BrokenBadge"/>），已兑现的给中性标签（<see cref="UnofficialTag"/>）。
+    /// 计数只依赖第一次批量响应，不依赖后到的身份证据，所以切进来不会看到数字跳。</summary>
     private bool IsBroken(ModEntry m) =>
         _smapiPrecheckStatus is not null
-        && _smapiPrecheckStatus.TryGetValue(m.Folder, out var st) && IsBadCompatStatus(st)
-        && !AltIsSelfNow(m) && !AltEvidenceInFlight(m);
+        && _smapiPrecheckStatus.TryGetValue(m.Folder, out var st) && IsBadCompatStatus(st);
 
     /// <summary>这一行的身份证据还在路上，先别落徽标。只推迟"除替代版页面版本以外没有别的证据"的行：
     /// summary 里直接写了推荐版本号的（<c>&lt;small&gt;</c>）与"替代版就是自己那页"的当场就能判，
@@ -1513,7 +1518,7 @@
 
     /// <summary>被点名、但上游的建议早已兑现（你跑的就是它指的那一版）的行：<b>不报警告</b>，
     /// 只挂一条中性标签，把"原作者不干了、这是社区接手版"这条信息留着。撤徽标撤的是重复提醒，
-    /// 不是这条事实 —— 什么都不说等于把已知信息删掉。不计入「维护存疑」，也不与警告徽标同时出现。</summary>
+    /// 不是这条事实 —— 什么都不说等于把已知信息删掉。与警告徽标互斥，但照样被「维护存疑」列出。</summary>
     private string? UnofficialTag(ModEntry m)
     {
         if (_smapiPrecheckStatus is null
@@ -1768,7 +1773,9 @@
     private string? MainVerOf(ModEntry m) =>
         _smapiPrecheckMainVer is not null && _smapiPrecheckMainVer.TryGetValue(m.Folder, out var v) ? v : null;
 
-    /// <summary>徽标、筛选计数、落点三处必须用同一个判据，否则「维护存疑 · 6」会数进行数对不上。</summary>
+    /// <summary>警告徽标、中性标签、点击落点、提示文案四处必须用同一个判据 ——
+    /// 否则会出现"行上说已兑现、点开的却是让你去下载的那一页"这种自相矛盾。
+    /// （「维护存疑」的计数与筛选<b>不</b>走这里：被点名过的行一律列出，见 <see cref="IsBroken"/>。）</summary>
     private bool AltIsSelfNow(ModEntry m) =>
         AltIsSelf(BrokenRaw(m), AltOf(m), AltVerOf(m), m.Version, m.NexusModId, MainVerOf(m));
 
