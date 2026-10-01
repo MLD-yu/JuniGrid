@@ -51,18 +51,33 @@ public sealed class ModService
                 // 列出来只会是一行让人误会的「无清单」。新留底已改放缓存根的 mods-backup。
                 if (Path.GetFileName(dir).EndsWith("-raw-backup", StringComparison.OrdinalIgnoreCase))
                     continue;
-                // v1.6.8：空壳目录清理 —— 只剩 .junigrid.json 安装来源标记、实体文件已
-                // 不存在的目录（版本切换/卸载残留），是"无清单幽灵条目"的来源。零用户
-                // 内容，直接清除并记日志，不再作为 mod 列出。
-                var shellEntries = Directory.Exists(dir)
-                    ? Directory.GetFileSystemEntries(dir) : Array.Empty<string>();
-                if (shellEntries.Length == 1
-                    && Path.GetFileName(shellEntries[0]).Equals(".junigrid.json", StringComparison.OrdinalIgnoreCase))
+                // v1.6.8：空壳目录清理 —— 实体文件已不存在的目录（版本切换/卸载残留），是
+                // "无清单幽灵条目"的来源。零用户内容，直接清除并记日志，不再作为 mod 列出。
+                // v1.7.37 放宽：原来要求"整个目录只剩 .junigrid.json 一个条目"，于是删掉
+                // Ridgeside Village 的捆绑子包后，顶层还剩 安装标记 + changelog.txt 两样，
+                // 谁都不满足 ⇒ 列表里留下一行「无清单」还带个能点的开关（用户实测截图）。
+                // 现在认的是"有我们的安装标记 + 下面没有任何子目录 + 没有 manifest.json
+                // + 没有 dll"，剩下的只可能是作者留的说明文件。
+                // ⚠ 不能只看"没有 manifest"就删：Portraiture 的素材包（Portraits/<名字>/*.png）
+                // 本来就没有 manifest.json，它靠【子目录】区分于空壳，所以子目录一条不能少。
+                if (Directory.Exists(dir))
                 {
-                    AppLog.Warn("Mods", $"[空壳清理] {Path.GetFileName(dir)}（仅剩安装标记，实体已不存在）已移除");
-                    try { Directory.Delete(dir, true); } catch (Exception ex)
-                    { AppLog.Warn("Mods", $"空壳清理失败: {ex.Message}"); }
-                    continue;
+                    var shellEntries = Directory.GetFileSystemEntries(dir);
+                    bool hasMarker = shellEntries.Any(e =>
+                        Path.GetFileName(e).Equals(".junigrid.json", StringComparison.OrdinalIgnoreCase));
+                    bool noSubDir = !shellEntries.Any(Directory.Exists);
+                    bool noPayload = !File.Exists(Path.Combine(dir, "manifest.json"))
+                        && !Directory.GetFiles(dir, "*.dll", SearchOption.AllDirectories).Any();
+                    if (hasMarker && noSubDir && noPayload)
+                    {
+                        var left = shellEntries.Select(Path.GetFileName);
+                        AppLog.Warn("Mods", $"[空壳清理] {Path.GetFileName(dir)}（仅剩安装标记与说明文件："
+                            + string.Join("/", left.Where(n => !n.Equals(".junigrid.json", StringComparison.OrdinalIgnoreCase)))
+                            + "）已移除");
+                        try { Directory.Delete(dir, true); } catch (Exception ex)
+                        { AppLog.Warn("Mods", $"空壳清理失败: {ex.Message}"); }
+                        continue;
+                    }
                 }
                 // v1.1.4：完全空目录直接跳过 —— 捆绑包子包删空后的顶层空壳不产生
                 // 孤儿条目、不进列表（Uninstall 已顺手删壳，这里兜住手删等其它来源）

@@ -8574,6 +8574,58 @@ if (!realMode)
     try { Directory.Delete(bdRoot, true); } catch { }
 }
 
+// ── BS 捆绑包删完留下的空壳：只剩安装标记 + 作者的 changelog 也要认出来 ──
+// 用户 2026-10-01 实测：删掉 Ridgeside Village 的捆绑子包后，顶层留下
+// 「.junigrid.json + changelog.txt」，列表里就是一行「无清单」还带个能点的开关。
+// 旧判据要求"整个目录只剩 .junigrid.json 一个条目"，多一个说明文件就漏。
+// ⚠ 放宽时不能把 Portraiture 那种【本来就没有 manifest】的素材包一起删了 ——
+//   它靠子目录自证身份，所以"没有子目录"是硬条件。
+{
+    var bsRoot = Path.Combine(Path.GetTempPath(), "jg-shell-test");
+    try { if (Directory.Exists(bsRoot)) Directory.Delete(bsRoot, true); } catch { }
+    var bsMods = Path.Combine(bsRoot, "Mods");
+    Directory.CreateDirectory(bsMods);
+    void BsMarker(string fold) => File.WriteAllText(Path.Combine(bsMods, fold, ".junigrid.json"),
+        """{"nexusModId":7286}""");
+    // ① 只剩安装标记（旧行为就要清掉的）
+    Directory.CreateDirectory(Path.Combine(bsMods, "BS 只剩标记")); BsMarker("BS 只剩标记");
+    // ② 标记 + 作者说明文件（真机那一格）
+    Directory.CreateDirectory(Path.Combine(bsMods, "BS 标记加说明")); BsMarker("BS 标记加说明");
+    File.WriteAllText(Path.Combine(bsMods, "BS 标记加说明", "changelog.txt"), "release notes");
+    // ③ 素材包：没有 manifest，但有子目录 + 真内容 ⇒ 绝不能当空壳删
+    Directory.CreateDirectory(Path.Combine(bsMods, "BS 素材包", "Portraits", "Miku"));
+    BsMarker("BS 素材包");
+    File.WriteAllBytes(Path.Combine(bsMods, "BS 素材包", "Portraits", "Miku", "a.png"), BuildPng(64, 64, 95));
+    // ④ 正常 mod：manifest + 标记 + 说明文件 ⇒ 不能动
+    Directory.CreateDirectory(Path.Combine(bsMods, "BS 正常包")); BsMarker("BS 正常包");
+    File.WriteAllText(Path.Combine(bsMods, "BS 正常包", "manifest.json"),
+        """{"Name":"BS 正常包","UniqueID":"JuniGrid.Test.BsReal","Version":"1.0.0"}""");
+    File.WriteAllText(Path.Combine(bsMods, "BS 正常包", "changelog.txt"), "keep me");
+    // ⑤ 没有安装标记的散装目录（用户自己放的）⇒ 不归我们清
+    Directory.CreateDirectory(Path.Combine(bsMods, "BS 无标记"));
+    File.WriteAllText(Path.Combine(bsMods, "BS 无标记", "readme.txt"), "user's own");
+
+    var bsList = new ModService().Scan(bsRoot);
+    var bsNames = bsList.Select(m => m.Name ?? "").ToList();
+    Check("BS1 删完捆绑子包留下的空壳（安装标记 + changelog）不再当 mod 列出，目录一并清掉",
+        !Directory.Exists(Path.Combine(bsMods, "BS 只剩标记"))
+        && !Directory.Exists(Path.Combine(bsMods, "BS 标记加说明"))
+        && !bsNames.Any(n => n.Contains("只剩标记") || n.Contains("标记加说明")),
+        "只剩标记目录还在=" + Directory.Exists(Path.Combine(bsMods, "BS 只剩标记"))
+        + " ‖ 标记加说明目录还在=" + Directory.Exists(Path.Combine(bsMods, "BS 标记加说明"))
+        + " ‖ 列表=" + string.Join(",", bsNames));
+    Check("BS2 放宽判据不许误删：没 manifest 但有子目录的素材包、有 manifest 的正常包、没安装标记的散装目录，三样都得留着",
+        Directory.Exists(Path.Combine(bsMods, "BS 素材包")) && Directory.Exists(Path.Combine(bsMods, "BS 正常包"))
+        && Directory.Exists(Path.Combine(bsMods, "BS 无标记"))
+        && File.Exists(Path.Combine(bsMods, "BS 素材包", "Portraits", "Miku", "a.png"))
+        && bsNames.Any(n => n.Contains("BS 正常包")),
+        "素材包在=" + Directory.Exists(Path.Combine(bsMods, "BS 素材包"))
+        + " ‖ 正常包在=" + Directory.Exists(Path.Combine(bsMods, "BS 正常包"))
+        + " ‖ 无标记目录在=" + Directory.Exists(Path.Combine(bsMods, "BS 无标记")));
+
+    try { Directory.Delete(bsRoot, true); } catch { }
+}
+
 // ── OV 覆盖型包（汉化补丁）：宿主判定四出口 + 备份/还原 + 失效校验 ──
 // 这类包没有 manifest.json，只有一个要盖到别人目录里的文件。装错的表现为
 // "列表说装好了、游戏里毫无变化"，用户自己永远查不出来，所以判定和还原都要能证明。
