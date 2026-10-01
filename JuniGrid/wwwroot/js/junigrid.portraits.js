@@ -209,20 +209,6 @@
     // ── GSAP 视觉增强 ──────────────────────────────────────────
 
     /** 角色卡进场 stagger（总览网格） */
-    window.junigridJs.ptGridEnter = function () {
-        if (!window.gsap) return;
-        var cards = document.querySelectorAll('.jg-pt-card');
-        if (!cards.length) return;
-        gsap.killTweensOf(cards);
-        gsap.fromTo(cards,
-            { autoAlpha: 0, y: 18, scale: 0.94 },
-            {
-                autoAlpha: 1, y: 0, scale: 1,
-                duration: 0.45, ease: 'back.out(1.6)',
-                stagger: { each: 0.018, from: 'start' },
-                overwrite: 'auto'
-            });
-    };
 
     /** 磁吸悬停 + 3D 倾斜 + 聚光灯/镭射膜坐标。
      *  只注册**一次**文档级委托：逐张卡 addEventListener 的话，列表一变（搜索/筛选/扫描完成）
@@ -310,12 +296,6 @@
     };
 
     /** 工具栏动作按钮涟漪确认 */
-    window.junigridJs.ptActionPop = function (selector) {
-        if (!window.gsap) return;
-        var el = document.querySelector(selector);
-        if (!el) return;
-        gsap.fromTo(el, { scale: 0.94 }, { scale: 1, duration: 0.4, ease: 'back.out(2.5)' });
-    };
 
     /** 一键应用/恢复后的全网格闪烁确认 */
     window.junigridJs.ptGridFlash = function () {

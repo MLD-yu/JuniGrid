@@ -635,7 +635,7 @@ html[data-theme="dark"] .jg-pt-cover-empty {
 
 /* ── 减少动态偏好 ── */
 @media (prefers-reduced-motion: reduce) {
-    .jg-pt-card, .jg-pt-skin, .jg-pt-season, .jg-pt-act, .jg-pt-lockbtn {
+    .jg-pt-card , .jg-pt-skin , .jg-pt-season , .jg-pt-lockbtn{
         transition: none !important;
     }
     .jg-pt-card::before { display: none; }

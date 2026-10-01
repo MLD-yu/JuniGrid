@@ -10,10 +10,6 @@
     var current = null;
     var hideTimer = null;
 
-    // 把 Windows 系统强调色注入 CSS 变量 --jg-accent（成功 toast 跟随系统配色）
-    window.junigridJs.setAccent = function (hex) {
-        try { if (hex) document.documentElement.style.setProperty('--jg-accent', hex); } catch (e) { }
-    };
 
     // 颜色主题：给 <html> 打 data-accent 选色卡；仅 "system" 时用内联 --jg-accent 注入系统色
     // （内联优先级最高，故非 system 时必须 removeProperty，让 CSS 主题块生效）
@@ -154,47 +150,6 @@ window.junigridJs.tiltPerspective = function (selector, opts) {
     };
 })();
 
-
-// ------------------ 存档下拉（GSAP easeReverse UI interactions 同款弹性开合） ------------------
-(function () {
-    window.junigridJs = window.junigridJs || {};
-
-    window.junigridJs.profileDropdown = function (wrapSel, open) {
-        var wrap = document.querySelector(wrapSel);
-        if (!wrap) return;
-        var menu = wrap.querySelector('.jg-profile-menu');
-        var arrow = wrap.querySelector('.jg-sort-arrow');
-        var items = wrap.querySelectorAll('.jg-profile-item');
-        if (!menu || !window.gsap) { wrap.classList.toggle('open', open); return; }
-
-        // v1.1.2：存档下拉同步外部遮罩（按 data-dd 键配对，见 dropdownToggle 内注释）——
-        // 此前遮罩永远没有 .open，点外部收不掉（既有 bug）
-        document.querySelectorAll('.jg-dd-overlay').forEach(function (o) {
-            o.classList.toggle('open', !!open && o.dataset.dd === wrap.dataset.dd);
-        });
-
-        gsap.killTweensOf([menu, arrow]);
-        if (open) {
-            wrap.classList.add('open');
-            var tl = gsap.timeline();
-            tl.to(arrow, { rotation: 180, duration: 0.7, ease: 'elastic.out(1.2, 0.32)' }, 0)
-              .fromTo(menu,
-                  { autoAlpha: 0, yPercent: -22, scale: 0.72, transformOrigin: 'top center' },
-                  { autoAlpha: 1, yPercent: 0, scale: 1, duration: 0.7, ease: 'elastic.out(1.2, 0.32)' }, 0)
-              .from(items, { opacity: 0, x: -16, duration: 0.32, ease: 'back.out(2.6)', stagger: 0.05 }, 0.08);
-        } else {
-            // 退出用 timeScale 加速 + 平滑缓出（demo 里 easeReverse/timeScale 的用意）
-            var tl2 = gsap.timeline({
-                onComplete: function () {
-                    wrap.classList.remove('open');
-                    gsap.set(menu, { autoAlpha: 0 });
-                }
-            });
-            tl2.to(arrow, { rotation: 0, duration: 0.28, ease: 'power2.inOut' }, 0)
-               .to(menu, { autoAlpha: 0, yPercent: -14, scale: 0.86, duration: 0.24, ease: 'power2.in' }, 0);
-        }
-    };
-})();
 
 // ------------------ data-tip 跟随鼠标胶囊提示（与导航栏一致） ------------------
 (function () {

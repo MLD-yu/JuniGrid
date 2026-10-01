@@ -2,17 +2,7 @@
    home：首页 Hero + 统计卡 / 日志配色 / 响应式断点 / SMAPI 置顶卡
    ============================================================ */
 /* -------- Hero + cards -------- */
-.jg-hero {
-    border-radius: 14px;
-    padding: 18px 22px;
-    margin-bottom: 14px;
-    background: linear-gradient(135deg, var(--jg-hover), rgba(16,185,129,0.08));
-    border: 1px solid var(--jg-line);
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 14px;
-}.jg-card {
+.jg-card {
     padding: 14px 16px;
     border-radius: 12px;
     background: var(--neutral-layer-1, #ffffff);
