@@ -412,7 +412,7 @@
         if (!NexusService.IsAuthenticated)
         {
             _loading = false;
-            _error = LocService.Tr("还没配置 Nexus API Key —— 先到「Nexus」页粘贴你的 Personal API Key。");
+            _error = LocService.Tr("还没登录 Nexus —— 先到「Nexus」页登录，再回来看详情页。");
             return;
         }
 
@@ -436,7 +436,7 @@
             if (!_detailCache.TryGetValue(ModId, out var hit) || DateTime.UtcNow - hit.At > DetailCacheTtl)
             {
                 var mod = await NexusApi.GetModDetailAsync(ModId);
-                if (mod is null) { _error = LocService.Tr("拉取失败 —— 检查网络或 API Key 是否有效。"); }
+                if (mod is null) { _error = LocService.Tr("拉取失败 —— 检查网络；若一直失败，去「Nexus」页重新登录一次。"); }
                 else
                 {
                     // v0.72.0：拉最新 MAIN 文件做可更新判定（与一键直装同源）。失败静默。

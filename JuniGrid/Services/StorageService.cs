@@ -514,6 +514,7 @@ public sealed class StorageService
         var oldWv2 = StoragePaths.WebView2Dir;
         var oldSelfUpdate = StoragePaths.SelfUpdateDir;
         var oldVerCache = StoragePaths.DepotStagingDir;
+        var oldThumbs = StoragePaths.InCache("portrait-covers");
 
         if (SelfUpdateService.CacheBusy)
             return LocService.Tr("自更新安装包正在下载，稍后再更改缓存目录");
@@ -534,6 +535,8 @@ public sealed class StorageService
                 (oldBackup, StoragePaths.ModsBackupDir),
                 (oldSelfUpdate, StoragePaths.SelfUpdateDir),
                 (oldVerCache, StoragePaths.DepotStagingDir),
+                // 立绘缩略图缓存跟着走 —— 不迁的话换根后肖像页整页空白重建
+                (oldThumbs, StoragePaths.InCache("portrait-covers")),
             };
             var movedNotes = new List<string>();
             foreach (var (oldDir, target) in pairs)
@@ -574,6 +577,8 @@ public sealed class StorageService
                   (skipped > 0 ? $"，{ResumableDownload.FormatBytes(skipped)} 正在使用留在原目录" : "") + wv2Note;
             _center.Finish(task, true, msg);
             AppLog.Warn("Storage", $"缓存目录迁移到 {newRoot ?? "<默认>"}：挪入 {moved}，跳过 {skipped}");
+            // 缩略图虚拟主机跟着新缓存根重新映射，否则短 URL 全 404
+            try { PortraitSkinService.RemapThumbHost?.Invoke(); } catch { }
             lock (_gate) _sizes.Clear();
             RefreshAll(force: true);
             return msg;

@@ -28,6 +28,10 @@
             st = { sw: sw, knob: knob, row: hostOf(sw), x: 0, v: 0, flow: 0, target: 0, travel: 0, half: 0, raf: 0, drag: null, swallow: false };
             if (!st.row) return null;
             rows.set(sw, st);
+            measure(st);
+            // 起点按当前 .on 摆好：没被交互过的开关第一次被 Blazor 翻掉时，
+            // 弹簧才有"从哪儿出发"，否则它以为自己已经在终点。
+            st.x = st.target = restX(st);
         }
         return st;
     }
@@ -147,6 +151,30 @@
         if (e.key !== 'Escape') return;
         rows.forEach(function (st) { if (st.drag) endDrag({ pointerId: st.drag.id }, true); });
     });
+
+    // Blazor 把 .on 翻掉时（覆盖包互斥切换里"让位"的那一颗、批量启禁、代码里改状态）没有任何
+    // pointer 交互，静止位置直接归 CSS —— 旋钮是瞬移的，看着就像开关没动画。
+    // 这里补一段同款弹簧：类一变，就从当前 x 弹到新的落位。MutationObserver 的微任务跑在
+    // 浏览器绘制之前，所以那一帧的 CSS 瞬移根本不会被画出来。
+    if (window.MutationObserver) {
+        new MutationObserver(function (muts) {
+            var hits = [];
+            for (var i = 0; i < muts.length; i++) {
+                var host = muts[i].target;
+                if (!host.classList) continue;
+                if (!host.classList.contains('jg-squish-host') && !host.classList.contains('jg-switch-row')) continue;
+                var sw = trackOf(host); if (!sw) continue;
+                var st = stateOf(sw); if (!st || st.drag || st.raf) continue;
+                var to = restX(st);
+                if (Math.abs(to - st.x) < 0.5) continue;      // 类变了但落位没变（渲染抖动）
+                hits.push([st, to]);
+            }
+            // 一次翻太多（例如「批量禁用」145 行同帧翻转）就不弹了：
+            // 一百多条弹簧同帧写样式会掉帧，那种场合瞬移比糊成一片好看。
+            if (hits.length > 12) return;
+            for (var j = 0; j < hits.length; j++) { hits[j][0].target = hits[j][1]; hits[j][0].v = 0; start(hits[j][0]); }
+        }).observe(document.body, { subtree: true, attributes: true, attributeFilter: ['class'] });
+    }
 
     window.junigridJs.squishSwitchInit = function () {
         document.querySelectorAll('.jg-switch').forEach(function (sw) { var st = stateOf(sw); if (st) measure(st); });

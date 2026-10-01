@@ -81,6 +81,55 @@ public partial class MainWindow : Window
         catch (Exception ex) { Log("EnsureStaticWebAssetContentRoots: " + ex.Message); }
     }
 
+    /// <summary>把立绘缩略图缓存目录挂到 https://junigrid-assets/ 。
+    /// 用 WebResourceRequested 动态吐文件（跟着当前 CacheRoot 走，迁移缓存目录也不用重映射）。</summary>
+    private static void MapPortraitThumbHost(CoreWebView2 core)
+    {
+        try
+        {
+            Directory.CreateDirectory(StoragePaths.InCache("portrait-covers"));
+            core.AddWebResourceRequestedFilter(
+                "https://junigrid-assets/*", CoreWebView2WebResourceContext.All);
+            core.WebResourceRequested -= OnThumbWebResourceRequested;
+            core.WebResourceRequested += OnThumbWebResourceRequested;
+            Services.PortraitSkinService.ThumbHostBase = "https://junigrid-assets";
+            Log("立绘缩略图短 URL 通道已挂上 → " + StoragePaths.InCache("portrait-covers"));
+        }
+        catch (Exception ex) { Log("MapPortraitThumbHost 失败: " + ex.Message); }
+    }
+
+    private static void OnThumbWebResourceRequested(object? sender, CoreWebView2WebResourceRequestedEventArgs e)
+    {
+        CoreWebView2? core = sender as CoreWebView2;
+        try
+        {
+            if (!e.Request.Uri.StartsWith("https://junigrid-assets/", StringComparison.OrdinalIgnoreCase)) return;
+            var name = Path.GetFileName(new Uri(e.Request.Uri).LocalPath);
+            static CoreWebView2WebResourceResponse? NotFound(CoreWebView2? c) =>
+                c?.Environment.CreateWebResourceResponse(Stream.Null, 404, "Not Found", "Content-Type: text/plain");
+            if (string.IsNullOrEmpty(name) || name.Contains("..")
+                || name.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+            {
+                e.Response = NotFound(core);
+                return;
+            }
+            var path = Path.Combine(StoragePaths.InCache("portrait-covers"), name);
+            if (!File.Exists(path))
+            {
+                e.Response = NotFound(core);
+                return;
+            }
+            var fs = File.OpenRead(path);
+            e.Response = core?.Environment.CreateWebResourceResponse(
+                fs, 200, "OK",
+                "Content-Type: image/png\r\nCache-Control: public, max-age=31536000, immutable\r\n");
+        }
+        catch
+        {
+            try { e.Response = core?.Environment.CreateWebResourceResponse(Stream.Null, 500, "Error", ""); } catch { }
+        }
+    }
+
     public MainWindow()
     {
         try
@@ -237,6 +286,15 @@ public partial class MainWindow : Window
             // 启动恢复 OAuth2 持久会话（有 token 则挂上 Bearer，过期则后台刷新）
             provider.GetRequiredService<NexusOAuthService>().RestoreSession();
 
+            // access token 会在会话中途过期：把刷新器挂到静态的 NexusService 上，
+            // 让每个带 Bearer 的请求在发出前自己续期 —— 否则用到一半就"拉取失败、重登才好"。
+            // 守卫必须留在这里：RefreshAsync 不看余量，只要手里有 refresh_token 就真发请求，
+            // 不判 NeedsRefresh 就等于每 10s 白打一次令牌端点（令牌本身还有半小时才到期）。
+            NexusService.EnsureFreshToken = async () =>
+            {
+                var oauth = provider.GetRequiredService<NexusOAuthService>();
+                if (oauth.NeedsRefresh) await oauth.RefreshAsync();
+            };
 
             // 游戏在运行但不是本程序启动的（如 JuniGrid 重启）→ 接上现有 SMAPI 日志
             provider.GetRequiredService<LauncherService>().AttachIfGameRunning();
@@ -289,6 +347,19 @@ public partial class MainWindow : Window
                     // 任何"还没内容"的帧都是界面本来的浅色，恢复全程无色跳。
                     args.WebView.DefaultBackgroundColor =
                         System.Drawing.Color.FromArgb(0xFF, 0xF3, 0xF6, 0xFB);
+                    // v1.7.37：立绘缩略图走虚拟主机短 URL（https://junigrid-assets/xxx.png）。
+                    // 以前每张封面都是 data URI 塞进 Blazor 树，进肖像页要 diff/解码几百 KB
+                    // base64，封面才慢慢亮起来。映射到磁盘缓存目录后浏览器自己缓存图片。
+                    MapPortraitThumbHost(args.WebView.CoreWebView2);
+                    PortraitSkinService.RemapThumbHost = () =>
+                    {
+                        try
+                        {
+                            if (_wv2?.CoreWebView2 is { } core)
+                                MapPortraitThumbHost(core);
+                        }
+                        catch { }
+                    };
                     args.WebView.CoreWebView2.WebMessageReceived += (_, e) =>
                     {
                         try

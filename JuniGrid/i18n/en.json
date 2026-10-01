@@ -914,5 +914,9 @@
   "依赖被禁": "Dep disabled",
   "{0} 依赖的 {1} 当前被禁用 —— 游戏里 SMAPI 会跳过 {0}（不是没装，是装着但关了）。点一下把依赖打开。": "{1} that {0} depends on is currently disabled - SMAPI will skip {0} in-game (it is installed, just switched off). Click to enable the dependency.",
   "{0} 依赖的 {1} 是捆绑包里不单独成行的子包 —— 启用它的整包就行": "{1} that {0} depends on is a sub-package inside a bundle with no row of its own - just enable its whole bundle.",
-  "（{0}）": "({0})"
+  "（{0}）": "({0})",
+  "非官方接手": "Unofficial successor",
+  "作者已停更": "No longer maintained",
+  "你装的 {0} 就是社区接手的那一版 · 原作者已停更 · 点一下打开接手版页面": "The {0} you have IS the community-maintained build · original author stopped · click to open that page",
+  "你装的 {0} 是社区接手版 · 原作者已停更 · 点一下打开原页面（已停更）": "The {0} you have is a community-maintained build · original author stopped · click to open the original page (no longer updated)"
 }

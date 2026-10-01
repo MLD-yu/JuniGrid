@@ -152,9 +152,26 @@
                     else
                     {
                         <text>@Loc.F("当前版本：{0}", SmapiDisplay)</text>
-                        @if (_smapiUpdate is { HasUpdate: true } && !SmapNeedsOld)
+                        @if (_smapiUpdate is { HasUpdate: true, LatestVersion: not null } && !SmapNeedsOld)
                         {
-                            <span style="color:#b4009e;font-weight:600">@Loc.F(" ⇧ 新版本 {0} 可用", _smapiUpdate.LatestVersion)</span>
+                            @* 新版本徽标：右箭头 + 「新版本」+ 版本号；点版本号直接更新 *@
+                            <button type="button" class="jg-newver" disabled="@_smapiUpdating"
+                                    title="@(_smapiUpdating ? Loc.T("正在更新…") : Loc.F("点击更新到 {0}", _smapiUpdate.LatestVersion!))"
+                                    @onclick="UpdateSmapi">
+                                <svg class="jg-newver-arrow" viewBox="0 0 1024 1024" aria-hidden="true">
+                                    <path d="M560 512.414C560 453.643 512.357 406 453.586 406H204.414C145.643 406 98 453.643 98 512.414v0.172C98 571.357 145.643 619 204.414 619h249.172C512.357 619 560 571.357 560 512.586v-0.172z" fill="currentColor"/>
+                                    <path d="M630.024 211.105l20.067 16.805 124.46 103.419L818 366.98v0.146l39.008 33.527 24.734 21.15c22.165 18.618 35.789 41.557 41.386 65.588 5.395 23.169 2.94 47.343-7.045 69.656-7.398 16.532-19.033 32.047-34.867 45.347l-21.025 17.62a128.674 128.674 0 0 1-3.92 3.425l-40.2 33.659-42.484 35.575-118.372 99.341a133.759 133.759 0 0 1-5.123 4.078l-20.068 16.805c-36.162 30.236-79.744 36.785-117.069 22.211-24.069-9.397-45.542-27.555-60.722-53.889l-2.171-3.77c-5.856-13.007-9.497-27.58-10.563-43.322l-0.455 0.443s41.854-154.592 41.854-222.471-41.758-212.887-41.758-212.887c0.035-19.354 3.923-37.113 10.923-52.66l2.171-3.77c14.42-25.015 34.524-42.636 57.131-52.395a112.775 112.775 0 0 1 3.59-1.494c37.325-14.574 80.907-8.024 117.069 22.212z" fill="currentColor"/>
+                                </svg>
+                                <span class="jg-newver-label">@Loc.T("新版本")</span>
+                                @if (_smapiUpdating)
+                                {
+                                    <span class="jg-newver-num">@Loc.T("更新中…")</span>
+                                }
+                                else
+                                {
+                                    <span class="jg-newver-num">@_smapiUpdate.LatestVersion</span>
+                                }
+                            </button>
                         }
                         else if (SmapNeedsOld)
                         {
@@ -220,6 +237,7 @@
         {
             <button class="jg-chip @(_filter == f.Key ? "active" : "")"
                     style="@(f.Key == "updatable" && FailedCheckCount > 0 ? "position:relative" : "")"
+                    data-tip="@FilterTip(f.Key)"
                     @onclick="() => SetFilter(f.Key)">
                 @Loc.T(f.Label)<span style="opacity:.7;font-weight:400"> · @CountFor(f.Key)</span>
                 @if (f.Key == "updatable" && FailedCheckCount > 0)
@@ -343,12 +361,27 @@
                                 }
                                 else if (NexusUpdateTruth.ShouldShowUpdate(Cfg.Current, m, st.RemoteVersion, st.RemoteFileId))
                                 {
-                                    <span class="upd jg-upd-jump" title='@Loc.F("点击打开 {0} 的下载页", st.RemoteVersion)'
-                                          @onclick="() => OpenUpdatePage(m)" @onclick:stopPropagation="true">⇧ @st.RemoteVersion</span>
+                                    @* 新版本徽标：右箭头 + 「新版本」+ 版本号；点版本号打开下载页 *@
+                                    <button type="button" class="jg-newver"
+                                            title='@Loc.F("点击打开 {0} 的下载页", st.RemoteVersion)'
+                                            @onclick="() => OpenUpdatePage(m)" @onclick:stopPropagation="true">
+                                        <svg class="jg-newver-arrow" viewBox="0 0 1024 1024" aria-hidden="true">
+                                            <path d="M560 512.414C560 453.643 512.357 406 453.586 406H204.414C145.643 406 98 453.643 98 512.414v0.172C98 571.357 145.643 619 204.414 619h249.172C512.357 619 560 571.357 560 512.586v-0.172z" fill="currentColor"/>
+                                            <path d="M630.024 211.105l20.067 16.805 124.46 103.419L818 366.98v0.146l39.008 33.527 24.734 21.15c22.165 18.618 35.789 41.557 41.386 65.588 5.395 23.169 2.94 47.343-7.045 69.656-7.398 16.532-19.033 32.047-34.867 45.347l-21.025 17.62a128.674 128.674 0 0 1-3.92 3.425l-40.2 33.659-42.484 35.575-118.372 99.341a133.759 133.759 0 0 1-5.123 4.078l-20.068 16.805c-36.162 30.236-79.744 36.785-117.069 22.211-24.069-9.397-45.542-27.555-60.722-53.889l-2.171-3.77c-5.856-13.007-9.497-27.58-10.563-43.322l-0.455 0.443s41.854-154.592 41.854-222.471-41.758-212.887-41.758-212.887c0.035-19.354 3.923-37.113 10.923-52.66l2.171-3.77c14.42-25.015 34.524-42.636 57.131-52.395a112.775 112.775 0 0 1 3.59-1.494c37.325-14.574 80.907-8.024 117.069 22.212z" fill="currentColor"/>
+                                        </svg>
+                                        <span class="jg-newver-label">@Loc.T("新版本")</span>
+                                        <span class="jg-newver-num">@st.RemoteVersion</span>
+                                    </button>
                                 }
                                 else if (st.Status is "updating")
                                 {
-                                    <span class="upd">@Loc.T("⇧ 更新中…")</span>
+                                    <span class="jg-newver">
+                                        <svg class="jg-newver-arrow" viewBox="0 0 1024 1024" aria-hidden="true">
+                                            <path d="M560 512.414C560 453.643 512.357 406 453.586 406H204.414C145.643 406 98 453.643 98 512.414v0.172C98 571.357 145.643 619 204.414 619h249.172C512.357 619 560 571.357 560 512.586v-0.172z" fill="currentColor"/>
+                                            <path d="M630.024 211.105l20.067 16.805 124.46 103.419L818 366.98v0.146l39.008 33.527 24.734 21.15c22.165 18.618 35.789 41.557 41.386 65.588 5.395 23.169 2.94 47.343-7.045 69.656-7.398 16.532-19.033 32.047-34.867 45.347l-21.025 17.62a128.674 128.674 0 0 1-3.92 3.425l-40.2 33.659-42.484 35.575-118.372 99.341a133.759 133.759 0 0 1-5.123 4.078l-20.068 16.805c-36.162 30.236-79.744 36.785-117.069 22.211-24.069-9.397-45.542-27.555-60.722-53.889l-2.171-3.77c-5.856-13.007-9.497-27.58-10.563-43.322l-0.455 0.443s41.854-154.592 41.854-222.471-41.758-212.887-41.758-212.887c0.035-19.354 3.923-37.113 10.923-52.66l2.171-3.77c14.42-25.015 34.524-42.636 57.131-52.395a112.775 112.775 0 0 1 3.59-1.494c37.325-14.574 80.907-8.024 117.069 22.212z" fill="currentColor"/>
+                                        </svg>
+                                        <span class="jg-newver-num">@Loc.T("更新中…")</span>
+                                    </span>
                                 }
                                 @if (m.Disabled)
                                 {
@@ -358,6 +391,14 @@
                                 {
                                     <span class="jg-tag" style="background:rgba(232,17,35,.12);color:#c50f1f">@Loc.T("无清单")</span>
                                 }
+                                @* v1.2.6：依赖装着但被禁用了 —— SMAPI 照样把依赖方 Skipped，
+                                   而「缺依赖」抓不到它（确实装了）。单独一条标签，点一下开依赖。 *@
+                                @if (!m.Disabled && DisabledDeps(m) is { Count: > 0 } offDeps)
+                                {
+                                    <span class="jg-tag broken"
+                                          data-tip='@Loc.F("{0} 依赖的 {1} 当前被禁用 —— 游戏里 SMAPI 会跳过 {0}（不是没装，是装着但关了）。点一下把依赖打开。", m.Name, string.Join("、", offDeps))'
+                                          @onclick="() => EnableItsDependencies(m)" @onclick:stopPropagation="true">@Loc.T("依赖被禁")</span>
+                                }
                                 @* v1.2.5：SMAPI 社区兼容性库点名「在当前游戏版本上有问题」的 mod。
                                    只标负面判定 —— 库里查不到的（实测本机约 1/3）一律不标，
                                    否则玩家会把"没数据"读成"已检查通过"。点徽标直达替代版本。 *@
@@ -365,6 +406,13 @@
                                 {
                                     <span class="jg-tag broken" data-tip="@BrokenTip(m)"
                                           @onclick="() => OpenBrokenFix(m)" @onclick:stopPropagation="true">@broken</span>
+                                }
+                                @* 上游的建议早已兑现（你跑的就是它指的那一版）→ 不报警告，但也不能变成"什么都没说过"：
+                                   挂一条中性标签留着"原作者不干了、这是接手版"这条信息。不进「维护存疑」计数。 *@
+                                @if (UnofficialTag(m) is { } unof)
+                                {
+                                    <span class="jg-tag" data-tip="@UnofficialTip(m)"
+                                          @onclick="() => OpenUnofficial(m)" @onclick:stopPropagation="true">@unof</span>
                                 }
                                 @* v1.2.5：有覆盖型包（汉化补丁）盖在这个 mod 上。点开看清单、可逐个还原。
                                    失效要单独标出来 —— 宿主 mod 更新会把覆盖整个端走，不标就等于骗人说汉化还在生效。 *@
@@ -403,7 +451,7 @@
                                 <span class="jg-switch"><span class="jg-switch-knob"></span></span>
                             </button>
 
-                            <div class="jg-sort-dd jg-modmenu @(_menuFolder == m.Folder ? "open" : "") @(_menuClosingFolder == m.Folder ? "closing" : "")" data-dd="modmenu">
+                            <div class="jg-sort-dd jg-modmenu @(_menuFolder == m.Folder ? "open" : "")" data-dd="modmenu">
                                 <button class="jg-rowbtn jg-modmenu-btn" data-tip='@Loc.T("更多操作")' aria-label='@Loc.T("更多操作")'
                                         @onclick="() => ToggleMenu(m.Folder)">
                                     <svg class="jg-rowbtn-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
@@ -639,48 +687,59 @@
                 <div class="jg-modal-title">@Loc.F("盖在「{0}」上的覆盖包", _overlayHost)</div>
                 <div class="jg-modal-body">
                     <div class="jg-dep-list">
-                        @foreach (var (key, rec) in OverlayRows())
+                        @foreach (var g in OverlayGroups())
                         {
-                            var gone = _overlayHealth.StaleKeys.Contains(key);
+                            var rec = g.Rec;
+                            var gone = g.Stale > 0;
                             var title = OverlayTitle(rec);
+                            var canOpen = rec.NexusModId is int;
                             <div class="jg-dep-row" style="display:flex;align-items:center;gap:10px;min-width:0">
-                                @if (!string.IsNullOrEmpty(rec.PackCover))
-                                {
-                                    <img src="@rec.PackCover" alt="" loading="lazy"
-                                         style="width:34px;height:34px;border-radius:6px;object-fit:cover;flex:none" />
-                                }
-                                else
-                                {
-                                    <div class="jg-modrow-icon jg-modrow-icon-fallback"
-                                         style="width:34px;height:34px;border-radius:6px;flex:none;font-size:14px">
-                                        @(title.Length > 0 ? title[..1].ToUpperInvariant() : "?")
-                                    </div>
-                                }
-                                <div style="flex:1;min-width:0">
-                                    <div style="font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">@title</div>
-                                    <div style="font-size:11px;opacity:.5;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
-                                        @rec.RelPath
-                                        @if (gone)
-                                        {
-                                            <span style="color:#c50f1f"> · @Loc.T("已不在")</span>
-                                        }
+                                @* 封面 + 名字这一块就是「进这个汉化包的 N 网详情页」的入口；
+                                   名字被省略号截断，所以整块挂 data-tip 显示全名。 *@
+                                <div style="display:flex;align-items:center;gap:10px;flex:1;min-width:0;@(canOpen ? "cursor:pointer" : "")"
+                                     data-tip="@title" @onclick="() => GoOverlayDetail(rec)" @onclick:stopPropagation="true">
+                                    @if (!string.IsNullOrEmpty(rec.PackCover))
+                                    {
+                                        <img src="@rec.PackCover" alt="" loading="lazy"
+                                             style="width:34px;height:34px;border-radius:6px;object-fit:cover;flex:none" />
+                                    }
+                                    else
+                                    {
+                                        <div class="jg-modrow-icon jg-modrow-icon-fallback"
+                                             style="width:34px;height:34px;border-radius:6px;flex:none;font-size:14px">
+                                            @(title.Length > 0 ? title[..1].ToUpperInvariant() : "?")
+                                        </div>
+                                    }
+                                    <div style="flex:1;min-width:0">
+                                        <div style="font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">@title</div>
+                                        <div style="font-size:11px;opacity:.5;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+                                            @(g.Keys.Count == 1 ? g.Rec.RelPath : Loc.F("{0} 个文件", g.Keys.Count))
+                                            @if (gone)
+                                            {
+                                                <span style="color:#c50f1f"> · @Loc.T("已不在")</span>
+                                            }
+                                        </div>
                                     </div>
                                 </div>
                                 @* 开关就是启用/停用本身：关掉时把原文件放回去、开着时从我们留的副本再放上去，
-                                   不需要重新下载汉化包。已失效的那行打开开关等于重新应用一次。 *@
-                                <span class="jg-squish-host @(rec.Enabled ? "on" : "")" role="switch"
-                                      aria-checked="@rec.Enabled" data-tip="@Loc.T("开 = 用汉化包的文件；关 = 换回原版，随时可切")"
-                                      @onclick="() => ToggleOverlay(key, !rec.Enabled)" @onclick:stopPropagation="true">
+                                   不需要重新下载汉化包。已失效的那行打开开关等于重新应用一次。
+                                   宿主必须是 button + .jg-modrow-switch（display:flex）：写成裸 span 的话
+                                   .jg-switch 那颗轨道也是 inline，40x22 宽高不生效，实机只剩一个黑点
+                                   （同 portraits.css 那条 2026-09-30 的坑）。 *@
+                                <button type="button" class="jg-modrow-switch jg-squish-host @(g.AnyOn ? "on" : "")" role="switch"
+                                        aria-checked="@g.AnyOn" data-tip="@Loc.T("打开即启用此覆盖包")"
+                                        @onclick="() => ToggleOverlayGroup(g, !g.AnyOn)" @onclick:stopPropagation="true">
                                     <span class="jg-switch"><span class="jg-switch-knob"></span></span>
-                                </span>
+                                </button>
                                 @* 已失效的那行不叫"还原"：宿主目录被重装过，磁盘上那份就是上游新版，
                                    没有东西可以还原，点它只是把这条账销掉。 *@
                                 <button type="button" class="jg-pill-ghost"
-                                        @onclick="() => RevertOneOverlay(key)">@(gone ? Loc.T("清除记录") : Loc.T("删除"))</button>
+                                        @onclick="() => RevertOverlayGroup(g)">@(gone ? Loc.T("清除记录") : Loc.T("删除"))</button>
                             </div>
                         }
                     </div>
-                    <div style="margin-top:8px;font-size:12px;opacity:.6">@Loc.T("开关只是换文件，不删东西：关掉时把原版放回去，打开时再把汉化版盖上去（原版一直留一份备份）。删除才会清掉备份和这份汉化包。宿主 mod 更新过一次的话汉化会失效，打开一次开关就能重新应用。")</div>
+                    @* 只留这一句：宿主 mod 更新把覆盖端走，是唯一会让人"以为汉化还在生效"的坑。 *@
+                    <div style="margin-top:8px;font-size:12px;opacity:.6">@Loc.T("宿主 mod 更新过一次的话汉化会失效，打开一次开关就能重新应用。")</div>
                 </div>
                 <div class="jg-modal-actions">
                     <button type="button" class="jg-pill-ghost" @onclick="CloseOverlayList">@Loc.T("关闭")</button>
@@ -1116,8 +1175,18 @@
     private async Task ApplyProfile(string name)
     {
         if (name == ActiveProfileName) return;
-        // v0.50.0：写回前先 Rescan 拿磁盘真实状态，防止写陈旧数据 → 串档
-        Rescan();
+        var __tAll = System.Diagnostics.Stopwatch.GetTimestamp();
+        // v0.50.0：写回前先 Rescan 拿磁盘真实状态，防止写陈旧数据 → 串档。
+        // v1.1.8：判重清理+全盘扫描挪后台 —— 同步跑会在 UI 线程冻住整窗（几百 mod 秒级）。
+        var __t = System.Diagnostics.Stopwatch.GetTimestamp();
+        var scanned = await Task.Run(() =>
+        {
+            try { ModSvc.CleanupDuplicateCopies(Cfg.Current.GamePath); }
+            catch (Exception ex) { AppLog.Warn("Mods", "多副本清理失败: " + ex.Message); }
+            return ModSvc.Scan(Cfg.Current.GamePath);
+        });
+        Rescan(scanned);
+        var __rescanMs = ElapsedMs(__t);
         PersistCurrentToActive();
         var profile = AllProfiles.FirstOrDefault(p => p.Name == name);
         if (profile is null) return;
@@ -1145,20 +1214,33 @@
         {
             var gamePath = Cfg.Current.GamePath;
             // v0.72.8：结构化错误结果，不再用字符串 Split(':') 反解析（文件夹名含 ':' 会截断）
+            // v1.1.8：顶层目录互不依赖，并行改名 —— 启用集合差得越多顶层越多，
+            // 串行 + 占用重试 Sleep 会把切档拖成分钟级。
+            __t = System.Diagnostics.Stopwatch.GetTimestamp();
             var errs = await Task.Run(() =>
             {
-                var list = new List<(string Folder, string Error)>();
-                foreach (var (top, disable) in topOps)
+                var bag = new System.Collections.Concurrent.ConcurrentBag<(string Folder, string Error)>();
+                if (topOps.Count > 0)
                 {
-                    var err = ModSvc.SetDisabled(gamePath, top, disable);
-                    if (err is not null) list.Add((top, err));
+                    var dop = Math.Clamp(topOps.Count, 2, 8);
+                    Parallel.ForEach(topOps,
+                        new ParallelOptions { MaxDegreeOfParallelism = dop },
+                        kv =>
+                        {
+                            var err = ModSvc.SetDisabled(gamePath, kv.Key, kv.Value);
+                            if (err is not null) bag.Add((kv.Key, err));
+                        });
                 }
-                return list;
+                return bag.ToList();
             });
+            var __renameMs = ElapsedMs(__t);
             foreach (var (folder, err) in errs)
                 AppLog.Warn("Mods", $"存档切换失败：{folder} - {err}");
 
-            // 增量更新内存状态：按子条目统一更新 Disabled + Folder + 缓存迁移
+            // 增量更新内存状态：按子条目统一更新 Disabled + Folder + 缓存迁移。
+            // persist:false —— 整轮只在末尾 Cfg.Save 一次，避免每条迁移都广播 Saved
+            // （AccountPanel.ProbeVersions 会对 exe 做 FileVersionInfo，N 条就探 N 次）。
+            __t = System.Diagnostics.Stopwatch.GetTimestamp();
             var errTops = new HashSet<string>(errs.Select(e => e.Folder), StringComparer.OrdinalIgnoreCase);
             foreach (var m in _mods)
             {
@@ -1172,9 +1254,12 @@
                 var newFolder = disable
                     ? (m.Folder.StartsWith('.') ? m.Folder : "." + m.Folder)
                     : m.Folder.TrimStart('.');
-                MigrateFolderCaches(m.Folder, newFolder);   // 内部把条目 folder 一并改掉
+                MigrateFolderCaches(m.Folder, newFolder, persist: false);   // 内部把条目 folder 一并改掉
                 m.Disabled = disable;
             }
+            var __migrateMs = ElapsedMs(__t);
+            ModsPerf($"切档「{name}」 {topOps.Count} 个顶层",
+                ("写回前重扫", __rescanMs), ("并行改名", __renameMs), ("缓存迁移", __migrateMs));
         }
         finally
         {
@@ -1184,6 +1269,7 @@
         SetActiveProfileName(name);
         Cfg.Save(Cfg.Current);
         ShowNotice("ok", LocService.Tf("已切换到存档「{0}」", name));
+        ModsPerf("　↳ 切档收尾", ("合计", ElapsedMs(__tAll) - __rescanMs));
         await InvokeAsync(StateHasChanged);
     }
 
@@ -1325,8 +1411,15 @@
         ("disabled",  "已禁用"),
         ("updatable", "可更新"),
         ("missing",   "缺依赖"),
-        ("broken",    "失效"),
+        // 这条不叫"失效"：它含的是 SMAPI 清单给的维护状态（需非官方版/有替代版/已过期…），
+        // 实测这些 mod 大多照样被 SMAPI 正常加载，叫"失效"会让人以为不能用。
+        ("broken",    "维护存疑"),
     };
+
+    /// <summary>筛选项的悬停解释：只有容易被误读的那条需要。</summary>
+    private string? FilterTip(string key) => key == "broken"
+        ? Loc.T("SMAPI 兼容性清单给的维护状态（需非官方版 / 有替代版 / 已失效 / 已过期 / 作者弃养），不代表当前版本用不了 —— 能不能用看游戏启动日志")
+        : null;
 
     /// <summary>已装 UniqueID 集合（v1.2.3：指向 ReindexMods 维护的缓存，不再每次访问全表重建）。</summary>
     private HashSet<string> InstalledUids => _installedUids;
@@ -1392,12 +1485,21 @@
 
     private bool IsBroken(ModEntry m) =>
         _smapiPrecheckStatus is not null
-        && _smapiPrecheckStatus.TryGetValue(m.Folder, out var st) && IsBadCompatStatus(st);
+        && _smapiPrecheckStatus.TryGetValue(m.Folder, out var st) && IsBadCompatStatus(st)
+        && !AltIsSelfNow(m) && !AltEvidenceInFlight(m);
+
+    /// <summary>这一行的身份证据还在路上，先别落徽标。只推迟"除替代版页面版本以外没有别的证据"的行：
+    /// summary 里直接写了推荐版本号的（<c>&lt;small&gt;</c>）与"替代版就是自己那页"的当场就能判，
+    /// 不该被推迟；解析彻底失败的行在证据标记落下后照常标出来，不会永远压着不报。</summary>
+    private bool AltEvidenceInFlight(ModEntry m) => _altEvidencePending
+        && AltOf(m) is null && AltVerOf(m) is null
+        && string.IsNullOrEmpty(RecommendedVersion(BrokenRaw(m)));
 
     private string? BrokenBadge(ModEntry m)
     {
         if (_smapiPrecheckStatus is null
             || !_smapiPrecheckStatus.TryGetValue(m.Folder, out var st) || !IsBadCompatStatus(st)) return null;
+        if (AltIsSelfNow(m) || AltEvidenceInFlight(m)) return null;
         return st switch
         {
             "unofficial" => Loc.T("需非官方版"),
@@ -1409,36 +1511,83 @@
         };
     }
 
+    /// <summary>被点名、但上游的建议早已兑现（你跑的就是它指的那一版）的行：<b>不报警告</b>，
+    /// 只挂一条中性标签，把"原作者不干了、这是社区接手版"这条信息留着。撤徽标撤的是重复提醒，
+    /// 不是这条事实 —— 什么都不说等于把已知信息删掉。不计入「维护存疑」，也不与警告徽标同时出现。</summary>
+    private string? UnofficialTag(ModEntry m)
+    {
+        if (_smapiPrecheckStatus is null
+            || !_smapiPrecheckStatus.TryGetValue(m.Folder, out var st) || !IsBadCompatStatus(st)) return null;
+        if (AltEvidenceInFlight(m) || !AltIsSelfNow(m)) return null;
+        return st == "unofficial" ? Loc.T("非官方接手") : Loc.T("作者已停更");
+    }
+
+    /// <summary>中性标签的落点：优先"你跑的这一版实际住在的那一页"（搜到的替代版页，或 summary
+    /// 链接指的页），都没有才回落到它自己的页面。文案与点击共用这一个判据。</summary>
+    internal static (string Url, bool OnForkPage) PickUnofficialTarget(
+        string? rawSummary, (int ModId, string Name)? alt, int? nexusModId, string name, string folder)
+    {
+        var page = alt?.ModId ?? SummaryLinkId(rawSummary);
+        if (page > 0) return ("https://www.nexusmods.com/stardewvalley/mods/" + page, true);
+        // 实测：Wind Effects / SAAT / Show Birthdays 的接手版根本不住在 N 网 —— summary 里那条
+        // 链接直接指向论坛帖或 GitHub releases。跳回早已停更的原页面没有意义，就去它给的那个地址。
+        var link = MdLink.Match(rawSummary ?? "");
+        if (link.Success && IsWebUrl(link.Groups[2].Value)) return (link.Groups[2].Value, true);
+        if (nexusModId is int own && own > 0)
+            return ("https://www.nexusmods.com/stardewvalley/mods/" + own, false);
+        return ("https://www.nexusmods.com/stardewvalley/search?q="
+            + Uri.EscapeDataString(string.IsNullOrWhiteSpace(name) ? folder : name), false);
+    }
+
+    private string UnofficialTip(ModEntry m)
+    {
+        var (_, onFork) = PickUnofficialTarget(BrokenRaw(m), AltOf(m), m.NexusModId, m.Name, m.Folder);
+        return onFork
+            ? Loc.F("你装的 {0} 就是社区接手的那一版 · 原作者已停更 · 点一下打开接手版页面", m.Version)
+            : Loc.F("你装的 {0} 是社区接手版 · 原作者已停更 · 点一下打开原页面（已停更）", m.Version);
+    }
+
+    private void OpenUnofficial(ModEntry m) => UpdateService.OpenUrl(PickUnofficialTarget(
+        BrokenRaw(m), AltOf(m), m.NexusModId, m.Name, m.Folder).Url);
+
     // ── v1.2.5：覆盖型包（汉化补丁）的标记、清单与还原 ──
     private ModService.OverlayReport _overlayHealth = new(new(), new());
     private string? _overlayHost;
 
     /// <summary>覆盖记录按宿主<b>顶层</b>目录名记账，而列表行的 m.Folder 可能是 "Top/Sub"
     /// （子包），且禁用态在磁盘上是 ".Top"。统一归一到不带点的顶层名再比。</summary>
-    private static string OverlayHostOf(ModEntry m)
+    /// <summary>覆盖记录按「宿主目录」挂徽标，所以这里必须给到和记录里同一个形状：
+    /// 顶层就是顶层名，捆绑包子包是「捆绑包/子包」（子包的汉化只该出现在子包那一行）。
+    /// 禁用只是顶层改名（X → .X），点号在这里去掉。</summary>
+    private static string OverlayHostOf(ModEntry m) => ModService.NormalizeOverlayHost(m.Folder);
+
+    /// <summary>某个宿主行对应的「包」数与失效包数。记录是逐文件的（一个汉化重打包 146 条），
+    /// 徽标要说包数 —— 显示「覆盖 ×146」等于骗人。</summary>
+    private (int Packs, int StalePacks) OverlayPackStats(string host)
     {
-        var top = m.Folder.Replace('\\', '/');
-        var cut = top.IndexOf('/');
-        if (cut > 0) top = top[..cut];
-        return top.TrimStart('.');
+        var groups = Cfg.Current.Overlays
+            .Where(kv => ModService.NormalizeOverlayHost(kv.Value.Host)
+                .Equals(host, StringComparison.OrdinalIgnoreCase))
+            .GroupBy(kv => ModService.OverlaySlotOf(kv.Key), StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        return (groups.Count, groups.Count(g => g.Any(kv => _overlayHealth.StaleKeys.Contains(kv.Key))));
     }
 
     private string? OverlayBadge(ModEntry m)
     {
         if (_overlayHost is not null) return null;
-        if (!_overlayHealth.ByHost.TryGetValue(OverlayHostOf(m), out var h)) return null;
-        return Loc.F("覆盖 ×{0}", h.Total);
+        if (!_overlayHealth.ByHost.ContainsKey(OverlayHostOf(m))) return null;
+        return Loc.F("覆盖 ×{0}", OverlayPackStats(OverlayHostOf(m)).Packs);
     }
 
-    private bool OverlayStale(ModEntry m) =>
-        _overlayHealth.ByHost.TryGetValue(OverlayHostOf(m), out var h) && h.Stale > 0;
+    private bool OverlayStale(ModEntry m) => OverlayPackStats(OverlayHostOf(m)).StalePacks > 0;
 
     private string OverlayTip(ModEntry m)
     {
-        var h = _overlayHealth.ByHost[OverlayHostOf(m)];
-        return h.Stale > 0
-            ? Loc.F("{0} 个文件来自覆盖包，其中 {1} 个已经不在了（宿主 mod 更新过）—— 点击查看或还原", h.Total, h.Stale)
-            : Loc.F("{0} 个文件来自覆盖包（汉化补丁等）—— 点击查看或还原", h.Total);
+        var s = OverlayPackStats(OverlayHostOf(m));
+        return s.StalePacks > 0
+            ? Loc.F("{0} 个覆盖包，其中 {1} 个已经不在了（宿主 mod 更新过）—— 点击查看或还原", s.Packs, s.StalePacks)
+            : Loc.F("{0} 个覆盖包（汉化补丁等）—— 点击查看或还原", s.Packs);
     }
 
     private void OpenOverlayList(ModEntry m)
@@ -1453,11 +1602,14 @@
         !string.IsNullOrWhiteSpace(rec.PackTitle) ? rec.PackTitle
         : !string.IsNullOrWhiteSpace(rec.PackName) ? rec.PackName : LocService.Tr("来自 N 网");
 
-    private void ToggleOverlay(string key, bool on)
+
+    /// <summary>覆盖包不是装进 Mods 的 mod，没有本地行可点，所以详情页入口挂在卡片上。
+    /// 路由的 UniqueID 段是可选的（"/mod/{ModId:int}/{UniqueID?}"），这里只有 N 网 id。</summary>
+    private void GoOverlayDetail(OverlayRecord rec)
     {
-        var err = ModSvc.SetOverlayEnabled(Cfg.Current.GamePath, key, on, Cfg);
-        if (err is not null) _ = JS.InvokeVoidAsync("junigridJs.toast", err, "err");
-        else _ = RescanInBackground();
+        if (rec.NexusModId is not int id) return;
+        CloseOverlayList();
+        Nav.NavigateTo($"mod/{id}");
     }
 
     /// <summary>用记录里的 NexusModId 补齐显示名与封面，写回记录（一次性的，之后离线也认得）。</summary>
@@ -1479,18 +1631,42 @@
         }
     }
 
-    private List<KeyValuePair<string, OverlayRecord>> OverlayRows()
-        => _overlayHost is null
-            ? new List<KeyValuePair<string, OverlayRecord>>()
-            : Cfg.Current.Overlays
-                .Where(kv => kv.Value.Host.Equals(_overlayHost, StringComparison.OrdinalIgnoreCase))
-                .OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase).ToList();
+    /// <summary>一个「包」在某个宿主上的一组覆盖记录。汉化重打包会一次产生上百条逐文件记录
+    /// （LewdDew 那个是 146 条），卡片必须一行一个包，开关和删除对整组生效。</summary>
+    private sealed record OverlayGroup(string Host, string Slot, List<string> Keys,
+        OverlayRecord Rec, bool AnyOn, int Stale);
 
-    private void RevertOneOverlay(string key)
+    private List<OverlayGroup> OverlayGroups()
     {
-        // 失效的那条没有东西可还原，销账而已 —— 两种结果说不同的话，别统一报"已还原"
-        var gone = _overlayHealth.StaleKeys.Contains(key);
-        var err = ModSvc.RevertOverlay(Cfg.Current.GamePath, key, Cfg);
+        if (_overlayHost is null) return new List<OverlayGroup>();
+        return Cfg.Current.Overlays
+            .Where(kv => ModService.NormalizeOverlayHost(kv.Value.Host)
+                .Equals(_overlayHost, StringComparison.OrdinalIgnoreCase))
+            .GroupBy(kv => ModService.OverlaySlotOf(kv.Key), StringComparer.OrdinalIgnoreCase)
+            .Select(g => new OverlayGroup(
+                g.First().Value.Host,
+                g.Key,
+                g.Select(kv => kv.Key).OrderBy(k => k, StringComparer.OrdinalIgnoreCase).ToList(),
+                g.First().Value,
+                g.Any(kv => kv.Value.Enabled),
+                g.Count(kv => _overlayHealth.StaleKeys.Contains(kv.Key))))
+            .OrderBy(x => x.Rec.PackTitle.Length > 0 ? x.Rec.PackTitle : x.Rec.PackName,
+                StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private void ToggleOverlayGroup(OverlayGroup g, bool on)
+    {
+        var err = ModSvc.SetOverlayGroupEnabled(Cfg.Current.GamePath, g.Host, g.Slot, on, Cfg);
+        if (err is not null) _ = JS.InvokeVoidAsync("junigridJs.toast", err, "err");
+        else _ = RescanInBackground();
+    }
+
+    private void RevertOverlayGroup(OverlayGroup g)
+    {
+        // 整组都失效时没有东西可还原，销账而已 —— 两种结果说不同的话，别统一报"已还原"
+        var gone = g.Stale == g.Keys.Count;
+        var err = ModSvc.RevertOverlayGroup(Cfg.Current.GamePath, g.Host, g.Slot, Cfg);
         _ = JS.InvokeVoidAsync("junigridJs.toast",
             err ?? (gone ? Loc.T("已清除该覆盖记录") : Loc.T("已还原被覆盖的文件")), err is null ? "ok" : "err");
         if (err is null) Rescan();
@@ -1498,40 +1674,200 @@
 
     private void RevertAllOverlay()
     {
-        foreach (var kv in OverlayRows().ToList()) ModSvc.RevertOverlay(Cfg.Current.GamePath, kv.Key, Cfg);
+        foreach (var g in OverlayGroups()) ModSvc.RevertOverlayGroup(Cfg.Current.GamePath, g.Host, g.Slot, Cfg);
         _overlayHost = null;
         _ = JS.InvokeVoidAsync("junigridJs.toast", Loc.T("已还原被覆盖的文件"), "ok");
         Rescan();
     }
 
-    // summary 是 markdown（"broken, use [unofficial version](https://…)"），而 data-tip 是纯文本
-    // 胶囊，所以把 [文字](链接) 摊平成「文字（链接）」，链接原样可读。
+    // summary 是 markdown（"broken, use [unofficial version](https://…)"）。徽标悬停已经不抄整段了，
+    // 这个正则只用来从里面抠出替代版本的链接，给点徽标跳转用。
     private static readonly System.Text.RegularExpressions.Regex MdLink =
         new(@"\[([^\]]*)\]\(([^)]+)\)", System.Text.RegularExpressions.RegexOptions.Compiled);
 
     private string? BrokenRaw(ModEntry m) =>
         _smapiPrecheckSummary is not null && _smapiPrecheckSummary.TryGetValue(m.Folder, out var s) ? s : null;
 
+    /// <summary>徽标悬停只解释「这个标签是什么意思」+「点下去会到哪」。上游 summary 是整段英文、
+    /// 还带展开后的长 N 网链接，直接贴上去会跑出屏幕被裁掉；跳转改由点徽标完成。</summary>
     private string BrokenTip(ModEntry m)
     {
-        var raw = BrokenRaw(m);
-        if (string.IsNullOrWhiteSpace(raw)) return Loc.T("社区兼容性库判定这个 mod 在当前游戏版本上有问题");
-        return MdLink.Replace(raw, "$1（$2）");
+        var st = _smapiPrecheckStatus is not null && _smapiPrecheckStatus.TryGetValue(m.Folder, out var s) ? s : "";
+        var what = st switch
+        {
+            "unofficial" => Loc.T("官方版没跟上当前游戏版本，社区出了非官方跟进版"),
+            "workaround" => Loc.T("原版有已知问题，社区给了替代版本"),
+            "broken"     => Loc.T("社区兼容性库判定它在当前游戏版本上跑不起来"),
+            "obsolete"   => Loc.T("游戏本体已经实现了，这个 mod 不再需要"),
+            "abandoned"  => Loc.T("作者已弃养，将来大概率跟不上新版本"),
+            _            => Loc.T("社区兼容性库判定这个 mod 在当前游戏版本上有问题"),
+        };
+        var (_, altName, kind) = PickBrokenFix(
+            BrokenRaw(m), PrecheckUrlOf(m), AltOf(m), m.NexusModId, m.Name, m.Folder, AltIsSelfNow(m));
+        if (BrokenRaw(m) is not { Length: > 0 }) return what;
+        return kind switch
+        {
+            // 只有真的落到另一个 mod 上，才敢说"替代版本"四个字。
+            // 上游直接给了链接时不重复贴链接本身（实测 5 条里 4 条是 60+ 字符的论坛长链，
+            // 贴进悬停会跑出屏幕被裁掉），点名到具体哪个 mod 只在"我们按名字搜出来的"那种场合。
+            0 => altName is { } an ? Loc.F("{0} · 替代版：{1} · 点徽标打开", what, an)
+                                   : Loc.F("{0} · 点徽标打开替代版本", what),
+            2 => Loc.F("{0} · 社区没留链接 · 点徽标去 N 网搜替代品", what),
+            _ => Loc.F("{0} · 点徽标打开它的页面", what),
+        };
     }
 
-    /// <summary>点徽标 → 优先打开 summary 里给的非官方分支/替代版链接，
-    /// 其次用快道的来源页，最后才回落到 N 网原页面。</summary>
-    private void OpenBrokenFix(ModEntry m)
+    /// <summary>只认真正的 http(s) 地址。上游那张表里有 <c>[Friends Forever (1.6)](#)</c>
+    /// 这种占位锚点，丢给 ShellExecute 只会静默失败 —— 症状就是"徽标点了没反应"。</summary>
+    private static bool IsWebUrl(string? s) =>
+        !string.IsNullOrWhiteSpace(s)
+        && (s.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+            || s.StartsWith("https://", StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>从 summary 的 markdown 链接里取「替代版的名字」：链接位是 <c>(#)</c> 占位时，
+    /// 方括号里那段文字就是社区点名的替代品（实测 "⚠ use [Friends Forever (1.6)](#) instead."）。
+    /// 有真链接时返回 null —— 那种直接开链接就行，不必再按名字搜。</summary>
+    internal static string? BrokenAltName(string? rawSummary)
     {
-        var raw = BrokenRaw(m);
-        var link = raw is null ? null : MdLink.Match(raw);
+        if (rawSummary is null) return null;
+        var link = MdLink.Match(rawSummary);
+        if (!link.Success) return null;
+        if (IsWebUrl(link.Groups[2].Value)) return null;
+        var text = link.Groups[1].Value.Trim();
+        return text.Length > 1 ? text : null;
+    }
+
+    /// <summary>徽标落点。<paramref name="alt"/> 是按 <see cref="BrokenAltName"/> 的名字搜出来的
+    /// 那个独立 mod（N 网 20702「Friends Forever (1.6)」，本体是 1738）。
+    /// <paramref name="homeId"/> 是 smapi.io 报的 <c>main.url</c> 里那个号 ——「你装的这一版住在哪儿」。
+    /// 返回 kind：0=落在替代版上、1=落在它自己/来源页、2=只能给搜索结果页。
+    /// 提示文案与点击落点都出自这里，两者不会再各说各话。</summary>
+    internal static (string Url, string? AltName, int Kind) PickBrokenFix(
+        string? rawSummary, string? precheckUrl, (int ModId, string Name)? alt,
+        int? nexusModId, string name, string folder, bool altIsSelf = false)
+    {
+        var usableAlt = altIsSelf ? null : alt;
+        var link = rawSummary is null ? null : MdLink.Match(rawSummary);
         var url = link is { Success: true } ? link.Groups[2].Value : null;
-        if (string.IsNullOrWhiteSpace(url)
-            && _smapiPrecheckUrl is not null && _smapiPrecheckUrl.TryGetValue(m.Folder, out var u)
-            && !string.IsNullOrWhiteSpace(u)) url = u;
-        if (string.IsNullOrWhiteSpace(url) && m.NexusModId is int nid && nid > 0)
-            url = $"https://www.nexusmods.com/stardewvalley/mods/{nid}";
-        if (url is not null) UpdateService.OpenUrl(url);
+        if (IsWebUrl(url) && !altIsSelf) return (url!, usableAlt?.Name, 0);
+        // 上游没给链接，但我们按名字找到了另一个 mod ⇒ 这才是真的"打开替代版本"
+        if (usableAlt is { } a)
+            return ($"https://www.nexusmods.com/stardewvalley/mods/{a.ModId}", a.Name, 0);
+        if (IsWebUrl(precheckUrl)) return (precheckUrl!, null, 1);
+        if (nexusModId is int nid && nid > 0)
+            return ($"https://www.nexusmods.com/stardewvalley/mods/{nid}", null, 1);
+        if (IsWebUrl(url)) return (url!, null, 1);   // 链接就是自己这一页，仍然有地方可去
+        // 兜底：搜索页是唯一一定落得地的地方
+        return ("https://www.nexusmods.com/stardewvalley/search?q="
+            + Uri.EscapeDataString(string.IsNullOrWhiteSpace(name) ? folder : name), null, 2);
+    }
+
+    private string? AltVerOf(ModEntry m) =>
+        _smapiPrecheckAltVer is not null && _smapiPrecheckAltVer.TryGetValue(m.Folder, out var v) ? v : null;
+
+    private string? MainVerOf(ModEntry m) =>
+        _smapiPrecheckMainVer is not null && _smapiPrecheckMainVer.TryGetValue(m.Folder, out var v) ? v : null;
+
+    /// <summary>徽标、筛选计数、落点三处必须用同一个判据，否则「维护存疑 · 6」会数进行数对不上。</summary>
+    private bool AltIsSelfNow(ModEntry m) =>
+        AltIsSelf(BrokenRaw(m), AltOf(m), AltVerOf(m), m.Version, m.NexusModId, MainVerOf(m));
+
+    private string? PrecheckUrlOf(ModEntry m) =>
+        _smapiPrecheckUrl is not null && _smapiPrecheckUrl.TryGetValue(m.Folder, out var u) ? u : null;
+
+    private (int ModId, string Name)? AltOf(ModEntry m) =>
+        _smapiPrecheckAlt is not null && _smapiPrecheckAlt.TryGetValue(m.Folder, out var a) ? a : null;
+
+    private void OpenBrokenFix(ModEntry m) => UpdateService.OpenUrl(PickBrokenFix(
+        BrokenRaw(m), PrecheckUrlOf(m), AltOf(m), m.NexusModId, m.Name, m.Folder, AltIsSelfNow(m)).Url);
+
+    /// <summary>被点名的 mod 里，上游只给了替代版名字没给链接的，按名字去 N 网把它找出来。
+    /// 一个会话只查一次（静态缓存），且只查这几个 —— 实测 146 个里 6 个有徽标。
+    /// 查不到就留空，落点自动降级成"它的页面/搜索页"，文案跟着降级。</summary>
+    private static readonly Dictionary<string, (int ModId, string Name)?> SmapiAltCache = new();
+    private Dictionary<string, (int ModId, string Name)?>? _smapiPrecheckAlt;
+
+    private async Task ResolveAltsAndRefreshAsync(List<ModEntry> targets)
+    {
+        try { await ResolveBrokenAlternativesAsync(targets); }
+        catch (Exception ex) { AppLog.Warn("Mods", "[替代版] 名字解析失败: " + ex.Message); }
+        if (!_disposed) StateHasChanged();
+    }
+
+    private async Task ResolveBrokenAlternativesAsync(List<ModEntry> targets)
+    {
+        try
+        {
+            var found = new Dictionary<string, (int ModId, string Name)?>();
+            // 快照必须在锁里取：首屏预查与「刷新」可能同时在跑，锁外复制会撞上
+            // "Collection was modified"（静态缓存写方就在下面的 lock 里）。
+            Dictionary<string, (int ModId, string Name)?> locked;
+            lock (SmapiAltCache) locked = new Dictionary<string, (int ModId, string Name)?>(SmapiAltCache);
+            foreach (var m in targets)
+            {
+                if (_disposed) return;
+                var altName = BrokenAltName(
+                    _smapiPrecheckSummary is not null && _smapiPrecheckSummary.TryGetValue(m.Folder, out var s) ? s : null);
+                if (altName is null) continue;
+                var key = string.IsNullOrEmpty(m.UniqueID) ? m.Folder : m.UniqueID;
+                (int ModId, string Name)? hit;
+                if (locked.TryGetValue(key, out var cached)) hit = cached;
+                else
+                {
+                    // 故意**不**排除"我们自己那一页"：搜回来的号与它当前的版本号，
+                    // 正是 AltIsSelf 判断"替代版=你手上这一版"的证据。
+                    hit = await Nexus.FindModByNameAsync(altName);
+                    lock (SmapiAltCache) SmapiAltCache[key] = hit;
+                }
+                if (hit is not null) found[m.Folder] = hit.Value;
+            }
+            // 「上游叫你去的那一页」当前的版本号 —— 判据②的数据源。两种来源都要覆盖：
+            // 按名字搜出来的（Friends Forever），以及 summary 里直接给链接的（Adventurer's Guild 22591）。
+            var vers = new Dictionary<string, string>();
+            var pages = new Dictionary<string, int>();
+            foreach (var m in targets)
+            {
+                var raw = _smapiPrecheckSummary is not null && _smapiPrecheckSummary.TryGetValue(m.Folder, out var sm0) ? sm0 : null;
+                var page = found.TryGetValue(m.Folder, out var f) && f is { } fa ? fa.ModId : SummaryLinkId(raw);
+                if (page > 0) pages[m.Folder] = page;
+            }
+            if (pages.Count > 0)
+            {
+                // 页号→版本查过一次就记住：否则每次点「刷新」都要重问一遍网络，
+                // 而那几秒里证据是缺的 —— 徽标就会闪一下又消失。
+                var need = pages.Values.Distinct().Where(p => !PageVerKnown(p)).ToArray();
+                if (need.Length > 0)
+                {
+                    var fps = await Nexus.GetModFingerprintsBatchAsync(need);
+                    if (fps is not null)
+                        foreach (var (pid, fp) in fps)
+                            if (!string.IsNullOrWhiteSpace(fp.Version))
+                                lock (SmapiPageVerCache) SmapiPageVerCache[pid] = fp.Version;
+                }
+                foreach (var (folder, page) in pages)
+                    if (TryGetPageVer(page, out var pv)) vers[folder] = pv;
+            }
+            // 两本字典必须**一起**上屏：先给"是哪一页"再给"那一页什么版本"，中间那一帧
+            // AltIsSelf 会两条证据都抓不住（②要版本号、③页号对不上自己），于是警告徽标会闪出来
+            // 再变回中性标签 —— 实测 150ms 采样抓到过这一次闪烁（t=3603 警告=1，300ms 后归 0）。
+            _smapiPrecheckAlt = found;
+            _smapiPrecheckAltVer = vers;
+        }
+        finally { _altEvidencePending = false; }
+    }
+
+    /// <summary>N 网页号 → 该页当前的版本号（跨本会话留着）。判据②「替代版页面当前版本==你装的」
+    /// 靠它，查一次就够，不必每次刷新都重问。</summary>
+    private static readonly Dictionary<int, string> SmapiPageVerCache = new();
+
+    private static bool PageVerKnown(int page)
+    {
+        lock (SmapiPageVerCache) return SmapiPageVerCache.ContainsKey(page);
+    }
+
+    private static bool TryGetPageVer(int page, out string ver)
+    {
+        lock (SmapiPageVerCache) return SmapiPageVerCache.TryGetValue(page, out ver!);
     }
 
     // v1.08：检查失败（超时等）的 mod 数量 —— 驱动筛选栏提示与"可更新"红点
@@ -1547,6 +1883,12 @@
     // v0.36.0：mod 列表 AnimatedList 滚动效果（进入视口 scale/opacity + 顶底渐变）
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
+        // 刚渲染出 .open 的「⋮」菜单：这时 DOM 里已有它的最终矩形，才能判断该不该翻到按钮上方
+        if (_menuFitPending)
+        {
+            _menuFitPending = false;
+            try { await JS.InvokeVoidAsync("junigridJs.fitModMenu"); } catch { }
+        }
         // v0.71.1：从详情页返回时恢复滚动位置 —— setScrollWhenReady 轮询等容器高度足够再设
         // v0.72.0：带上离开时的「是否在底部」标记，恢复器不再用 y>limit 猜底部
         var dedicatedRan = false;
@@ -1651,9 +1993,42 @@
     private readonly Dictionary<string, List<string>> _missingDepsCache
         = new(StringComparer.OrdinalIgnoreCase);
 
-    private List<string> MissingDeps(ModEntry m)
+    /// <summary>已装、但当前被禁用的依赖 —— MissingDeps 的另一半。缺依赖是"没装"，
+    /// 这条是"装着但关了"，两种在 SMAPI 那边的结果一样（依赖方被 Skipped），
+    /// 但在启动器这边的出路完全不同：一个要去装，一个只要拨开关。</summary>
+    private List<string> DisabledDeps(ModEntry m)
     {
-        if (_missingDepsCache.TryGetValue(m.Folder, out var cached)) return cached;
+        if (_disabledUids.Count == 0) return new List<string>();
+        var deps = m.Dependencies.Concat(m.ContentPackIds).ToList();
+        if (deps.Count == 0) return new List<string>();
+        var uids = InstalledUids;
+        return deps.Where(d => !string.IsNullOrWhiteSpace(d)
+                && uids.Contains(d) && _disabledUids.Contains(d))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    /// <summary>点「依赖被禁」标签 → 把那些被禁用的依赖启用。走正常启用路径
+    /// （联动、缓存迁移、重扫、写回存档都在里面），不自己复制那套收尾。</summary>
+    private void EnableItsDependencies(ModEntry m)
+    {
+        var deps = DisabledDeps(m);
+        var done = 0;
+        foreach (var uid in deps)
+        {
+            var depMod = _mods.FirstOrDefault(x => !string.IsNullOrWhiteSpace(x.UniqueID)
+                && x.UniqueID.Equals(uid, StringComparison.OrdinalIgnoreCase));
+            if (depMod is null) continue;   // 不单独成行的捆绑包子包没有条目可点
+            SetDisabled(depMod, false);
+            done++;
+        }
+        if (done == 0)
+            ShowNotice("ok", Loc.F("{0} 依赖的 {1} 是捆绑包里不单独成行的子包 —— 启用它的整包就行",
+                m.Name, string.Join("、", deps)));
+    }
+
+    private List<string> MissingDeps(ModEntry m)
+    {        if (_missingDepsCache.TryGetValue(m.Folder, out var cached)) return cached;
         var deps = m.Dependencies.Concat(m.ContentPackIds).ToList();
         List<string> missing;
         if (deps.Count == 0)
@@ -2175,6 +2550,10 @@
         // 「⇑ 可更新」状态（快照路径同样要跑：新实例的 _states 是空的）。
         ApplyKnownRemoteVersions();
         StateHasChanged();
+        // v1.2.6：「维护存疑」原先只在跑过一轮更新检查后才有数据，第一次进页整列徽标和筛选
+        // 计数都是空的，看着像这功能没生效。首屏就单独预查一次 —— 免 Key、一次批量请求、
+        // 10 分钟会话缓存，不碰 Nexus 精查那条链路。
+        _ = KickoffCompatPrecheck();
         if (ActiveProfileName != "默认"
             && AllProfiles.Any(p => p.Name == ActiveProfileName))
         {
@@ -2317,9 +2696,19 @@
         // v1.2.3：已装 UID 集合随重扫一并重建 —— MissingDeps/筛选计数/分组在渲染期被高频
         // 调用，旧写法每次访问 InstalledUids 都全表重建 HashSet（每页渲染 O(N²) 次分配）。
         _installedUids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        _disabledUids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var m in _mods)
             if (!string.IsNullOrWhiteSpace(m.UniqueID))
+            {
                 _installedUids.Add(m.UniqueID.Trim());
+                if (m.Disabled) _disabledUids.Add(m.UniqueID.Trim());
+            }
+        // 捆绑包里不单独成行的子包：SMAPI 照样加载，所以依赖它不算缺（Enabled 那份进已装集合）；
+        // 顶层被禁用时子包一起算禁用 —— 它们是「依赖被禁用」，不是「缺依赖」。
+        var hidden = ModSvc.HiddenChildUids;
+        _installedUids.UnionWith(hidden.Enabled);
+        _installedUids.UnionWith(hidden.Disabled);
+        _disabledUids.UnionWith(hidden.Disabled);
         // v1.2.5：缺失依赖缓存随重扫一并失效（依赖列表与 UID 集合都只在重扫时变化）
         _missingDepsCache.Clear();
         // 覆盖型包（汉化补丁）的健康度随重扫刷新。绝大多数人一条都没有 → 先短路，
@@ -2353,65 +2742,48 @@
 
     /// <summary>已装 UniqueID 集合（ReindexMods 时重建的缓存，勿在渲染期重算）。</summary>
     private HashSet<string> _installedUids = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>已装但被禁用（含随顶层一起禁掉的捆绑包子包）的 UniqueID。
+    /// 「装了」与「能加载」是两件事：SMAPI 对禁用依赖照样把依赖方 Skipped，
+    /// 而缺依赖判定看不出来 —— 这一集专门用来给那种行打「依赖被禁用」标签。</summary>
+    private HashSet<string> _disabledUids = new(StringComparer.OrdinalIgnoreCase);
 
     // ------------------------------------------------------------------
     // 行交互：左键多选 / hover 按钮
     // ------------------------------------------------------------------
     // ─── v1.5：行尾 … 菜单（单开互斥；纯 class 驱动，无需 JS）───
-    // v1.5.3：关闭时先摘 open 再挂 closing，等 200ms 动画走完才降 z-index ——
-    // 否则 open 一摘 :has() 立刻失效，行掉回 z-index:auto，收起中的菜单顶部
-    // 会被后续行/顶部渐变压住（截图里「更新到 x」半截被挡就是这个）。
+    // 关闭直接摘 open，无关闭动画：曾用 closing+200ms 做收起，.up 菜单在摘 open
+    // 时会弹回按钮下方再淡出（「关闭动画闪到下面」）。硬关即可。
     private string? _menuFolder;
-    private string? _menuClosingFolder;
-    private static readonly TimeSpan MenuCloseMs = TimeSpan.FromMilliseconds(200);
+    private bool _menuFitPending;
 
-    private async Task ToggleMenu(string folder)
+    private void ToggleMenu(string folder)
     {
         if (_menuFolder == folder)
         {
-            await CloseMenu();
+            CloseMenu();
             return;
         }
-        // 换开另一行：旧菜单同样走 closing 动画，不要硬切
-        if (_menuFolder is not null)
-            _menuClosingFolder = _menuFolder;
         _menuFolder = folder;
+        // 翻转判定要量的是「这一行有几个条目」的菜单最终矩形，而 StateHasChanged 只是排队渲染：
+        // 在这里直接调 JS，浏览器收到的顺序是 JS 先、渲染批次后 ⇒ 量到的是没 .open 的旧 DOM，
+        // up 永远加不上（实测最后一行菜单整块掉到视口外）。改挂到 OnAfterRenderAsync 里，DOM 一定已就位。
+        _menuFitPending = true;
         StateHasChanged();
-        if (_menuClosingFolder is not null)
-            await DrainMenuClosingAsync();
     }
 
-    private async Task CloseMenu()
+    private void CloseMenu()
     {
-        if (_menuFolder is null && _menuClosingFolder is null) return;
-        _menuClosingFolder = _menuFolder ?? _menuClosingFolder;
+        if (_menuFolder is null) return;
         _menuFolder = null;
         StateHasChanged();
-        await DrainMenuClosingAsync();
     }
 
-    private async Task DrainMenuClosingAsync()
+    private void MenuAct(Action act)
     {
-        var target = _menuClosingFolder;
-        if (target is null) return;
-        try { await Task.Delay(MenuCloseMs); } catch { /* 组件已销毁 */ }
-        if (_menuClosingFolder == target)
-        {
-            _menuClosingFolder = null;
-            try { StateHasChanged(); } catch { }
-        }
-    }
-
-    private async Task MenuAct(Action act)
-    {
-        // 先起收起动画并立刻执行动作（弹窗/跳转），不阻塞用户点击
-        var closing = _menuFolder;
-        _menuClosingFolder = closing;
+        // 硬关菜单并立刻执行动作（弹窗/跳转），不阻塞用户点击
         _menuFolder = null;
         act();
         StateHasChanged();
-        if (closing is not null)
-            await DrainMenuClosingAsync();
     }
 
     private void ToggleSelect(string folder)
@@ -2725,7 +3097,7 @@
             // v0.42.0：重命名 .X <-> X 后把 update state + 封面缓存迁移到新名字，
             // 否则 GetCover 按新 folder 名查不到缓存会落回首字母占位块
             __t = System.Diagnostics.Stopwatch.GetTimestamp();
-            MigrateFolderCaches(oldFolder, DisabledName(oldFolder, disabled));
+            MigrateFolderCaches(oldFolder, DisabledName(oldFolder, disabled), persist: false);
             // v1.7.1：启用时祖先目录可能被一并解点（.SVE/Sub → SVE/Sub），
             // 同级其它子包的路径也要跟着走，否则内存里还握着 .SVE/... 的旧名
             if (!disabled) MigrateAncestorRenames(oldFolder);
@@ -2769,7 +3141,7 @@
     {
         var err = ModSvc.SetDisabled(Cfg.Current.GamePath, m.Folder, disabled);
         if (err is not null) { AppLog.Warn("Mods", $"联动{(disabled ? "禁用" : "启用")} {m.Folder} 失败：{err}"); return; }
-        MigrateFolderCaches(m.Folder, DisabledName(m.Folder, disabled));
+        MigrateFolderCaches(m.Folder, DisabledName(m.Folder, disabled), persist: false);
         if (!disabled) MigrateAncestorRenames(m.Folder);
     }
 
@@ -2793,8 +3165,12 @@
     /// 列表条目的 folder/启禁态、update state、封面与分类缓存的 key。
     /// newFolder 由调用方给 —— 单条启禁改的是路径末段（Top/Sub ↔ Top/.Sub），
     /// 切存档改的是整条顶层（Top/Sub ↔ .Top/Sub），两种都不是一个 bool 能表达清楚的。
-    /// 只做字符串改写，不碰磁盘 —— 所以可以在事件处理器里同步跑（微秒级）。</summary>
-    private void MigrateFolderCaches(string folder, string newFolder)
+    /// 只做字符串改写，不碰磁盘 —— 所以可以在事件处理器里同步跑（微秒级）。
+    /// persist=false 时跳过落盘：批量路径（切档/批量启禁/依赖联动）里调用方自己在末尾
+    /// Save 一次即可。旧版每条迁移都 Cfg.Save，而 Save 会广播 Saved → AccountPanel
+    /// ProbeVersions 对游戏 exe 做 FileVersionInfo —— 启用集合差得越多、迁移条数越多，
+    /// 切档就成倍变慢（"相差远就超级慢"的根因）。</summary>
+    private void MigrateFolderCaches(string folder, string newFolder, bool persist = true)
     {
         if (newFolder == folder) return;
         ApplyRenameInMemory(folder, newFolder);
@@ -2802,7 +3178,7 @@
         MigrateDictKey(Cfg.Current.ModCovers, folder, newFolder);
         MigrateDictKey(Cfg.Current.ModCategories, folder, newFolder);
         _coversDirty = true;
-        Cfg.Save(Cfg.Current);
+        if (persist) Cfg.Save(Cfg.Current);
     }
 
     /// <summary>改名只落在路径最后一段（v1.1.5 的子包级启禁：Top/Sub ↔ Top/.Sub），
@@ -2895,7 +3271,7 @@
         var failedSet = new HashSet<string>(failedTops, StringComparer.OrdinalIgnoreCase);
         foreach (var top in topLevels)
             if (!failedSet.Contains(top))
-                MigrateFolderCaches(top, DisabledName(top, disabled));
+                MigrateFolderCaches(top, DisabledName(top, disabled), persist: false);
         ReindexMods();
         ModsPerf($"批量{(disabled ? "禁" : "启")} {topLevels.Count} 个顶层",
             ("内存改名+缓存迁移", ElapsedMs(__t)));
@@ -3170,9 +3546,87 @@
     private Dictionary<string, string?>? _smapiPrecheckStatus;
     private Dictionary<string, string?>? _smapiPrecheckSummary;
 
+    /// <summary>替代版页面<b>当前的版本号</b>（folder → version），来自免 Key 的指纹批量接口。
+    /// 为什么需要它：smapi.io 那句 "use [Friends Forever (1.6)](#)" 是**静态**的，装到替代版自己
+    /// 头上也不会改口；而它给的 <c>main.url</c> 只是把我们发的 UpdateKey 念回来（实测五种发法
+    /// 全部返回 1738），区分不了"你装的就是那一版"。</summary>
+    private Dictionary<string, string>? _smapiPrecheckAltVer;
+
+    /// <summary>我们发的那个 UpdateKey 对应页面<b>自己的最新版</b>（folder → metadata.main.version）。
+    /// 它是判据②的必要对照：光"装的版本 == 替代版当前版本"不能证明身份 —— 非官方续作常常
+    /// 接着原版的号码往下发（实测 Adventurer's Guild：原版页与续作页当前都是 2.3.2），
+    /// 玩家停在坏页最新版时也会被误判成"建议已兑现"。只有装的版本 ≠ 坏页最新版，
+    /// 这个相等才是"你确实拿到了另一页的文件"。</summary>
+    private Dictionary<string, string?>? _smapiPrecheckMainVer;
+
+    /// <summary>身份证据（替代版是哪一页、那页当前什么版本）正在查 —— 这段时间里"只有这一条证据可依赖"
+    /// 的行先不落徽标，免得玩家看到徽标闪一下又消失（徽标与筛选计数同时受控，两者永远一致）。</summary>
+    private bool _altEvidencePending;
+
+    /// <summary>版本号归一（去空白与开头的 v），只用于"是不是同一版"的相等判断。</summary>
+    internal static string NormVersion(string? s) => (s ?? "").Trim().TrimStart('v', 'V');
+
+    /// <summary>从 https://www.nexusmods.com/stardewvalley/mods/22591 里抠出 22591。</summary>
+    internal static int NexusIdFromUrl(string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url)) return 0;
+        var m = System.Text.RegularExpressions.Regex.Match(url, @"/mods/(\d+)");
+        return m.Success && int.TryParse(m.Groups[1].Value, out var id) ? id : 0;
+    }
+
+    /// <summary>上游 summary 里**第一个指向 N 网 mod 页**的链接号（0 = 没有）。
+    /// 必须遍历所有链接：实测 Adventurer's Guild 那条给了两个 —— 第一个是论坛帖（无 /mods/），
+    /// 第二个才是 mods/22591，只看第一条会漏。</summary>
+    internal static int SummaryLinkId(string? rawSummary)
+    {
+        if (rawSummary is null) return 0;
+        foreach (System.Text.RegularExpressions.Match link in MdLink.Matches(rawSummary))
+        {
+            var id = NexusIdFromUrl(link.Groups[2].Value);
+            if (id > 0) return id;
+        }
+        return 0;
+    }
+
+    /// <summary>上游 summary 里"它推荐的那一版"的版本号。实测格式：
+    /// <c>"broken, use [unofficial version](链接) (&lt;small&gt;1.0.3-unofficial.5-brimbane&lt;/small&gt;)."</c>
+    /// —— 版本号就写在 <c>&lt;small&gt;</c> 里，是机器可读的。</summary>
+    internal static string? RecommendedVersion(string? rawSummary)
+    {
+        if (rawSummary is null) return null;
+        var m = System.Text.RegularExpressions.Regex.Match(rawSummary, @"<small>\s*([^<]+?)\s*</small>");
+        return m.Success ? m.Groups[1].Value.Trim() : null;
+    }
+
+    /// <summary>上游叫我们去的"替代版"其实就是玩家手上这一版吗？三条任一成立即算：
+    /// ① summary 的 <c>&lt;small&gt;</c> 里那个推荐版本号 == 玩家装的版本号（实测 2026-10-01：
+    ///    Wind Effects / SAAT.API / SAAT.Mod / Show Birthdays 四条「需非官方版」全是这种 ——
+    ///    玩家装的正是它推荐的非官方版，建议早已兑现，徽标纯属谎报）；
+    /// ② 按名字搜到的那个替代版页面当前版本 == 玩家装的版本，<b>且</b>玩家装的版本 ≠ 坏页自己的
+    ///    最新版（Friends Forever 1.2.11 走这条：坏页 1738 最新只到 1.2.3，1.2.11 只可能来自另一页。
+    ///    两个条件缺一不可 —— 续作沿用原版号码时，只看相等会把"还停在坏页最新版"判成已兑现）；
+    /// ③ 替代版页面就是玩家 manifest 里那个 N 网页（实测 Adventurer's Guild：它的 UpdateKeys
+    ///    本身就写着续作页 22591，上游叫他去的就是他脚下这一页，没地方可去）。</summary>
+    internal static bool AltIsSelf(string? rawSummary, (int ModId, string Name)? alt, string? altVersion,
+        string? installedVersion, int? nexusModId, string? mainVersion = null)
+    {
+        var inst = NormVersion(installedVersion);
+        var rec = NormVersion(RecommendedVersion(rawSummary));
+        if (rec.Length > 0 && rec == inst) return true;
+        var av = NormVersion(altVersion);
+        var mv = NormVersion(mainVersion);
+        if (av.Length > 0 && av == inst && mv != inst) return true;
+        // 「上游叫去的那一页」有两种来源：按名字搜出来的（Friends Forever），和 summary 里
+        // 直接给链接的（Adventurer's Guild 22591）。两种都要参与③，否则后者只能靠②，
+        // 而它的号码与原版页撞车时②已被 main 挡掉 —— 结果是把「他脚下就是那一页」误报成待办。
+        var page = alt?.ModId ?? SummaryLinkId(rawSummary);
+        if (page > 0 && nexusModId is int own && page == own) return true;
+        return false;
+    }
+
     // v1.08：预查结果会话级缓存 uid → (最新版, 来源页, 兼容性状态, 兼容性说明, 时间)。
     // 10 分钟内重复刷新直接命中，连 smapi.io 那一个请求都省掉。null 版本（快道确认已最新）同样缓存。
-    private static readonly Dictionary<string, (string? Ver, string? Url, string? Status, string? Summary, DateTime At)> SmapiPrecheckCache = new();
+    private static readonly Dictionary<string, (string? Ver, string? Url, string? Status, string? Summary, string? MainVer, DateTime At)> SmapiPrecheckCache = new();
     private static readonly TimeSpan SmapiPrecheckTtl = TimeSpan.FromMinutes(10);
 
     private static readonly HttpClient SmapiWebHttp = CreateSmapiWebHttp();
@@ -3198,12 +3652,41 @@
         return _smapiApiVersion;
     }
 
+    /// <summary>首屏后台跑一次 smapi.io 兼容性预查，让「维护存疑」的徽标和计数不用等
+    /// 手动更新检查。失败只记日志：这屏还有别的来源，预查缺席顶多是少几个徽标，不该弹错误。</summary>
+    private async Task KickoffCompatPrecheck()
+    {
+        try
+        {
+            if (_disposed || _smapiPrecheckStatus is not null) return;
+            var targets = _mods.Where(m => !string.IsNullOrWhiteSpace(m.UniqueID)).ToList();
+            if (targets.Count == 0) return;
+            await SmapiBatchPrecheck(targets);
+            if (_disposed) return;
+            await ResolveBrokenAlternativesAsync(targets);
+            if (_disposed) return;
+            await InvokeAsync(StateHasChanged);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warn("Mods", "[国内快道] 首屏兼容性预查失败: " + ex.Message);
+            // 解析没跑成也不能把证据一直挂在"在路上"的状态里 —— 那样该报的行会永远不报。
+            _altEvidencePending = false;
+        }
+    }
+
     private async Task SmapiBatchPrecheck(List<ModEntry> targets)
     {
         _smapiPrecheck = null;
         _smapiPrecheckUrl = null;
         _smapiPrecheckStatus = null;
         _smapiPrecheckSummary = null;
+        _smapiPrecheckMainVer = null;
+        // 「替代版是哪一页 / 那页当前什么版本」不在这一次请求里，要随后另发两次查询。
+        // 所以这次结果上屏时把证据标记重新按下 —— 否则每次刷新都会看到徽标闪一下又消失
+        // （实测 2026-10-01：正在检查更新…时「维护存疑 · 1」，查完变 0）。
+        // 这两本字典本身**不清空**：查到过的身份证据留着用，别让一次网络抖动把它冲掉。
+        _altEvidencePending = true;
         if (targets.Count == 0) return;
         var apiVersion = ApiVersionForPrecheck();
         if (apiVersion is null)
@@ -3237,6 +3720,9 @@
             _smapiPrecheckSummary = targets.ToDictionary(
                 m => m.Folder,
                 m => SmapiPrecheckCache.TryGetValue(keyOf(m), out var h) ? h.Summary : null);
+            _smapiPrecheckMainVer = targets.ToDictionary(
+                m => m.Folder,
+                m => SmapiPrecheckCache.TryGetValue(keyOf(m), out var h) ? h.MainVer : null);
             return;
         }
 
@@ -3271,11 +3757,12 @@
             var urlById = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
             var statusById = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
             var summaryById = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+            var mainVerById = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
             int noSuggestion = 0;
             foreach (var item in doc.RootElement.EnumerateArray())
             {
                 var id = item.TryGetProperty("id", out var i) ? i.GetString() : null;
-                string? ver = null, srcUrl = null, status = null, summary = null;
+                string? ver = null, srcUrl = null, status = null, summary = null, mainVer = null;
                 if (item.TryGetProperty("suggestedUpdate", out var su)
                     && su.ValueKind == System.Text.Json.JsonValueKind.Object)
                 {
@@ -3296,6 +3783,13 @@
                     if (md.TryGetProperty("compatibilitySummary", out var cm)
                         && cm.ValueKind == System.Text.Json.JsonValueKind.String)
                         summary = cm.GetString();
+                    // main.url 会把我们发的 UpdateKey 原样念回来（不可信），但 main.version 是
+                    // 那一页自己的最新版 —— 判据②的对照项（实测 FF 发 1738 回 1.2.3、AG 发 22591 回 2.3.2）。
+                    if (md.TryGetProperty("main", out var mn)
+                        && mn.ValueKind == System.Text.Json.JsonValueKind.Object
+                        && mn.TryGetProperty("version", out var mnv)
+                        && mnv.ValueKind == System.Text.Json.JsonValueKind.String)
+                        mainVer = mnv.GetString();
                 }
                 if (ver is null && item.TryGetProperty("errors", out var errs)
                     && errs.ValueKind == System.Text.Json.JsonValueKind.Array && errs.GetArrayLength() > 0)
@@ -3306,6 +3800,7 @@
                     urlById[id] = string.IsNullOrWhiteSpace(srcUrl) ? null : srcUrl;
                     statusById[id] = string.IsNullOrWhiteSpace(status) ? null : status;
                     summaryById[id] = string.IsNullOrWhiteSpace(summary) ? null : summary;
+                    mainVerById[id] = string.IsNullOrWhiteSpace(mainVer) ? null : mainVer;
                 }
             }
             if (noSuggestion > 0)
@@ -3320,6 +3815,7 @@
                         urlById.TryGetValue(k, out var u) ? u : null,
                         statusById.TryGetValue(k, out var st) ? st : null,
                         summaryById.TryGetValue(k, out var sm) ? sm : null,
+                        mainVerById.TryGetValue(k, out var mv) ? mv : null,
                         DateTime.UtcNow);
             }
             _smapiPrecheck = targets.ToDictionary(
@@ -3334,6 +3830,9 @@
             _smapiPrecheckSummary = targets.ToDictionary(
                 m => m.Folder,
                 m => SmapiPrecheckCache.TryGetValue(keyOf(m), out var h) ? h.Summary : null);
+            _smapiPrecheckMainVer = targets.ToDictionary(
+                m => m.Folder,
+                m => SmapiPrecheckCache.TryGetValue(keyOf(m), out var h) ? h.MainVer : null);
             // 值语义：非空字符串 = 快道给出的最新版本；空字符串 = 快道确认已是最新；
             // null = 快道没覆盖（无 UpdateKey / 不在索引）→ 精查兜底。
         }
@@ -3402,6 +3901,9 @@
         }
 
         await smapiTask;   // v1.08：精查前等快道结果（此时通常已并行完成）
+        // 替代版名字解析不挡精查：它只影响徽标提示的第二句，查完自己上屏。
+        // 不用 Task.Run —— 就地 await 才留在 Blazor 的同步上下文里，改组件状态才安全。
+        _ = ResolveAltsAndRefreshAsync(targets);
 
         // v1.6.8：未配 Nexus API Key → 跳过需要 Key 的 files.json 精查，
         // 全部按 smapi.io 快道的版本号判定可更新（更新动作走行内 ⇧ 手动通道）；
@@ -3779,7 +4281,7 @@
                             Cfg.Current.ModFileLastDownload[file.FileId.ToString()] = DateTime.Now.ToString("yyyy-MM-dd");
                             // 版本号优先用装出来的 manifest（zip 内 Version），N 网 file.Version 常为空
                             var ver = !string.IsNullOrWhiteSpace(newVer) ? newVer! : remoteVer;
-                            NexusUpdateTruth.RecordInstall(Cfg.Current, m, file.FileId, ver, Cfg.Current.GamePath ?? "");
+                            NexusUpdateTruth.RecordInstall(Cfg.Current, m, m.NexusModId ?? 0, file.FileId, ver, Cfg.Current.GamePath ?? "");
                             if (!string.IsNullOrWhiteSpace(ver)) m.Version = ver!;
                             st.RemoteVersion = remoteVer;
                             st.RemoteFileId = file.FileId;

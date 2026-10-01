@@ -383,7 +383,14 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
     opacity: 1;
     transform: translateY(0) scale(1);
     pointer-events: auto;
-}/* v1.07.0：触顶桥 —— trigger→菜单之间 8px 空隙划入命中区域，鼠标移向菜单不再中途滑出下拉 */
+}/* 行尾「⋮」菜单靠窗口底部时整块翻到按钮上方 —— 向下放会把最后一行的菜单裁掉一半
+   （2026-09-30 实测）。.up 由 junigridJs.fitModMenu 在打开后按实测矩形打上。 */
+.jg-sort-dd.open.up .jg-sort-menu {
+    top: auto;
+    bottom: calc(100% + 8px);
+    transform-origin: bottom left;
+}
+.jg-sort-dd.open.up .jg-sort-menu::before { top: auto; bottom: -14px; }/* v1.07.0：触顶桥 —— trigger→菜单之间 8px 空隙划入命中区域，鼠标移向菜单不再中途滑出下拉 */
 .jg-sort-menu::before { content: ''; position: absolute; left: 0; right: 0; top: -14px; height: 14px; }/* v1.07.0：Nexus 页菜单拆两层 —— 弹性动画只作用在 .jg-sort-menu-in（视觉层），
    外层盒子（含触顶桥）保持最终矩形不动，命中区域从打开第一帧起 = 最终位置，
    动画期间不再「看着开了、其实命中在下方 mod 卡上」。皮肤值须与 .jg-sort-menu 保持一致。 */
@@ -517,7 +524,10 @@ html[data-theme="dark"] .jg-tl { --tl-black: #e8eaee; --tl-onblack: #1a1a1a; }/*
 .jg-modmenu { flex-shrink: 0; }
 .jg-modrow:has(.jg-modmenu.open) .jg-modmenu { position: static; }
 .jg-modmenu-btn { border-radius: 8px; }
-.jg-modmenu .jg-sort-menu { left: auto; right: 12px; top: calc(100% + 6px); transform-origin: top right; min-width: 200px; transition: opacity .16s ease, transform .16s ease, visibility .16s; }
+/* 开：短淡入；关：直接消失（无关闭动画）—— 关态 transition:none，
+   否则 .up 菜单在摘 .open 时定位弹回按钮下方再淡出（关闭动画闪到下面）。 */
+.jg-modmenu .jg-sort-menu { left: auto; right: 12px; top: calc(100% + 6px); transform-origin: top right; min-width: 200px; transition: none; }
+.jg-modmenu.open .jg-sort-menu { transition: opacity .16s ease, transform .16s ease; }
 .jg-sort-item.danger { color: #c50f1f; }
 html[data-theme="dark"] .jg-sort-item.danger { color: #ff7b96; }
 .jg-sort-item.danger:hover { background: rgba(197, 15, 31, .08); }
@@ -527,12 +537,80 @@ html[data-theme="dark"] .jg-sort-item.danger { color: #ff7b96; }
    用 :has() 把打开菜单的行提到兄弟之上。
    v1.5.3：z-index → 9500 —— 必须高于遮罩 .jg-dd-overlay(9000)，否则遮罩铺开后
    会盖住菜单导致菜单项点不到；同时压过顶部 sticky 渐变(.jg-al-gradient=50)，
-   否则菜单上半截（含「更新到 x」）会被渐变压住。
-   v1.5.3b：.closing 与 .open 同级抬升 —— 关闭瞬间 Blazor 会先摘掉 .open，
-   若只认 .open，行立刻掉回 z-index:auto，收起动画中菜单顶部会被挡。 */
-.jg-modrow:has(.jg-modmenu.open),
-.jg-modrow:has(.jg-modmenu.closing) { position: relative; z-index: 9500; }
+   否则菜单上半截（含「更新到 x」）会被渐变压住。 */
+.jg-modrow:has(.jg-modmenu.open) { position: relative; z-index: 9500; }
 
-/* 版本徽标现在本身就是「打开这一版的下载页」的入口（点它不再只是选中整行） */
-.jg-modrow-title .upd.jg-upd-jump { cursor: pointer; text-decoration: underline dotted rgba(180,0,158,0.45); text-underline-offset: 3px; }
-.jg-modrow-title .upd.jg-upd-jump:hover { text-decoration: underline solid #b4009e; }
+/* ── 新版本徽标：右箭头 SVG + 「新版本」+ 可点版本号 ────────────────
+   两处共用：SMAPI 卡片（点版本号更新）/ mod 行（点版本号开下载页） */
+.jg-newver {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    margin-left: 8px;
+    padding: 2px 8px 2px 6px;
+    border: 1px solid rgba(200, 61, 179, 0.35);
+    border-radius: 999px;
+    background: linear-gradient(135deg, rgba(200, 61, 179, 0.12), rgba(154, 48, 204, 0.10));
+    color: #c239b3;
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1.2;
+    white-space: nowrap;
+    flex-shrink: 0;
+    cursor: pointer;
+    vertical-align: middle;
+    transition: background .15s ease, border-color .15s ease, color .15s ease, transform .12s ease;
+}
+.jg-newver:hover:not(:disabled) {
+    background: linear-gradient(135deg, rgba(200, 61, 179, 0.22), rgba(154, 48, 204, 0.16));
+    border-color: rgba(200, 61, 179, 0.65);
+    color: #d84bc8;
+    transform: translateY(-1px);
+}
+.jg-newver:active:not(:disabled) { transform: translateY(0); }
+.jg-newver:disabled {
+    opacity: .65;
+    cursor: default;
+    transform: none;
+}
+html[data-theme="dark"] .jg-newver {
+    color: #e05ad0;
+    border-color: rgba(224, 90, 208, 0.4);
+    background: linear-gradient(135deg, rgba(224, 90, 208, 0.16), rgba(154, 48, 204, 0.12));
+}
+html[data-theme="dark"] .jg-newver:hover:not(:disabled) {
+    color: #f07ae4;
+    border-color: rgba(224, 90, 208, 0.7);
+    background: linear-gradient(135deg, rgba(224, 90, 208, 0.26), rgba(154, 48, 204, 0.18));
+}
+.jg-newver-arrow {
+    width: 13px;
+    height: 13px;
+    flex-shrink: 0;
+    display: block;
+}
+.jg-newver-label {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .02em;
+    opacity: .85;
+}
+.jg-newver-num {
+    font-size: 12px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: .01em;
+    border-bottom: 1px dotted rgba(200, 61, 179, 0.45);
+    padding-bottom: 1px;
+}
+.jg-newver:hover:not(:disabled) .jg-newver-num {
+    border-bottom-style: solid;
+    border-bottom-color: currentColor;
+}
+/* 行内徽标比卡片里更紧凑一点；baseline 行里按钮要居中对齐 */
+.jg-modrow-title .jg-newver {
+    margin-left: 6px;
+    padding: 1px 7px 1px 5px;
+    gap: 4px;
+    align-self: center;
+}

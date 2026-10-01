@@ -184,14 +184,15 @@
     display: flex; align-items: center; justify-content: center;
 }.jg-login-success-name { font-size: 16.5px; font-weight: 700; }.jg-login-success-welcome { font-size: 13px; opacity: .65; }/* 成功 toast：顶部黑色浮条 */
 .jg-login-toast {
-    position: fixed; top: 92px; left: 50%; transform: translateX(-50%);
-    background: var(--jg-ink); color: var(--jg-on-ink); padding: 11px 22px; border-radius: 999px;
+    position: fixed; top: var(--jg-toast-top, 112px); left: 50%; transform: translateX(-50%);
+    background: var(--jg-toast-bg); color: var(--jg-toast-fg); padding: 11px 22px; border-radius: 999px;
     font-size: 13.5px; font-weight: 600; z-index: 999999;
     box-shadow: 0 10px 30px rgba(0,0,0,0.35);
     animation: jg-login-toast-in 320ms cubic-bezier(.22,1,.36,1) both;
     pointer-events: none; white-space: nowrap;
 }
-@keyframes jg-login-toast-in {from { opacity: 0; transform: translateX(-50%) translateY(-12px) scale(.94); }to   { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
+/* 入场从下方浮起：从上面落下来会先盖住顶导航（顶导航占 40–90px，浮条落在 112px） */
+@keyframes jg-login-toast-in {from { opacity: 0; transform: translateX(-50%) translateY(12px) scale(.94); }to   { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
 }/* 批量栏不换行：取消选择并入同一行 */
 .jg-batchbar { flex-wrap: nowrap; }/* 行内按钮 SVG 统一深色 */
 .jg-rowbtn svg { color: var(--jg-text-2); }.jg-rowbtn.upd svg { color: #b4009e; }.jg-rowbtn.danger svg { color: #c50f1f; }/* -- v0.42.0：批量栏/行内纯图标按钮 + 胶囊提示（data-tip）+ 计数单行 -- */
@@ -200,15 +201,14 @@
 
 /* -- v0.43.1：全局 toast（黑底白字默认 / 红底白字报错）-- */
 .jg-toast-live {
-    position: fixed; top: 92px; left: 50%; transform: translateX(-50%);
+    position: fixed; top: var(--jg-toast-top, 112px); left: 50%; transform: translateX(-50%);
     z-index: 99999; padding: 10px 22px; border-radius: 999px;
-    background: rgba(22,22,22,0.94); color: #fff;
+    background: var(--jg-toast-bg); color: var(--jg-toast-fg);
     font-size: 13.5px; font-weight: 600; letter-spacing: .2px;
     box-shadow: 0 8px 28px rgba(0,0,0,0.28);
     pointer-events: none; max-width: 72vw;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}.jg-toast-live.err { background: rgba(198,15,31,0.96); color: #fff; }.jg-toast-live.ok { background: var(--jg-accent, #7aa2ff); color: #fff; }/* v1.1.2：暗色主题下通用 toast 反色 —— 白底黑字（红色失败 / 强调色成功 toast 不变） */
-html[data-theme="dark"] .jg-toast-live:not(.err):not(.ok) { background: #f2f3f5; color: #17181c; box-shadow: 0 8px 28px rgba(0,0,0,0.5); }/* -- v0.45.0：mod 分类标签（仿 PCL2，简介前的小胶囊）-- */
+}.jg-toast-live.err { background: var(--jg-danger); color: #fff; }.jg-toast-live.ok { background: var(--jg-accent); color: #fff; }/* v1.1.2 的深色反色已收进 --jg-toast-bg/-fg 两个令牌，这里不再单独立规则 *//* -- v0.45.0：mod 分类标签（仿 PCL2，简介前的小胶囊）-- */
 .jg-cat {
     display: inline-block; padding: 1px 8px; margin-right: 6px;
     border-radius: 999px; background: var(--jg-hover); color: var(--jg-text-2);

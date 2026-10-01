@@ -82,7 +82,7 @@ public sealed class InstallService
     {
         var cfg = _cfg.Current;
         if (!NexusService.IsAuthenticated)
-            return LocService.Tr("还没配置 Nexus API Key —— 先到「Nexus」页粘贴");
+            return LocService.Tr("还没登录 Nexus —— 先到「Nexus」页登录");
         if (string.IsNullOrWhiteSpace(cfg.GamePath))
             return LocService.Tr("还没设置游戏目录 —— 先到「设置」页选择");
 
@@ -164,14 +164,12 @@ public sealed class InstallService
                 {
                     var folderGuess = modName ?? "";
                     // Scan 是磁盘全量扫描，同样别落在 UI 线程
-                    var entry = (await Task.Run(() => _mods.Scan(cfg.GamePath), ct))
-                        .FirstOrDefault(x => x.NexusModId == modId
-                            || (!string.IsNullOrEmpty(folderGuess)
-                                && string.Equals(x.Folder, folderGuess, StringComparison.OrdinalIgnoreCase)));
+                    var scanned = await Task.Run(() => _mods.Scan(cfg.GamePath), ct);
+                    var entry = NexusUpdateTruth.FindInstalledEntry(scanned, modId, folderGuess);
                     if (entry is not null)
                     {
                         entry.NexusModId ??= modId;
-                        NexusUpdateTruth.RecordInstall(cfg, entry, file.FileId, file.Version ?? "", cfg.GamePath ?? "");
+                        NexusUpdateTruth.RecordInstall(cfg, entry, modId, file.FileId, file.Version ?? "", cfg.GamePath ?? "");
                     }
                     else
                     {
@@ -390,7 +388,7 @@ public sealed class InstallService
                 var cfg = _cfg.Current;
                 if (!NexusService.IsAuthenticated)
                 {
-                    _center.Finish(task, false, LocService.Tr("还没配置 Nexus API Key"));
+                    _center.Finish(task, false, LocService.Tr("还没登录 Nexus —— 先到「Nexus」页登录"));
                     Notify();
                     return;
                 }
@@ -476,14 +474,12 @@ public sealed class InstallService
                         // 再没有任何判据能认出「这一版我已经装过了」，⇧ 装上就消不掉
                         var nxmVer = (await _nexus.GetFileByIdAsync(modId, fileId))?.Version ?? "";
                         var guess = modName ?? "";
-                        var entry = (await Task.Run(() => _mods.Scan(cfg.GamePath), ct))
-                            .FirstOrDefault(x => x.NexusModId == modId
-                                || (!string.IsNullOrEmpty(guess)
-                                    && string.Equals(x.Folder, guess, StringComparison.OrdinalIgnoreCase)));
+                        var scanned = await Task.Run(() => _mods.Scan(cfg.GamePath), ct);
+                        var entry = NexusUpdateTruth.FindInstalledEntry(scanned, modId, guess);
                         if (entry is not null)
                         {
                             entry.NexusModId ??= modId;
-                            NexusUpdateTruth.RecordInstall(cfg, entry, fileId, nxmVer, cfg.GamePath ?? "");
+                            NexusUpdateTruth.RecordInstall(cfg, entry, modId, fileId, nxmVer, cfg.GamePath ?? "");
                         }
                         else
                             NexusUpdateTruth.RecordInstallByModId(cfg, cfg.GamePath ?? "",
@@ -555,7 +551,7 @@ public sealed class InstallService
         if (Busy) return LocService.Tr("上一个安装还没完成，等它结束再试");
         var cfg = _cfg.Current;
         if (!NexusService.IsAuthenticated)
-            return LocService.Tr("还没配置 Nexus API Key —— 先到「Nexus」页粘贴");
+            return LocService.Tr("还没登录 Nexus —— 先到「Nexus」页登录");
         if (string.IsNullOrWhiteSpace(cfg.GamePath))
             return LocService.Tr("还没设置游戏目录 —— 先到「设置」页选择");
 

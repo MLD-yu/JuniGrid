@@ -38,6 +38,8 @@ public sealed class ModService
         catch (DirectoryNotFoundException) { return new List<ModEntry>(); }
 
         var results = new List<ModEntry>();
+        var hidOn = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var hidOff = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var dir in dirs)
         {
             // v0.72.6：单个目录在扫描瞬间被改名/删除属合法竞态 —— 局部容错跳过该项，
@@ -122,6 +124,10 @@ public sealed class ModService
                 if (entry is not null)
                 {
                     results.Add(entry);
+                    // 顶层自带 manifest 的捆绑包：Scan 只为顶层出一条目，下一层子包的 UniqueID
+                    // 因此不在列表里 —— 但 SMAPI 照样加载它们，依赖它们的 mod 不能算"缺依赖"。
+                    // 这里只把 UID 记进隐藏子集（不产生行、不动磁盘），实测多走一层约 70ms。
+                    CollectHiddenChildUids(dir, entry.UniqueID, folderName.StartsWith('.'), hidOn, hidOff);
                 }
                 else
                 {
@@ -133,7 +139,37 @@ public sealed class ModService
             catch (IOException ioe) { AppLog.Warn("Mods", "扫描跳过(IO): " + Path.GetFileName(dir) + " - " + ioe.Message); continue; }
             catch (UnauthorizedAccessException) { AppLog.Warn("Mods", "扫描跳过(无权限): " + Path.GetFileName(dir)); continue; }
         }
+        HiddenChildUids = (hidOn, hidOff);
         return results;
+    }
+
+    /// <summary>本次扫描发现的「不列进列表的子包 UniqueID」（启用中 / 随顶层一起被禁用）。
+    /// 只在 Scan/ScanRaw 跑过后有意义 —— 列表侧的「已装 UID 集合」要并进来它才不会误报缺依赖。</summary>
+    public (HashSet<string> Enabled, HashSet<string> Disabled) HiddenChildUids { get; private set; }
+        = (new HashSet<string>(StringComparer.OrdinalIgnoreCase), new HashSet<string>(StringComparer.OrdinalIgnoreCase));
+
+    /// <summary>顶层自带 manifest 的包，往下再看一层把子包 UID 收进隐藏集合。
+    /// 只读 UID、不建条目；子包与顶层同 UID（包内又塞了一份）时不收，免得把判重逻辑绕晕。</summary>
+    private static void CollectHiddenChildUids(string topDir, string? ownUid, bool topDisabled,
+        HashSet<string> on, HashSet<string> off)
+    {
+        foreach (var sub in Directory.EnumerateDirectories(topDir))
+        {
+            var name = Path.GetFileName(sub);
+            if (name.StartsWith('.') || name.Equals("assets", StringComparison.OrdinalIgnoreCase)) continue;
+            var mf = Path.Combine(sub, "manifest.json");
+            if (!File.Exists(mf)) continue;
+            string uid;
+            try
+            {
+                using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(mf));
+                uid = doc.RootElement.TryGetProperty("UniqueID", out var u) ? (u.GetString() ?? "").Trim() : "";
+            }
+            catch { continue; }   // 子目录里的坏 manifest 由 BuildModEntry/兜底那套说话，这里不重复报
+            if (string.IsNullOrWhiteSpace(uid)) continue;
+            if (!string.IsNullOrWhiteSpace(ownUid) && uid.Equals(ownUid, StringComparison.OrdinalIgnoreCase)) continue;
+            (topDisabled ? off : on).Add(uid);
+        }
     }
 
     public IReadOnlyList<ModEntry> Scan(string gamePath)
@@ -876,7 +912,7 @@ public sealed class ModService
 
     private const string OverlayBackupSuffix = ".junigrid_backup";
 
-    private sealed record OverlayPlan(string Host, List<string> RelPaths);
+    private sealed record OverlayPlan(string Host, List<string> RelPaths, string PackRoot);
 
     private enum OverlayFail
     {
@@ -896,12 +932,61 @@ public sealed class ModService
 
     /// <summary>宿主目录可能是 Mods/X，也可能是被禁用的 Mods/.X（SetDisabled 用点前缀）。
     /// 记录里统一存不带点的名字，找的时候两种都试 —— 与立绘页那条点名容错同款。</summary>
+    /// <summary>宿主路径归一：统一分隔符、去首尾斜杠、去掉禁用改名的首段点号。
+    /// 记录键、徽标分组、卸载连带清理三处必须用同一个形状，否则同一个宿主会分裂成两个键。</summary>
+    public static string NormalizeOverlayHost(string host)
+    {
+        var s = host.Replace('\\', '/').Trim('/');
+        return s.StartsWith('.') ? s[1..] : s;
+    }
+
+    /// <summary>记录键里的来源槽位（第三段）；同一个宿主文件上可以挂多条，靠它分组。</summary>
+    public static string OverlaySlotOf(string key)
+    {
+        var i = key.LastIndexOf('|');
+        return i < 0 ? key : key[(i + 1)..];
+    }
+
+    /// <summary>宿主目录：支持「顶层」和「捆绑包/子包」两种深度。禁用只把顶层改名（X → .X），
+    /// 但每一段都试一次带点写法，别名捆绑包（.Bundle/Child）里的子包也能命中。</summary>
     private static string? ResolveHostDir(string gamePath, string host)
     {
-        var plain = Path.Combine(gamePath, "Mods", host);
-        if (Directory.Exists(plain)) return plain;
-        var dotted = Path.Combine(gamePath, "Mods", "." + host);
-        return Directory.Exists(dotted) ? dotted : null;
+        var rel = NormalizeOverlayHost(host);
+        if (rel.Length == 0) return null;
+        var cur = Path.Combine(gamePath, "Mods");
+        foreach (var seg in rel.Split('/', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var hit = Directory.Exists(Path.Combine(cur, seg)) ? seg
+                : Directory.Exists(Path.Combine(cur, "." + seg)) ? "." + seg : null;
+            if (hit is null) return null;
+            cur = Path.Combine(cur, hit);
+        }
+        return Directory.Exists(cur) ? cur : null;
+    }
+
+    /// <summary>在已安装 mod 里找<b>唯一</b>一个叶子目录名等于 leaf 的子包（形如 捆绑包/子包）。
+    /// 命中 0 个或多个都不返回 —— 猜错的表现是盖到隔壁同名子包上，宁可放弃。</summary>
+    private static string? FindInstalledSubpackageByLeaf(string gamePath, string leaf)
+    {
+        string? found = null;
+        var hits = 0;
+        try
+        {
+            foreach (var topDir in Directory.EnumerateDirectories(Path.Combine(gamePath, "Mods")))
+            {
+                var topName = Path.GetFileName(topDir);
+                if (topName.Equals(".junigrid_trash", StringComparison.OrdinalIgnoreCase)) continue;
+                foreach (var child in Directory.EnumerateDirectories(topDir))
+                {
+                    if (!Path.GetFileName(child).Equals(leaf, StringComparison.OrdinalIgnoreCase)) continue;
+                    if (!File.Exists(Path.Combine(child, "manifest.json"))) continue;
+                    hits++;
+                    found = topName.TrimStart('.') + "/" + Path.GetFileName(child);
+                }
+            }
+        }
+        catch { return null; }
+        return hits == 1 ? found : null;
     }
 
     private static string Sha256Of(string file)
@@ -915,6 +1000,8 @@ public sealed class ModService
     /// 所有文件共享同一个第一层目录名，那个名字就是宿主。
     /// 包名像不像某个 mod 只用来给人看，不作为落盘依据 —— 猜错的表现是"装成功了但游戏里
     /// 毫无变化"，用户自己永远查不出来，所以判定不出时返回 null 让调用方放弃安装。
+    /// 第一层对不上时再往下探一层：汉化包常把真宿主再套一层
+    /// （"zLewdDewValley translation/LewdDew_Valley/…"，宿主其实是捆绑包里的子包）。
     /// </summary>
     private static OverlayPlan? ProbeOverlay(string gamePath, string tempDir, out OverlayFail fail, out string hostGuess)
     {
@@ -925,22 +1012,33 @@ public sealed class ModService
         catch { return null; }
         if (files.Length == 0) { fail = OverlayFail.NoHostInPack; return null; }
 
-        string? host = null;
+        string? top = null, sub = null;
         var rel = new List<string>();
+        var relNested = new List<string>();
         foreach (var f in files)
         {
             var r = Path.GetRelativePath(tempDir, f).Replace('\\', '/');
-            var cut = r.IndexOf('/');
-            if (cut <= 0) { fail = OverlayFail.NoHostInPack; return null; }
-            var top = r[..cut];
-            if (host is null) host = top;
-            else if (!host.Equals(top, StringComparison.OrdinalIgnoreCase)) { fail = OverlayFail.MultiHost; return null; }
-            rel.Add(r[(cut + 1)..]);
+            var parts = r.Split('/');
+            if (parts.Length < 2) { fail = OverlayFail.NoHostInPack; return null; }   // 裸文件：说不了宿主是谁
+            if (top is null) top = parts[0];
+            else if (!top.Equals(parts[0], StringComparison.OrdinalIgnoreCase)) { fail = OverlayFail.MultiHost; return null; }
+            // 第二层只有"全部文件都一致"时才能当子包名用；有一个不一致就放弃这条线索
+            if (sub is null) sub = parts.Length > 2 ? parts[1] : "";
+            else if (!sub.Equals(parts.Length > 2 ? parts[1] : "", StringComparison.OrdinalIgnoreCase)) sub = "";
+            rel.Add(r[(top.Length + 1)..]);
+            if (parts.Length > 2) relNested.Add(string.Join('/', parts[2..]));
         }
-        if (host is null || rel.Count == 0) { fail = OverlayFail.NoHostInPack; return null; }
-        hostGuess = host;
-        if (ResolveHostDir(gamePath, host) is null) { fail = OverlayFail.HostNotInstalled; return null; }
-        return new OverlayPlan(host, rel);
+        if (top is null || rel.Count == 0) { fail = OverlayFail.NoHostInPack; return null; }
+        hostGuess = top;
+        if (ResolveHostDir(gamePath, top) is not null) return new OverlayPlan(top, rel, top);
+        if (!string.IsNullOrEmpty(sub) && relNested.Count == files.Length
+            && FindInstalledSubpackageByLeaf(gamePath, sub) is string nested)
+        {
+            hostGuess = nested;
+            return new OverlayPlan(nested, relNested, top + "/" + sub);
+        }
+        fail = OverlayFail.HostNotInstalled;
+        return null;
     }
 
     private static string OverlayRefusal(OverlayFail fail, string gamePath, string hostGuess)
@@ -956,6 +1054,52 @@ public sealed class ModService
         }
     }
 
+    /// <summary>判断一个<b>带 manifest</b> 的包是不是「某个已安装 mod 的汉化重打包」：
+    /// 作者把整个 mod 目录重发一遍、manifest 原封不动（UniqueID 与已装那份完全相同），
+    /// 只把内容文件翻译成中文。判据只用包内路径与已装目录的实际重合度，不猜名字：
+    /// 同 UID 的已安装目录只有一个、且包里 ≥60% 的文件在那个目录里已有同名文件 → 它就是去盖的。
+    /// （2026-09-30 LewdDew Valley 实测：汉化包 306 个文件里 305 个原包里就有。）
+    /// </summary>
+    private OverlayPlan? ProbeTranslatedRepackage(string gamePath, string tempDir, string modRoot, string manifest)
+    {
+        string uid;
+        try
+        {
+            using var doc = JsonDocument.Parse(ReadManifestText(manifest), ManifestJson);
+            uid = doc.RootElement.TryGetProperty("UniqueID", out var u) ? (u.GetString() ?? "").Trim() : "";
+        }
+        catch { return null; }
+        if (uid.Length == 0) return null;
+
+        List<string> hosts;
+        try
+        {
+            hosts = ScanRaw(gamePath)
+                .Where(e => !string.IsNullOrWhiteSpace(e.UniqueID)
+                    && e.UniqueID.Trim().Equals(uid, StringComparison.OrdinalIgnoreCase))
+                .Select(e => NormalizeOverlayHost(e.Folder)).Distinct().ToList();
+        }
+        catch { return null; }
+        if (hosts.Count != 1) return null;              // 0 个=不是重打包；多个=目标不唯一，别猜
+
+        var host = hosts[0];
+        var hostDir = ResolveHostDir(gamePath, host);
+        if (hostDir is null) return null;
+        // 已经同路径 = 普通的"更新那个 mod"，交给原链路，不要改成逐文件覆盖
+        if (NormalizeOverlayHost(Path.GetFileName(modRoot)).Equals(host, StringComparison.OrdinalIgnoreCase))
+            return null;
+
+        string[] files;
+        try { files = Directory.GetFiles(modRoot, "*", SearchOption.AllDirectories); }
+        catch { return null; }
+        if (files.Length < 2) return null;              // 单文件的走普通覆盖链就够了
+        var rel = files.Select(f => Path.GetRelativePath(modRoot, f).Replace('\\', '/')).ToList();
+        var overlap = rel.Count(r => File.Exists(Path.Combine(hostDir,
+            r.Replace('/', Path.DirectorySeparatorChar))));
+        if (overlap * 100 < files.Length * 60) return null;   // 目录结构对不上 → 它是要新增的另一个 mod
+        return new OverlayPlan(host, rel, Path.GetRelativePath(tempDir, modRoot).Replace('\\', '/'));
+    }
+
     /// <summary>把覆盖包的文件写进宿主目录，并逐文件记账。
     /// 备份只在"还没有备份"时创建 —— 已有备份说明先前有别的包盖过这里，那份才是真原版，
     /// 用当前值覆盖它就会把还原目标污染成上一个覆盖版。</summary>
@@ -966,32 +1110,39 @@ public sealed class ModService
         var hostDir = ResolveHostDir(gamePath, plan.Host);
         if (hostDir is null) return LocService.Tr("找不到要覆盖的 mod，已放弃安装");
         var hostRoot = Path.GetFullPath(hostDir) + Path.DirectorySeparatorChar;
+        // 包内那层目录 ≠ 宿主目录（汉化包常把宿主再套一层、或宿主是捆绑包里的子包），
+        // 所以取文件一律用 PackRoot，落盘才用宿主目录。
+        var packRoot = Path.GetFullPath(Path.Combine(tempDir, plan.PackRoot.Replace('/', Path.DirectorySeparatorChar)));
         var c = cfg.Current;
         var written = 0;
+        var skipped = 0;
 
         foreach (var r in plan.RelPaths)
         {
             var local = r.Replace('/', Path.DirectorySeparatorChar);
-            var src = Path.Combine(tempDir, plan.Host, local);
+            var src = Path.Combine(packRoot, local);
             if (!File.Exists(src)) continue;
             var dst = Path.GetFullPath(Path.Combine(hostDir, local));
             // 包内出现 ../ 之类的越界路径时绝不允许写到宿主外面去
             if (!dst.StartsWith(hostRoot, StringComparison.OrdinalIgnoreCase))
                 return LocService.Tr("覆盖包里含越界路径，已放弃安装");
+            // 逐字节相同的文件不盖也不留备份：汉化重打包会把整个目录原样带上来
+            // （LewdDew 那个包 306 个文件里 160 个和原版一模一样），
+            // 全记进账就变成几百条毫无意义的"可还原"，还会把备份目录撑爆。
+            if (File.Exists(dst) && Sha256Of(src) == Sha256Of(dst)) { skipped++; continue; }
             try
             {
                 Directory.CreateDirectory(Path.GetDirectoryName(dst)!);
-                var key = plan.Host + "|" + r;
+                var key = OverlayKey(plan.Host, r, nexusModId, packName);
+                var bakFile = dst + OverlayBackupSuffix;
                 var origHash = "";
                 if (File.Exists(dst))
                 {
-                    origHash = Sha256Of(dst);
-                    var bak = dst + OverlayBackupSuffix;
-                    if (!File.Exists(bak)) File.Copy(dst, bak);
+                    // 备份才是真原版：第二个包盖上来时磁盘上那份是第一个包的内容，
+                    // 拿它当"原版"存下来，还原时就把第一个汉化一起毁掉了。
+                    origHash = File.Exists(bakFile) ? Sha256Of(bakFile) : Sha256Of(dst);
+                    if (!File.Exists(bakFile)) File.Copy(dst, bakFile);
                 }
-                // 重复安装同一个包时，真原版哈希以第一条记录为准，别让"上一个覆盖版"冒充原版
-                if (File.Exists(dst) && c.Overlays.TryGetValue(key, out var prev) && prev.OriginalSha256.Length > 0)
-                    origHash = prev.OriginalSha256;
 
                 File.Copy(src, dst, overwrite: true);
                 // 留一份包里的原件：没有它，"关掉"就变成"卸载"，再也打不开了。
@@ -1008,6 +1159,15 @@ public sealed class ModService
                     AppLog.Warn("Mods", "[覆盖包] 副本保存失败，之后将无法重新开启：" + ex.Message);
                     storeId = "";
                 }
+                // 同一个宿主文件被第二个汉化包重盖时，上一条记录的副本目录就再没人引用了
+                // （记录被覆盖，「删除」只认新 StoreId）→ 永久孤儿。新副本落盘成功后清掉旧的。
+                if (storeId.Length > 0 && c.Overlays.TryGetValue(key, out var replaced)
+                    && replaced.StoreId.Length > 0 && !replaced.StoreId.Equals(storeId, StringComparison.Ordinal))
+                {
+                    try { Directory.Delete(OverlayStoreDir(replaced.StoreId), recursive: true); }
+                    catch (Exception ex)
+                    { AppLog.Warn("Mods", "[覆盖包] 上一个包的副本目录没清掉（只是多占点盘）: " + ex.Message); }
+                }
                 c.Overlays[key] = new OverlayRecord
                 {
                     Host = plan.Host,
@@ -1019,6 +1179,10 @@ public sealed class ModService
                     StoreId = storeId,
                     Enabled = true,
                 };
+                // 文件槽位只有一个：这份占上了，同一个文件上的其它包一律记成"关着" ——
+                // 账和副本都留着，所以想换回哪一个，去卡片里拨它那颗开关就行。
+                foreach (var sib in OverlaySiblings(c, c.Overlays[key], key))
+                    c.Overlays[sib].Enabled = false;
                 written++;
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -1030,7 +1194,8 @@ public sealed class ModService
 
         cfg.Save(c);
         modName = packName;
-        AppLog.Info("Mods", $"[覆盖包] {packName} → {Path.GetFileName(hostDir)}，共写入 {written} 个文件");
+        AppLog.Info("Mods", $"[覆盖包] {packName} → {Path.GetFileName(hostDir)}，共写入 {written} 个文件"
+            + (skipped > 0 ? $"（另有 {skipped} 个与原版逐字节相同，跳过）" : ""));
         return null;
     }
 
@@ -1042,26 +1207,54 @@ public sealed class ModService
     {
         var byHost = new Dictionary<string, (int Total, int Stale)>(StringComparer.OrdinalIgnoreCase);
         var stale = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var (key, rec) in cfg.Overlays)
+        // 同一个宿主文件上可以有好几个汉化包各占一条账（磁盘槽位只有一个），所以按文件分组判：
+        // 有人在位就只校验在位的那条，否则两份内容撞得一模一样时，关着的那条会被误报成失效。
+        foreach (var grp in cfg.Overlays.GroupBy(kv => NormalizeOverlayHost(kv.Value.Host) + "|" + kv.Value.RelPath,
+                     StringComparer.OrdinalIgnoreCase))
         {
-            var hostDir = ResolveHostDir(gamePath, rec.Host);
-            var file = hostDir is null
-                ? null
-                : Path.Combine(hostDir, rec.RelPath.Replace('/', Path.DirectorySeparatorChar));
-            var ours = file is not null && File.Exists(file) && Sha256Of(file) == rec.AppliedSha256;
-            // "正常" = 磁盘状态和开关一致：开着该是我们的文件在位，关着该是不在位
-            var alive = rec.Enabled ? ours : !ours;
-            var cur = byHost.TryGetValue(rec.Host, out var v) ? v : (0, 0);
-            byHost[rec.Host] = (cur.Item1 + 1, alive ? cur.Item2 : cur.Item2 + 1);
-            if (!alive) stale.Add(key);
+            var rows = grp.ToList();
+            var activeKey = rows.FirstOrDefault(kv => kv.Value.Enabled).Key;
+            var hostDir = ResolveHostDir(gamePath, rows[0].Value.Host);
+            var file = hostDir is null ? null
+                : Path.Combine(hostDir, rows[0].Value.RelPath.Replace('/', Path.DirectorySeparatorChar));
+            var hash = file is not null && File.Exists(file) ? Sha256Of(file) : null;
+            foreach (var (key, rec) in rows)
+            {
+                var ours = hash is not null && hash == rec.AppliedSha256;
+                // "正常" = 磁盘状态和开关一致：开着该是我们的文件在位，关着该是不在位
+                var alive = activeKey is null ? !ours
+                    : string.Equals(key, activeKey, StringComparison.OrdinalIgnoreCase) ? ours : true;
+                var norm = NormalizeOverlayHost(rec.Host);
+                var cur = byHost.TryGetValue(norm, out var v) ? v : (0, 0);
+                byHost[norm] = (cur.Item1 + 1, alive ? cur.Item2 : cur.Item2 + 1);
+                if (!alive) stale.Add(key);
+            }
         }
         return new OverlayReport(byHost, stale);
     }
 
+    /// <summary>覆盖记录的键：宿主 | 包内相对路径 | 来源槽位。
+    /// 槽位用 N 网 modId（本地包退回包名），所以同一个文件能被多个汉化包各占一条记录 ——
+    /// 磁盘上那个文件同一时刻只可能是其中一份，其余的账和副本都留着，开关一拨就换上去。</summary>
+    public static string OverlayKey(string host, string relPath, int? nexusModId, string packName)
+        => host + "|" + relPath + "|" + (nexusModId?.ToString()
+            ?? (string.IsNullOrWhiteSpace(packName) ? "legacy" : packName));
+
+    /// <summary>同一个宿主文件上的其它覆盖记录（不含自己）。文件槽位只有一个，谁在位谁算数。</summary>
+    private static List<string> OverlaySiblings(JuniGridConfig c, OverlayRecord rec, string selfKey)
+        => c.Overlays.Where(kv => !kv.Key.Equals(selfKey, StringComparison.OrdinalIgnoreCase)
+                && NormalizeOverlayHost(kv.Value.Host).Equals(NormalizeOverlayHost(rec.Host), StringComparison.OrdinalIgnoreCase)
+                && kv.Value.RelPath.Equals(rec.RelPath, StringComparison.OrdinalIgnoreCase))
+            .Select(kv => kv.Key).ToList();
+
     /// <summary>覆盖包文件的副本目录。开关要能来回，就得留着包里那份原件；
-    /// 放 AppDataDir 而不是缓存目录 —— 缓存是「缓存与存储」页能一键清掉的，清了就等于弄丢用户的包。</summary>
+    /// 放 AppDataDir 而不是缓存目录 —— 缓存是「缓存与存储」页能一键清掉的，清了就等于弄丢用户的包。
+    /// <para>根目录与配置认同一个 <c>JUNIGRID_CONFIG_DIR</c>：不设时仍是
+    /// <c>%APPDATA%\JuniGrid\overlays</c>（逐字节同旧行为）；设了则连副本都落在临时目录里。
+    /// 为什么补这道缝：这页既不在「缓存与存储」里露出、app 也不回收孤儿，
+    /// 2026-10-01 几轮测试就在玩家真目录里堆出 171 个永久孤儿目录。</para></summary>
     public static string OverlayStoreDir(string storeId)
-        => Path.Combine(StoragePaths.AppDataDir, "overlays", storeId);
+        => Path.Combine(ConfigService.ConfigDir, "overlays", storeId);
 
     /// <summary>卸载宿主时清掉它名下的覆盖记录与副本目录。
     /// <b>不做还原</b>：宿主目录本身就要没了，把原版拷回去毫无意义，而副本留在 AppData 里
@@ -1070,9 +1263,12 @@ public sealed class ModService
     {
         var c = cfg.Current;
         if (c.Overlays.Count == 0) return;
-        var host = folderName.Replace('\\', '/').Split('/')[0].TrimStart('.');
+        // 卸载顶层会连里面的子包一起没掉，所以「等于它」或「在它下面」的记录都要清；
+        // 反过来只卸某个子包时，顶层和兄弟子包的覆盖不能跟着陪葬。
+        var gone = NormalizeOverlayHost(folderName);
         var doomed = c.Overlays
-            .Where(kv => kv.Value.Host.Equals(host, StringComparison.OrdinalIgnoreCase))
+            .Where(kv => NormalizeOverlayHost(kv.Value.Host).Equals(gone, StringComparison.OrdinalIgnoreCase)
+                || NormalizeOverlayHost(kv.Value.Host).StartsWith(gone + "/", StringComparison.OrdinalIgnoreCase))
             .Select(kv => kv.Key).ToList();
         foreach (var key in doomed)
         {
@@ -1082,12 +1278,12 @@ public sealed class ModService
         }
         if (doomed.Count == 0) return;
         cfg.Save(c);
-        AppLog.Info("Mods", $"[覆盖包] 宿主 {host} 被卸载，连带清除 {doomed.Count} 条覆盖记录与副本");
+        AppLog.Info("Mods", $"[覆盖包] 宿主 {gone} 被卸载，连带清除 {doomed.Count} 条覆盖记录与副本");
     }
 
     /// <summary>开 / 关一条覆盖。开着 = 我们的文件在位；关掉 = 把原文件放回去，<b>但账和副本都留着</b>，
     /// 所以随时能再打开，不需要重新下载汉化包。彻底删账走 <see cref="RevertOverlay"/>。</summary>
-    public string? SetOverlayEnabled(string gamePath, string key, bool enabled, ConfigService cfg)
+    public string? SetOverlayEnabled(string gamePath, string key, bool enabled, ConfigService cfg, bool save = true)
     {
         var c = cfg.Current;
         if (!c.Overlays.TryGetValue(key, out var rec)) return LocService.Tr("找不到这条覆盖记录");
@@ -1096,6 +1292,8 @@ public sealed class ModService
         var local = rec.RelPath.Replace('/', Path.DirectorySeparatorChar);
         var dst = Path.GetFullPath(Path.Combine(hostDir, local));
         var bak = dst + OverlayBackupSuffix;
+        // 状态没变就别动盘：关着的那条再"关"一次会把当前在位的另一个包的文件换成原版
+        if (rec.Enabled == enabled) return null;
         try
         {
             if (enabled)
@@ -1108,6 +1306,8 @@ public sealed class ModService
                 Directory.CreateDirectory(Path.GetDirectoryName(dst)!);
                 File.Copy(keep, dst, overwrite: true);
                 rec.AppliedSha256 = Sha256Of(dst);
+                // 抢占槽位：同一个文件上其它包的记录一律记成"关着"（账和副本都留着）
+                foreach (var sib in OverlaySiblings(c, rec, key)) c.Overlays[sib].Enabled = false;
             }
             else if (File.Exists(bak))
             {
@@ -1118,7 +1318,7 @@ public sealed class ModService
                 File.Delete(dst);                       // 这个文件本来就是覆盖包新增的
             }
             rec.Enabled = enabled;
-            cfg.Save(c);
+            if (save) cfg.Save(c);
             AppLog.Info("Mods", $"[覆盖包] {(enabled ? "开启" : "关闭")} {rec.Host}/{rec.RelPath}");
             return null;
         }
@@ -1131,7 +1331,7 @@ public sealed class ModService
     /// <summary>彻底撤销一条覆盖：还原原文件、删掉备份与副本、销账。
     /// 备份没了就不硬编 —— 宿主被整体重装过时，目录里那份新文件正是上游原版，没什么可还原的，
     /// 这时只把账销掉，并如实说明。</summary>
-    public string? RevertOverlay(string gamePath, string key, ConfigService cfg)
+    public string? RevertOverlay(string gamePath, string key, ConfigService cfg, bool save = true)
     {
         var c = cfg.Current;
         if (!c.Overlays.TryGetValue(key, out var rec)) return LocService.Tr("找不到这条覆盖记录");
@@ -1143,19 +1343,28 @@ public sealed class ModService
 
         try
         {
-            if (bak is not null && File.Exists(bak))
+            // 先算同一个文件上还留着谁：还剩别人，备份和槽位就还要用，不能顺手清掉
+            var sibs = OverlaySiblings(c, rec, key);
+            if (rec.Enabled)
             {
-                if (dst is not null) File.Copy(bak, dst, overwrite: true);
-                File.Delete(bak);
+                if (bak is not null && File.Exists(bak))
+                {
+                    if (dst is not null) File.Copy(bak, dst, overwrite: true);
+                    if (sibs.Count == 0) File.Delete(bak);
+                }
+                else if (dst is not null && rec.OriginalSha256.Length == 0 && File.Exists(dst))
+                {
+                    File.Delete(dst);   // 原本没这个文件，是覆盖包新增的 → 删掉就是还原
+                }
             }
-            else if (dst is not null && rec.OriginalSha256.Length == 0 && File.Exists(dst))
+            else if (sibs.Count == 0 && bak is not null && File.Exists(bak))
             {
-                File.Delete(dst);   // 原本没这个文件，是覆盖包新增的 → 删掉就是还原
+                File.Delete(bak);       // 删的是关着的那条，且这个文件上再没别的账 → 备份也没人用了
             }
             if (!string.IsNullOrEmpty(rec.StoreId))
                 try { Directory.Delete(OverlayStoreDir(rec.StoreId), recursive: true); } catch { }
             c.Overlays.Remove(key);
-            cfg.Save(c);
+            if (save) cfg.Save(c);
             return null;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -1163,6 +1372,46 @@ public sealed class ModService
             return LocService.Tr("文件正被占用，还原失败");
         }
     }
+
+    /// <summary>整包开关：一个汉化包可能盖了上百个文件（LewdDew 那种重打包 146 个），
+    /// 卡片上是一行，所以按「宿主 + 来源槽位」成组操作，只在最后落一次盘。</summary>
+    public string? SetOverlayGroupEnabled(string gamePath, string host, string slot, bool enabled, ConfigService cfg)
+    {
+        var c = cfg.Current;
+        var keys = GroupKeys(c, host, slot);
+        string? err = null;
+        foreach (var k in keys)
+        {
+            err = SetOverlayEnabled(gamePath, k, enabled, cfg, save: false);
+            if (err is not null) break;
+        }
+        if (keys.Count > 0) cfg.Save(c);
+        return err;
+    }
+
+    /// <summary>整包删除（还原 + 销账 + 删副本）。逐条走 RevertOverlay，最后统一落盘一次。</summary>
+    public string? RevertOverlayGroup(string gamePath, string host, string slot, ConfigService cfg)
+    {
+        var c = cfg.Current;
+        var keys = GroupKeys(c, host, slot);
+        string? err = null;
+        foreach (var k in keys)
+        {
+            err = RevertOverlay(gamePath, k, cfg, save: false);
+            if (err is not null) break;
+        }
+        if (keys.Count > 0) cfg.Save(c);
+        return err;
+    }
+
+    /// <summary>某个包在某个宿主名下的全部记录键（按路径排序，保证逐条操作顺序稳定）。</summary>
+    private static List<string> GroupKeys(JuniGridConfig c, string host, string slot)
+        => c.Overlays
+            .Where(kv => NormalizeOverlayHost(kv.Value.Host).Equals(NormalizeOverlayHost(host), StringComparison.OrdinalIgnoreCase)
+                && OverlaySlotOf(kv.Key).Equals(slot, StringComparison.OrdinalIgnoreCase))
+            .Select(kv => kv.Key)
+            .OrderBy(k => k, StringComparer.OrdinalIgnoreCase)
+            .ToList();
 
     public string? InstallNew(string gamePath, string zipPath, out string? modName, int? nexusModId = null,
         string? requireUniqueId = null, string? portraiturePackName = null, ConfigService? cfg = null)
@@ -1250,6 +1499,21 @@ public sealed class ModService
                     modName = n.GetString();
             }
             catch (Exception __ex) { AppLog.Warn("ModService", __ex.Message); }
+
+            // v1.2.4：带 manifest 的包也可能是「同一个 mod 的汉化重打包」（作者把整个目录重发一遍、
+            // manifest 原封不动）。这种要按文件盖回它对应的那个已装目录，绝不能当成第二个 mod
+            // 装到别处 —— 同 UniqueID 会互相判重吃掉，捆绑包结构还会被拆散。
+            var prettyName = modName;
+            if (cfg is not null && allManifests.Length == 1 && requireUniqueId is null
+                && ProbeTranslatedRepackage(gamePath, temp!, modRoot, manifest) is { } rep)
+            {
+                var rerr = ApplyOverlay(gamePath, temp!, rep, cfg, nexusModId,
+                    SanitizeFolderName(Path.GetFileNameWithoutExtension(zipPath)), out _);
+                TryDelete(temp);
+                modName = prettyName;      // 卡片标题用 manifest 里的名字，不用 zip 文件名
+                return rerr;
+            }
+
             if (isBundle)
             {
                 // 捆绑包的展示名取所有子包名的共同部分。子包名都带 "[BL] "/"[CC] "
@@ -2735,14 +2999,18 @@ public static class NexusUpdateTruth
         return null;
     }
 
-    /// <summary>安装成功后：记住 N 网 fileId/文件版本；若与 manifest 不一致则回写 Version。</summary>
-    public static void RecordInstall(JuniGridConfig cfg, ModEntry m, long fileId, string remoteVersion,
-        string gamePath)
+    /// <summary>安装成功后：记住 N 网 fileId/文件版本；若与 manifest 不一致则回写 Version。
+    /// <paramref name="downloadedModId"/> 必须是<b>真下载的那一页</b>：非官方续作的 manifest 里
+    /// UpdateKeys 仍写着原版页（实测 2026-10-01 从续作页 20702 装的 Friends Forever，
+    /// manifest 里写的是 Nexus:1738），拿 <c>m.NexusModId</c> 存就是把来源身份丢掉 ——
+    /// 而「替代版是不是你手上这一版」正是靠这条记录来证明的。</summary>
+    public static void RecordInstall(JuniGridConfig cfg, ModEntry m, int downloadedModId,
+        long fileId, string remoteVersion, string gamePath)
     {
         if (string.IsNullOrWhiteSpace(remoteVersion) && fileId == 0) return;
         var rec = new NexusInstallRecord
         {
-            NexusModId = m.NexusModId ?? 0,
+            NexusModId = downloadedModId > 0 ? downloadedModId : (m.NexusModId ?? 0),
             FileId = fileId,
             RemoteVersion = remoteVersion ?? "",
             InstalledAtUtc = DateTime.UtcNow,
@@ -2754,6 +3022,31 @@ public static class NexusUpdateTruth
         if (!string.IsNullOrWhiteSpace(remoteVersion))
             TrySetManifestVersion(Path.Combine(gamePath, "Mods", m.Folder), remoteVersion);
     }
+
+    /// <summary>装完后从扫描结果里认出「刚装的那一条」。文件夹名对不上时，再按 manifest 的显示名
+    /// 和路径末段各认一次 —— 传进来的猜测名是 manifest 里的 <c>Name</c>，改名安装与捆绑包子包的场合
+    /// 它就不等于文件夹名；认不出来的后果是以一个永远查不中的键写进 ModNexusInstalls（记录等于白写，
+    /// manifest 版本回写也落空）。三条判据按可信度排：N 网 id &gt; 文件夹全名 &gt; 显示名 / 末段。</summary>
+    public static ModEntry? FindInstalledEntry(IEnumerable<ModEntry> scanned, int nexusModId, string? nameGuess)
+    {
+        foreach (var x in scanned)
+            if (x.NexusModId == nexusModId) return x;
+        var guess = (nameGuess ?? "").Trim();
+        if (guess.Length == 0) return null;
+        ModEntry? byFolder = null, byName = null, byLeaf = null;
+        foreach (var x in scanned)
+        {
+            if (byFolder is null && string.Equals(x.Folder, guess, StringComparison.OrdinalIgnoreCase)) byFolder = x;
+            else if (byName is null && string.Equals(x.Name, guess, StringComparison.OrdinalIgnoreCase)) byName = x;
+            else if (byLeaf is null && string.Equals(LeafOf(x.Folder), guess, StringComparison.OrdinalIgnoreCase)) byLeaf = x;
+            if (byFolder is not null) break;
+        }
+        return byFolder ?? byName ?? byLeaf;
+    }
+
+    /// <summary>Mods 里的路径末段：捆绑包子包记作 "Top/Sub"，而它的显示名常常只等于 "Sub"。</summary>
+    private static string LeafOf(string folder) =>
+        folder.Replace('\\', '/').TrimEnd('/').Split('/')[^1];
 
     public static void RecordInstallByModId(JuniGridConfig cfg, string gamePath, string folderOrUid,
         int nexusModId, long fileId, string remoteVersion)
@@ -2872,7 +3165,7 @@ public static class NexusUpdateTruth
             if (fileId != 0 && !string.IsNullOrWhiteSpace(remoteVersion)
                 && (rec is null || string.IsNullOrWhiteSpace(rec.RemoteVersion)))
             {
-                RecordInstall(cfg, m, fileId, remoteVersion!, gamePath);
+                RecordInstall(cfg, m, m.NexusModId ?? 0, fileId, remoteVersion!, gamePath);
                 if (!string.Equals(m.Version, remoteVersion, StringComparison.OrdinalIgnoreCase))
                     m.Version = remoteVersion!;
             }

@@ -53,6 +53,12 @@
     --jg-on-thumb: #ffffff;
     --jg-thumb-track: rgba(0,0,0,0.04);
     --jg-dock-running: #7d7d80;          /* 任务胶囊下载中灰 */
+    /* 浮条 toast：三种（普通/失败/成功）共用一套落点与配色，主题切换跟着令牌走。
+       落点必须低于顶导航（实测导航占 40–90px），否则浮条压在导航上。 */
+    --jg-toast-top: 112px;
+    --jg-toast-bg: rgba(22,22,22,0.94);
+    --jg-toast-fg: #ffffff;
+    --jg-danger: #c50f1f;
     /* 主题切换开关（Element Plus 导航栏同款） */
     --jg-toggle-track: #e3e5e8;
     --jg-toggle-track-border: rgba(0,0,0,0.08);
@@ -97,6 +103,10 @@ html[data-theme="dark"] {
     --jg-on-thumb: #17181c;
     --jg-thumb-track: rgba(255,255,255,0.10);
     --jg-dock-running: #55585e;
+    /* 深色下浮条反色（白底黑字），失败条提亮一档才压得住深底 */
+    --jg-toast-bg: #f2f3f5;
+    --jg-toast-fg: #17181c;
+    --jg-danger: #e0475a;
     --jg-toggle-track: #43464c;
     --jg-toggle-track-border: rgba(255,255,255,0.10);
     --jg-toggle-knob: #f2f3f5;

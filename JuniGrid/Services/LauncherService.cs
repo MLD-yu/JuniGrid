@@ -241,55 +241,10 @@ public sealed class LauncherService
     public bool IsGameRunning =>
         _smapiProcess is { HasExited: false } || AnyProcess(GameProcessNames);
 
-    /// <summary>能否向 SMAPI 控制台发命令：游戏须由本程序启动且未退出
-    /// （接续的外部进程没有我们这条 stdin 管道，输入框该置灰）。</summary>
-    public bool CanSendCommand => _smapiProcess is { HasExited: false };
-
-    /// <summary>命令管道的编码。不显式指定的话 .NET 跟随父进程控制台代码页 —— 无控制台地
-    /// 启动时退化成 UTF-8，而子进程 Console.In 按系统 ANSI 码页（中文机器 = 936）解码，
-    /// 中文参数就变乱码（离线实测：写出 E6-8A-80-E8-83-BD，子进程读出「鎶€鑳?」）。
-    /// 钉到 936 与解码端对齐；ASCII 命令两种码页字节相同，不受影响。</summary>
-    private static readonly Encoding? SmapiPipeEncoding = CreatePipeEncoding();
-
-    private static Encoding? CreatePipeEncoding()
-    {
-        try
-        {
-            Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
-            return Encoding.GetEncoding(936);
-        }
-        catch { return null; }   // 拿不到就退回 .NET 默认行为
-    }
-
-    // v1.3.4：不再自动加 debug 前缀 —— 旧逻辑把白名单外的输入一律当游戏调试命令
-    // 补 "debug "，但 SMAPI 生态的【mod 自定义命令】（CJB Cheats、Lookup Anything、
-    // 自定义 NPC mod 的命令……）都在白名单之外，被加上前缀后 SMAPI 就报
-    // "没有名为 debug xxx 的命令"——用户实测"好多命令用不了"的根源。
-    // SMAPI 本身会把收不到的裸命令提示"你是想输入 debug xxx 吗"，错误处理有兜底，
-    // 直接原样转发是正确且宽容的行为。
-    /// <summary>向 SMAPI 写入一条命令，等价于在 SMAPI 控制台里输入后回车（原样转发）。
-    /// 走 LaunchSmapiCore 建的 stdin 管道；v1.6.9~v1.6.9b 曾试图改用「往控制台注入按键」，
-    /// 但 Windows Terminal（ConPTY）下跨进程注入不生效，已放弃。</summary>
-    public bool SendCommand(string command)
-    {
-        var p = _smapiProcess;
-        if (p is not { HasExited: false }) return false;
-        var actual = command.Trim();
-        if (actual.Length == 0) return false;
-
-        RaiseLog("[JuniGrid] > " + actual);
-        try
-        {
-            p.StandardInput.WriteLine(actual);
-            return true;
-        }
-        catch (Exception ex)
-        {
-            AppLog.Warn("LauncherService", ex.Message);
-            RaiseLog("[JuniGrid] 命令发送失败：" + ex.Message);
-            return false;
-        }
-    }
+    // 这里原来有一套「向 SMAPI 发命令」的东西（stdin 管道 + 936 编码 + debug 前缀白名单）——
+    // 全部删除：SMAPI 根本不读我们建的管道（带不带控制台窗口两种启动都实测过），跨进程往它的
+    // 控制台注入按键在 ConPTY 下也不投递（v1.6.9 试过，2026-09-30 再验一次，结论相同）。
+    // 日志页的命令框因此改成「复制到剪贴板」，由用户在游戏内聊天框或 SMAPI 控制台粘贴。
 
     /// <summary>
     /// 取消启动的清场看门狗：Steam 的拉起管线可能在「取消」之后才把游戏进程拉出来
@@ -487,10 +442,10 @@ public sealed class LauncherService
                     FileName = exe,
                     WorkingDirectory = gamePath,
                     UseShellExecute = false,
-                    // 只接 stdin：命令输入框靠这条管道。stdout/stderr 一律不接 ——
-                    // 没人持续读的话管道缓冲写满会把 SMAPI 卡死，而日志页读的是文件。
-                    RedirectStandardInput = true,
-                    StandardInputEncoding = SmapiPipeEncoding,
+                    // stdin/stdout/stderr 一律不接：以前接 stdin 是为了日志页那个命令框，
+                    // 但 SMAPI 不读重定向进来的命令（实测），那条管道只是让我们误以为发出去了。
+                    // stdout/stderr 更不能接 —— 没人持续读的话管道缓冲写满会把 SMAPI 卡死，
+                    // 而日志页读的是 SMAPI 自己写的 ErrorLogs\SMAPI-latest.txt。
                     RedirectStandardOutput = false,
                     RedirectStandardError = false,
                     CreateNoWindow = !showConsole
@@ -668,9 +623,9 @@ public sealed class LauncherService
     /// 直启不触发那次下载（22 次会话实测：20/20 经 Steam 的都有 `AC Launch`，2/2 直启的都没有），
     /// 退出时仍触发 `AC Exit` → 这一局的进度照样上传到云。
     ///
-    /// 刻意**不**给 _smapiProcess 赋值：这条路上没有 stdin 管道，赋了 CanSendCommand 就变成 true，
-    /// 命令输入框会显示成可用、发出去石沉大海。运行态交给 TrackSteamExitAsync + AnyProcess，
-    /// GameProcessNames 里本来就有 "Stardew Valley"。
+    /// 刻意**不**给 _smapiProcess 赋值：这条路上我们并没有真的持有那个子进程（Steam 才是它的
+    /// 父进程），赋值会让「游戏是否在跑」之类的状态误判。运行态交给 TrackSteamExitAsync +
+    /// AnyProcess，GameProcessNames 里本来就有 "Stardew Valley"。
     /// </summary>
     private LaunchResult LaunchVanillaDirectly(string gamePath, string? warning)
     {

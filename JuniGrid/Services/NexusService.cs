@@ -48,6 +48,28 @@ public sealed class NexusService
     /// <summary>用户是否已通过 OAuth2 登录（存在 Bearer token）。</summary>
     public static bool IsAuthenticated => !string.IsNullOrEmpty(BearerToken);
 
+    /// <summary>token 快过期时的刷新器，由启动处在 DI 建好后挂进来 —— 本类是静态的，
+    /// 反向依赖 NexusOAuthService 会把两个服务拧成环。</summary>
+    public static Func<Task>? EnsureFreshToken;
+    private static readonly SemaphoreSlim RefreshGate = new(1, 1);
+    private static DateTime _lastRefreshTryUtc = DateTime.MinValue;
+
+    /// <summary>带 Bearer 的请求发出前刷一次过期的 access token。
+    /// 10 秒内只试一次、且已有刷新在飞时直接放行 —— 否则一次 401 风暴会刷出几十次。</summary>
+    private static async Task EnsureFreshBearerAsync(CancellationToken ct)
+    {
+        var hook = EnsureFreshToken;
+        if (hook is null || !await RefreshGate.WaitAsync(0, ct).ConfigureAwait(false)) return;
+        try
+        {
+            if ((DateTime.UtcNow - _lastRefreshTryUtc).TotalSeconds < 10) return;
+            _lastRefreshTryUtc = DateTime.UtcNow;
+            await hook().ConfigureAwait(false);
+        }
+        catch { /* 刷新失败就按原 token 发，调用方照旧优雅降级 */ }
+        finally { RefreshGate.Release(); }
+    }
+
     // ══════════════════════════════════════════════════════════════════
     // Nexus API 集中限流闸门（AUP 二审：降低并发 + 集中识别 429 + 遵守 Retry-After）
     //  - MaxConcurrent：本进程在飞的 API/GraphQL 请求硬顶
@@ -156,6 +178,8 @@ public sealed class NexusService
         bool useBearer = true,
         CancellationToken ct = default)
     {
+        if (useBearer && BearerToken is not null)
+            await EnsureFreshBearerAsync(ct).ConfigureAwait(false);
         await ApiGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
@@ -710,6 +734,56 @@ public sealed class NexusService
             r.ModName, r.Notes, r.Url, r.ModId, r.External,
             covers.TryGetValue(r.ModId, out var pu) ? pu : null)).ToList();
     }
+
+    /// <summary>按名字在 N 网搜 mod（免 Key 的 GraphQL WILDCARD 通配），返回最像的那条且排除本体。
+    /// 用在 SMAPI 兼容性表只给了替代版**名字**、链接位是 <c>(#)</c> 占位的场合
+    /// （实测 "⚠ use [Friends Forever (1.6)](#) instead." → N 网 20702 是独立的一个 mod，
+    /// 而本体是 1738 —— 只开本体页面会让人以为"替代版跟现在这个一模一样"）。
+    /// <para>清洗规则与 <see cref="GetModTranslationsAsync"/> 相反：那边削掉括号点号无所谓，
+    /// 这里**必须保留** —— 实测 "Friends Forever (1.6)" 命中 1 条，削成 "Friends Forever 16" 命中 0 条。
+    /// 所以只剥会破坏 GraphQL 字符串字面量的字符。</para></summary>
+    public async Task<(int ModId, string Name)?> FindModByNameAsync(
+        string name, int excludeModId = 0, string gameDomain = "stardewvalley")
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(name)) return null;
+            if (await EnsureGameIdAsync(gameDomain) is not { } gameId) return null;
+            var safe = new string(name.Where(c => !new[] { '"', '\\', '\r', '\n', '{', '}' }.Contains(c)).ToArray()).Trim();
+            if (safe.Length == 0) return null;
+            // adultContent 必须是 name 的**兄弟**条件；塞进 name 那个对象里 GraphQL 直接不认
+            var adult = IncludeAdultContent ? "" : ", adultContent:{value:false, op:EQUALS}";
+            var q = "{ mods(filter:{gameId:{value:\"" + gameId + "\"}, name:{value:\"" + safe
+                + "\", op:WILDCARD}" + adult + "}, count:20) { nodes { modId name } } }";
+            var d = await GraphQlAsync(q);
+            if (d is null || !d.Value.TryGetProperty("mods", out var mods)
+                || mods.ValueKind != JsonValueKind.Object
+                || !mods.TryGetProperty("nodes", out var nodes) || nodes.ValueKind != JsonValueKind.Array)
+                return null;
+            (int ModId, string Name)? first = null, exact = null;
+            var norm = NormalizeForNameMatch(safe);
+            foreach (var n in nodes.EnumerateArray())
+            {
+                var mid = n.TryGetProperty("modId", out var m1) && m1.ValueKind == JsonValueKind.Number
+                    ? m1.GetInt32() : 0;
+                var nm = GetStr(n, "name");
+                if (mid <= 0 || mid == excludeModId || string.IsNullOrWhiteSpace(nm)) continue;
+                first ??= (mid, nm);
+                if (NormalizeForNameMatch(nm) == norm) { exact = (mid, nm); break; }
+            }
+            return exact ?? first;
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warn("Nexus", "按名字搜 mod 失败(" + name + "): " + ex.Message);
+            return null;
+        }
+    }
+
+    /// <summary>名字比对用的归一化：只留小写字母数字，括号/点/空格全抹掉
+    /// （"Friends Forever (1.6)" 与 "Friends Forever 1.6" 视为同一个名字）。</summary>
+    private static string NormalizeForNameMatch(string s) =>
+        new string(s.Where(char.IsLetterOrDigit).Select(char.ToLowerInvariant).ToArray());
 
     /// <summary>v0.69.7：译本 —— 用 mods 搜索按主 mod 名匹配翻译版本（官网 HTML 抓取被 403 反爬挡死）。</summary>
     public async Task<List<NexusTranslationItem>?> GetModTranslationsAsync(int modId, string modName, string gameDomain = "stardewvalley")

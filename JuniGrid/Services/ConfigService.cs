@@ -8,7 +8,13 @@ namespace JuniGrid.Services;
 /// </summary>
 public sealed class ConfigService
 {
-    private static readonly string ConfigDir = StoragePaths.AppDataDir;
+    /// <summary>配置落点覆盖（只给测试舱用）：设了 JUNIGRID_CONFIG_DIR 就写到那儿去。
+    /// 没有这个口子，夹具就只能拿玩家的真配置练手 —— 2026-09-30 真把 148 条覆盖记录冲掉过一次。
+    /// 不设环境变量时行为与以前逐字节一致。
+    /// <para>这也是覆盖包副本目录的根（见 <see cref="ModService.OverlayStoreDir"/>）——
+    /// 两处认同一个变量，测试才可能"整个落在临时目录里"。</para></summary>
+    public static readonly string ConfigDir = Environment.GetEnvironmentVariable("JUNIGRID_CONFIG_DIR") is { Length: > 0 } dir
+        ? dir : StoragePaths.AppDataDir;
     private static readonly string ConfigPath = Path.Combine(ConfigDir, "junigrid.config.json");
 
     /// <summary>给 App.OnStartup（早于 DI、还没有 Current）用的配置文件路径。</summary>
@@ -101,6 +107,9 @@ public sealed class ConfigService
             }
             SyncAdultFilter();
             SyncStoragePaths();
+            // 覆盖记录键迁移：老键「宿主|文件」一个槽位只够记一个包，第二个汉化包会把第一个顶掉。
+            // 新键多一段来源槽位（N 网 modId，没有就退回包名），同一个文件因此能并存多条记录。
+            if (NormalizeOverlayKeys(Current)) Save(Current);
             // v1.1.5：首次使用日期只补写一次（老用户从本次升级后开始起算）
             // 仅当「本来就没有配置」或「从备份恢复出的旧配置缺该字段」时补写；
             // 解析失败后的全新默认对象不许在这里立刻 Save 盖掉现场
@@ -112,9 +121,24 @@ public sealed class ConfigService
             }
         }
 
-        /// <summary>主配置存在且能解析 = 现场完好，允许补写 FirstRunDate。</summary>
-        private static bool ConfigLooksIntact()
+        /// <summary>把两段式老覆盖键补成三段（多一段来源槽位）。返回是否动了 —— 动了才值得落盘。
+        /// 槽位取 N 网 modId，本地手放的包退回包名（包名来自 Windows 文件名，不可能含 '|'）。</summary>
+        private static bool NormalizeOverlayKeys(JuniGridConfig c)
         {
+            var legacy = c.Overlays.Where(kv => kv.Key.Split('|').Length == 2).ToList();
+            if (legacy.Count == 0) return false;
+            foreach (var kv in legacy) c.Overlays.Remove(kv.Key);
+            foreach (var kv in legacy)
+            {
+                var slot = kv.Value.NexusModId?.ToString() ?? kv.Value.PackName;
+                if (string.IsNullOrWhiteSpace(slot)) slot = "legacy";
+                c.Overlays[kv.Value.Host + "|" + kv.Value.RelPath + "|" + slot] = kv.Value;
+            }
+            return true;
+        }
+
+        /// <summary>主配置存在且能解析 = 现场完好，允许补写 FirstRunDate。</summary>
+        private static bool ConfigLooksIntact()        {
             try
             {
                 return File.Exists(ConfigPath)

@@ -159,6 +159,23 @@ public partial class App : Application
                 return;
             }
 
+            // 没有可交还的备份时，也只有「这条登记确实是我们自己的（或我们留下的残骸）」才删。
+            // 别的管理器后来自己登记回来了，删树等于把人家整棵 nxm 键端掉（连 URL Protocol 一起没），
+            // 症状就是"关了开关反而谁都收不到下载"。
+            string? cur = null;
+            using (var k = Registry.CurrentUser.OpenSubKey(NxmCmdKey))
+                cur = k?.GetValue(null) as string;
+            var holder = ExeOf(cur);
+            var isOurs = holder is { Length: > 0 }
+                && string.Equals(holder, Environment.ProcessPath, StringComparison.OrdinalIgnoreCase);
+            var isOurGhost = holder is { Length: > 0 } && !File.Exists(holder)
+                && string.Equals(Path.GetFileName(holder), "JuniGrid.exe", StringComparison.OrdinalIgnoreCase);
+            if (!isOurs && !isOurGhost)
+            {
+                AppLog.Info("Startup", "nxm:// 登记已不属于我们（" + (holder ?? "空") + "），交还时不动它");
+                return;
+            }
+
             if (Registry.CurrentUser.OpenSubKey(NxmRootKey) is not null)
                 Registry.CurrentUser.DeleteSubKeyTree(NxmRootKey);
             AppLog.Info("Startup", back is { Length: > 0 }
@@ -172,6 +189,23 @@ public partial class App : Application
     }
 
     private static void WriteSelf(string exe) => WriteNxmCommand($"\"{exe}\" \"%1\"");
+
+    /// <summary>补上 URL Protocol 这个空值 —— Windows 认不认 nxm:// 是协议，看的是它，
+    /// 不是 command 键。缺了的症状：点网页上的「下载」按钮，浏览器什么都不做。
+    /// 只在缺失时写，返回是否补过。</summary>
+    private static bool EnsureUrlProtocolMarker()
+    {
+        try
+        {
+            using var root = Registry.CurrentUser.CreateSubKey(NxmRootKey);
+            if (root is null || root.GetValue("URL Protocol") is not null) return false;
+            root.SetValue(null, "URL:nxm");
+            root.SetValue("URL Protocol", "");
+            AppLog.Info("Startup", "nxm:// 缺 URL Protocol 标记（点下载会毫无反应），已补上");
+            return true;
+        }
+        catch (Exception ex) { AppLog.Warn("Startup", "补 URL Protocol 失败: " + ex.Message); return false; }
+    }
 
     /// <summary>写 nxm 处理器。参数是**整条命令行**，原样落盘不再加工 ——
     /// 交还别的管理器时必须走这里，不能走 WriteSelf（那条会给参数再套一层引号并追加 "%1"）。</summary>
@@ -202,8 +236,14 @@ public partial class App : Application
                 cur = rk?.GetValue(null) as string;
             var path = ExeOf(cur);
 
-            // 已经指着自己 ⇒ 两种模式都不用动，也不能动（动了会把备份覆盖成我们自己）
-            if (path is not null && path.Equals(exe, StringComparison.OrdinalIgnoreCase)) return;
+            // 已经指着自己 ⇒ 两种模式都不用动，也不能动（动了会把备份覆盖成我们自己）。
+            // 但"命令在、URL Protocol 缺"这种半残状态必须补 —— 那个空值才是 Windows 把 nxm://
+            // 当成协议交给浏览器的凭据，缺了的症状是点「下载」按钮毫无反应（2026-09-30 实测）。
+            if (path is not null && path.Equals(exe, StringComparison.OrdinalIgnoreCase))
+            {
+                EnsureUrlProtocolMarker();
+                return;
+            }
 
             if (!claim)
             {

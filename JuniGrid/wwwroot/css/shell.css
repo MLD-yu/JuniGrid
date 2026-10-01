@@ -125,23 +125,8 @@
     display: inline-flex;
     align-items: center;
     gap: 4px;
-}/* 失败 toast：屏幕上方居中，红色浮条 */
-.jg-toast {
-    position: fixed;
-    top: 20px;
-    left: 50%;
-    transform: translateX(-50%);
-    background: #e5484d;
-    color: #fff;
-    padding: 12px 20px;
-    border-radius: 10px;
-    font-size: 14px;
-    font-weight: 600;
-    z-index: 999999;
-    box-shadow: 0 8px 28px rgba(229, 72, 77, 0.4);
-    pointer-events: none;
-    white-space: nowrap;
-}.jg-launch-big:hover { transform: translateY(-1px); box-shadow: 0 8px 24px rgba(0,0,0,0.5); }.jg-launch-big:active { transform: translateY(0); }.jg-launch-big[disabled] { opacity: 0.55; cursor: not-allowed; transform: none; }.jg-launch-big.update {
+}/* 浮条 toast 全部在 effects.css 的 .jg-toast-live（配色/落点走 --jg-toast-* 令牌） */
+.jg-launch-big:hover { transform: translateY(-1px); box-shadow: 0 8px 24px rgba(0,0,0,0.5); }.jg-launch-big:active { transform: translateY(0); }.jg-launch-big[disabled] { opacity: 0.55; cursor: not-allowed; transform: none; }.jg-launch-big.update {
     background: linear-gradient(135deg, #c239b3, #8b008b);
     box-shadow: 0 6px 18px rgba(194,57,179,0.35);
 }.jg-launch-big.update:hover { box-shadow: 0 8px 24px rgba(194,57,179,0.45); }/* 启动区：主按钮默认占满整行；运行时主按钮宽度丝滑收窄，右侧叉号浮现 */

@@ -7,16 +7,26 @@ namespace JuniGrid.Services;
 
 public sealed partial class PortraitSkinService
 {
-    // ══════════════════════ 缩略图（磁盘缓存 + data URI） ══════════════════════
+    // ══════════════════════ 缩略图（磁盘缓存 + 短 URL / data URI） ══════════════════════
 
     private const string CacheVersion = "v8";   // 裁剪规则变了必须升版本
 
     private static string CacheDir => StoragePaths.InCache("portrait-covers");
 
+    /// <summary>WebView2 虚拟主机基址（如 <c>https://junigrid-assets</c>）。有它时缩略图
+    /// 走短 URL，浏览器自己缓存图片；Blazor 渲染树里不再塞几百 KB 的 base64 ——
+    /// 「每次进肖像页封面慢慢蹦」的大头就是 data URI 反复 diff/解码。
+    /// 由 MainWindow 在 BlazorWebViewInitialized 里映射后写入；null = 回退 data URI。</summary>
+    public static string? ThumbHostBase;
+
+    /// <summary>缓存根迁移后重新映射虚拟主机（映射目录跟着 CacheRoot 走）。</summary>
+    public static Action? RemapThumbHost;
+
     private readonly ConcurrentDictionary<string, string?> _memory = new();
     private readonly ConcurrentDictionary<string, byte> _generating = new();
     private readonly ConcurrentQueue<string> _memoryOrder = new();
-    private const int MemoryCap = 1024;
+    // 短 URL 只有几十字节，上限放宽：角色×皮肤×季节变体轻松上千条
+    private const int MemoryCap = 4096;
 
     /// <summary>缓存键 = 版本 + 种类 + 源路径 + mtime + size（源文件更新自动失效）。
     /// ⚠ 不含"卡片/弹窗"这类范围——同一来源文件渲染结果相同，必须共享缓存，
@@ -102,19 +112,19 @@ public sealed partial class PortraitSkinService
             ? null
             : RequestThumb(CoverKey(ThumbKind.Portrait, skin.SourceFile), ThumbKind.Portrait, skin.SourceFile);
 
-    /// <summary>任意路径的立绘缩略图（弹窗季节预览用，与皮肤格同一生成管线/缓存）。
-    /// sync=true：缓存未命中时当场生成再返回 —— 弹窗里的图必须立即出现，
-    /// 不允许"先空白占位、后台慢慢补"（用户实测换季闪空白）。单张仅几十毫秒。</summary>
+    /// <summary>任意路径的立绘缩略图（弹窗季节预览用）。
+    /// 磁盘缓存命中【同步】立刻出 URL；未命中走后台生成，不再在 Blazor 渲染线程上
+    /// 同步解码（弹窗几十张卡一起 sync 生成 = 打开就冻几秒）。</summary>
     public string? GetPortraitThumbByPath(string? path) =>
         string.IsNullOrWhiteSpace(path)
             ? null
-            : RequestThumb(CoverKey(ThumbKind.Portrait, path), ThumbKind.Portrait, path, sync: true);
+            : RequestThumb(CoverKey(ThumbKind.Portrait, path), ThumbKind.Portrait, path);
 
-    /// <summary>任意路径的精灵表缩略图（弹窗季节预览用，同步）。</summary>
+    /// <summary>任意路径的精灵表缩略图（弹窗季节预览用）。</summary>
     public string? GetSpriteThumbByPath(string? path) =>
         string.IsNullOrWhiteSpace(path)
             ? null
-            : RequestThumb(CoverKey(ThumbKind.Sprite, path), ThumbKind.Sprite, path, sync: true);
+            : RequestThumb(CoverKey(ThumbKind.Sprite, path), ThumbKind.Sprite, path);
 
     /// <summary>弹窗打开时预生成该角色全部皮肤的四季变体缩略图（后台、去重）——
     /// 用户点季节按钮时全部零等待。</summary>
@@ -130,37 +140,66 @@ public sealed partial class PortraitSkinService
         }
     }
 
-    /// <summary>预热：把扫描结果里所有角色的全部皮肤缩略图生成一遍（后台、去重）。
-    /// 同一次扫描签名只跑一遍 —— 每次进立绘页都全量预热是「肖像全在重载」的元凶。</summary>
-    private static string _prewarmedSig;
+    /// <summary>预热：只预热【网格封面】。同一次扫描签名只跑一遍。
+    /// ⚠ 以前这里把每个角色的全部皮肤+精灵图都排进生成队列（本机 2269 张），
+    /// 4 路并发闸被预热占满后，渲染线程上的 RequestThumb 会在 Wait() 上干等 ——
+    /// 表现就是「每次进肖像页肖像加载半天」。皮肤缩略图改到打开弹窗时按需取。</summary>
+    private static string? _prewarmedSig;
 
     public void PrewarmThumbs(string gamePath, PortraitScanResult scan)
     {
         var sig = _memScanSig;
         if (sig is not null && string.Equals(sig, _prewarmedSig, StringComparison.Ordinal))
             return;
-        _prewarmedSig = sig ?? "";
+        _prewarmedSig = sig;
+        var t0 = Environment.TickCount64;
+        var n = 0;
         foreach (var ch in scan.Characters)
         {
             if (ch.Hidden) continue;
-            if (ch.IsVanilla)
-            {
-                var coverSrc = ch.Vanilla?.SourceFile;
-                if (coverSrc is not null)
-                    _ = RequestThumb(CoverKey(ThumbKind.Portrait, coverSrc), ThumbKind.Portrait, coverSrc);
-            }
-            foreach (var opt in ch.AllOptions)
-            {
-                _ = GetSkinThumb(ch, opt);
-                _ = GetSpriteThumb(opt);
-            }
-            _ = GetCharacterCover(gamePath, ch, null);
+            // 只要网格上看得见的那张封面；AllOptions 的皮肤/精灵留到弹窗
+            if (GetCharacterCover(gamePath, ch, null) is not null) n++;
         }
+        AppLog.Info("Portraits", $"[预热] 网格封面 {n} 张，{Environment.TickCount64 - t0}ms");
+    }
+
+    private static string CacheFileName(string cacheKey) => Sha1(cacheKey + "|alg3") + ".png";
+
+    /// <summary>磁盘缓存文件 → 页面可用的 src。有虚拟主机就出短 URL（零读盘）；
+    /// 否则回退 data URI（读文件 + base64，仅兼容路径）。</summary>
+    private static string? ThumbSrcFromFile(string cacheFile)
+    {
+        if (ThumbHostBase is not null)
+            return ThumbHostBase + "/" + Path.GetFileName(cacheFile);
+        try
+        {
+            var png = File.ReadAllBytes(cacheFile);
+            return "data:image/png;base64," + Convert.ToBase64String(png);
+        }
+        catch { return null; }
     }
 
     private string? RequestThumb(string key, ThumbKind kind, string src, bool sync = false)
     {
         if (_memory.TryGetValue(key, out var cached)) return cached;
+
+        // v1.7.37：磁盘缓存命中走快路径 —— 直接出 URL/URI，不进生成队列。
+        // 热缓存进页时封面一次上齐；旧路径要排队 ReadAllBytes+Base64 几百张才慢慢亮。
+        try
+        {
+            var cacheHit = Path.Combine(CacheDir, CacheFileName(key));
+            if (File.Exists(cacheHit))
+            {
+                var hit = ThumbSrcFromFile(cacheHit);
+                if (hit is not null)
+                {
+                    Remember(key, hit);
+                    return hit;
+                }
+            }
+        }
+        catch { /* 快路径失败则走下面的生成管线 */ }
+
         // v1.3.4：生成并发限 4 路 —— 算法升级（alg2）后的全量重建是几百张图的
         // 解码+逐帧分析+编码，无限制地 Task.Run 会占满线程池，把整个应用的
         // UI 调度一起拖卡（用户实测"刚开始什么都不显示，过一会儿才好"）。
@@ -185,7 +224,14 @@ public sealed partial class PortraitSkinService
             }
             else
             {
-                _thumbGate.Wait();
+                // ⚠ 绝不能在调用方（Blazor 渲染线程）上 Wait() —— 闸满时会把整页渲染
+                // 冻住，封面一个都出不来（v1.7.37 实测「进肖像页转圈」的元凶）。
+                // TryWait(0) 拿不到就先返回空，让上层下次渲染/预热再试。
+                if (!_thumbGate.Wait(0))
+                {
+                    _generating.TryRemove(key, out _);
+                    return _memory.TryGetValue(key, out var v0) ? v0 : null;
+                }
                 try
                 {
                     _ = Task.Run(() =>
@@ -251,13 +297,10 @@ public sealed partial class PortraitSkinService
         // 磁盘缓存文件名 = 键哈希（键已含版本+mtime+size，天然失效正确；哈希也避免
         // 包 Folder 里的 / 出现在文件路径里 —— v1 踩过的坑）。v1.3.4：预览算法升级
         //（空白帧扫描回退）—— 键追加了算法版本号，旧空白缓存图不会命中。
-        var cacheFile = Path.Combine(CacheDir, Sha1(cacheKey + "|alg3") + ".png");
-        byte[] png;
+        var cacheFile = Path.Combine(CacheDir, CacheFileName(cacheKey));
         if (File.Exists(cacheFile))
-        {
-            png = File.ReadAllBytes(cacheFile);
-        }
-        else
+            return ThumbSrcFromFile(cacheFile);
+
         {
             DecodedTexture? tex = null;
             if (src.EndsWith(".xnb", StringComparison.OrdinalIgnoreCase))
@@ -344,10 +387,13 @@ public sealed partial class PortraitSkinService
                     (int)Math.Ceiling(sh / (double)128)));
                 (dw, dh) = (Math.Max(1, sw / down), Math.Max(1, sh / down));
             }
-            png = PixelKit.CropScalePng(tex, sx, sy, sw, sh, dw, dh);
+            var png = PixelKit.CropScalePng(tex, sx, sy, sw, sh, dw, dh);
             try { File.WriteAllBytes(cacheFile, png); } catch { }
+            // 刚生成的这张：写盘成功走短 URL；写盘失败也别让封面空白，直接吐 data URI
+            if (ThumbHostBase is not null && File.Exists(cacheFile))
+                return ThumbHostBase + "/" + Path.GetFileName(cacheFile);
+            return "data:image/png;base64," + Convert.ToBase64String(png);
         }
-        return "data:image/png;base64," + Convert.ToBase64String(png);
     }
 
 }

@@ -26,6 +26,18 @@
         } catch (e) { }
     };
 
+    // 行尾「⋮」菜单：先按默认（向下）量一次，下方放不下就整块翻到按钮上方。
+    // 必须在渲染后量 —— 菜单高度取决于这一行有几个条目（5~7 个不等）。
+    window.junigridJs.fitModMenu = function () {
+        var dd = document.querySelector('.jg-sort-dd.jg-modmenu.open');
+        if (!dd) return;
+        dd.classList.remove('up');
+        var menu = dd.querySelector('.jg-sort-menu');
+        if (!menu) return;
+        var r = menu.getBoundingClientRect();
+        if (r.bottom > window.innerHeight - 8) dd.classList.add('up');
+    };
+
     window.junigridJs.toast = function (msg, kind) {
         try {
             if (current) {
@@ -38,12 +50,13 @@
             document.body.appendChild(el);
             current = el;
             if (window.gsap) {
-                gsap.fromTo(el, { y: -14, opacity: 0, scale: 0.96 },
+                // 从下方浮起：从上面落下来会先盖住顶导航（浮条落点已经让开导航，入场也别越过它）
+                gsap.fromTo(el, { y: 12, opacity: 0, scale: 0.96 },
                     { y: 0, opacity: 1, scale: 1, duration: 0.28, ease: 'back.out(2)' });
             }
             hideTimer = setTimeout(function () {
                 if (window.gsap) {
-                    gsap.to(el, { y: -10, opacity: 0, duration: 0.3, ease: 'power2.in',
+                    gsap.to(el, { y: 10, opacity: 0, duration: 0.3, ease: 'power2.in',
                         onComplete: function () {
                             if (el.parentNode) el.parentNode.removeChild(el);
                             if (current === el) current = null;
