@@ -30,10 +30,13 @@ if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable("JUNIGRID_CONFIG_DIR
         var iso = Path.Combine(Path.GetTempPath(), "jg-testharness-appdata");
         Directory.CreateDirectory(iso);
         var realCfg = Path.Combine(realDir, "junigrid.config.json");
-        if (File.Exists(realCfg) && !File.Exists(Path.Combine(iso, "junigrid.config.json")))
-            File.Copy(realCfg, Path.Combine(iso, "junigrid.config.json"));
+        var isoCfg = Path.Combine(iso, "junigrid.config.json");
+        // ⚠ 每轮都从真配置重拷。原来只在"副本不存在"时拷 ⇒ 副本永远停在第一次播种那天，
+        // 而 --resync-real 这类模式写的是【真实游戏目录】：读旧档 + 写新包，把他 1331 个
+        // 钉图重钉成 33 个（2026-10-01 实测踩中，已按备份逐文件还原，sha1 对齐）。
+        if (File.Exists(realCfg)) File.Copy(realCfg, isoCfg, true);
         Environment.SetEnvironmentVariable("JUNIGRID_CONFIG_DIR", iso);
-        Console.WriteLine($"[隔离] 配置与覆盖副本写盘 → {iso}（真配置只读）");
+        Console.WriteLine($"[隔离] 配置与覆盖副本写盘 → {iso}（每轮从真配置刷新，真配置只读）");
     }
     catch (Exception ex) { Console.WriteLine("[隔离] 失败，按老样子跑: " + ex.Message); }
 }
@@ -548,9 +551,29 @@ if (args.Contains("--resync-real"))
 {
     var cfgR = new ConfigService();
     var psR = new PortraitSkinService(new ModService(), cfgR);
+    // 这条模式写的是【真实游戏目录】，所以先把覆盖包的 content.json 存一份带时间戳的副本，
+    // 并在重钉后对比补丁条数 —— 数量大幅缩水就说明读到的配置与盘上的包不是一回事。
+    var ovPre = Path.Combine(cfgR.Current.GamePath, "Mods", PortraitSkinService.OverrideFolder, "content.json");
+    var snapPre = Path.Combine(Path.GetTempPath(), "jg-ov-content-before-" + DateTime.Now.ToString("HHmmss") + ".json");
+    var beforeN = -1;
+    if (File.Exists(ovPre))
+    {
+        File.Copy(ovPre, snapPre, true);
+        try { beforeN = System.Text.Json.JsonDocument.Parse(File.ReadAllText(ovPre))
+            .RootElement.GetProperty("Changes").GetArrayLength(); } catch { }
+    }
     var scanR = psR.Scan(cfgR.Current.GamePath);
     psR.SyncToDisk(cfgR.Current.GamePath, scanR);
-    Console.WriteLine("resync done: " + cfgR.Current.GamePath);
+    var afterN = -1;
+    if (File.Exists(ovPre))
+    {
+        try { afterN = System.Text.Json.JsonDocument.Parse(File.ReadAllText(ovPre))
+            .RootElement.GetProperty("Changes").GetArrayLength(); } catch { }
+    }
+    Console.WriteLine("resync done: " + cfgR.Current.GamePath
+        + $" 补丁条数 {beforeN} → {afterN}（改前 content.json 已存 {snapPre}）");
+    if (beforeN > 0 && afterN * 2 < beforeN)
+        Console.WriteLine("⚠ 数量减半以上 —— 先别信这一轮：核对读到的配置与盘上的包是不是同一天的。");
     return;
 }
 
@@ -8198,14 +8221,24 @@ if (!realMode)
     // 对手包：主文件只写 Include，真 patch 在子文件里（SVE / Donut 的写法）
     Directory.CreateDirectory(Path.Combine(inDir, "Mods", "JGTest In Rival", "assets", "Code"));
     File.WriteAllBytes(Path.Combine(inDir, "Mods", "JGTest In Rival", "assets", "Tall480.png"), BuildPng(64, 480, 93));
+    File.WriteAllBytes(Path.Combine(inDir, "Mods", "JGTest In Rival", "assets", "TallFaceWinter.png"),
+        BuildPng(128, 192, 94));
     InManifest("JGTest In Rival", "JuniGrid.Test.InRival");
     File.WriteAllText(Path.Combine(inDir, "Mods", "JGTest In Rival", "content.json"),
         """{"Format":"2.5","Changes":[{"Action":"Include","FromFile":"assets/Code/*.json"}]}""");
     File.WriteAllText(Path.Combine(inDir, "Mods", "JGTest In Rival", "assets", "Code", "Abigail.json"),
-        """{"Format":"2.5","Changes":[{"Action":"Load","Target":"Characters/Abigail","FromFile":"assets/Tall480.png"}]}""");
+        """{"Format":"2.5","Changes":[{"Action":"Load","Target":"Characters/Abigail","FromFile":"assets/Tall480.png"},"""
+        + """{"Action":"EditImage","Target":"Portraits/Abigail","FromFile":"assets/TallFaceWinter.png","When":{"Season":"winter"}}]}""");
 
     var scanIn = new PortraitSkinService(new ModService(), cfgSvc).Scan(inDir);
     var inAbi = scanIn.RivalSheets.TryGetValue("Characters/Abigail", out var il) ? il : new();
+    Check("B81 Include 子文件里的「同一资产名 + When:{Season}」也要进 BaseSeasonPatches（变异：删掉 Absorb 里那段 ⇒ 四季映射整包丢）",
+        scanIn.BaseSeasonPatches.Any(x => x.Pack == "JGTest In Rival"
+            && x.Asset == "Portraits/Abigail" && x.Season == "winter"
+            && Path.GetFileName(x.File) == "TallFaceWinter.png"),
+        "该包分季表=" + string.Join(",", scanIn.BaseSeasonPatches
+            .Where(x => x.Pack == "JGTest In Rival")
+            .Select(x => x.Asset + ":" + x.Season + ":" + Path.GetFileName(x.File))));
     Check("B79 对手声明写在 Include 子文件里也要进账（变异：删掉 Absorb 里那句 ⇒ 整包从 RivalSheets 消失）",
         inAbi.Count(r => r.Pack == "JGTest In Rival") == 1
         && inAbi.Single(r => r.Pack == "JGTest In Rival").H == 480

@@ -1417,6 +1417,17 @@ public sealed partial class PortraitSkinService
         // LewdDew 六个包的 patch 全在 assets/Code/*.json，不搬 ⇒ RivalSheets 里整个包消失，
         // 法师那条就是因此看不见 SCC-SVE 的 Magnus 四季表）。
         foreach (var r in from.RivalDecls) into.RivalDecls.Add(r);
+        // 同一类洞（2026-10-01 实测）：分季表也只在 Include 子文件里登记 ⇒ 不搬就整包丢。
+        // 真机上 SVE / SCC / SCC-SVE / Donut / Ridgeside / Caroline 的 BaseSeasonPatches 全是 0，
+        // 只有把 patch 写在主 content.json 的 3 个包有值 —— 四季文件不叫 <id>_Winter 的包全靠它兜底。
+        foreach (var (asset, seasons) in from.BaseSeasonPatches)
+        {
+            if (!into.BaseSeasonPatches.TryGetValue(asset, out var dst))
+                into.BaseSeasonPatches[asset] = dst = new(StringComparer.OrdinalIgnoreCase);
+            foreach (var (season, file) in seasons) dst[season] = file;
+        }
+
+
     }
 
     /// <summary>Target=="Data/Characters" 的 EditData：Entries 键名 / Records 键 / Fields 第 2 元素
