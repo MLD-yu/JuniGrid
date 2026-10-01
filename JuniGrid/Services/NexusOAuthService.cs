@@ -42,9 +42,6 @@ public sealed class NexusOAuthService
         return h;
     }
 
-    /// <summary>存在 access token 即为已登录（启动时 RestoreSession 恢复持久会话）。</summary>
-    public bool IsSignedIn => !string.IsNullOrEmpty(NexusService.BearerToken);
-
     /// <summary>启动恢复：载入持久化 token、过期则刷新、并把 access token 挂到 NexusService。
     /// 不抛异常 —— 恢复失败只表示未登录。</summary>
     public void RestoreSession()

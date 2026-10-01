@@ -372,30 +372,6 @@ public static class SaveVersionService
         return list;
     }
 
-    /// <summary>某份存档最新的那一份留底在哪个目录（「退回」退的就是它）。没有则 null。</summary>
-    public static string? NewestStampDir(string saveName)
-    {
-        var stamps = StampsOf(saveName);
-        return stamps.Count == 0 ? null : stamps[0].Dir;
-    }
-
-    /// <summary>某个版本包里现在压着几份被收走的档。启动要不要绕开 Steam 判的就是这个：
-    /// 只要压着，云随时可能把它们下回来，所以每一次启动都得绕，不只是搬东西那一次。</summary>
-    public static int StashedCountFor(string? pkgDir)
-    {
-        if (pkgDir is null) return 0;
-        try
-        {
-            // 新 C: 抽屉 + 旧 E: 抽屉都算：排空窗口期旧抽屉里还压着的档不能漏计，
-            // 否则「绕开 Steam 直启」的判据会在收敛前翻掉。
-            var n = 0;
-            foreach (var h in new[] { HiddenRootOf(pkgDir), LegacyHiddenRootOf(pkgDir) })
-                if (Directory.Exists(h)) n += Directory.GetDirectories(h).Length;
-            return n;
-        }
-        catch { return 0; }
-    }
-
     /// <summary>聚焦抽屉 + 各版本抽屉里一共压着几份。聚焦启动后判「要不要绕开 Steam」用这个持久量。</summary>
     public static int StashedCountAll()
     {

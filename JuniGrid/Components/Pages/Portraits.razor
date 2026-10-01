@@ -430,30 +430,6 @@
         }
     }
 
-    /// <summary>页签只显示干净的 mod 名：剥开头 "[CP] " 标记前缀、结尾 " [Content Patcher
-    /// component]" 组件后缀，以及 "Seven.Deadly.Sins-CP" 这类点分/带 CP 尾缀的 manifest 写法。</summary>
-    private static string CleanPackName(string name)
-    {
-        var n = name.Trim();
-        while (n.StartsWith("["))
-        {
-            var close = n.IndexOf(']');
-            if (close < 0) break;
-            n = n[(close + 1)..].Trim();
-        }
-        while (n.EndsWith("]"))
-        {
-            var open = n.LastIndexOf('[');
-            if (open < 0) break;
-            n = n[..open].Trim();
-        }
-        if (!n.Contains(' ') && n.Contains('.'))
-            n = n.Replace('.', ' ');
-        n = System.Text.RegularExpressions.Regex.Replace(
-            n, @"[\s\-_]+CP$", "", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-        return n.Length > 0 ? n : name;
-    }
-
     private IEnumerable<PortraitCharacter> VisibleCharacters
     {
         get

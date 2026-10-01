@@ -685,8 +685,6 @@
     private bool _isPremium;
     private string? _profileUrl;
     private NexusUserExtras? _userExtras;
-    private static string FormatNum(long n) => n >= 10000 ? (n / 10000.0).ToString("0.0") + "万" : n >= 1000 ? (n / 1000.0).ToString("0.0") + "K" : n.ToString();
-
     private string _browseKind = "new";
     private string _searchText = "";
     /// <summary>v1.05.0：已提交（回车）的搜索词 —— 搜索页标题/提示用它，

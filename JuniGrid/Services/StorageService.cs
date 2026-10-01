@@ -313,9 +313,6 @@ public sealed class StorageService
             Danger: true),
     };
 
-    /// <summary>某个目录的字节数（走目录树，调用方别放在 UI 线程上）。</summary>
-    public static long DirBytes(string dir) => DirSize(dir);
-
     /// <summary>界面上实际出现的附属目录（一个都不存在时不显示；大小已遍历一次目录树）。</summary>
     public static (StagingBucketKind Kind, string Path, long Bytes)[] ListStagingBuckets()
     {

@@ -100,12 +100,6 @@ public sealed partial class PortraitSkinService
         return RequestThumb(CoverKey(ThumbKind.Portrait, src), ThumbKind.Portrait, src);
     }
 
-    /// <summary>弹窗右侧的精灵图预览（整张表，等比缩到 ≤720）。</summary>
-    public string? GetSpriteThumb(PortraitSkinOption skin) =>
-        skin.SpriteFile is null
-            ? null
-            : RequestThumb(CoverKey(ThumbKind.Sprite, skin.SpriteFile), ThumbKind.Sprite, skin.SpriteFile);
-
     /// <summary>弹窗皮肤格缩略图（v2：全部用大头照）。</summary>
     public string? GetSkinThumb(PortraitCharacter ch, PortraitSkinOption skin) =>
         skin.SourceFile is null

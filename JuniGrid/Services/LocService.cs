@@ -33,8 +33,6 @@ public sealed class LocService
     /// <summary>当前语言："en" 或 "zh"。</summary>
     public string Lang => string.Equals(_cfg.Current.Language, "en", StringComparison.OrdinalIgnoreCase) ? "en" : "zh";
 
-    public bool IsEnglish => Lang == "en";
-
     private void LoadCatalog()
     {
         try
