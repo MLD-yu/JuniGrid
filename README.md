@@ -1,7 +1,7 @@
 # JuniGrid
 
 一个面向 **星露谷物语** 的桌面 Mod 管理器与启动器，基于 .NET（WPF + Blazor WebView2）构建。
-本仓库为中文原版；英文版见 [JuniGrid-en](https://github.com/MLD-yu/JuniGrid-en)。
+
 
 ## 支持赞助
 
