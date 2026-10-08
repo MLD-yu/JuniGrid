@@ -334,10 +334,14 @@ window.junigridJs.tiltPerspective = function (selector, opts) {
 (function () {
     function bubbleOf(wrap) { return wrap.querySelector('.jg-help-tip-bubble'); }
     function btnOf(wrap) { return wrap.querySelector('.jg-help-tip-btn'); }
+    // 朝上的气泡靠 translateX(-50%) 居中，朝下的（--down）贴问号左缘、CSS 写的是 transform:none。
+    // 这里必须跟着变体走：GSAP 的行内 transform 会盖掉那条 transform:none，
+    // 写死 -50 会让朝下气泡从第二次 hover 起整体左移半个气泡宽（实测 130px）。
+    function xPercentOf(wrap) { return wrap.classList.contains('jg-help-tip--down') ? 0 : -50; }
     function close(wrap) {
         if (wrap._tipTl) { wrap._tipTl.kill(); wrap._tipTl = null; }
         var b = bubbleOf(wrap), btn = btnOf(wrap);
-        if (b) gsap.set(b, { autoAlpha: 0, y: 14, scale: 0.4, xPercent: -50 });
+        if (b) gsap.set(b, { autoAlpha: 0, y: 14, scale: 0.4, xPercent: xPercentOf(wrap) });
         if (btn) gsap.set(btn, { scale: 1 });
     }
     document.addEventListener('mouseover', function (e) {
@@ -347,8 +351,11 @@ window.junigridJs.tiltPerspective = function (selector, opts) {
         if (!bubble) return;
         if (wrap._tipTl) wrap._tipTl.kill();
         wrap._tipTl = gsap.timeline({ paused: true })
+            // 透明度不进 elastic 缓动：elastic 会让 opacity 在弹跳里反复跌破 1（实测 0.84 / 0.98），
+            // 奶油底就变半透明、透出底下那行文字。弹入第一帧直接拉满，只让缩放和位移去弹。
+            .set(bubble, { autoAlpha: 1, xPercent: xPercentOf(wrap) }, 0)
             .to(bubble, {
-                autoAlpha: 1, y: 0, scale: 1, duration: 1,
+                y: 0, scale: 1, duration: 1,
                 ease: 'elastic.out(1.2, 0.3)'
             }, 0)
             .to(btn, {
@@ -737,8 +744,11 @@ window.junigridJs.updTipInit = function (wrap, bubble) {
     if (typeof gsap === "undefined") { wrap.classList.add("jg-upd-tip-nogsap"); return; }
     // 居中用 xPercent:-50 交给 GSAP 托管 —— CSS translateX(-50%) 会被 GSAP 的 transform 覆盖
     gsap.set(bubble, { autoAlpha: 0, xPercent: -50, y: -14, scale: 0.4, transformOrigin: "top center" });
+    // 透明度不进 elastic 缓动（同帮助问号）：elastic 绕终值振荡，opacity 会反复跌破 1，奶油底透出底下内容。
+    // 必须是 .to() 不能是 .set()：关闭靠 tl.pause(0) 回卷，时间线里的 set 回卷后仍停在 1（实测会常显）。
     var tl = gsap.timeline({ paused: true })
-        .to(bubble, { autoAlpha: 1, y: 0, scale: 1, duration: 1.0, ease: "elastic.out(1.2, 0.3)" }, 0);
+        .to(bubble, { autoAlpha: 1, duration: 0.001, ease: "none" }, 0)
+        .to(bubble, { y: 0, scale: 1, duration: 1.0, ease: "elastic.out(1.2, 0.3)" }, 0);
     wrap.addEventListener("mouseenter", function () { tl.timeScale(1).play(); });
     wrap.addEventListener("mouseleave", function () {
         tl.pause(0);
@@ -771,7 +781,9 @@ window.junigridJs.authorTipInit = function (wrapId, bubbleId) {
     // hover 时间线：高光扫过 + 气泡 elastic 弹出
     var tl = gsap.timeline({ paused: true })
         .to(hl, { scaleX: 1, duration: 0.55, ease: "back.out(1.7)", easeReverse: "power2.out" }, 0)
-        .to(bubble, { autoAlpha: 1, y: 0, scale: 1, duration: 0.9, ease: "elastic.out(1.2, 0.3)", easeReverse: "power3.in" }, 0.08);
+        // 透明度单拎出来、不跟 elastic 一起振荡（同帮助问号）；仍排在 0.08，高光先扫、气泡再弹的节拍不变
+        .to(bubble, { autoAlpha: 1, duration: 0.001, ease: "none" }, 0.08)
+        .to(bubble, { y: 0, scale: 1, duration: 0.9, ease: "elastic.out(1.2, 0.3)", easeReverse: "power3.in" }, 0.08);
 
     // 首次渲染高光自动扫入一次（blur-highlight 加载动效），随后回零等 hover
     gsap.timeline({ delay: 0.35 })

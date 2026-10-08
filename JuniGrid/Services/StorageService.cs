@@ -3,7 +3,9 @@ using System.IO;
 namespace JuniGrid.Services;
 
 /// <summary>缓存与存储页的一个分类行：显示路径 + 占用 + 可否清理/迁移。
-/// Tip 是悬浮「?」里的通俗解释（面向不了解 terminology 的用户）。</summary>
+/// Tip 是悬浮「?」里的通俗解释（面向不了解 terminology 的用户）。
+/// Destructive = 删掉的东西没法靠重新下载或应用自己重建（存档/mod 备份/配置等用户内容），
+/// 界面上给它一个红色「⚠」而不是普通「?」。</summary>
 public sealed record StorageCategory(
     string Id,
     string Name,
@@ -13,7 +15,8 @@ public sealed record StorageCategory(
     string[] CleanRoots,    // 清理时删除内容的根
     bool Cleanable,
     bool Movable,
-    string Tip = "");
+    string Tip = "",
+    bool Destructive = false);
 
 /// <summary>
 /// v0.2.1：缓存与存储管理 —— 各类缓存占用统计、单项/一键清理、统一缓存目录更改与迁移。
@@ -41,12 +44,6 @@ public sealed class StorageService
 
     public bool IsComputing(string id) { lock (_gate) return _computing.Contains(id); }
     public long GetSize(string id) { lock (_gate) return _sizes.TryGetValue(id, out var v) ? v : -1; }
-
-    /// <summary>本服务认领的全部路径（含清理根）。审计用例用它核对"缓存根 / AppData 下
-    /// 没有无主条目"—— 新增缓存目录却忘了在这里登记，就会被这条钉住。</summary>
-    public IEnumerable<string> SizeRootsForAudit() => GetCategories()
-        .SelectMany(c => c.SizeRoots.Concat(c.CleanRoots))
-        .Where(p => !string.IsNullOrWhiteSpace(p));
 
     /// <summary>可清理各项的已知占用合计（未算出的项不计入）。</summary>
     public long TotalKnownBytes
@@ -130,7 +127,7 @@ public sealed class StorageService
         var verCache = StoragePaths.DepotStagingDir;
         list.Add(new("vercache", "游戏版本缓存", "历史版本本地包", verCache,
             new[] { verCache }, new[] { verCache }, Cleanable: true, Movable: true,
-            Tip: "切换游戏版本时下载的完整游戏包 切回该版本时无需重新下载 清理会删掉全部已缓存版本"));
+            Tip: "切换游戏版本时下载的完整游戏包 切回该版本时无需重新下载 清理会删掉全部已缓存版本 而且每个版本包里还躺着那一版的 Mods 抽屉（那是你的 mod 本体，删了要重装）"));
 
         var logFiles = new[]
         {
@@ -157,7 +154,10 @@ public sealed class StorageService
         // v1.6.12：saves-hidden（版本收起的存档抽屉，可达数百 MB）与 userdata-backup 同理。
         var pcovers = new[]
         {
-            Path.Combine(StoragePaths.CacheRoot ?? "", "portrait-covers"),
+            // 必须是 InCache（CacheRoot ?? %TEMP%\JuniGrid）—— 与写缩略图的 PackThumbService
+            // 同一个入口。以前这里写的是 CacheRoot ?? "" 拼接，没设统一缓存目录时拼出裸相对名
+            // "portrait-covers"：统计算不到真目录（1.1 MB 缩略图凭空消失）、「打开」跳到空文件夹。
+            StoragePaths.InCache("portrait-covers"),
             Path.Combine(StoragePaths.AppDataDir, "portrait-scan-cache.json"),
             Path.Combine(StoragePaths.AppDataDir, "portrait-probe-cache.json"),
             // 早期版本（CacheRoot 还没统一时）把缩略图写在 AppData / LocalAppData 下，留下的目录也得有人管
@@ -167,9 +167,9 @@ public sealed class StorageService
             Path.Combine(StoragePaths.AppDataDir, "farmer-full.png"),
             Path.Combine(StoragePaths.AppDataDir, "farmer-head.png"),
         };
-        list.Add(new("pcovers", "立绘缩略图缓存", "肖像页的缩略图与扫描结果", pcovers[0],
-            pcovers, pcovers, Cleanable: true, Movable: false,
-            Tip: "肖像页为了秒开把立绘缩略图和扫描结果存了一份 清理只是让它下次重新生成 不影响任何皮肤选择"));
+        list.Add(new("pcovers", "内容包缩略图缓存", "内容包页生成的缩略图", pcovers[0],
+            pcovers, pcovers, Cleanable: true, Movable: true,
+            Tip: "内容包页为了秒开把缩略图存了一份 清理只是让它下次重新生成 不影响任何 mod"));
 
         var appCacheFiles = new[]
         {
@@ -188,13 +188,15 @@ public sealed class StorageService
         };
         list.Add(new("data", "设置与任务数据", "配置与任务记录（固定·不可清理）", StoragePaths.AppDataDir,
             dataFiles, Array.Empty<string>(), Cleanable: false, Movable: false,
-            Tip: "你的设置 Nexus API Key mod 存档列表和下载任务记录 属于个人数据 程序永远不会自动清理它"));
+            Tip: "你的设置 Nexus API Key mod 存档列表和下载任务记录 属于个人数据 程序永远不会自动清理它 删了应用回到刚装好的状态，Nexus 授权也要重新扫",
+            Destructive: true));
 
         // 切旧版本前备份的 Steam userdata（成就/云存档本地记录）。只统计不清理 —— 删了出问题没法比对。
         var steamDataDir = StoragePaths.SteamUserdataBackupDir;
         list.Add(new("steamdata", "Steam 存档快照", "切旧版本前备份的 userdata（成就/云存档本地记录）", steamDataDir,
             new[] { steamDataDir }, Array.Empty<string>(), Cleanable: false, Movable: false,
-            Tip: "切换到旧游戏版本前自动备份的 Steam 本地记录 只用于出问题时人工比对 不会自动清理"));
+            Tip: "切换到旧游戏版本前自动备份的 Steam 本地记录 只用于出问题时人工比对 不会自动清理",
+            Destructive: true));
 
         // 版本收起的存档抽屉：用户档被暂时从 Saves 挪进来（避免低版本点错闪退）。
         // 绝不可清理 —— 那是玩家的真存档，只是当前版本读不了才收起来的。
@@ -204,7 +206,8 @@ public sealed class StorageService
         var qzBatches = SaveVersionService.QuarantineSaveBatches();
         list.Add(new("saveshidden", "版本收起的存档", "当前游戏版本读不了、暂时从存档列表收起的档（含人工隔离批次）", savesHidden,
             new[] { savesHidden }.Concat(qzBatches).ToArray(), Array.Empty<string>(), Cleanable: false, Movable: false,
-            Tip: "切到读不了它们的版本时 自动把那些档从存档列表收进这里 防止点错闪退 切回能读的版本会自动放回 千万不要手动删 这是你的存档本体 开着 Steam 云时收档会让云端在退出同步时跟着删掉这些文件 所以这里可能就是唯一一份"));
+            Tip: "切到读不了它们的版本时 自动把那些档从存档列表收进这里 防止点错闪退 切回能读的版本会自动放回 千万不要手动删 这是你的存档本体 开着 Steam 云时收档会让云端在退出同步时跟着删掉这些文件 所以这里可能就是唯一一份",
+            Destructive: true));
 
         return list;
     }
@@ -257,7 +260,8 @@ public sealed class StorageService
         }
     }
 
-    private static long DirSize(string root)
+    /// <summary>整棵目录的字节数（<c>DepotDownloaderService</c> 跨盘收存本体前要用它算"装不装得下"）。</summary>
+    internal static long DirSize(string root)
     {
         try
         {
@@ -499,9 +503,75 @@ public sealed class StorageService
     /// Mods 备份三处立即切换并现场搬迁现有内容；WebView2 数据正被占用，记入
     /// PendingWebView2MoveFrom，由 MainWindow 在下次启动（WebView2 初始化之前）自动搬迁。
     /// </summary>
+    /// <summary>缓存根落点的三条硬拒绝（返回 null = 可以设）。
+    /// <para>为什么要有这条：以前 <see cref="MigrateCacheRootAsync"/> 只 <c>CreateDirectory</c> 就接受，
+    /// 用户把统一缓存目录设成安装目录或游戏目录时，<c>depot-staging</c>（游戏历史版本，一份几 GB）、
+    /// <c>mods-backup</c>（SMAPI 更新前的 mod 快照）、<c>webview2</c>（登录态）会整个搬进去 ——
+    /// 下次覆盖安装或走卸载器就连锅端。缓存根还必须是"专门放缓存的目录"，
+    /// 否则清理按钮和卸载器都分不清哪份是它的。</para></summary>
+    internal static string? CacheRootRejection(string? root, string installDir, string gameDir)
+    {
+        if (string.IsNullOrWhiteSpace(root)) return null;      // 恢复默认位置，永远允许
+        var full = Trim(Path.GetFullPath(root.Trim()));
+
+        // ① 整个盘符根，或桌面/文档/下载这类用户自己的公共位置
+        //    （Downloads 不在这版 SDK 的 SpecialFolder 枚举里，只能按 %USERPROFILE%\Downloads 拼）
+        var profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        var drive = Path.GetPathRoot(full);
+        if (drive is not null && Trim(drive).Length > 0 && Trim(drive).Equals(full, StringComparison.OrdinalIgnoreCase))
+            return LocService.Tr("缓存目录不能是整个盘 —— 里面全是你自己的东西，请在盘里新建一个专门放缓存的子目录（比如 D:\\JuniGridCache）。");
+        foreach (var known in new[]
+        {
+            profile,
+            Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),
+            Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
+            string.IsNullOrWhiteSpace(profile) ? "" : Path.Combine(profile, "Downloads"),
+            Environment.GetFolderPath(Environment.SpecialFolder.MyPictures),
+            Environment.GetFolderPath(Environment.SpecialFolder.MyMusic),
+            Environment.GetFolderPath(Environment.SpecialFolder.MyVideos),
+        })
+        {
+            if (string.IsNullOrWhiteSpace(known)) continue;
+            if (Trim(Path.GetFullPath(known)).Equals(full, StringComparison.OrdinalIgnoreCase))
+                return LocService.Tr("缓存目录不能设在桌面/文档/下载这类公共位置 —— 里面本来就有你自己的东西。请在里面新建一个专门放缓存的子目录（比如 D:\\JuniGridCache）。");
+        }
+
+        // ② 安装目录本身/它的子目录/它的上层：v1.2.5 起【放行】。
+        //    原来的理由是「覆盖安装和卸载会连子树一起删」，这条理由现在不成立了 ——
+        //    覆盖安装按 junigrid-files.txt 只回收我们写出去的文件，卸载没清单时也只做
+        //    不带 /s 的 rd（目录里还剩东西就失败、整目录原样留着），两条都不再端子树。
+        //    而「程序和数据住在一起」正是换目录安装要搬的那个形态：用户选了 D:\JuniGrid，
+        //    他就以为版本缓存和登录态会跟着去 D:\JuniGrid，拦他反而违背直觉。
+        //    （游戏目录那条仍要拦：切版本/卸载 SMAPI 的连坐风险在人家自己身上，见 ③。）
+
+        // ③ 游戏目录同理：切版本/卸载 SMAPI 时最容易连累
+        if (!string.IsNullOrWhiteSpace(gameDir) && (SameOrInside(full, gameDir) || SameOrInside(gameDir, full)))
+            return LocService.Tr("缓存目录不能设在游戏目录里或它的上层 —— 那会把 mod 备份和游戏版本缓存堆进 "
+                + "Stardew Valley 文件夹，切版本或卸载时一起没。请换一个专门放缓存的目录（比如 D:\\JuniGridCache）。");
+
+        return null;
+    }
+
+    private static string Trim(string p) => p.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
+    /// <summary>a 与 b 相同，或 b 在 a 这棵子树里。</summary>
+    private static bool SameOrInside(string a, string b)
+    {
+        var x = Trim(Path.GetFullPath(a));
+        var y = Trim(Path.GetFullPath(b));
+        return x.Length > 0 && y.Length > 0
+            && (y.Equals(x, StringComparison.OrdinalIgnoreCase)
+                || y.StartsWith(x + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase));
+    }
+
     public async Task<string> MigrateCacheRootAsync(string? newRoot)
     {
         newRoot = string.IsNullOrWhiteSpace(newRoot) ? null : Path.GetFullPath(newRoot.Trim());
+
+        // 先验落点再动盘：一旦 CreateDirectory + 写配置，用户就以为设好了
+        var reject = CacheRootRejection(newRoot, AppContext.BaseDirectory, _cfg.Current.GamePath);
+        if (reject is not null) return reject;
+
         if (newRoot is not null) Directory.CreateDirectory(newRoot);
 
         // 保存前先抓旧位置（SyncStoragePaths 会把解析结果切到新根）
@@ -524,61 +594,75 @@ public sealed class StorageService
         _center.Report(task, newRoot is null ? LocService.Tr("正在恢复默认位置…") : LocService.Tf("目标：{0}", newRoot), 5);
         return await Task.Run(() =>
         {
-            long moved = 0, skipped = 0;
-            var pairs = new (string oldDir, string target)[]
+            // v1.09.0：这个委托原先【裸奔】—— 任何异常都会逸出 Task.Run，
+            // 而 Finish 只写在最后一行 ⇒ 任务永远停在 running（和 InstallService
+            // 那四处理由同源：异常没人收尾）。这里整体裹进 try/catch/finally，
+            // 失败一律落 failed + 带原因，running 的行绝不留给用户去猜。
+            try
             {
-                (oldDownloads, StoragePaths.DownloadsDir),
-                (oldSmapi, StoragePaths.SmapiInstallerDir),
-                (oldBackup, StoragePaths.ModsBackupDir),
-                (oldSelfUpdate, StoragePaths.SelfUpdateDir),
-                (oldVerCache, StoragePaths.DepotStagingDir),
-                // 立绘缩略图缓存跟着走 —— 不迁的话换根后肖像页整页空白重建
-                (oldThumbs, StoragePaths.InCache("portrait-covers")),
-            };
-            var movedNotes = new List<string>();
-            foreach (var (oldDir, target) in pairs)
-            {
-                if (string.Equals(Path.GetFullPath(oldDir), Path.GetFullPath(target), StringComparison.OrdinalIgnoreCase)
-                    || !Directory.Exists(oldDir))
-                    continue;
-                Directory.CreateDirectory(target);
-                var m0 = moved; var s0 = skipped;
-                MoveInto(oldDir, target, ref moved, ref skipped);
-                if (moved + skipped > m0 + s0)
+                long moved = 0, skipped = 0;
+                var pairs = new (string oldDir, string target)[]
                 {
-                    movedNotes.Add($"{Path.GetFileName(oldDir)} → {Path.GetFileName(target)}");
-                    // 旧目录搬空了就顺手删掉空壳（被占用的文件留在里面则保留）
-                    try
+                    (oldDownloads, StoragePaths.DownloadsDir),
+                    (oldSmapi, StoragePaths.SmapiInstallerDir),
+                    (oldBackup, StoragePaths.ModsBackupDir),
+                    (oldSelfUpdate, StoragePaths.SelfUpdateDir),
+                    (oldVerCache, StoragePaths.DepotStagingDir),
+                    // 素材缩略图缓存跟着走 —— 不迁的话换根后素材包页整页空白重建
+                    (oldThumbs, StoragePaths.InCache("portrait-covers")),
+                };
+                var movedNotes = new List<string>();
+                foreach (var (oldDir, target) in pairs)
+                {
+                    if (string.Equals(Path.GetFullPath(oldDir), Path.GetFullPath(target), StringComparison.OrdinalIgnoreCase)
+                        || !Directory.Exists(oldDir))
+                        continue;
+                    Directory.CreateDirectory(target);
+                    var m0 = moved; var s0 = skipped;
+                    MoveInto(oldDir, target, ref moved, ref skipped);
+                    if (moved + skipped > m0 + s0)
                     {
-                        if (Directory.Exists(oldDir) && !Directory.EnumerateFileSystemEntries(oldDir).Any())
-                            Directory.Delete(oldDir);
+                        movedNotes.Add($"{Path.GetFileName(oldDir)} → {Path.GetFileName(target)}");
+                        // 旧目录搬空了就顺手删掉空壳（被占用的文件留在里面则保留）
+                        try
+                        {
+                            if (Directory.Exists(oldDir) && !Directory.EnumerateFileSystemEntries(oldDir).Any())
+                                Directory.Delete(oldDir);
+                        }
+                        catch { }
                     }
-                    catch { }
                 }
-            }
 
-            // WebView2 正被本进程占用 → 记遗留迁移，MainWindow 下次启动（WebView2 初始化前）自动搬
-            var wv2Note = "";
-            if (!string.Equals(Path.GetFullPath(oldWv2), Path.GetFullPath(StoragePaths.WebView2Dir), StringComparison.OrdinalIgnoreCase)
-                && Directory.Exists(oldWv2))
+                // WebView2 正被本进程占用 → 记遗留迁移，MainWindow 下次启动（WebView2 初始化前）自动搬
+                var wv2Note = "";
+                if (!string.Equals(Path.GetFullPath(oldWv2), Path.GetFullPath(StoragePaths.WebView2Dir), StringComparison.OrdinalIgnoreCase)
+                    && Directory.Exists(oldWv2))
+                {
+                    cfg.PendingWebView2MoveFrom = oldWv2;
+                    _cfg.Save(cfg);
+                    wv2Note = "；WebView2 数据将在重启应用后自动迁移";
+                    _center.Report(task, LocService.Tr("WebView2 数据将在重启后自动迁移"), 90);
+                }
+
+                var msg = newRoot is null
+                    ? "已恢复默认位置" + wv2Note
+                    : $"迁移完成：挪入 {ResumableDownload.FormatBytes(moved)}" +
+                      (skipped > 0 ? $"，{ResumableDownload.FormatBytes(skipped)} 正在使用留在原目录" : "") + wv2Note;
+                _center.Finish(task, true, msg);
+                AppLog.Warn("Storage", $"缓存目录迁移到 {newRoot ?? "<默认>"}：挪入 {moved}，跳过 {skipped}");
+                // 缩略图虚拟主机跟着新缓存根重新映射，否则短 URL 全 404
+                try { PackThumbService.RemapThumbHost?.Invoke(); } catch { }
+                lock (_gate) _sizes.Clear();
+                RefreshAll(force: true);
+                return msg;
+            }
+            catch (Exception ex)
             {
-                cfg.PendingWebView2MoveFrom = oldWv2;
-                _cfg.Save(cfg);
-                wv2Note = "；WebView2 数据将在重启应用后自动迁移";
-                _center.Report(task, LocService.Tr("WebView2 数据将在重启后自动迁移"), 90);
+            // 落终态，绝不让这行永远 running（用户会以为还在跑）
+            _center.Finish(task, false, LocService.Tr("迁移缓存目录失败：") + ex.Message);
+            AppLog.Warn("Storage", "缓存目录迁移失败：" + ex.Message);
+            return LocService.Tr("迁移缓存目录失败：") + ex.Message;
             }
-
-            var msg = newRoot is null
-                ? "已恢复默认位置" + wv2Note
-                : $"迁移完成：挪入 {ResumableDownload.FormatBytes(moved)}" +
-                  (skipped > 0 ? $"，{ResumableDownload.FormatBytes(skipped)} 正在使用留在原目录" : "") + wv2Note;
-            _center.Finish(task, true, msg);
-            AppLog.Warn("Storage", $"缓存目录迁移到 {newRoot ?? "<默认>"}：挪入 {moved}，跳过 {skipped}");
-            // 缩略图虚拟主机跟着新缓存根重新映射，否则短 URL 全 404
-            try { PortraitSkinService.RemapThumbHost?.Invoke(); } catch { }
-            lock (_gate) _sizes.Clear();
-            RefreshAll(force: true);
-            return msg;
         }).ConfigureAwait(false);
     }
 

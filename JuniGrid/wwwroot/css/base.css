@@ -185,12 +185,16 @@ html[data-theme="dark"][data-accent]:not([data-accent="system"]) {
 :root[data-accent="parchment"] { --jg-accent: #b07b45; }
 :root[data-accent="sky"]    { --jg-accent: #2f80d8; }
 :root[data-accent="rose"]   { --jg-accent: #dd4a72; }
+/* 紫罗兰 Violet：氛围主题（外壳夜幕漂移 + 细节呼应），样式主体在 violet.css。
+   这里只给基色，按钮/滑块等全部走标准 color-mix 派生，与其它主题一致。 */
+:root[data-accent="violet"] { --jg-accent: #7c3aed; }
 html[data-theme="dark"][data-accent="forest"] { --jg-accent: #46b56e; }
 html[data-theme="dark"][data-accent="mint"]   { --jg-accent: #2bc4c4; }
 html[data-theme="dark"][data-accent="honey"]  { --jg-accent: #f0b429; --jg-on-ink: #2a2000; }
 html[data-theme="dark"][data-accent="parchment"] { --jg-accent: #c9925a; --jg-on-ink: #1b120a; }
 html[data-theme="dark"][data-accent="sky"]    { --jg-accent: #57a0ee; }
 html[data-theme="dark"][data-accent="rose"]   { --jg-accent: #ec5f83; }
+html[data-theme="dark"][data-accent="violet"] { --jg-accent: #a78bfa; }
 
 /* 命名主题的热力图随强调色；system/默认保留原灰阶(home.css)/蓝阶(theme.css) */
 :root[data-accent]:not([data-accent="system"]) .jg-heat-cell.l1 { background: color-mix(in srgb, var(--jg-accent) 24%, #ffffff); }
@@ -252,6 +256,20 @@ body.jg-booting #app { background: transparent !important; }
 body.jg-booting #app > * { opacity: 0 !important; visibility: hidden !important; }
 #jg-splash { display: none; }   /* 前端 splash 不再显示，改由 WPF 层负责 */
 
+/* -------- 全局滚动条（图三·立绘皮肤格那种细圆条）--------
+   以前只有 .jg-pt-skinbox 一处定制，其余（版本管理列表、SMAPI 日志、批量应用
+   肖像包弹窗、轮播图…）都掉回 Chromium 默认样式：15px 粗 + 上下箭头按钮 + 实心轨道。
+   这里用裸选择器（特异性 0）兜底，任何带 class 的旧规则仍然覆盖它，所以
+   需要隐藏滚动条的地方（.jg-main / .jg-account / .jg-dep-list / 折叠手风琴）照旧生效。
+   注意：别在同一个元素上写 scrollbar-width: thin —— 一旦指定 scrollbar-width/color，
+   Chromium 就忽略该元素的 ::-webkit-scrollbar 整套规则，宽度被顶回 ~11px。 */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--jg-line-strong); border-radius: 999px; }
+::-webkit-scrollbar-thumb:hover { background: var(--jg-text-3); }
+::-webkit-scrollbar-button { display: none; }   /* 去掉默认滚动条两端的箭头 */
+::-webkit-scrollbar-corner { background: transparent; }
+
 /* -------- Shell layout -------- */
 .jg-shell {
     position: relative;      /* TaskDock 用 absolute 挂在这上面，保证不跑出可视区 */
@@ -277,7 +295,8 @@ body.jg-booting #app > * { opacity: 0 !important; visibility: hidden !important;
     padding: clamp(14px, 1.6vw, 28px) clamp(16px, 2vw, 40px) 0;
     scrollbar-width: none;              /* Firefox：隐藏滚动条（仍可滚动） */
     /* 内容区左上角：只有这一角露在粉色外壳上（右上角贴着窗口右边、两下角落在窗口
-       底边，都看不出角），所以只圆这一角。12px 与卡片和导航滑块圆角同值。 */
+       底边，都看不出角），所以只圆这一角。12px 与卡片和导航滑块圆角同值。
+       圆角外漏出的那块外壳由 shell.css 的 .jg-topnav::after 补平。 */
     border-top-left-radius: 12px;
 }
 .jg-main::-webkit-scrollbar { display: none; }   /* WebKit：隐藏滚动条（仍可滚动） */

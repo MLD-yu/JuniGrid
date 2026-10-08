@@ -1,0 +1,668 @@
+/* ============================================================
+   packs：素材包页 —— 按对象网格 / 版本选择弹窗 / 空状态
+   卡片复用立绘页原语（jg-pt-slot/jg-pt-card：磁吸、聚光灯、镭射膜），
+   这里只写素材包页自己的差异件。像素风缩略图一律最近邻。
+   ============================================================ */
+
+/* ── 头部 ── */
+.jg-packs-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+/* ── 视图切换：软玻璃分段控件 ── */
+.jg-pk-seg {
+    display: inline-flex;
+    gap: 3px;
+    padding: 3px;
+    border-radius: 12px;
+    background: var(--jg-well);
+    border: 1px solid var(--jg-line);
+    flex: none;               /* 工具行是 nowrap：不给这条让位，它就会被 chips 挤扁 */
+}
+.jg-pk-seg-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 14px;
+    border: 0;
+    border-radius: 9px;
+    background: transparent;
+    color: inherit;
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    opacity: .62;
+    white-space: nowrap;
+    transition: background 160ms ease, opacity 160ms ease, box-shadow 160ms ease, transform 120ms ease;
+}
+.jg-pk-seg-btn svg {
+    width: 14px;
+    height: 14px;
+    display: block;
+}
+.jg-pk-seg-btn:hover { opacity: .9; }
+.jg-pk-seg-btn:active { transform: scale(.97); }
+.jg-pk-seg-btn.active {
+    background: var(--jg-card);
+    opacity: 1;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, .12), 0 0 0 1px var(--jg-line);
+}
+
+/* ── 分类 chips：只占一行，装不下的横向拖动看 ──
+   只圈素材包页这一处 —— .jg-chips 是 Mods / Nexus 两页共用的，那边照旧换行。
+   滚动条三种写法都要给：::-webkit-scrollbar 管 WebView2，scrollbar-width 管 Firefox。 */
+.jg-packs-page .jg-mods-toolbar .jg-chips {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overflow-y: hidden;
+    min-width: 0;
+    cursor: grab;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+}
+.jg-packs-page .jg-mods-toolbar .jg-chips::-webkit-scrollbar { display: none; }
+.jg-packs-page .jg-mods-toolbar .jg-chips.dragging { cursor: grabbing; }
+.jg-packs-page .jg-mods-toolbar .jg-chips > .jg-chip {
+    flex: 0 0 auto;
+    white-space: nowrap;
+}
+
+/* ── 对象网格 ── */
+.jg-pk-grid {
+    grid-template-columns: repeat(auto-fill, minmax(118px, 1fr));
+}
+
+/* 进页面的骨架屏：复用对象网格的列宽，卡片高度对齐真卡（封面 92 + 两行字），
+   微光走全站同一个 .jg-shimmer 原语（与 Mod / Nexus 页同款） */
+.jg-pk-skeleton-card {
+    height: 152px;
+    border-radius: 12px;
+}
+
+/* 覆盖中的对象不再描边：盖没盖看卡下的包名就够，边框+黄点在一屏几十张卡上是噪音 */
+
+/* 封面：透明底 + 像素风；等待生成时微光占位（与立绘页骨架同款原语） */
+.jg-pk-cover {
+    width: 92px;
+    height: 92px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.jg-pk-cover img {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+    image-rendering: pixelated;
+    -ms-interpolation-mode: nearest-neighbor;
+}
+.jg-pk-cover-wait {
+    width: 100%;
+    height: 100%;
+    border-radius: 10px;
+    display: block;
+}
+/* 字体卡：SpriteFont 的字形表与图集内联在同一个 xnb 里，我们的解码器读不出它的纹理，
+   所以这里【不画假样张】—— 摆出来的必须是能核对的事实（资产路径 / 整份替换 / 语言变体数）。
+   以前是一个跟内容无关的 Georgia "Aa"，三张不同字体的卡长得一模一样。 */
+.jg-pk-cover-font {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    padding: 0 8px;
+    text-align: center;
+    user-select: none;
+}
+.jg-pk-cover-font-a {
+    font-size: 11.5px;
+    font-weight: 600;
+    opacity: .62;
+    word-break: break-all;
+}
+.jg-pk-cover-font-b {
+    font-size: 10.5px;
+    opacity: .45;
+}
+
+/* 状态行：包名 / 原版 / 已不在位 */
+.jg-pk-sub {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    max-width: 100%;
+    font-size: 11px;
+    line-height: 1.2;
+    opacity: .55;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.jg-pk-sub.on { opacity: .85; }
+.jg-pk-sub.drift { color: #e5484d; opacity: .95; }
+
+/* ── 对象弹窗：版本选择 ── */
+.jg-pk-tmodal { max-width: 620px; }
+/* 不换行：长 mod 名由 .jg-pk-curlink 自己出省略号（与立绘页同款）。
+   原来 flex-wrap:wrap 会把「当前：xxx」整段挤到第二行，看着像换了个标题。
+   每段都按自身宽度比例收缩 —— 只钉死资产路径的话，一条长路径就能把包名挤到零宽。 */
+.jg-pk-tmodal-sub {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 2px;
+    font-size: 12px;
+    opacity: .65;
+    flex-wrap: nowrap;
+}
+.jg-pk-tmodal-sub > span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+/* 「关闭」离列表远一点：对象弹窗没有 jg-modal-body 那层 18px 下边距，
+   不顶开的话按钮就贴在最后一行版本卡底下 */
+.jg-pk-tmodal .jg-modal-actions { margin-top: 20px; }
+
+/* ── 形象 chips：一个角色的 默认/冬季/沙滩/… 横排（复用工具行那套 .jg-chip）── */
+.jg-pk-variant-chips {
+    margin-top: 14px;
+    flex-wrap: wrap;
+}
+/* 配色 chips：摆在它那张资产行的【上面】，跟工具行那排分类 chips 同一个位置感。
+   一行装不下就横向滚 —— 折行会把卡片撑高，一屏放不下几个包。 */
+.jg-pk-color-chips {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    gap: 6px;
+    margin-bottom: 6px;
+    scrollbar-width: none;
+}
+.jg-pk-color-chips::-webkit-scrollbar { display: none; }
+.jg-pk-color-chips > .jg-chip { flex: none; padding: 3px 10px; font-size: 11.5px; }
+.jg-pk-gesture-hint {
+    margin-top: 6px;
+    font-size: 11.5px;
+    opacity: .5;
+}
+/* 单击让给了"应用"，放大只能靠缩略图自己说话 */
+.jg-pk-ver .jg-pk-ver-thumbs { cursor: zoom-in; }
+.jg-pk-verlist {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 14px;
+    max-height: 380px;
+    overflow: auto;
+    padding-right: 2px;
+}
+.jg-pk-ver {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 12px;
+    /* 行不许被压扁：.jg-pk-verlist 是 max-height 的纵向 flex 容器，而下面那条充能条规则
+       给本行加了 overflow:hidden —— flex 项主轴 overflow 非 visible 时自动最小尺寸归零，
+       于是十几行的包详情每行被压到 22px（内容要 70px），副标题整条裁没。 */
+    flex: none;
+    border: 1px solid var(--jg-line);
+    border-radius: 12px;
+    background: transparent;
+    color: inherit;
+    font-family: inherit;
+    text-align: left;
+    cursor: pointer;
+    transition: background 160ms ease, border-color 160ms ease, box-shadow 200ms ease, transform 120ms ease;
+}
+.jg-pk-ver:hover:not(:disabled) {
+    background: var(--jg-well);
+    border-color: var(--jg-line-strong);
+    box-shadow: 0 4px 14px rgba(0, 0, 0, .07);
+}
+.jg-pk-ver:active:not(:disabled) { transform: scale(.99); }
+.jg-pk-ver:disabled { cursor: default; opacity: .6; }
+.jg-pk-ver.active {
+    border-color: color-mix(in srgb, var(--jg-accent) 55%, transparent);
+    background: color-mix(in srgb, var(--jg-accent) 6%, transparent);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--jg-accent) 16%, transparent);
+}
+.jg-pk-ver-thumbs {
+    display: inline-flex;
+    align-items: flex-end;
+    gap: 6px;
+    flex: none;
+}
+.jg-pk-ver-thumb {
+    width: 48px;
+    height: 48px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 8px;
+    overflow: hidden;
+}
+.jg-pk-ver-thumb.tall { height: 64px; width: 36px; }
+.jg-pk-ver-thumb.miss { opacity: .35; }
+.jg-pk-ver-thumb img {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+    image-rendering: pixelated;
+    -ms-interpolation-mode: nearest-neighbor;
+}
+.jg-pk-ver-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+    flex: 1;
+}
+.jg-pk-ver-name {
+    font-size: 13.5px;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.jg-pk-ver-sub {
+    font-size: 11.5px;
+    opacity: .55;
+}
+.jg-pk-ver-on {
+    flex: none;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 3px 9px;
+    border-radius: 999px;
+    color: #fff;
+    background: color-mix(in srgb, var(--jg-accent) 92%, transparent);
+    box-shadow: 0 2px 8px color-mix(in srgb, var(--jg-accent) 30%, transparent);
+}
+/* 大图弹层底部那颗「使用中」占的是按钮位，不是行内角标 —— 行内那套 11px/3px
+   搁在 .jg-pill-ghost 旁边矮一截。这里按胶囊的盒模型给（透明描边凑高度），
+   行内那颗（.jg-pk-ver-on--drift）不动。 */
+.jg-pk-lb-actions .jg-pk-ver-on {
+    font-size: 13px;
+    padding: 7px 18px;
+    border: 1px solid transparent;
+}
+/* 「当前：xxx」可点 → mod 详情页（与立绘页 jg-pt-packlink 同款：下划线只在悬停出现） */
+.jg-pk-curlink {
+    cursor: pointer;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+}
+.jg-pk-curlink:hover { text-decoration: underline; opacity: 1; }
+
+/* ── 包详情：不适配行 —— 禁用态（不许用），但仍可点开放大看原因 ── */
+.jg-pk-ver--skip {
+    cursor: not-allowed;
+    opacity: .55;
+}
+.jg-pk-ver--skip:hover:not(:disabled) {
+    background: transparent;
+    border-color: var(--jg-line);
+    box-shadow: none;
+    transform: none;
+}
+.jg-pk-ver--skip:active:not(:disabled) { transform: none; }
+.jg-pk-ver-thumb--skip {
+    color: var(--jg-text-2);
+    opacity: .7;
+}
+.jg-pk-ver-thumb--skip svg {
+    width: 22px;
+    height: 22px;
+    display: block;
+}
+.jg-pk-ver-off {
+    flex: none;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 3px 9px;
+    border-radius: 999px;
+    color: var(--jg-text-2);
+    background: var(--jg-well);
+    border: 1px solid var(--jg-line);
+}
+
+/* ── 包详情：只剩当初那句尺寸说明、账上已经没有这张的行 ──
+   它不是"不可用"，所以不能沿用 --skip 的禁用态（灰掉、划掉、cursor:not-allowed）；
+   但它也确实没有可点的图，所以虚线 + 略暗 + cursor:default，跟能点的行分得开。 */
+.jg-pk-ver--rz {
+    cursor: default;
+    opacity: .82;
+    border-style: dashed;
+}
+.jg-pk-ver-thumb--rz {
+    color: var(--jg-text-1);
+    opacity: .85;
+}
+.jg-pk-ver-thumb--rz svg {
+    width: 22px;
+    height: 22px;
+    display: block;
+}
+.jg-pk-ver-off--ok {
+    color: var(--jg-text-1);
+    background: transparent;
+}
+.jg-pk-ver-on--drift {
+    background: #e5484d;
+    box-shadow: none;
+}
+/* 大图弹层：没有图可显示时的说明（不适配原因等） */
+.jg-pk-lb-note {
+    padding: 34px 22px;
+    font-size: 13px;
+    line-height: 1.8;
+    opacity: .72;
+    text-align: center;
+    max-width: 440px;
+}
+
+/* ── 空状态 ── */
+.jg-pk-empty {
+    margin-top: 28px;
+    padding: 44px 28px 36px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    gap: 6px;
+    border: 1px dashed var(--jg-line-strong);
+    border-radius: 18px;
+    background:
+        radial-gradient(340px 120px at 50% 0%,
+            color-mix(in srgb, var(--jg-accent) 7%, transparent), transparent 70%);
+}
+.jg-pk-empty-art {
+    width: 220px;
+    height: 120px;
+    color: var(--jg-accent);
+    margin-bottom: 6px;
+}
+.jg-pk-empty-title {
+    font-size: 17px;
+    font-weight: 700;
+    /* 原来这段留白在 jg-pk-empty-desc 的 margin-bottom 上；说明文字删了，间距挪到这里 */
+    margin-bottom: 18px;
+}
+.jg-pk-empty-note {
+    margin-top: 12px;
+    font-size: 12px;
+    opacity: .45;
+}
+.jg-pk-empty .jg-pill-dark {
+    gap: 6px;
+}
+
+/* ── 版本行长按：充能条（时长与 C# 的 480ms 计时一致，充满即盖上）── */
+.jg-pk-ver {
+    overflow: hidden;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
+}
+.jg-pk-ver::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(90deg,
+        color-mix(in srgb, var(--jg-accent) 16%, transparent),
+        color-mix(in srgb, var(--jg-accent) 26%, transparent));
+    transform: scaleX(0);
+    transform-origin: left center;
+    pointer-events: none;
+}
+.jg-pk-ver.pressing {
+    border-color: color-mix(in srgb, var(--jg-accent) 60%, transparent);
+    box-shadow: 0 4px 16px color-mix(in srgb, var(--jg-accent) 22%, transparent);
+}
+.jg-pk-ver.pressing::before {
+    animation: jg-pk-press 480ms linear forwards;
+}
+@keyframes jg-pk-press {
+    to { transform: scaleX(1); }
+}
+/* 充能条不能压住行里的内容 */
+.jg-pk-ver > * { position: relative; }
+
+/* ── 大图弹层：必须压过本页所有弹窗（对象/包详情弹窗 z-index 99998，
+   包详情在 DOM 里排本层之后，同层级会被它盖住 —— "单项放大显示到后面去"的根因），
+   tooltip（999999）仍最顶 ── */
+.jg-pk-lb-overlay { z-index: 99999; }
+.jg-pk-lb {
+    width: min(680px, 92vw);
+    background: var(--jg-card);
+    color: var(--jg-text);
+    border: 1px solid var(--jg-line);
+    border-radius: 18px;
+    padding: 18px 20px 16px;
+    box-shadow: 0 24px 64px rgba(0, 0, 0, .32);
+    display: flex;
+    flex-direction: column;
+}
+.jg-pk-lb-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+}
+.jg-pk-lb-title {
+    font-size: 16px;
+    font-weight: 700;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.jg-pk-lb-sub {
+    margin-top: 2px;
+    font-size: 12px;
+    opacity: .6;
+}
+.jg-pk-lb-close {
+    flex: none;
+    width: 30px;
+    height: 30px;
+    border: 1px solid var(--jg-line);
+    border-radius: 50%;
+    background: var(--jg-well);
+    color: inherit;
+    font-size: 13px;
+    cursor: pointer;
+    transition: background 150ms ease, transform 120ms ease;
+}
+.jg-pk-lb-close:hover { background: var(--jg-line); }
+.jg-pk-lb-close:active { transform: scale(.92); }
+
+/* 大图弹层的衬底：以前铺 8% 墨色棋盘格标"这里是透明像素"，但字体预览是不透明烘的
+   （纸白底 + 黑墨），网格围在一圈反而让人以为图坏了 / 图上有网格（用户 2026-10-07：
+   能不能给网格删了）。深色底本身就能分辨"有像素"与"没像素"，不需要额外的标记。
+   body 只做视口（overflow:hidden + 定位上下文），滚动让位给拖动平移。 */
+.jg-pk-lb-body {
+    position: relative;
+    margin-top: 14px;
+    height: min(58vh, 560px);
+    overflow: hidden;
+    border-radius: 14px;
+    border: 1px solid var(--jg-line);
+    background: var(--jg-well);
+}
+/* 视口：overflow:hidden + 定位上下文；只做整数 translate 平移（平移不糊）。
+   缩放在 inner 上用 CSS zoom —— 布局级缩放会按新尺寸重栅格化，
+   image-rendering: pixelated 才生效；transform: scale 走合成器双线性，越大越糊。 */
+.jg-pk-lb-canvas {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    box-sizing: border-box;
+    transform-origin: 0 0;
+    will-change: transform;
+    user-select: none;
+    -webkit-user-select: none;
+    cursor: grab;
+    touch-action: none;
+}
+/* 缩放内容层：宽度钉视口宽（JS 会再写成等值 px，CSS 先兜住首帧），
+   min-height 100% 让 flex 在 JS 初始化前就把内容居中 —— 不出现左上闪一下再跳中。
+   换行/居中在各倍率下与 100% 一致 */
+.jg-pk-lb-inner {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    min-height: 100%;
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 22px;
+    flex-wrap: wrap;
+    padding: 18px 14px;
+}
+.jg-pk-lb-body.dragging .jg-pk-lb-canvas { cursor: grabbing; }
+/* 倍率胶囊：放大时出现，点击重置（JS 控制显隐与文案） */
+.jg-pk-lb-zoom {
+    position: absolute;
+    right: 10px;
+    bottom: 10px;
+    z-index: 2;
+    padding: 3px 10px;
+    border: 1px solid var(--jg-line);
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--jg-card) 88%, transparent);
+    color: inherit;
+    font-size: 11.5px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    cursor: pointer;
+    backdrop-filter: blur(6px);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, .12);
+    transition: transform 120ms ease, border-color 150ms ease;
+}
+.jg-pk-lb-zoom:hover { border-color: var(--jg-line-strong); }
+.jg-pk-lb-zoom:active { transform: scale(.94); }
+.jg-pk-lb-fig {
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+}
+.jg-pk-lb-frame {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 72px;
+    min-height: 72px;
+}
+.jg-pk-lb-frame img {
+    max-width: min(56vw, 420px);
+    max-height: 44vh;
+    object-fit: contain;
+    image-rendering: pixelated;
+    -ms-interpolation-mode: nearest-neighbor;
+    filter: drop-shadow(0 6px 14px rgba(0, 0, 0, .22));
+}
+.jg-pk-lb-wait {
+    width: 120px;
+    height: 120px;
+    border-radius: 12px;
+    display: block;
+}
+.jg-pk-lb-fig figcaption {
+    font-size: 12px;
+    opacity: .62;
+}
+.jg-pk-lb-actions {
+    margin-top: 14px;
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    gap: 10px;
+}
+@media (prefers-reduced-motion: reduce) {
+    .jg-pk-ver.pressing::before { animation-duration: 1ms; }
+}
+
+/* ── 按包卡片：三点菜单（替代「已安装」角标）── */
+.jg-cardmenu-host { position: relative; }
+/* 菜单打开时整卡抬到遮罩（.jg-dd-overlay z-index 9000）之上，菜单才点得到 */
+.jg-cardmenu-host:has(.jg-cardmenu) { z-index: 9500; }
+.jg-cardmenu-btn {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 0;
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--jg-card) 82%, transparent);
+    color: var(--jg-text);
+    cursor: pointer;
+    backdrop-filter: blur(6px);
+    box-shadow: 0 1px 4px rgba(0, 0, 0, .18);
+    transition: background 150ms ease, transform 120ms ease;
+}
+.jg-cardmenu-btn svg { width: 16px; height: 16px; display: block; }
+.jg-cardmenu-btn:hover { background: var(--jg-card); }
+.jg-cardmenu-btn:active { transform: scale(.92); }
+.jg-cardmenu {
+    position: absolute;
+    top: 40px;              /* 按钮（8+28）下方 4px */
+    right: 8px;
+    min-width: 158px;
+    display: flex;
+    flex-direction: column;
+    padding: 5px;
+    border: 1px solid var(--jg-line);
+    border-radius: 12px;
+    background: var(--jg-card);
+    box-shadow: 0 12px 32px rgba(0, 0, 0, .22);
+    animation: jg-cardmenu-in 140ms ease-out both;
+}
+@keyframes jg-cardmenu-in {
+    from { opacity: 0; transform: translateY(-5px) scale(.97); }
+    to { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+    .jg-cardmenu { animation-duration: 1ms; }
+}
+
+/* ── 长 mod 名一律省略号（与立绘页同款），不再折行 ── */
+/* 按包卡片标题：官网风是两行 clamp，这页一屏全是已装的包，一行更齐 */
+.jg-packs-page .jg-modcard2-title {
+    display: block;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+/* 包详情弹窗标题 */
+.jg-pk-dmodal .jg-modal-title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+/* 标题 + 「打开文件夹」同行：标题吃掉剩余宽度并省略号，按钮永远不被挤掉 */
+.jg-pk-dmodal-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+    min-width: 0;
+}
+.jg-pk-dmodal-head .jg-modal-title { margin-bottom: 0; min-width: 0; }
+.jg-pk-dmodal-head .jg-pk-dmodal-folder { flex: none; }

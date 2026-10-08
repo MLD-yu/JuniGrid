@@ -6,6 +6,8 @@
 @inject NexusService NexusApi
 @inject ModService ModSvc
 @inject InstallService Installer
+@inject GameService Game
+@inject UpdateService Updater
 @inject IJSRuntime JS
 @inject NavigationManager Nav
 
@@ -61,11 +63,15 @@
 
                 <div class="jg-dl4-actions">
                     @{
-                        var alreadyInstalled = _installedFolder is not null;
+                        var alreadyInstalled = _installedFolder is not null || _smapiInstalled || _overlayInstalled;
                         // v1.04.0：已装判定优先于一键安装开关 —— 无论开关与否，「Mod 列表已有该 mod」都要显示
                         var installLabel = _installing ? Loc.T("安装中…")
-                            : alreadyInstalled ? (HasUpdate ? Loc.T("更新") : Loc.T("Mod 列表已有该 mod"))
-                            : !Cfg.Current.EnableOneClickInstall ? Loc.T("在浏览器安装") : Loc.T("安装");
+                            : _smapiLabel ?? (alreadyInstalled ? (HasUpdate ? Loc.T("更新")
+                                // 覆盖包装完不在 Mods 列表里，说「Mod 列表已有该 mod」是假的 → 只说已安装
+                                : _installedFolder is null ? Loc.T("已安装") : Loc.T("Mod 列表已有该 mod"))
+                            : !Cfg.Current.EnableOneClickInstall ? Loc.T("在浏览器安装") : Loc.T("安装"));
+                        // SMAPI 不需要例外：已装就禁用，跟其它 mod 一条规矩。换适配版是 Mod 页
+                        // 那条按游戏版本选包的通道干的活，不在这里给一个点得动的口子。
                         var disableInstall = _installing || (alreadyInstalled && !HasUpdate);
                     }
                     <button class="jg-dl4-cta" @onclick="Install" disabled="@disableInstall">
@@ -89,13 +95,41 @@
 
             @* ─── v0.69.5：三项手风琴（多开不互关 / 平滑展开 / 超长内部滚动且标题吸顶）─── *@
             <div class="jg-about-acc">
+                @{ var reqTotal = _requirements is null ? 0 : ReqTotal(); }
                 <div class="jg-acc @(_openAccs.Contains(1) ? "open" : "")" id="jgAcc1">
                     <div class="jg-acc-inner">
                         <button class="jg-acc-head" @onclick="() => ToggleAcc(1)">
-                            <span class="jg-acc-no">01</span><span class="jg-acc-name">Requirements@(_requirements is { Count: > 0 } ? $"（{_requirements.Count}）" : "")</span>
+                            <span class="jg-acc-no">01</span><span class="jg-acc-name">Requirements@(reqTotal > 0 ? $"（{reqTotal}）" : "")</span>
                             <svg class="jg-acc-arrow" width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
                         </button>
                         <div class="jg-acc-body">
+                            @{ var manifestReqs = ManifestReqs(); }
+                            @* ─── 本机 manifest 那一半：SMAPI 实际判的就是这份，而且它是本地数据，
+                               第一帧就有，不等网络，官网拉失败也不该遮住它 ─── *@
+                            @if (manifestReqs.Count > 0)
+                            {
+                                <div class="jg-req-sub">@Loc.T("本机 manifest 声明的前置")</div>
+                                <div class="jg-req-table">
+                                    <div class="jg-req-th"><span>@Loc.T("模组名称")</span><span>@Loc.T("注释")</span></div>
+                                    @foreach (var r in manifestReqs)
+                                    {
+                                        <div class="jg-req-row">
+                                            <span class="jg-req-name">
+                                                @if (r.ModId > 0)
+                                                {
+                                                    <button class="jg-req-link" @onclick="() => GoDep(r.ModId, r.Name)">@r.Name</button>
+                                                }
+                                                else { @r.Name }
+                                                @if (r.State is not null)
+                                                {
+                                                    <span class="@ReqBadgeClass(r.State)">@ReqBadgeText(r.State)</span>
+                                                }
+                                            </span>
+                                            <span class="jg-req-notes">@(string.IsNullOrWhiteSpace(r.Notes) ? "—" : r.Notes)</span>
+                                        </div>
+                                    }
+                                </div>
+                            }
                             @if (_requirements is null)
                             {
                                 <div class="jg-shimmer" style="height:16px;border-radius:5px;margin:4px 0"></div>
@@ -105,17 +139,26 @@
                             {
                                 <span style="opacity:.65">@Loc.T("要求数据拉取失败，")</span><button class="jg-linklike" @onclick="OpenPage">@Loc.T("点此到官网查看")</button>
                             }
-                            else if (_requirements.Count == 0)
-                            {
-                                <span style="opacity:.6">@Loc.T("该模组没有前置要求。")</span>
-                            }
                             else
                             {
-                                var nexusReqs = _requirements.Where(r => !r.External).ToList();
-                                var offsiteReqs = _requirements.Where(r => r.External).ToList();
+                                @* 官网手填表里与 manifest 撞车的那行不再单列：同一个前置说两遍，
+                                   而官网那版连版本号都没有，看着像两条要求。 *@
+                                var siteReqs = _requirements
+                                    .Where(r => !manifestReqs.Any(x => SameReq(x, r)))
+                                    .ToList();
+                                var nexusReqs = siteReqs.Where(r => !r.External).ToList();
+                                var offsiteReqs = siteReqs.Where(r => r.External).ToList();
+                                @if (siteReqs.Count == 0 && manifestReqs.Count == 0)
+                                {
+                                    @* 「该模组没有前置要求」这句以前只照着官网那张表说 —— 而那张表
+                                       是作者手填的，实测 29 个 mod 里 0 个填过，说满了。 *@
+                                    <span style="opacity:.6">@Loc.T(_thisEntry is null
+                                        ? "官网没登记前置；本机还没装这个 mod，读不到它的 manifest。"
+                                        : "官网没登记前置，它的 manifest 里也没声明依赖。")</span>
+                                }
                                 if (nexusReqs.Count > 0)
                                 {
-                                    <div class="jg-req-sub">@Loc.T("Nexus 要求")</div>
+                                    <div class="jg-req-sub" style="@(manifestReqs.Count > 0 ? "margin-top:10px" : null)">@Loc.T("Nexus 要求")</div>
                                     <div class="jg-req-table">
                                         <div class="jg-req-th"><span>@Loc.T("模组名称")</span><span>@Loc.T("注释")</span></div>
                                         @foreach (var r in nexusReqs)
@@ -338,6 +381,13 @@
     private string? _interopsInitedFor;
     private string? _error;
     private string? _installedFolder;
+    /// <summary>这个 mod 是以覆盖包（汉化补丁那种）的形式装着的：Mods 里没有它那一行，
+    /// 已装与否只能问覆盖账本 + 磁盘实际内容。</summary>
+    private bool _overlayInstalled;
+    /// <summary>详情页这个 mod 就是 SMAPI 时：游戏根主程序在不在 + 该显示什么文案
+    /// （未装时文案留 null，让上面那条「安装 / 在浏览器安装」的正常链走）。</summary>
+    private bool _smapiInstalled;
+    private string? _smapiLabel;
     private bool _installing;
     private string? _installMsg;
 
@@ -346,6 +396,11 @@
     private bool _reqFailed;
     private readonly HashSet<int> _openAccs = new();
     private List<NexusRequirementEx>? _requirements;
+    /// <summary>本机没装的前置 → 官网搜索解析出的名字/页面号（与 Mods 页同一本进程内缓存，
+    /// 解析过就不再发请求）。按 UID 存，跨 mod 复用。</summary>
+    private readonly Dictionary<string, InstallService.DependencyDisplayInfo> _depDisplay
+        = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _depTried = new(StringComparer.OrdinalIgnoreCase);
     private List<NexusTranslationItem>? _translations;
     private List<NexusChangelog>? _changelogs;
 
@@ -429,6 +484,15 @@
                 && string.Equals(m.UniqueID, UniqueID, StringComparison.OrdinalIgnoreCase))
             : _localMods.FirstOrDefault(m => m.NexusModId == ModId);
         _installedFolder = _thisEntry?.Folder;
+        _overlayInstalled = _installedFolder is null
+            && ModService.OverlayAppliedForMod(Cfg.Current.GamePath, Cfg.Current, ModId);
+
+        // v1.7.39：SMAPI 这一格单独问游戏根 —— 上面的已装判据是「Mods\ 里有没有这个文件夹」，
+        // 而加载器根本不住在 Mods\ 里，于是本机装着 4.5.2 按钮还说「安装」。判据用
+        // Game.SmapiState（与浏览页卡片、依赖栏同一个入口），这里不再写第二套。
+        await RefreshSmapiStateAsync();
+        // 没装的前置要显示成"是哪个 mod"而不是裸 UID，得问官网搜索 —— 后台补，不挡首屏
+        _ = ResolveMissingDepNamesAsync();
 
         try
         {
@@ -548,6 +612,23 @@
         !string.IsNullOrWhiteSpace(_latestFile?.Version) ? _latestFile!.Version : _mod?.Version ?? "";
 
 
+    /// <summary>这个 mod 就是 SMAPI 时，刷新「游戏根实况 + 按钮该写什么」。非 SMAPI 直接返回。
+    /// <paramref name="freshRead"/> 用在刚装完的场合：Windows 按路径缓存版本资源，
+    /// 覆盖安装后立即重探会拿到旧版本号（v1.3.4 实测）。</summary>
+    private async Task RefreshSmapiStateAsync(bool freshRead = false)
+    {
+        if (ModId != InstallService.SmapiNexusId) return;
+        var gp = Cfg.Current.GamePath;
+        var st = await Task.Run(() =>
+        {
+            var s = Game.SmapiState(gp, freshRead);
+            return (s.Installed,
+                Label: s.Installed ? UpdateService.SmapiDetailLabel(true, s.Version, Updater.GetGameVersion(gp)) : null);
+        });
+        _smapiInstalled = st.Installed;
+        _smapiLabel = st.Label;
+    }
+
     private async Task Install()
     {
         if (_mod is null) return;
@@ -575,12 +656,17 @@
                 _scanCache = null;   // v1.2.4：磁盘变了，本地扫描缓存立即失效
                 _installedFolder ??= ModSvc.Scan(Cfg.Current.GamePath)
                     .FirstOrDefault(m => m.NexusModId == ModId)?.Folder;
+                _overlayInstalled = _installedFolder is null
+                    && ModService.OverlayAppliedForMod(Cfg.Current.GamePath, Cfg.Current, ModId);
+                // SMAPI 走的是游戏根，上面那句扫 Mods 对它无效 —— 装完直接重探实况
+                await RefreshSmapiStateAsync(freshRead: true);
             }
             else if (err.Contains("premium", StringComparison.OrdinalIgnoreCase))
             {
+                // 打开文件页这件事已经在 InstallService.PremiumNeedsWebFallback 里做过了
+                // （那样任务面板的「↻ 重试」和「重新发起」两条路也才会开）—— 这里再开一次
+                // 就是两个标签页。
                 _installMsg = LocService.Tr("这个 mod 需要 Premium 才能直装 —— 已为你打开系统浏览器，点 Mod Manager Download 即可自动安装");
-                MainWindow.OpenNexusOverlay(
-                    $"https://www.nexusmods.com/stardewvalley/mods/{ModId}?tab=files");
             }
             else if (err is "已取消" or "已暂停")
             {
@@ -635,9 +721,9 @@
         if (n.Equals("SMAPI", StringComparison.OrdinalIgnoreCase)
             || n.Contains("Stardew Modding API", StringComparison.OrdinalIgnoreCase))
         {
-            var gp = Cfg.Current.GamePath;
-            return !string.IsNullOrWhiteSpace(gp)
-                && File.Exists(Path.Combine(gp, "StardewModdingAPI.exe"));
+            // v1.7.39：改问 Game.SmapiState —— 顶部按钮和这里必须同一口径，
+            // 否则会出现「依赖栏说装了、按钮说没装」的两套账。
+            return Game.SmapiState(Cfg.Current.GamePath).Installed;
         }
         return _localMods.Any(m => string.Equals(m.Name?.Trim(), n, StringComparison.OrdinalIgnoreCase));
     }
@@ -647,6 +733,122 @@
     /// 只认以 optional 开头的写法；认不出仍按必需的红标处理，宁可多提示不误吞。</summary>
     private static bool IsReqOptional(NexusRequirementEx r) =>
         (r.Notes ?? "").TrimStart().StartsWith("optional", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>详情页「要求」的一行。State 为 null = 已就位；否则是徽标：
+    /// missing = 没装，optional = 可选且没装，stale = 装了但版本低于 manifest 要求。</summary>
+    private sealed record ReqRow(string Name, int ModId, string Notes, string? State);
+
+    /// <summary>本机已装条目 manifest 里声明的前置 —— 这才是 SMAPI 决定加不加载用的那一份，
+    /// 官网的 Requirements 表只是作者手填的说明。三档状态见 <see cref="ReqRow"/>。</summary>
+    private List<ReqRow> ManifestReqs()
+    {
+        var list = new List<ReqRow>();
+        if (_thisEntry is null) return list;   // 没装过 → 本机没有它的 manifest 可读
+        foreach (var uid in _thisEntry.Dependencies.Concat(_thisEntry.ContentPackIds))
+            AddManifestReq(list, uid, optional: false);
+        foreach (var uid in _thisEntry.OptionalDependencies)
+            AddManifestReq(list, uid, optional: true);
+        return list;
+    }
+
+    private void AddManifestReq(List<ReqRow> list, string? uid, bool optional)
+    {
+        var key = uid?.Trim();
+        if (string.IsNullOrEmpty(key)
+            || list.Any(x => string.Equals(x.Name, key, StringComparison.OrdinalIgnoreCase))) return;
+        var need = _thisEntry!.DependencyMinVersions.TryGetValue(key, out var nv) ? nv.Trim() : null;
+        var badge = optional ? "optional" : "missing";
+
+        if (_localMods.FirstOrDefault(m => string.Equals(m.UniqueID.Trim(), key, StringComparison.OrdinalIgnoreCase))
+            is { } have)
+        {
+            var hv = (have.Version ?? "").Trim();
+            list.Add(new ReqRow(string.IsNullOrWhiteSpace(have.Name) ? key : have.Name.Trim(),
+                have.NexusModId ?? 0,
+                need is null ? Loc.F("本机 {0}", hv.Length > 0 ? hv : "?")
+                             : Loc.F("需要 ≥{0}，本机 {1}", need, hv.Length > 0 ? hv : "?"),
+                need is not null && VersionUtil.IsOlderThan(hv, need) ? "stale" : null));
+            return;
+        }
+
+        // 捆绑包里不单独成行的子包：磁盘上有、列表没条目，说「未安装」是假的
+        var hidden = ModSvc.HiddenChildUids;
+        if (hidden.Enabled.Contains(key) || hidden.Disabled.Contains(key))
+        {
+            var parentUid = ModService.BundledParentOf(key, _localMods.Select(m => m.UniqueID));
+            var pn = parentUid is null ? null : _localMods.FirstOrDefault(
+                m => string.Equals(m.UniqueID.Trim(), parentUid, StringComparison.OrdinalIgnoreCase))?.Name;
+            list.Add(new ReqRow(key, 0,
+                string.IsNullOrWhiteSpace(pn) ? Loc.T("随宿主包一起装") : Loc.F("随「{0}」一起装", pn!.Trim()),
+                hidden.Disabled.Contains(key) ? badge : null));
+            return;
+        }
+
+        // SMAPI 不住在 Mods\ 里，按 Mods 目录扫永远判「未安装」—— 与官网那半段同一口径直接探游戏根目录
+        if (key.Equals("SMAPI", StringComparison.OrdinalIgnoreCase))
+        {
+            list.Add(new ReqRow("SMAPI", 0, need is null ? "—" : Loc.F("需要 ≥{0}", need),
+                Game.SmapiState(Cfg.Current.GamePath).Installed ? null : badge));
+            return;
+        }
+
+        // 没装的前置：名字和页面靠官网搜索解析（与 Mods 页一键安装同一本缓存，解析过就不再发请求）。
+        // 解析不出来就退回裸 UID + 「未安装」，不假装精确。
+        var shown = _depDisplay.TryGetValue(key, out var di) && !string.IsNullOrWhiteSpace(di.Name) ? di.Name!.Trim() : key;
+        list.Add(new ReqRow(shown, di?.ModId ?? 0, need is null ? "—" : Loc.F("需要 ≥{0}", need), badge));
+    }
+
+    /// <summary>把「本机没装的前置」解析成名字 + N 网页面号（进程内/配置缓存命中则零请求）。
+    /// 解析不出来那一行就继续显示裸 UID —— 这只影响显示，不该拖住详情页，也不该抛未观察异常。</summary>
+    private async Task ResolveMissingDepNamesAsync()
+    {
+        try
+        {
+            foreach (var uid in ManifestReqs()
+                         .Where(r => r.ModId == 0 && (r.State == "missing" || r.State == "optional"))
+                         .Select(r => r.Name).ToList())
+            {
+                if (!_depTried.Add(uid)) continue;
+                // 本详情页这个 mod 就是它的父包：先拿官网 Requirements 认（作者手填、带 modId），
+                // 认不出来才降级到全站搜索猜。
+                var info = await Installer.ResolveDependencyDisplayAsync(uid, new[] { ModId });
+                if (info is not null)
+                {
+                    _depDisplay[uid] = info;
+                    await InvokeAsync(StateHasChanged);
+                }
+            }
+        }
+        catch (Exception ex) { AppLog.Warn("ModDetail", "依赖名解析失败: " + ex.Message); }
+    }
+
+    /// <summary>徽标配色：过旧与没装都是"这条会让依赖方跑不起来"，但不是一个颜色，
+    /// 因为出路不同 —— 一个去装，一个去换成更新的版本。</summary>
+    private static string ReqBadgeClass(string state) => state switch
+    {
+        "optional" => "jg-req-optional",
+        "stale" => "jg-req-old",
+        _ => "jg-req-missing",
+    };
+    private string ReqBadgeText(string state) => state switch
+    {
+        "optional" => Loc.T("可选未装"),
+        "stale" => Loc.T("版本过旧"),
+        _ => Loc.T("未安装"),
+    };
+
+    /// <summary>官网表的一行是否已被 manifest 那半段说过（同 N 网页面号，或名字对得上）。</summary>
+    private static bool SameReq(ReqRow x, NexusRequirementEx r)
+        => (r.ModId > 0 && x.ModId == r.ModId)
+        || string.Equals(x.Name.Trim(), (r.ModName ?? "").Trim(), StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>标题上的计数 = manifest 那批 + 官网表里没跟它撞车的。</summary>
+    private int ReqTotal()
+    {
+        var man = ManifestReqs();
+        return _requirements is null ? man.Count
+            : man.Count + _requirements.Count(r => !man.Any(x => SameReq(x, r)));
+    }
 
     /// <summary>依赖 → 跳它的详情页。拿得到 mod_id 就进内部详情；拿不到（=0）才降级到 Nexus 搜索。</summary>
     private void GoDep(int modId, string name)
@@ -677,7 +879,6 @@
     /// v1.1.1：描述 HTML 可读性规整（白底详情页）——
     /// ① 中性灰阶文字一律 color:inherit（≈黑）。作者用浅灰做弱化强调，白底看不清；
     ///    近白(#f7+)视为深色底块上的白字，保留。
-    /// ② 彩色文字保留原色，追加 0.5px 黑描边（-webkit-text-stroke）提升白底可读性。
     /// 旧版正则只认 #77~#aa 前缀灰值，#efefef/#d8d8d8 全部漏网（如 Weather Wonders 天气名）。
     /// </summary>
     private static string NormalizeGrayColors(string html)
@@ -700,8 +901,7 @@
             if (lum >= 0.97) return prefix + value;   // 近白：多半是深色底上的白字
             return prefix + "inherit";
         }
-        // 彩色：保留原色 + 细黑描边
-        return $"{prefix}{value}; -webkit-text-stroke: 0.5px #000";
+        return prefix + value;   // 彩色：保留原色
     }
 
     private static bool TryParseDescColor(string s, out int r, out int g, out int b)

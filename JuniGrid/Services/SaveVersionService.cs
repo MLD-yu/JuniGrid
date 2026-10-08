@@ -4,7 +4,7 @@ using System.Text.RegularExpressions;
 namespace JuniGrid.Services;
 
 /// <summary>
-/// 存档的「单向升级」保护 + 择档/聚焦启动。
+/// 存档的「单向升级」保护：把当前版本读不了的档收进抽屉，游戏列表只显示读得了的。
 ///
 /// 星露谷只有一个存档目录（%APPDATA%\StardewValley\Saves），所有游戏版本共用一份，
 /// 而存档是被单向写上去的：一份档只要被高版本存过一次盘，低版本再点它就是进档闪退
@@ -12,15 +12,16 @@ namespace JuniGrid.Services;
 /// 游戏自己的存档列表不分版本，所以玩家从界面上看不出哪一行读得了。
 ///
 /// 设计（列表始终完整，不再按版本隐藏）：
-/// ① 每次往更高版本切之前，先把「这次会被升级」的档整份复制进缓存留底。想回旧版本继续玩时，
-///    把留底放回 Saves，那份档在旧版本又读得懂 —— 存档本体从不删，只做复制或改名移走。
-///    这一步只读 Saves、往缓存里写，开着云存档也安全。
-/// ② 启动器「用这份档玩」自动切到能读它的版本，并用 <see cref="FocusHideExcept"/> 聚焦：
-///    游戏里只显示选中的那一份，老版本列表分不清高版本档、点错行闪退的问题从根上没了。
-///    玩完 <see cref="RestoreHidden"/> 放回。<b>但"云眼里的 Saves 始终完整"这句已经不成立</b>：
-///    开着云时收起 = 本地文件消失，Steam 会在<b>退出同步</b>时把这些它不再看得见的文件
-///    「Removing from cloud」掉（实测 cloud_log 2026-09-24 12:12:52 一次移除 34 个文件，
-///    09-23 也发生 4 次）。⇒ 抽屉与隔离区里的份就是<b>唯一副本</b>，绝不能当缓存清理。
+/// ① 启动前 <see cref="HideUnreadable"/> 把「这个版本读不了」的那几份挪进抽屉，
+///    游戏里出现不了，也就点不到；启动后退出游戏 / 切换版本时用 <see cref="RestoreHidden"/> 放回。
+///    <b>"云眼里的 Saves 始终完整"这句不成立</b>：开着云时收起 = 本地文件消失，Steam 会在
+///    <b>退出同步</b>时把这些它不再看得见的文件「Removing from cloud」掉
+///    （实测 cloud_log 2026-09-24 12:12:52 一次移除 34 个文件，09-23 也发生 4 次）。
+///    ⇒ 抽屉与隔离区里的份就是<b>唯一副本</b>，绝不能当缓存清理。
+/// ② 留底只发生在撞名让位时：抽屉里已有一份同名档、而 Saves 又来了同名的一份，
+///    让位那份按时间戳存进 _saves-backup（<see cref="KeepStamps"/> 份封顶，见 ResolveNameConflict
+///    与 HideUnreadable）。<b>不做「切到更高版本前整份留底」</b> —— 那条路径（BackupAboutToUpgrade）
+///    早就没有调用点，随选档启动一起清掉了；玩家要回旧版本继续玩，得自己从 Steam 云或备份拿。
 ///
 /// 判「读不了」只认档里写着的 &lt;gameVersion&gt;：1.0–1.2 的存档没有这个字段，判不准就一律不动它。
 /// </summary>
@@ -91,50 +92,9 @@ public static class SaveVersionService
         return CompareVersions(s.GameVersion, version) <= 0;
     }
 
-    /// <summary>这份档会不会被 version 存一次盘就回不去（= 切过去之前该留底）。</summary>
-    public static bool UpgradedBy(Slot s, string? version)
-        => version is not null && (s.GameVersion is null || CompareVersions(s.GameVersion, version) < 0);
-
-    // ─────────────── 启动前那道闸门用的口径（只读，不动任何文件） ───────────────
-
-    /// <summary>当前存档目录里 version 读不了的那几份。</summary>
+    /// <summary>当前存档目录里 version 读不了的那几份（版本切换挪档前也用它点名单）。</summary>
     public static List<Slot> UnreadableBy(string? version)
         => Scan().Where(s => !ReadableBy(s, version)).ToList();
-
-    /// <summary>
-    /// 这批「读不了的档」的指纹。闸门用它判「同一状态只拦一次」：档的集合没变就说明玩家已经看过
-    /// 说明了，不该每次启动都拦；集合变了（新增了档、或换了版本）则重新拦一次。
-    /// </summary>
-    public static string UnreadableFingerprint(string? version, List<Slot> bad)
-        => (version ?? "-") + "|" + string.Join(",",
-            bad.Select(s => s.Name).OrderBy(x => x, StringComparer.Ordinal));
-
-    /// <summary>弹窗里那段话：说清后果 + 两条出路（切版本 / 仍然启动）。</summary>
-    public static string DescribeUnreadableShort(string? version, List<Slot> bad)
-    {
-        var need = bad.Select(s => s.GameVersion)
-            .Where(v => v is not null)
-            .OrderBy(v => v, Comparer<string?>.Create((a, b) => CompareVersions(a, b)))
-            .LastOrDefault() ?? "更高的版本";
-        return $"当前游戏版本 {version ?? "未知"} 读不了存档列表里的 {bad.Count} 份档（它们是 {need} 或更高版本存过盘的）。\n\n"
-             + "这个版本的存档列表会把它们显示得和你自己的档一模一样（农场主名、农场名、日期全是空白或同一个值），"
-             + "点错一行就是进档闪退到桌面。\n\n"
-             + $"要玩那 {bad.Count} 份档：在「版本管理」里切到 {need} 或更新的版本。\n"
-             + $"只想在 {version ?? "这个版本"} 里玩自己的档：点「仍然启动」，进去之后认准目录名再点。";
-    }
-
-    /// <summary>写进日志的完整版：逐份列出目录名、档内版本、农场主名。</summary>
-    public static string DescribeUnreadable(string? version, List<Slot> bad)
-    {
-        var sb = new System.Text.StringBuilder();
-        sb.Append($"版本 {version ?? "未知"} 读不了的存档共 {bad.Count} 份（目录名 / 档内版本 / 农场主名）：\n");
-        foreach (var s in bad.Take(20))
-            sb.Append($"  {s.Name}  /  {s.GameVersion}  /  {s.FarmerName ?? "-"}\n");
-        if (bad.Count > 20) sb.Append($"  …另有 {bad.Count - 20} 份\n");
-        sb.Append("存档是单向升级的：被高版本存过一次盘，低版本再点它就是 NPC..ctor 里的 NullReferenceException。");
-        return sb.ToString();
-    }
-
 
     // ─────────────── 扫描 ───────────────
 
@@ -210,49 +170,6 @@ public static class SaveVersionService
     }
 
     // ─────────────── ① 留底 ───────────────
-
-    /// <summary>切到 targetVersion 之前，给「会被这个版本升上去」的档各留一份底。返回新建留底份数。</summary>
-    public static int BackupAboutToUpgrade(string? targetVersion, Action<string>? log = null)
-    {
-        if (targetVersion is null)
-        {
-            log?.Invoke("认不出要切去的版本号，这次不给存档留底");
-            return 0;
-        }
-        SweepPartials();
-        var made = 0;
-        foreach (var s in Scan().Where(x => UpgradedBy(x, targetVersion)))
-        {
-            try
-            {
-                var root = Path.Combine(BackupRoot, s.Name);
-                Directory.CreateDirectory(root);
-                var stamps = StampsOfPath(root);
-                // 内容没动过就不再复制一份：他一天能切十次版本，只玩一次的档才需要底
-                if (stamps.Count > 0 && stamps[0].SourceWritten == s.WrittenAt
-                    && stamps[0].SizeBytes == s.SizeBytes) continue;
-
-                var dst = UniqueStampDir(root, DateTime.Now.ToString("yyyyMMdd_HHmmss"));
-                var tmp = dst + ".tmp";
-                CopyTree(s.Dir, tmp);
-                File.WriteAllText(Path.Combine(tmp, StampMeta),
-                    $"{s.SizeBytes}|{s.WrittenAt.Ticks}|切到 {targetVersion} 之前（存档内版本 " +
-                    $"{s.GameVersion ?? "未记录，1.2 及更早"}）");
-                Directory.Move(tmp, dst);      // 标记最后写、整棵改名顶上：半份底不会被认成底
-                made++;
-                PruneStamps(root, log);
-                log?.Invoke($"给存档「{s.FarmName ?? s.Name}」留了底（{(double)s.SizeBytes / 1048576:F1} MB）");
-            }
-            catch (Exception ex)
-            {
-                log?.Invoke($"存档「{s.Name}」留底失败：{ex.Message}");
-            }
-        }
-        return made;
-    }
-
-    /// <summary>某份存档的全部留底，新的在前。</summary>
-    public static List<Stamp> StampsOf(string saveName) => StampsOfPath(Path.Combine(BackupRoot, saveName));
 
     private static List<Stamp> StampsOfPath(string saveRoot)
     {
@@ -372,75 +289,11 @@ public static class SaveVersionService
         return list;
     }
 
-    /// <summary>聚焦抽屉 + 各版本抽屉里一共压着几份。聚焦启动后判「要不要绕开 Steam」用这个持久量。</summary>
+    /// <summary>聚焦抽屉 + 各版本抽屉里一共压着几份。启动后判「要不要绕开 Steam」用这个持久量。（抽屉里压着档 = 本地 Saves 不完整，走 steam:// 会被 Auto-Cloud 拉回来，见 LauncherService 直启那段。）</summary>
     public static int StashedCountAll()
     {
         try { return EnumerateHiddenRoots().Sum(h => Directory.GetDirectories(h).Length); }
         catch { return 0; }
-    }
-
-    /// <summary>留底总占用（设置 → 缓存与存储 那一行用）。目录不存在时是 0。</summary>
-    public static long BackupBytes() => Directory.Exists(BackupRoot) ? DirBytes(BackupRoot) : 0;
-
-    /// <summary>全部留底涉及的存档槽位数，界面上「N 份存档有留底」。</summary>
-    public static int BackedUpSaveCount()
-    {
-        if (!Directory.Exists(BackupRoot)) return 0;
-        try { return Directory.GetDirectories(BackupRoot).Count(d => StampsOfPath(d).Count > 0); }
-        catch { return 0; }
-    }
-
-    /// <summary>
-    /// 退回：把选中的那份底放回 Saves。
-    /// 现有的那份不覆盖也不删 —— 先整棵改名成一份新留底（还能再换回去），然后把旧的复制进来
-    /// （复制不是搬走，留底原地留着，可以反复退回不同的时间点）。
-    /// </summary>
-    public static string? Restore(string saveName, string stampDir, Action<string>? log = null)
-    {
-        var root = SavesDir();
-        if (root is null) return LocService.Tr("还没有存档目录，退回不了");
-        var saveRoot = Path.Combine(BackupRoot, saveName);
-        if (!PathsUnder(stampDir, saveRoot) || !File.Exists(Path.Combine(stampDir, StampMeta)))
-            return LocService.Tr("这份留底已经不在原位置了");
-        var dst = Path.Combine(root, saveName);
-        try
-        {
-            if (Directory.Exists(dst))
-            {
-                var aside = UniqueStampDir(saveRoot,
-                    DateTime.Now.ToString("yyyyMMdd_HHmmss") + "-" + ReplacedMark + "现有档");
-                if (DepotDownloaderService.MoveDirectoryVerified(dst, aside, null, null, "换下现有存档")
-                    == DepotDownloaderService.DirMove.Failed)
-                    return LocService.Tr("现有的那份挪不动，已停止（没有覆盖任何东西）");
-                // 补上完成标记，这份「换下来的」才算一份认得出的留底：界面上列得出来、
-                // 没有标记的半成品会被回收逻辑清掉，被换下来的档绝不能被那样清掉。
-                var moved = ReadSlot(aside);
-                if (moved is not null)
-                    File.WriteAllText(Path.Combine(aside, StampMeta),
-                        $"{moved.SizeBytes}|{moved.WrittenAt.Ticks}|退回「{saveName}」时被换下来的现有档");
-                log?.Invoke($"现有的那份存档已改名为留底：{Path.GetFileName(aside)}");
-            }
-            CopyTree(stampDir, dst, skipMeta: true);
-            log?.Invoke($"已把「{Path.GetFileName(stampDir)}」那份底放回存档「{saveName}」");
-            return null;
-        }
-        catch (Exception ex)
-        {
-            log?.Invoke($"退回存档「{saveName}」失败：{ex.Message}");
-            return LocService.Tr("退回失败：") + ex.Message;
-        }
-    }
-
-    private static bool PathsUnder(string child, string parent)
-    {
-        try
-        {
-            var c = Path.GetFullPath(child).TrimEnd(Path.DirectorySeparatorChar);
-            var p = Path.GetFullPath(parent).TrimEnd(Path.DirectorySeparatorChar);
-            return c.StartsWith(p + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
-                   && Path.GetFileName(Path.GetDirectoryName(c)) == Path.GetFileName(p);
-        }
-        catch { return false; }
     }
 
     // ─────────────── ② 按版本挪走读不了的档 ───────────────
@@ -604,67 +457,6 @@ public static class SaveVersionService
         }
     }
 
-    /// <summary>
-    /// 聚焦启动：只留 keepSaveName 在 Saves，其余挪进聚焦抽屉。返回挪走的份数。
-    /// 和旧「按版本收档」同一套存放与放回（RestoreHidden 会一并放回）。
-    ///
-    /// 为什么需要：老版本的存档列表读不懂高版本的档（显示成「农场主 1 / 农场 1」），
-    /// 游戏内点错一行就是 NPC..ctor 闪退。启动器已经替玩家选好了这份档 ——
-    /// 游戏里只出现这一行，点哪都是它。启动器列表仍然是全的。
-    /// </summary>
-    public static int FocusHideExcept(string? keepSaveName, Action<string>? log = null)
-    {
-        if (string.IsNullOrWhiteSpace(keepSaveName) || SavesDir() is null) return 0;
-        var half = HalfSyncedSaves();
-        if (half.Count > 0)
-        {
-            log?.Invoke($"存档目录里有 {half.Count} 份只剩索引件的档（云同步断在半路）—— 这种现场不搬档");
-            return 0;
-        }
-        var hidden = FocusRootOf();
-        var n = 0;
-        foreach (var s in Scan())
-        {
-            if (string.Equals(s.Name, keepSaveName, StringComparison.OrdinalIgnoreCase)) continue;
-            try
-            {
-                var dst = Path.Combine(hidden, s.Name);
-                Directory.CreateDirectory(hidden);
-                if (Directory.Exists(dst))
-                {
-                    // 云把同名档补回了 Saves、聚焦抽屉里还留着一份：让 Saves 这份进抽屉，
-                    // 抽屉原来那份降级成留底（不删、不覆盖）。
-                    var root = Path.Combine(BackupRoot, s.Name);
-                    var aside = UniqueStampDir(root,
-                        DateTime.Now.ToString("yyyyMMdd_HHmmss") + "-聚焦抽屉里原来的那份");
-                    Directory.CreateDirectory(root);
-                    if (DepotDownloaderService.MoveDirectoryVerified(dst, aside, null, null, "给云上刚下来的那份让位")
-                        == DepotDownloaderService.DirMove.Failed)
-                    {
-                        log?.Invoke($"存档「{s.Name}」聚焦抽屉里那份挪不动，Saves 里这份只能留着");
-                        continue;
-                    }
-                    File.WriteAllText(Path.Combine(aside, StampMeta),
-                        $"{s.SizeBytes}|{s.WrittenAt.Ticks}|聚焦时抽屉里已有同名的一份，这是抽屉里原来那份");
-                    PruneStamps(root, log);
-                }
-                if (DepotDownloaderService.MoveDirectoryVerified(s.Dir, dst, null, null, "聚焦启动暂存其它存档")
-                    == DepotDownloaderService.DirMove.Failed)
-                {
-                    log?.Invoke($"存档「{s.Name}」挪不动，会留在游戏列表里");
-                    continue;
-                }
-                n++;
-                log?.Invoke($"聚焦启动：「{s.FarmName ?? s.Name}」暂存进聚焦抽屉（游戏里只显示「{keepSaveName}」）");
-            }
-            catch (Exception ex)
-            {
-                log?.Invoke($"聚焦暂存「{s.Name}」失败：{ex.Message}");
-            }
-        }
-        return n;
-    }
-
     public static string FocusRootOf() => Path.Combine(DrawerRoot, FocusDirName);
 
     private const string FocusDirName = "_saves-focus";
@@ -765,25 +557,6 @@ public static class SaveVersionService
             log?.Invoke($"兜底收起「{s.Name}」失败：{ex.Message}");
             return false;
         }
-    }
-
-    /// <summary>现在被收在某个版本抽屉里的档（界面上要说清「不是丢了，是被收起来了」）。</summary>
-    public static List<(Slot Hidden, string PkgDir)> HiddenSaves()
-    {
-        var list = new List<(Slot, string)>();
-        foreach (var hidden in EnumerateHiddenRoots())
-        {
-            try
-            {
-                foreach (var dir in Directory.GetDirectories(hidden))
-                {
-                    var s = ReadSlot(dir);
-                    if (s is not null) list.Add((s, Path.GetFileName(Path.GetDirectoryName(dir)!)));
-                }
-            }
-            catch { }
-        }
-        return list;
     }
 
     private static IEnumerable<string> EnumerateHiddenRoots()
@@ -927,15 +700,4 @@ public static class SaveVersionService
     [System.Runtime.InteropServices.DllImport("Kernel32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
     private static extern bool CreateHardLink(string newFileName, string? existingFileName, IntPtr securityAttributes);
 
-    public static long DirBytes(string dir)
-    {
-        long sum = 0;
-        try
-        {
-            foreach (var f in Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories))
-                try { sum += new FileInfo(f).Length; } catch { }
-        }
-        catch { }
-        return sum;
-    }
 }

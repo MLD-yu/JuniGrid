@@ -8,6 +8,11 @@
     <Nullable>enable</Nullable>
     <RootNamespace>JuniGridInstaller</RootNamespace>
     <AssemblyName>JuniGridSetup</AssemblyName>
+    <!-- PE 版本资源里 FileDescription 只认 AssemblyTitle、CompanyName 只认 Company；
+         不写就退化成 AssemblyName（用户属性页/UAC 上厂商显示「JuniGridSetup」）。
+         注意 <ProductName> 对 apphost 无效，实测恒等于 AssemblyName，别往这儿加。 -->
+    <AssemblyTitle>JuniGrid 安装程序</AssemblyTitle>
+    <Company>JuniGrid</Company>
     <!-- 与 JuniGrid\Services\AppInfo.cs 保持一致；build-installer.ps1 会用 AppInfo.cs 里的版本号覆盖它 -->
     <Version>1.2.2</Version>
     <ApplicationIcon>..\..\JuniGrid\Assets\junigrid-logo.ico</ApplicationIcon>

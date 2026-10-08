@@ -284,7 +284,6 @@ public sealed class LauncherService
     /// </summary>
     public void KillGame()
     {
-        _killedByUser = true;
         // 优先温和关闭所持有的 SMAPI 子进程
         if (_smapiProcess is { HasExited: false })
         {
@@ -391,9 +390,6 @@ public sealed class LauncherService
     // ------------------------------------------------------------------
     // Launch
     // ------------------------------------------------------------------
-    /// <summary>用户点了「取消启动/关闭游戏」——我们自己杀的进程，不是崩溃。</summary>
-    private volatile bool _killedByUser;
-
     /// <summary>
     /// v1.6.10：不显示 SMAPI 控制台窗口 —— 日志页（尾随 SMAPI-latest.txt）+ 命令输入框取代它。
     /// 退出时不再自动带窗口重拉、也不再复述报错/版本提示（用户明确要"退出就退出了"）；
@@ -401,7 +397,6 @@ public sealed class LauncherService
     /// </summary>
     public LaunchResult LaunchSmapi(string gamePath)
     {
-        _killedByUser = false;
         return LaunchSmapiCore(gamePath, showConsole: false);
     }
 
@@ -494,7 +489,7 @@ public sealed class LauncherService
         {
             await Task.Delay(3000);
         }
-        // 聚焦启动暂存的档在这时放回，游戏列表恢复完整
+        // 抽屉里暂存的档在这时放回，游戏列表恢复完整
         OnGameExit();
     }
 
@@ -524,56 +519,14 @@ public sealed class LauncherService
     }
 
     /// <summary>
-    /// 当前部署版本读不了的存档还留在列表里时，启动前拦一次（SMAPI 直启与 steam:// 两条路都过这里）。
+    /// 启动前整理存档：放回上次收起的（列表回全）→ 把当前版本读不了的收进抽屉。
     ///
-    /// 为什么必须有这道闸门：星露谷只有一个存档目录、所有版本共用，而存档是单向升级的 ——
-    /// 被 1.6 存过一次盘的档，1.0 点进去就是 NPC..ctor 里的 NullReferenceException 闪退到桌面。
+    /// 为什么要动这一步：星露谷只有一个存档目录、所有版本共用，而存档是单向升级的 ——
+    /// 被 1.6 存过一次盘的档，1.0 点进去就是 NPC..ctor 里的 NullReferenceException 闪退到桌面；
     /// 更坏的是老版本的存档列表读不懂这些档，把它们显示成「农场主 1 / 农场 1 / 开局第 1 年」，
-    /// 和玩家自己的真 1.0 档长得一模一样（1.0 的 SaveGameInfo 没有 createdDate/daysPlayed 可用来区分），
-    /// 玩家没法靠自己点对行。本机 35 次崩溃日志的农场主名全部是同一份 1.6.8 的档，一次例外都没有。
+    /// 和玩家自己的真 1.0 档长得一模一样（1.0 的 SaveGameInfo 没有 createdDate/daysPlayed 可区分），
+    /// 玩家没法靠自己点对行。所以不靠提示、直接把读不了的从列表里收走。
     ///
-    /// 这一步只读存档目录、不动任何文件 —— 云存档开着也安全（移档那条路见 SaveVersionService.HideUnreadable）。
-    /// 同一批档只拦一次：90 秒内再点「启动游戏」= 玩家看过说明仍要启动 → 放行并写日志。
-    /// </summary>
-    private static string _saveGateFingerprint = "";
-    private static DateTime _saveGateWarnedAt = DateTime.MinValue;
-
-    private static LaunchResult? SaveCompatibilityBlock(string? gamePath)
-    {
-        try
-        {
-            var version = UpdateService.ResolveCurrentVersion(gamePath);
-            var bad = SaveVersionService.UnreadableBy(version);
-            if (bad.Count == 0) return null;
-
-            var fingerprint = SaveVersionService.UnreadableFingerprint(version, bad);
-            var since = DateTime.Now - _saveGateWarnedAt;
-            if (fingerprint == _saveGateFingerprint && since < TimeSpan.FromSeconds(90))
-            {
-                AppLog.Warn("Launcher",
-                    $"看过说明后仍以 {version} 启动（{(int)since.TotalSeconds} 秒前拦过一次），" +
-                    "这个版本读不了的档：" + string.Join("、", bad.Select(b => b.Name)));
-                return null;
-            }
-
-            _saveGateFingerprint = fingerprint;
-            _saveGateWarnedAt = DateTime.Now;
-            AppLog.Warn("Launcher", $"当前版本 {version} 读不了 {bad.Count} 份存档，已拦下这次启动\n" +
-                                    SaveVersionService.DescribeUnreadable(version, bad));
-            return LaunchResult.Blocked("saves",
-                SaveVersionService.DescribeUnreadableShort(version, bad));
-        }
-        catch (Exception ex)
-        {
-            // 闸门自己出问题绝不能变成「启动不了」
-            AppLog.Warn("Launcher", "存档版本闸门没跑起来（本次不拦启动）：" + ex.Message);
-            return null;
-        }
-    }
-
-    /// <summary>
-    /// 启动前收拾存档：先放回上次聚焦/收起的（列表回全），再按需留底。
-    /// 启动前整理存档：放回上次收起的 → **把当前版本读不了的收进抽屉**（游戏列表只显示读得了的）。
     /// 返回仍暂存着的份数（持久量，判要不要绕开 Steam）。
     /// </summary>
     private static int PrepareSavesForLaunch(string? gamePath)
@@ -617,7 +570,7 @@ public sealed class LauncherService
         => stashedInDrawer > 0 && cloud != SteamService.CloudSync.Disabled;
 
     /// <summary>
-    /// 直启游戏本体（不经 steam://）。只在「暂存区还压着别的档」（聚焦启动）时用：
+    /// 直启游戏本体（不经 steam://）。只在「抽屉里还压着别的档」时用：
     /// steam:// 会在游戏进程起来之前先跑一次 Auto-Cloud 的 `AC Launch,down`，把刚收走的档全数拉回
     /// Saves（06:36:29 实测：Saves 从 5 个目录回到 21 个），等游戏读存档列表时又是闪退现场。
     /// 直启不触发那次下载（22 次会话实测：20/20 经 Steam 的都有 `AC Launch`，2/2 直启的都没有），
@@ -652,7 +605,7 @@ public sealed class LauncherService
             // 这条路压根没起 SMAPI，而这一页叫「SMAPI 日志」——把说明性播报写进去，
             // 看着就像本次的 SMAPI 输出。原因记进 juni-grid.log 备查即可。
             AppLog.Info("Launcher", $"已直启游戏本体 (PID {proc.Id}) —— 未经 Steam，" +
-                                    "避免云同步把聚焦暂存的其它存档拉回来；退出时 Steam 仍会上传这一局的进度");
+                                    "避免云同步把抽屉里暂存的其它存档拉回来；退出时 Steam 仍会上传这一局的进度");
             return LaunchResult.Ok(proc.Id, warning);
         }
         catch (Exception ex)
@@ -669,164 +622,6 @@ public sealed class LauncherService
         // 收不动的残档也会被塞进聚焦抽屉，游戏列表尽量干净。
         var stashed = PrepareSavesForLaunch(_cfg.Current.GamePath);
         return LaunchGameCore(steamAppId, stashed);
-    }
-
-    /// <summary>首页「用这份档玩」：自动匹配能读它的版本 → 必要时切过去并留底 → 聚焦只留这一份 → 启动。
-    /// 新用户不用碰版本管理或云开关，点一下就能进对的档。</summary>
-    public sealed record SavePlayRow(
-        string Name, string? Farmer, string? Farm, string? GameVersion,
-        bool ReadableNow, bool WillUpgrade, string Badge, string Hint);
-
-    /// <summary>启动器存档列表：全部档 + 当前版本能否读 + 该用哪个版本开。</summary>
-    public List<SavePlayRow> ListSavesForPlay()
-    {
-        var current = UpdateService.ResolveCurrentVersion(_cfg.Current.GamePath);
-        var rows = new List<SavePlayRow>();
-        foreach (var s in SaveVersionService.Scan())
-        {
-            var readable = SaveVersionService.ReadableBy(s, current);
-            var upgrade = SaveVersionService.UpgradedBy(s, current);
-            string badge, hint;
-            if (!s.MetaComplete)
-            {
-                badge = LocService.Tr("元数据缺失");
-                hint = LocService.Tr("没有 SaveGameInfo，认不出写入版本 —— 旧版本进得去也可能闪退，建议用最新版试；或从留底/云端找回完整档");
-            }
-            else if (readable && !upgrade)
-            {
-                badge = LocService.Tr("可直接玩");
-                hint = $"当前 {current ?? "未知"} 读得了";
-            }
-            else if (readable)
-            {
-                badge = LocService.Tr("可直接玩 · 会升级");
-                hint = $"当前 {current ?? "未知"} 读得了；存一次盘后旧版本就回不去了（会自动留底）";
-            }
-            else
-            {
-                var need = MinReadablePackageVersion(s);
-                badge = $"需 {need ?? "更高版本"}";
-                hint = need is null
-                    ? "本机还没有能读这份档的版本包，先到「版本管理」下载"
-                    : $"会自动切到 {need} 再进（约几十秒）";
-            }
-            rows.Add(new SavePlayRow(s.Name, s.FarmerName, s.FarmName, s.GameVersion, readable, upgrade, badge, hint));
-        }
-        return rows.OrderByDescending(r => r.Name, StringComparer.OrdinalIgnoreCase).ToList();
-    }
-
-    /// <summary>能读这份档、且本机已有完整缓存的版本里，最旧的那个（尽量少升盘）。没有则 null。</summary>
-    public string? MinReadablePackageVersion(SaveVersionService.Slot slot)
-    {
-        // 残缺档（无 SaveGameInfo）不给旧版本：直接找 1.3+ 里最旧的可读包
-        var candidates = _depot.ListStagedPackages()
-            .Where(p => p.Complete && SaveVersionService.ReadableBy(slot, p.Label))
-            .ToList();
-        if (candidates.Count == 0) return null;
-        return candidates
-            .OrderBy(p => p.Label, Comparer<string>.Create((a, b) => SaveVersionService.CompareVersions(a, b)))
-            .First().Label;
-    }
-
-    /// <summary>PlaySave 的只读规划（UI 先显示将要发生什么；测试也走同一口径）。</summary>
-    public (string? TargetVersion, bool NeedSwitch, bool WillUpgrade, string Message) PlanPlaySave(string saveName)
-    {
-        var slot = SaveVersionService.Scan().FirstOrDefault(x => x.Name == saveName);
-        if (slot is null) return (null, false, false, "找不到这份存档");
-        var current = UpdateService.ResolveCurrentVersion(_cfg.Current.GamePath);
-        if (SaveVersionService.ReadableBy(slot, current))
-            return (current, false, SaveVersionService.UpgradedBy(slot, current),
-                $"用当前版本 {current ?? "未知"} 进「{slot.FarmName ?? slot.Name}」");
-        var need = MinReadablePackageVersion(slot);
-        if (need is null)
-            return (null, false, false,
-                $"当前版本 {current ?? "未知"} 读不了「{slot.FarmName ?? slot.Name}」（档内 " +
-                $"{slot.GameVersion ?? "未记录"}），本机也没有能读它的版本包 —— 先到「版本管理」下载对应版本");
-        return (need, true, true,
-            $"会先切到 {need}（约几十秒），再进「{slot.FarmName ?? slot.Name}」");
-    }
-
-    /// <summary>真正执行「用这份档玩」。</summary>
-    public LaunchResult PlaySave(string saveName, IProgress<string>? progress = null)
-    {
-        void Log(string m)
-        {
-            AppLog.Warn("存档", m);
-            progress?.Report(m);
-            RaiseLog("[JuniGrid] " + m);
-        }
-
-        var half = HalfSyncedBlock();
-        if (half is not null) return half.Value;
-
-        // 清掉上一局的聚焦/暂存，列表先回全
-        try { SaveVersionService.RestoreHidden(Log); } catch { }
-
-        var (target, needSwitch, willUpgrade, planMsg) = PlanPlaySave(saveName);
-        Log(planMsg);
-        if (target is null) return LaunchResult.Fail(planMsg);
-
-        var cfg = _cfg.Current;
-        var gamePath = cfg.GamePath;
-        if (string.IsNullOrWhiteSpace(gamePath) || !Directory.Exists(gamePath))
-            return LaunchResult.Fail(LocService.Tr("未检测到 Stardew Valley 游戏目录，请先在「设置」里指定。"));
-
-        // 升级前留底已去掉：后果用户自担
-
-        if (needSwitch)
-        {
-            if (DepotDownloaderService.IsApplyInProgress)
-                return LaunchResult.Fail(LocService.Tr("正在切换版本，请等它完成后再玩这份档。"));
-            if (IsGameProcessRunning())
-                return LaunchResult.Fail(LocService.Tr("游戏正在运行 — 请先退出，再点「用这份档玩」。"));
-            var staged = _depot.ListStagedPackages()
-                .FirstOrDefault(p => p.Complete &&
-                    SaveVersionService.CompareVersions(p.Label, target) == 0);
-            if (staged is null)
-                return LaunchResult.Fail(LocService.Tf("版本包 {0} 不完整，请到「版本管理」重新下载后再玩这份档。", target));
-            Log($"正在切到 {target} …");
-            var ok = false;
-            try
-            {
-                ok = Task.Run(() => _depot.TryApplyStaged(gamePath, cfg.SteamAppId, "413151",
-                    staged.ManifestId, new Progress<DepotDownloaderService.Progress>(p => Log(p.State)),
-                    currentGameVersion: UpdateService.ResolveCurrentVersion(gamePath))).GetAwaiter().GetResult();
-            }
-            catch (Exception ex)
-            {
-                return LaunchResult.Fail(LocService.Tr("切换版本失败：") + ex.Message);
-            }
-            if (!ok) return LaunchResult.Fail(LocService.Tf("版本包 {0} 不完整，无法切换。请到「版本管理」重新下载。", target));
-            // 真历史降级才锁，避免 Steam 覆盖（与版本弹窗同一口径）
-            try
-            {
-                var manifestPath = SteamService.FindAppManifest(gamePath, cfg.SteamAppId);
-                if (manifestPath is not null
-                    && !DepotDownloaderService.IsLatestOfficialManifest(cfg.SteamAppId, staged.ManifestId))
-                    SteamService.SetGameVersionLock(manifestPath, true);
-                cfg.LastHistoricalManifest = staged.ManifestId;
-                cfg.LastHistoricalLabel = staged.Label;
-                cfg.LastHistoricalInternalVersion = UpdateService.ResolveCurrentVersion(gamePath) ?? "";
-                _cfg.Save(cfg);
-            }
-            catch { /* 锁失败只记日志，不拦启动 */ }
-        }
-
-        // 聚焦：游戏里只出现这一份，点错行闪退从根上没了
-        var focused = SaveVersionService.FocusHideExcept(saveName, Log);
-        var visible = SaveVersionService.Scan();
-        var stashed = SaveVersionService.StashedCountAll();
-        Log(visible.Count <= 1
-            ? $"聚焦启动：游戏里只显示「{saveName}」（暂存了 {focused} 份其它档，玩完自动放回）"
-            : $"聚焦未能收干净（列表仍有 {visible.Count} 份），已尽量收起");
-
-        if (visible.Count > 1)
-        {
-            // 聚焦失败也**不再弹「版本不匹配」** —— 与普通启动同一策略：后台尽力收起，不打断玩家
-            AppLog.Warn("Launcher", $"聚焦未能收干净（列表仍有 {visible.Count} 份），已尽量收起读不了的档");
-        }
-
-        return LaunchGameCore(cfg.SteamAppId, stashed);
     }
 
     private LaunchResult LaunchGameCore(string steamAppId, int stashed)

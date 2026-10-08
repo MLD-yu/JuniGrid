@@ -1,4 +1,3 @@
-using System;
 using System.Globalization;
 using System.Windows;
 using System.Windows.Controls;
@@ -29,6 +28,7 @@ public partial class SplashWindow : Window
     {
         InitializeComponent();
         Loaded += (_, _) => PlayIntro();
+        Closed += (_, _) => _watchdog?.Dispose();
     }
 
     private void PlayIntro()
@@ -93,16 +93,51 @@ public partial class SplashWindow : Window
             Duration = TimeSpan.FromMilliseconds(1300)
             // 不设 EasingFunction —— 默认就是线性匀速
         };
-        // wipe 完成后再多停 800ms 让用户看清完整字样，才触发 IntroCompleted
+        // wipe 完成后再多停 800ms 让用户看清完整字样，才触发 IntroCompleted。
+        // 这条"动画 Completed → DispatcherTimer 800ms"的链路会失效：
+        //  ① `AnimationTimeline.Completed` 只在 FillBehavior=Stop 时触发，
+        //     而这里用 BeginAnimation（可动画版，默认 HoldEnd）⇒ 渲染线程一忙、
+        //     或动画被合并填充，事件可以永远不来；
+        //  ② 那圈 800ms 又用 DispatcherTimer，它要等 Dispatcher 空闲 ——
+        //     Dispatcher 忙时它自己也停摆，等于两层一起失效。
+        // 2026-10-05 实测：uiReady 迟到 8s，Dispatcher 已被卡住，
+        // 两条链路同时哑火 ⇒ 动画播完了但主窗口永远不现身（白屏，进程还活着）。
+        // 所以完成信号改由【独立线程 + Stopwatch】发出：线程不排队等 Dispatcher。
+        const double wipeStartMs = 1800, wipeDurMs = 1300, dwellMs = 800;
         rectAnim.Completed += (_, _) =>
         {
             var dwell = new System.Windows.Threading.DispatcherTimer
-                { Interval = TimeSpan.FromMilliseconds(800) };
+            { Interval = TimeSpan.FromMilliseconds(dwellMs) };
             dwell.Tick += (_, _) => { dwell.Stop(); FinishIntro(); };
             dwell.Start();
         };
         wipeClip.BeginAnimation(RectangleGeometry.RectProperty, rectAnim);
+
+        StartIntroWatchdog(wipeStartMs + wipeDurMs + dwellMs + 400);
     }
+
+    /// <summary>
+    /// 启动动画的看门狗：墙钟到了就 <see cref="FinishIntro"/>，绝不等动画事件。
+    /// 用 <see cref="System.Threading.Timer"/>（线程池）而不是 DispatcherTimer ——
+    /// 后者要等 Dispatcher 空闲，恰好在"Dispatcher 卡住导致白屏"时一起停摆。
+    /// <paramref name="budgetMs"/> 比动画总长多留 400ms 余量，正常路径下动画事件先到。
+    /// </summary>
+    private void StartIntroWatchdog(double budgetMs)
+    {
+        var timer = new System.Threading.Timer(
+            _ =>
+            {
+                // 用 Dispatcher 切回 UI 线程再触发事件（IntroCompleted 的订阅方
+                // 会 Dispatcher.Invoke(TryReveal)，本身要求在 UI 线程）。
+                Dispatcher.Invoke(() => FinishIntro());
+            },
+            null,
+            TimeSpan.FromMilliseconds(budgetMs),
+            Timeout.InfiniteTimeSpan);   // one-shot：只补一次，不重复打断
+        _watchdog = timer;
+    }
+
+    private System.Threading.Timer? _watchdog;
 
     private void BuildWordGeometry()
     {
@@ -139,7 +174,8 @@ public partial class SplashWindow : Window
     {
         var a = new DoubleAnimation
         {
-            From = from, To = to,
+            From = from,
+            To = to,
             BeginTime = TimeSpan.FromSeconds(beginSec),
             Duration = TimeSpan.FromSeconds(durSec),
             EasingFunction = ease

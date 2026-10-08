@@ -936,10 +936,15 @@ public sealed partial class DepotDownloaderService
     // `CONNECT cmp*.steamserver.net:2702x` —— 一次注入罩住两段。
     // 只有 netfilter（裸 TCP 27017）那类候选不走代理，但它只占一成。
     //
-    // 为什么必须我们替它读注册表：DD 的 SocketsHttpHandler 是 Proxy=null + UseProxy=true，
-    // 这种组合下 .NET 只查 **环境变量**（HttpEnvironmentProxy），**不读 Windows 系统代理**。
-    // 而 Clash Verge 的「系统代理」模式写的正是注册表（本机实测 ProxyEnable=1/127.0.0.1:7897）——
-    // 不替它翻译过去，用户已经在跑的代理对登录链路完全无效。
+    // 为什么我们还得替它读一次注册表（2026-10-05 修正过理由，别再抄回旧的那句）：
+    // 旧注释写的是「.NET 只查环境变量，不读 Windows 系统代理」—— 那在 net10 上已经不成立：
+    // 本机实测 HttpClient.DefaultProxy 现在是 System.Net.Http.HttpWindowsProxy，注册表
+    // ProxyEnable=1/ProxyServer=127.0.0.1:7897 时 DefaultProxy.GetProxy() 就直接返回它。
+    // 保留注入的理由只剩两条：① DD 的 runtimeconfig 写的是 net9.0，跑在 9.x 上时是否也读注册表
+    // **没重测过**（本机只有 10.0.12 的 ref pack，测不了 9）；② 环境变量优先级高于注册表，
+    // 所以注入的是「我们读到的那个代理」，比留给运行时猜更确定。
+    // 注意反面：正因为环境变量压过注册表，注入一个错值会盖掉用户本来能用的代理 —— 宁缺毋滥，
+    // 判不了的地址（socks、空）NormalizeProxyUrl 一律返回 null。
     // ------------------------------------------------------------------
 
     /// <summary>把 "127.0.0.1:7890" / "http://127.0.0.1:7890" 这类写法统一成带 scheme 的绝对地址。

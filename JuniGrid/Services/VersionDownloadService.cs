@@ -93,6 +93,12 @@ public sealed class VersionDownloadService
                 });
 
                 var account = cfg.SteamCmdAccount;
+                // 豁免僵尸看门狗（60s 宽限）：下载+应用整段是【事件式】进度 ——
+                // "正在把当前本体收进版本缓存"/"正在写入目标版本文件"/"正在恢复该版本的 Mods"
+                // 这类 Report 都是单次事件（见 DepotDownloaderService.Apply.cs），
+                // 两个事件之间可能几分钟不报任何一行（收本体、写入几 GB 都在做重活）。
+                // 不豁免的话，正在正常下载+切换版本的任务会被看门狗误判成"工人已死"。
+                using var longRun = _center.BeginLongRunning(task);
                 await _depot.QrDownloadAndApplyAsync(
                     cfg.GamePath, cfg.SteamAppId, "413151",
                     manifestId, versionLabel,
@@ -119,14 +125,25 @@ public sealed class VersionDownloadService
                 _center.Finish(task, true, LocService.Tf("已下载 {0}，可在「已下载」里切换", label));
                 BroadcastPagesAfterSwitch();
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException ex)
             {
+                // ⚠ 同 InstallService.FinishIfTimeout：HttpClient/DepotDownloader 的超时抛的是
+                // TaskCanceledException（继承自 OperationCanceledException），会一路穿到这里。
+                // 它不是"用户取消"—— 报成"已取消"会把网络故障说成用户的错。
+                // 判据：真被取消/移除时 Cts.IsCancellationRequested 为 true。
                 if (task.Status == "paused")
                     _center.Report(task, LocService.Tr("已暂停"), task.Percent);
-                else
+                else if (task.Cts.IsCancellationRequested)
                 {
                     try { _depot.DeleteStagedPackage(manifestId); } catch { }
                     _center.Finish(task, false, LocService.Tr("已取消"));
+                }
+                else
+                {
+                    // 伪装成取消的超时：清理暂存包 + 落failed + 明确文案，不落"已取消"
+                    try { _depot.DeleteStagedPackage(manifestId); } catch { }
+                    _center.Finish(task, false,
+                        LocService.Tr("下载请求超时或被中断，已中止：") + ex.Message);
                 }
             }
             catch (Exception ex)
@@ -147,7 +164,6 @@ public sealed class VersionDownloadService
         try
         {
             _pageRefresh.Request("mods");
-            _pageRefresh.Request("portraits");
             _pageRefresh.Request("version");
         }
         catch (Exception ex) { AppLog.Warn("VersionDownload", "广播页面刷新失败: " + ex.Message); }

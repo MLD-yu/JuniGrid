@@ -1,7 +1,6 @@
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Windows;
-using System.Windows.Input;
 using System.Windows.Interop;
 using JuniGrid.Services;
 using Microsoft.Extensions.DependencyInjection;
@@ -81,9 +80,9 @@ public partial class MainWindow : Window
         catch (Exception ex) { Log("EnsureStaticWebAssetContentRoots: " + ex.Message); }
     }
 
-    /// <summary>把立绘缩略图缓存目录挂到 https://junigrid-assets/ 。
+    /// <summary>把缩略图缓存目录挂到 https://junigrid-assets/ 。
     /// 用 WebResourceRequested 动态吐文件（跟着当前 CacheRoot 走，迁移缓存目录也不用重映射）。</summary>
-    private static void MapPortraitThumbHost(CoreWebView2 core)
+    private static void MapAssetThumbHost(CoreWebView2 core)
     {
         try
         {
@@ -92,10 +91,10 @@ public partial class MainWindow : Window
                 "https://junigrid-assets/*", CoreWebView2WebResourceContext.All);
             core.WebResourceRequested -= OnThumbWebResourceRequested;
             core.WebResourceRequested += OnThumbWebResourceRequested;
-            Services.PortraitSkinService.ThumbHostBase = "https://junigrid-assets";
-            Log("立绘缩略图短 URL 通道已挂上 → " + StoragePaths.InCache("portrait-covers"));
+            Services.PackThumbService.ThumbHostBase = "https://junigrid-assets";
+            Log("素材缩略图短 URL 通道已挂上 → " + StoragePaths.InCache("portrait-covers"));
         }
-        catch (Exception ex) { Log("MapPortraitThumbHost 失败: " + ex.Message); }
+        catch (Exception ex) { Log("MapAssetThumbHost 失败: " + ex.Message); }
     }
 
     private static void OnThumbWebResourceRequested(object? sender, CoreWebView2WebResourceRequestedEventArgs e)
@@ -272,8 +271,6 @@ public partial class MainWindow : Window
             services.AddSingleton<PlayTimeService>();
             // v1.1.2：内置翻译器（谷歌引擎 + 磁盘缓存 + 微批），详情页/日志页共用
             services.AddSingleton<TranslationService>();
-            // v1.3.0：立绘页（CP 皮肤包归类 / Portraiture 素材包 / 选择同步磁盘）
-            services.AddSingleton<PortraitSkinService>();
             // 命令桥：日志页的输入框要能把命令真的交给 SMAPI（详见 CommandBridgeService）
             services.AddSingleton<CommandBridgeService>();
             // i18n：源文本即 key 的轻量本地化服务（中/EN）
@@ -310,7 +307,11 @@ public partial class MainWindow : Window
             _ = provider.GetRequiredService<PlayTimeService>();
 
             // v1.0.2：启动后台检查一次应用新版本（不阻塞 UI，失败静默）
-            provider.GetRequiredService<SelfUpdateService>().StartBackgroundCheck();
+            // v1.7.x：同一次调用里认出「更新已落地」（旧安装包缓存被清掉），顺手硬删旧肖像页
+            // 遗留在各版本 Mods 里的覆盖包 —— 页面已经没了，留着会被 CP 继续加载。
+            provider.GetRequiredService<SelfUpdateService>().StartBackgroundCheck(
+                configService.Current.GamePath,
+                provider.GetRequiredService<DepotDownloaderService>());
 
             InitializeComponent();
             // v1.1.2b：拖拽最小尺寸完全由 WM_GETMINMAXINFO hook 强制（v1.1.8 起按所在
@@ -320,19 +321,19 @@ public partial class MainWindow : Window
             // WPF 属性清零让位给 hook。
             MinWidth = 0;
             MinHeight = 0;
-        // v0.35.0：吞掉 "no browser renderer with ID" 未观察异常（页面切换时残留的 JS 调用打到已销毁 renderer）
-        // v0.43.0：全项目未处理异常 / 未观察任务异常统一写入 juni-grid.log
-        AppDomain.CurrentDomain.UnhandledException += (_, e) =>
-            Services.AppLog.Error("AppDomain", e.ExceptionObject?.ToString() ?? "unknown");
-        TaskScheduler.UnobservedTaskException += (_, e) =>
-        {
-            Services.AppLog.Error("Task", e.Exception?.ToString() ?? "unknown");
-            if (e.Exception?.ToString().Contains("no browser renderer") == true)
+            // v0.35.0：吞掉 "no browser renderer with ID" 未观察异常（页面切换时残留的 JS 调用打到已销毁 renderer）
+            // v0.43.0：全项目未处理异常 / 未观察任务异常统一写入 juni-grid.log
+            AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+                Services.AppLog.Error("AppDomain", e.ExceptionObject?.ToString() ?? "unknown");
+            TaskScheduler.UnobservedTaskException += (_, e) =>
             {
-                e.SetObserved();
-                Log("swallowed renderer-ID exception");
-            }
-        };
+                Services.AppLog.Error("Task", e.Exception?.ToString() ?? "unknown");
+                if (e.Exception?.ToString().Contains("no browser renderer") == true)
+                {
+                    e.SetObserved();
+                    Log("swallowed renderer-ID exception");
+                }
+            };
 
             Log("InitializeComponent done");
 
@@ -347,16 +348,16 @@ public partial class MainWindow : Window
                     // 任何"还没内容"的帧都是界面本来的浅色，恢复全程无色跳。
                     args.WebView.DefaultBackgroundColor =
                         System.Drawing.Color.FromArgb(0xFF, 0xF3, 0xF6, 0xFB);
-                    // v1.7.37：立绘缩略图走虚拟主机短 URL（https://junigrid-assets/xxx.png）。
-                    // 以前每张封面都是 data URI 塞进 Blazor 树，进肖像页要 diff/解码几百 KB
+                    // v1.7.37：缩略图走虚拟主机短 URL（https://junigrid-assets/xxx.png）。
+                    // 以前每张封面都是 data URI 塞进 Blazor 树，进页面要 diff/解码几百 KB
                     // base64，封面才慢慢亮起来。映射到磁盘缓存目录后浏览器自己缓存图片。
-                    MapPortraitThumbHost(args.WebView.CoreWebView2);
-                    PortraitSkinService.RemapThumbHost = () =>
+                    MapAssetThumbHost(args.WebView.CoreWebView2);
+                    PackThumbService.RemapThumbHost = () =>
                     {
                         try
                         {
                             if (_wv2?.CoreWebView2 is { } core)
-                                MapPortraitThumbHost(core);
+                                MapAssetThumbHost(core);
                         }
                         catch { }
                     };
@@ -365,7 +366,8 @@ public partial class MainWindow : Window
                         try
                         {
                             var msg = e.TryGetWebMessageAsString();
-                            if (msg == "ui-ready") App.NotifyUiReady();  }
+                            if (msg == "ui-ready") App.NotifyUiReady();
+                        }
                         catch { }
                     };
                     // v1.0.9：WebView2 子进程崩溃自愈 —— 渲染进程挂掉时 Reload 重启它，

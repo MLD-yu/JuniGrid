@@ -11,7 +11,6 @@
     flex-direction: column;
     align-items: center;
     gap: 10px;
-    border-right: 1px solid var(--jg-line);
     background: var(--jg-account-bg);
     backdrop-filter: saturate(180%) blur(20px);
     border-bottom-left-radius: 10px;
@@ -280,6 +279,22 @@
     backdrop-filter: saturate(180%) blur(20px);
     /* 不裁剪：让选中块（.jg-topnav-thumb）向下漏进内容区，与内容同色无缝接通，
        否则会被裁在顶栏底边，勾出一道分界线，看着不像“从内容区自己突出来” */
+}/* 内容区左上那 12px 圆角是「空」的：圆角外那块角没有任何东西垫，直接露出 .jg-shell
+   的底色，实测比两侧磨砂面暗 14–20，读成一个脏脏的直角。这块小片把它补回顶导航同一层，
+   圆角才读得出「卡片压在磨砂面上」。 */
+.jg-topnav::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 100%;                     /* 顶导航底边以下，正好落在 .jg-main 的顶边左端 */
+    width: 12px;
+    height: 12px;
+    /* 只画圆弧「外侧」：圆心落在 .jg-main 圆角的同一点 (右下角) 上，半径同值，
+       两片严丝合缝。别用 border-bottom-right-radius —— 那画出来的是内侧扇形，
+       会往卡片角上多糊一层 30% 白。 */
+    background: radial-gradient(circle 12px at 100% 100%,
+        transparent 0 11.6px, var(--jg-topnav-bg) 12.4px);
+    pointer-events: none;
 }/* 选中高亮滑块：纯色素，向下延伸到内容区（同色无缝打通）；点其他项时左移/宽度由 JS 平移过去 */
 .jg-topnav-thumb {
     position: absolute;

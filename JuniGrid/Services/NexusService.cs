@@ -85,6 +85,9 @@ public sealed class NexusService
     private static readonly TimeSpan MinRetryAfter = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan FallbackWhenNoHeaders = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan MaxInlineRetryWait = TimeSpan.FromSeconds(15);
+    /// <summary>在闸门外排队的上限。ct=default 时 WaitAsync 无期限等待，必须自己带超时：
+    /// 2 个槽位被慢请求占满，第三个请求会静静排队到天荒地老，而界面只看见"某一步在转圈"。</summary>
+    private static readonly TimeSpan ApiGateQueueTimeout = TimeSpan.FromSeconds(30);
 
     private static void PauseUntil(DateTimeOffset untilUtc)
     {
@@ -170,6 +173,31 @@ public sealed class NexusService
     /// 短窗口（≤15s）等满后重试一次；长锁立刻返回 429（释放闸门，不占槽位挂死 UI），
     /// 全局 PauseUntil 仍按服务端完整时长生效。
     /// </summary>
+    /// <summary>本进程真实发出去的 Nexus API/GraphQL 请求数，和命中缓存的次数。
+    /// AUP 审的正是「一个客户端消耗多少请求」，界面上给出来比口头保证可信：Nexus 页每次进页
+    /// 打一行「本次进页 网络 N 次 / 缓存 M 次」，他截图就能回给审核方。</summary>
+    private static long _apiRequests, _cacheHits, _cacheMisses;
+    public static long ApiRequests => Volatile.Read(ref _apiRequests);
+    public static long CacheHits => Volatile.Read(ref _cacheHits);
+    public static long CacheMisses => Volatile.Read(ref _cacheMisses);
+
+    /// <summary>给页面用的一帧快照：本次进页相对上次各涨了多少。</summary>
+    public static (long Requests, long Hits, long Misses) TakeTrafficDelta()
+    {
+        var r = Interlocked.Exchange(ref _trafficReq, 0);
+        var h = Interlocked.Exchange(ref _trafficHit, 0);
+        var m = Interlocked.Exchange(ref _trafficMiss, 0);
+        return (r, h, m);
+    }
+    private static long _trafficReq, _trafficHit, _trafficMiss;
+    private static void BumpTraffic(long req, long hit, long miss)
+    {
+        Interlocked.Add(ref _trafficReq, req);
+        Interlocked.Add(ref _trafficHit, hit);
+        Interlocked.Add(ref _trafficMiss, miss);
+    }
+
+    /// <summary>唯一出口：数一次请求再交给闸门（计数只在这里加，别的地方数不到）。</summary>
     private static async Task<HttpResponseMessage> SendApiAsync(
         HttpClient client,
         string url,
@@ -178,46 +206,212 @@ public sealed class NexusService
         bool useBearer = true,
         CancellationToken ct = default)
     {
-        if (useBearer && BearerToken is not null)
-            await EnsureFreshBearerAsync(ct).ConfigureAwait(false);
-        await ApiGate.WaitAsync(ct).ConfigureAwait(false);
-        try
+        Interlocked.Increment(ref _apiRequests);
+        Interlocked.Increment(ref _trafficReq);
+        return await SendApiInnerAsync(client, url, method, jsonBody, useBearer, ct);
+    }
+
+    private static async Task<HttpResponseMessage> SendApiInnerAsync(
+        HttpClient client,
+        string url,
+        HttpMethod? method,
+        string? jsonBody,
+        bool useBearer,
+        CancellationToken ct)
+    {
+        for (; ; )
         {
-            for (var attempt = 0; ; attempt++)
+            if (useBearer && BearerToken is not null)
+                await EnsureFreshBearerAsync(ct).ConfigureAwait(false);
+            // 等暂停必须在<b>取槽位之前</b>：旧写法先进闸门再睡，一次 429 能让 2 个槽全抱着
+            // 槽位睡觉，浏览请求排在睡死的槽后面 —— 服务端看到的是"没并发"，用户看到的是"进页卡住"。
+            await WaitIfPausedAsync(ct).ConfigureAwait(false);
+            // 闸门排队也要有上限：ct 可能是 default（调用方没传），那样 WaitAsync 会无限期
+            // 干等 —— 2 个槽位被慢请求占满时，第三个请求在闸门外静静排队，界面上看不出
+            // 任何区别（同样表现为"某一步永远转圈"）。排队超过阈值就当这次调用失败，
+            // 让调用方重试或报错，绝不静默挂死。
+            if (!await ApiGate.WaitAsync(ApiGateQueueTimeout, ct).ConfigureAwait(false))
+                throw new TimeoutException(
+                    $"Nexus API 闸门排队超过 {ApiGateQueueTimeout.TotalSeconds:0}s（前面的请求还没腾出通道）");
+            try
             {
-                await WaitIfPausedAsync(ct).ConfigureAwait(false);
+                // 排队期间别人刚触发了新暂停 ⇒ 让出槽位回到闸门外重等，不占着坑睡觉
+                if (Volatile.Read(ref _apiPauseUntilUtcTicks) > DateTimeOffset.UtcNow.UtcTicks) continue;
 
-                using var req = new HttpRequestMessage(method ?? HttpMethod.Get, url);
-                if (useBearer && BearerToken is { } token && token.Length > 0)
-                    req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
-                if (jsonBody is not null)
-                    req.Content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
-
-                var res = await client.SendAsync(req, ct).ConfigureAwait(false);
-                ObserveRateLimit(res);
-                if ((int)res.StatusCode != 429 || attempt >= 1)
-                    return res;
-
-                var wait = ApplyPauseFrom429(res);
-                res.Dispose();
-                if (wait > MaxInlineRetryWait)
+                for (var attempt = 0; ; attempt++)
                 {
-                    AppLog.Warn("Nexus", $"HTTP 429 on {url} — API 暂停 {wait.TotalSeconds:0}s，本次调用直接失败不重试");
-                    return new HttpResponseMessage(HttpStatusCode.TooManyRequests)
+                    using var req = new HttpRequestMessage(method ?? HttpMethod.Get, url);
+                    if (useBearer && BearerToken is { } token && token.Length > 0)
+                        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+                    if (jsonBody is not null)
+                        req.Content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
+
+                    var res = await client.SendAsync(req, ct).ConfigureAwait(false);
+                    ObserveRateLimit(res);
+                    if ((int)res.StatusCode != 429 || attempt >= 1)
+                        return res;
+
+                    var wait = ApplyPauseFrom429(res);
+                    res.Dispose();
+                    if (wait > MaxInlineRetryWait)
                     {
-                        ReasonPhrase = "Rate limited (paused per Retry-After / rate-limit reset)",
-                    };
+                        AppLog.Warn("Nexus", $"HTTP 429 on {url} — API 暂停 {wait.TotalSeconds:0}s，本次调用直接失败不重试");
+                        return new HttpResponseMessage(HttpStatusCode.TooManyRequests)
+                        {
+                            ReasonPhrase = "Rate limited (paused per Retry-After / rate-limit reset)",
+                        };
+                    }
+                    AppLog.Warn("Nexus", $"HTTP 429 on {url} — 短窗口 {wait.TotalSeconds:0}s，等待后重试一次");
+                    await Task.Delay(wait, ct).ConfigureAwait(false);   // 有界 ≤15s，占槽可接受
                 }
-                AppLog.Warn("Nexus", $"HTTP 429 on {url} — 短窗口 {wait.TotalSeconds:0}s，等待后重试一次");
-                await Task.Delay(wait, ct).ConfigureAwait(false);
             }
-        }
-        finally
-        {
-            ApiGate.Release();
+            finally
+            {
+                ApiGate.Release();
+            }
         }
     }
 
+    // ══════════════════════════════════════════════════════════════════
+    // 响应缓存（AUP：同一个用户的同一个查询不该打两次）
+    //  - 10 分钟内同参数直接吃上一份结果，0 请求；「刷新」/登录登出/成人开关变化时整仓作废
+    //  - 键里带成人过滤版本与登录态：这两者一变，同一查询文本对应的结果本来就不同
+    //  - 失败（null）只记 60 秒，避免一次 429 把坏结果钉住 10 分钟
+    //  - 同一 key 并发只发一次（single-flight）：进页的几条链否则会各打一份同样的请求
+    // ══════════════════════════════════════════════════════════════════
+    private const long CacheTtlMs = 10 * 60 * 1000;
+    private const long CacheFailTtlMs = 60_000;
+    private static readonly ConcurrentDictionary<string, (long ExpiresAtMs, object? Value)> ResponseCache = new();
+    private static readonly ConcurrentDictionary<string, Task> InFlight = new();
+    private static int _cacheGen;
+
+    /// <summary>作废全部已缓存的 N 网响应。手动刷新、登录态变化、成人开关变化时调用。</summary>
+    public static void ClearResponseCache()
+    {
+        Interlocked.Increment(ref _cacheGen);
+        ResponseCache.Clear();
+        InFlight.Clear();
+        // 磁盘那层也要跟着清：开关一翻，上一份按旧偏好拉的榜单就不该还在盘上等被读出来
+        try { if (Directory.Exists(BrowseDiskDir)) Directory.Delete(BrowseDiskDir, true); }
+        catch { /* 缓存盘从来不许把业务拖住 */ }
+    }
+
+    /// <summary>榜单落盘的目录（跟着统一缓存目录走，用户搬缓存时它一起搬）。</summary>
+    private static string BrowseDiskDir => StoragePaths.InCache("nexus-browse");
+
+    /// <summary>公共键前缀：过滤条件版本 + 登录态。调用方只需拼自己的参数。
+    /// 这两样都会改变「服务端/我们自己该给出哪些页」，所以必须进键，不能靠 Clear 兜。</summary>
+    private static string Key(string what) =>
+        what + "|av" + AdultFilterVersion + (IsAuthenticated ? "|au1" : "|au0");
+
+    private static string BrowseDiskPath(string key)
+    {
+        // ⚠ 别用 SHA1.HashData(Span,Span) 那对重载 —— 它的顺序是 (source, destination)，
+        // 写反了会把每个键都散列成同一个值（实测：所有榜单共用一个文件，后写的盖掉前写的，
+        // 于是「搜 Content Patcher 返回 LewdDew 的 8 条」）。测试舱 U23 钉住这一点。
+        var hash = System.Security.Cryptography.SHA1.HashData(Encoding.UTF8.GetBytes(key));
+        return Path.Combine(BrowseDiskDir, Convert.ToHexString(hash) + ".json");
+    }
+
+    /// <summary>落盘信封：连同「什么时候写的」一起存，读回来才能算还剩多少 TTL。</summary>
+    private sealed class DiskEntry
+    {
+        public long WrittenAtUnixMs { get; set; }
+        public string? Payload { get; set; }
+    }
+
+    /// <summary>缓存的唯一判据：这份结果值不值得按 10 分钟留着、要不要落盘。
+    /// 抽出来只为一件事 —— <c>null</c> 被包进一层壳之后就不再是 null，光看"非 null"会把
+    /// 一次抓取失败判成一次成功结果（2026-10-04 16:24 真机：TLS 抖动 ⇒ 空壳被缓存 10 分钟
+    /// 并写盘 ⇒ 榜单连重启都是空的）。所以【壳里装的是什么】必须由 sane 说清楚。</summary>
+    internal static bool Cacheable<T>(T? v, Func<T, bool>? sane) where T : class
+        => v is not null && (sane is null || sane(v));
+
+    private static async Task<T?> CachedAsync<T>(string key, Func<Task<T?>> factory) where T : class
+        => await CachedAsync(key, factory, persist: false, sane: null);
+
+    private static async Task<T?> CachedAsync<T>(string key, Func<Task<T?>> factory, bool persist) where T : class
+        => await CachedAsync(key, factory, persist, sane: null);
+
+    /// <param name="sane">命中后还要过一道「这结果本身像不像成功」，判据见 <see cref="Cacheable"/>。
+    /// 命中到坏条目时该键就地作废，下一次调用重新去拉。</param>
+    private static async Task<T?> CachedAsync<T>(string key, Func<Task<T?>> factory, bool persist,
+        Func<T, bool>? sane) where T : class
+    {
+        bool Good(T? v) => Cacheable(v, sane);
+        if (ResponseCache.TryGetValue(key, out var hit) && hit.ExpiresAtMs > Environment.TickCount64)
+        {
+            if (hit.Value is T memHit && Good(memHit))
+            { Interlocked.Increment(ref _cacheHits); BumpTraffic(0, 1, 0); return memHit; }
+            ResponseCache.TryRemove(key, out _);   // 坏条目就地踢掉，别一直占着这个键
+        }
+        var gen = Volatile.Read(ref _cacheGen);
+        // 内存没有、但上次启动写过盘 ⇒ 冷启动第一次进页也 0 请求（AUP 要的就是少打，
+        // 而「每次重启都要重新拉两条榜单链」正是 Nexus 页首屏慢的那一段）
+        if (persist)
+        {
+            var fromDisk = ReadDisk<T>(key, gen);
+            if (Good(fromDisk)) { Interlocked.Increment(ref _cacheHits); BumpTraffic(0, 1, 0); return fromDisk; }
+        }
+        Interlocked.Increment(ref _cacheMisses); BumpTraffic(0, 0, 1);
+        var tcs = new TaskCompletionSource<T?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var running = InFlight.GetOrAdd(key, tcs.Task);
+        if (!ReferenceEquals(running, tcs.Task))
+            return running is Task<T?> sameType ? await sameType.ConfigureAwait(false) : null;
+        try
+        {
+            var v = await factory().ConfigureAwait(false);
+            if (gen == Volatile.Read(ref _cacheGen))   // 等待期间被 Clear 过就别写回旧结果
+            {
+                // 失败（null 或"包了一层的失败"）只记 60 秒负缓存，而且【绝不写盘】
+                ResponseCache[key] = (Environment.TickCount64 + (Good(v) ? CacheTtlMs : CacheFailTtlMs), v);
+                if (persist && Good(v)) WriteDisk(key, v);
+            }
+            tcs.TrySetResult(v);
+            return v;
+        }
+        catch (Exception ex) { tcs.TrySetException(ex); throw; }
+        finally { InFlight.TryRemove(key, out _); }
+    }
+
+    private static T? ReadDisk<T>(string key, int gen) where T : class
+    {
+        try
+        {
+            var path = BrowseDiskPath(key);
+            if (!File.Exists(path)) return null;
+            var env = Newtonsoft.Json.JsonConvert.DeserializeObject<DiskEntry>(File.ReadAllText(path));
+            if (env?.Payload is null) return null;
+            var ageMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - env.WrittenAtUnixMs;
+            if (ageMs < 0 || ageMs > CacheTtlMs) { try { File.Delete(path); } catch { } return null; }
+            if (gen != Volatile.Read(ref _cacheGen)) return null;   // 读的瞬间开关翻了 ⇒ 作废
+            var v = Newtonsoft.Json.JsonConvert.DeserializeObject<T>(env.Payload);
+            if (v is not null)
+                ResponseCache[key] = (Environment.TickCount64 + (CacheTtlMs - ageMs), v);
+            return v;
+        }
+        catch { return null; }
+    }
+
+    private static void WriteDisk<T>(string key, T value) where T : class
+    {
+        // 落盘失败绝不影响这次结果，所以整段吞掉；写本身挪到线程池，不挡渲染
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                Directory.CreateDirectory(BrowseDiskDir);
+                var env = new DiskEntry
+                {
+                    WrittenAtUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    Payload = Newtonsoft.Json.JsonConvert.SerializeObject(value)
+                };
+                File.WriteAllText(BrowseDiskPath(key),
+                    Newtonsoft.Json.JsonConvert.SerializeObject(env));
+            }
+            catch { }
+        });
+    }
     // v1.08：宽容客户端 —— 详情页/按需单请求专用。Nexus API 单请求实测要 5~8 秒，
     // 详情页要串 7 个请求，15s 快速失败通道必然超时。批量检查更新仍走 Http(15s)。
     private static readonly HttpClient SlowHttp = CreateSlow();
@@ -249,19 +443,20 @@ public sealed class NexusService
     }
 
     public async Task<NexusModInfo?> GetModAsync(int modId)
-    {
-        using var res = await SendApiAsync(Http, $"{Base}/mods/{modId}.json");
-        if (!res.IsSuccessStatusCode) return null;
-        using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
-        var root = doc.RootElement;
-        return new NexusModInfo(
-            modId,
-            GetStr(root, "name"),
-            GetStr(root, "version"),
-            GetStr(root, "picture_url"),
-            root.TryGetProperty("category_id", out var cid) && cid.ValueKind == JsonValueKind.Number
-                ? cid.GetInt32() : (int?)null);
-    }
+        => await CachedAsync<NexusModInfo>(Key("mod|" + modId), async () =>
+        {
+            using var res = await SendApiAsync(Http, $"{Base}/mods/{modId}.json");
+            if (!res.IsSuccessStatusCode) return null;
+            using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+            var root = doc.RootElement;
+            return new NexusModInfo(
+                modId,
+                GetStr(root, "name"),
+                GetStr(root, "version"),
+                GetStr(root, "picture_url"),
+                root.TryGetProperty("category_id", out var cid) && cid.ValueKind == JsonValueKind.Number
+                    ? cid.GetInt32() : (int?)null);
+        });
 
     /// <summary>Full mod detail for the in-app detail page (incl. HTML description + cover).</summary>
     public async Task<NexusModDetail?> GetModDetailAsync(int modId)
@@ -340,133 +535,141 @@ public sealed class NexusService
     /// 这里把常见 BBCode 转成真正的 HTML，让详情页能渲染出加粗/链接/列表/颜色。
     /// </summary>
     private static string SanitizeHtml(string html)
-{
-    if (string.IsNullOrEmpty(html)) return "";
-    var s = html;
-    // 先剥掉危险的 script（防御）
-    s = Regex.Replace(s, "<script.*?</script>", "", RegexOptions.Singleline | RegexOptions.IgnoreCase);
-    // 若一段是转义实体（&lt;）则先解一次
-    if (s.Contains("&lt;", StringComparison.OrdinalIgnoreCase))
-        s = System.Net.WebUtility.HtmlDecode(s);
-
-    // ── BBCode → HTML ──
-    s = Regex.Replace(s, @"\[b\](.*?)\[/b\]", "<b>$1</b>", RegexOptions.Singleline);
-    s = Regex.Replace(s, @"\[i\](.*?)\[/i\]", "<i>$1</i>", RegexOptions.Singleline);
-    s = Regex.Replace(s, @"\[u\](.*?)\[/u\]", "<u>$1</u>", RegexOptions.Singleline);
-    s = Regex.Replace(s, @"\[s\](.*?)\[/s\]", "<s>$1</s>", RegexOptions.Singleline);
-    // 颜色 / 字号（Nexus 的 size 是 1–7 档位，映射到可读的像素字号）
-    s = Regex.Replace(s, @"\[color\s*=\s*([^\]]+)\](.*?)\[/color\]",
-        "<span style=\"color:$1\">$2</span>", RegexOptions.Singleline);
-    s = Regex.Replace(s, @"\[size\s*=\s*([^\]]+)\](?<c>.*?)\[/size\]", m =>
     {
-        var n = int.TryParse(m.Groups[1].Value.Trim(), out var v) ? v : 3;
-        var px = n switch
+        if (string.IsNullOrEmpty(html)) return "";
+        var s = html;
+        // 先剥掉危险的 script（防御）
+        s = Regex.Replace(s, "<script.*?</script>", "", RegexOptions.Singleline | RegexOptions.IgnoreCase);
+        // 若一段是转义实体（&lt;）则先解一次
+        if (s.Contains("&lt;", StringComparison.OrdinalIgnoreCase))
+            s = System.Net.WebUtility.HtmlDecode(s);
+
+        // ── BBCode → HTML ──
+        s = Regex.Replace(s, @"\[b\](.*?)\[/b\]", "<b>$1</b>", RegexOptions.Singleline);
+        s = Regex.Replace(s, @"\[i\](.*?)\[/i\]", "<i>$1</i>", RegexOptions.Singleline);
+        s = Regex.Replace(s, @"\[u\](.*?)\[/u\]", "<u>$1</u>", RegexOptions.Singleline);
+        s = Regex.Replace(s, @"\[s\](.*?)\[/s\]", "<s>$1</s>", RegexOptions.Singleline);
+        // 颜色 / 字号（Nexus 的 size 是 1–7 档位，映射到可读的像素字号）
+        s = Regex.Replace(s, @"\[color\s*=\s*([^\]]+)\](.*?)\[/color\]",
+            "<span style=\"color:$1\">$2</span>", RegexOptions.Singleline);
+        s = Regex.Replace(s, @"\[size\s*=\s*([^\]]+)\](?<c>.*?)\[/size\]", m =>
         {
-            <= 1 => 11, 2 => 12, 3 => 14, 4 => 17, 5 => 20,
-            6 => 24, _ => 28
-        };
-        return $"<span style=\"font-size:{px}px\">{m.Groups["c"].Value}</span>";
-    }, RegexOptions.Singleline);
-    // 链接：[url=外链]文字[/url] 或 [url]外链[/url]
-    s = Regex.Replace(s, @"\[url\s*=\s*[^\]]+?\](.*?)\[/url\]", m =>
-    {
-        var tag = m.Value;
-        var url = Regex.Match(tag, @"\[url\s*=\s*(?<u>[^\]]+?)\]").Groups["u"].Value.Trim('"', '\'', ' ');
-        var text = Regex.Replace(m.Value, @"^\[url\s*=[^\]]*\]|\[/url\]$", "");
-        return $"<a href=\"{System.Net.WebUtility.HtmlEncode(url)}\" target=\"_blank\" rel=\"noopener\">{text}</a>";
-    }, RegexOptions.Singleline);
-    s = Regex.Replace(s, @"\[url\](.*?)\[/url\]",
-        "<a href=\"$1\" target=\"_blank\" rel=\"noopener\">$1</a>", RegexOptions.Singleline);
-    // 图片
-    s = Regex.Replace(s, @"\[img\s*(?:=\s*([^\]]+))?\](.*?)\[/img\]",
-        "<img src=\"$2\" alt=\"\" loading=\"lazy\" class=\"jg-desc-img\"/>", RegexOptions.Singleline);
-    // v0.56.0：HTML <img> 标签也统一加 class，便于 Flip 放大
-    s = Regex.Replace(s, @"<img\s+([^>]*?)src=""([^""]+)""([^>]*?)>",
-        @"<img src=""$2"" alt="""" loading=""lazy"" class=""jg-desc-img""/>", RegexOptions.IgnoreCase);
-    // v0.57.0：裸图片直链（既没包 [img] 也不是 <img> 的）也渲染成图片。
-    // 前置否定 lookbehind 排除已生成标签属性里的 URL（href="/src=" 前的引号、> 等）。
-    s = Regex.Replace(s, @"(?<![""'>=])(https?://[^\s<""'\]\[]+?\.(?:png|jpe?g|gif|webp)(?:\?[a-zA-Z0-9=&_%\-]*)?)",
-        "<img src=\"$1\" alt=\"\" loading=\"lazy\" class=\"jg-desc-img\"/>", RegexOptions.IgnoreCase);
-    // 引用 / 代码
-    s = Regex.Replace(s, @"\[quote\](.*?)\[/quote\]",
-        "<blockquote>$1</blockquote>", RegexOptions.Singleline);
-    s = Regex.Replace(s, @"\[code\](.*?)\[/code\]",
-        "<pre>$1</pre>", RegexOptions.Singleline);
-
-    // 列表与列表项：用栈记录 open 的 <ul>/<ol>，让 [/list] 正确闭合并保持嵌套
-    var listStack = new Stack<string>();
-    s = Regex.Replace(s, @"\[(/)?list(=([^\]]+))?\]", match =>
-    {
-        if (match.Value == "[/list]")
+            var n = int.TryParse(m.Groups[1].Value.Trim(), out var v) ? v : 3;
+            var px = n switch
+            {
+                <= 1 => 11,
+                2 => 12,
+                3 => 14,
+                4 => 17,
+                5 => 20,
+                6 => 24,
+                _ => 28
+            };
+            return $"<span style=\"font-size:{px}px\">{m.Groups["c"].Value}</span>";
+        }, RegexOptions.Singleline);
+        // 链接：[url=外链]文字[/url] 或 [url]外链[/url]
+        s = Regex.Replace(s, @"\[url\s*=\s*[^\]]+?\](.*?)\[/url\]", m =>
         {
-            if (listStack.Count == 0) return "";
-            return "</" + listStack.Pop() + ">";
-        }
-        var kindAttr = match.Groups[2].Success ? match.Groups[3].Value.Trim() : "";
-        var tag = (!string.IsNullOrEmpty(kindAttr) && kindAttr is "1" or "a" or "o") ? "ol" : "ul";
-        listStack.Push(tag);
-        return "<" + tag + ">";
-    }, RegexOptions.IgnoreCase);
-    s = Regex.Replace(s, @"\[item\]", "<li>", RegexOptions.IgnoreCase);
-    s = Regex.Replace(s, @"\[\*\]", "<li>", RegexOptions.IgnoreCase);
+            var tag = m.Value;
+            var url = Regex.Match(tag, @"\[url\s*=\s*(?<u>[^\]]+?)\]").Groups["u"].Value.Trim('"', '\'', ' ');
+            var text = Regex.Replace(m.Value, @"^\[url\s*=[^\]]*\]|\[/url\]$", "");
+            return $"<a href=\"{System.Net.WebUtility.HtmlEncode(url)}\" target=\"_blank\" rel=\"noopener\">{text}</a>";
+        }, RegexOptions.Singleline);
+        s = Regex.Replace(s, @"\[url\](.*?)\[/url\]",
+            "<a href=\"$1\" target=\"_blank\" rel=\"noopener\">$1</a>", RegexOptions.Singleline);
+        // 图片
+        s = Regex.Replace(s, @"\[img\s*(?:=\s*([^\]]+))?\](.*?)\[/img\]",
+            "<img src=\"$2\" alt=\"\" loading=\"lazy\" class=\"jg-desc-img\"/>", RegexOptions.Singleline);
+        // v0.56.0：HTML <img> 标签也统一加 class，便于 Flip 放大
+        s = Regex.Replace(s, @"<img\s+([^>]*?)src=""([^""]+)""([^>]*?)>",
+            @"<img src=""$2"" alt="""" loading=""lazy"" class=""jg-desc-img""/>", RegexOptions.IgnoreCase);
+        // v0.57.0：裸图片直链（既没包 [img] 也不是 <img> 的）也渲染成图片。
+        // 前置否定 lookbehind 排除已生成标签属性里的 URL（href="/src=" 前的引号、> 等）。
+        s = Regex.Replace(s, @"(?<![""'>=])(https?://[^\s<""'\]\[]+?\.(?:png|jpe?g|gif|webp)(?:\?[a-zA-Z0-9=&_%\-]*)?)",
+            "<img src=\"$1\" alt=\"\" loading=\"lazy\" class=\"jg-desc-img\"/>", RegexOptions.IgnoreCase);
+        // 引用 / 代码
+        s = Regex.Replace(s, @"\[quote\](.*?)\[/quote\]",
+            "<blockquote>$1</blockquote>", RegexOptions.Singleline);
+        s = Regex.Replace(s, @"\[code\](.*?)\[/code\]",
+            "<pre>$1</pre>", RegexOptions.Singleline);
 
-    // 常用子集：字体、水平线、float 保留辅助样式
-    s = Regex.Replace(s, @"\[font\s*=\s*([^\]]+)\](.*?)\[/font\]",
-        "<span style=\"font-family:$1\">$2</span>", RegexOptions.Singleline);
-    s = Regex.Replace(s, @"\[hr\]", "<hr/>", RegexOptions.IgnoreCase);
+        // 列表与列表项：用栈记录 open 的 <ul>/<ol>，让 [/list] 正确闭合并保持嵌套
+        var listStack = new Stack<string>();
+        s = Regex.Replace(s, @"\[(/)?list(=([^\]]+))?\]", match =>
+        {
+            if (match.Value == "[/list]")
+            {
+                if (listStack.Count == 0) return "";
+                return "</" + listStack.Pop() + ">";
+            }
+            var kindAttr = match.Groups[2].Success ? match.Groups[3].Value.Trim() : "";
+            var tag = (!string.IsNullOrEmpty(kindAttr) && kindAttr is "1" or "a" or "o") ? "ol" : "ul";
+            listStack.Push(tag);
+            return "<" + tag + ">";
+        }, RegexOptions.IgnoreCase);
+        s = Regex.Replace(s, @"\[item\]", "<li>", RegexOptions.IgnoreCase);
+        s = Regex.Replace(s, @"\[\*\]", "<li>", RegexOptions.IgnoreCase);
 
-    // ── v1.2.6：实测 45 个包描述里出现、旧版漏掉的四类（旧版走到下面的兜底被当未知标签剥光）──
-    // 块级标签自带换行，作者紧贴着写的这一个 <br /> 会变成多余空行 —— 先各吞掉一个
-    s = Regex.Replace(s, @"(?i)(<br\s*/?>\s*)(?=\[center\]|\[spoiler\]|\[line\])", "");
-    s = Regex.Replace(s, @"(?i)(?<=\[/center\]|\[/spoiler\]|\[line\])\s*<br\s*/?>", "");
-    // [center] 104 处：作者的标题/横幅排版全靠它，剥掉标签 = 整页只剩左对齐
-    s = Regex.Replace(s, @"\[center\](.*?)\[/center\]",
-        "<div class=\"jg-desc-center\">$1</div>", RegexOptions.Singleline | RegexOptions.IgnoreCase);
-    // [spoiler] 90 处：剥掉标签会把作者折叠起来的长说明直接摊平进正文
-    s = Regex.Replace(s, @"\[spoiler\](.*?)\[/spoiler\]",
-        "<details class=\"jg-desc-spoiler\"><summary>显示隐藏内容</summary>$1</details>",
-        RegexOptions.Singleline | RegexOptions.IgnoreCase);
-    // [line] 20 处：Nexus 的分隔线写法（[hr] 之外的那一种）
-    s = Regex.Replace(s, @"\[line\]", "<hr/>", RegexOptions.IgnoreCase);
-    // [heading] 2 处
-    s = Regex.Replace(s, @"\[heading\](.*?)\[/heading\]",
-        "<h3>$1</h3>", RegexOptions.Singleline | RegexOptions.IgnoreCase);
-    // [youtube]11位ID[/youtube] 12 处：只给可点链接 —— 内嵌播放器在无代理/墙内环境只剩一块空白，
-    // 旧版连标签一起剥掉后正文里剩一串裸 ID
-    s = Regex.Replace(s, @"\[youtube\]\s*([A-Za-z0-9_\-]{6,20})\s*\[/youtube\]",
-        "<a href=\"https://www.youtube.com/watch?v=$1\" target=\"_blank\" rel=\"noopener\">▶ YouTube 视频</a>",
-        RegexOptions.IgnoreCase);
+        // 常用子集：字体、水平线、float 保留辅助样式
+        s = Regex.Replace(s, @"\[font\s*=\s*([^\]]+)\](.*?)\[/font\]",
+            "<span style=\"font-family:$1\">$2</span>", RegexOptions.Singleline);
+        s = Regex.Replace(s, @"\[hr\]", "<hr/>", RegexOptions.IgnoreCase);
 
-    // 剩下的未知 BBCode 当作纯文本剥掉标签语法，避免方括号毒化
-    // v0.58.0：列表闭合标记 [*] 的收尾 [/ *] / [/*] 也要清掉（* 不是字母，原规则匹配不到）
-    s = Regex.Replace(s, @"\[/?\*\]", "", RegexOptions.Singleline);
-    s = Regex.Replace(s, @"\[/?[a-zA-Z][a-zA-Z0-9_=:,/\.# -]*?\]", "", RegexOptions.Singleline);
+        // ── v1.2.6：实测 45 个包描述里出现、旧版漏掉的四类（旧版走到下面的兜底被当未知标签剥光）──
+        // 块级标签自带换行，作者紧贴着写的这一个 <br /> 会变成多余空行 —— 先各吞掉一个
+        s = Regex.Replace(s, @"(?i)(<br\s*/?>\s*)(?=\[center\]|\[spoiler\]|\[line\])", "");
+        s = Regex.Replace(s, @"(?i)(?<=\[/center\]|\[/spoiler\]|\[line\])\s*<br\s*/?>", "");
+        // [center] 104 处：作者的标题/横幅排版全靠它，剥掉标签 = 整页只剩左对齐
+        s = Regex.Replace(s, @"\[center\](.*?)\[/center\]",
+            "<div class=\"jg-desc-center\">$1</div>", RegexOptions.Singleline | RegexOptions.IgnoreCase);
+        // [spoiler] 90 处：剥掉标签会把作者折叠起来的长说明直接摊平进正文
+        s = Regex.Replace(s, @"\[spoiler\](.*?)\[/spoiler\]",
+            "<details class=\"jg-desc-spoiler\"><summary>显示隐藏内容</summary>$1</details>",
+            RegexOptions.Singleline | RegexOptions.IgnoreCase);
+        // [line] 20 处：Nexus 的分隔线写法（[hr] 之外的那一种）
+        s = Regex.Replace(s, @"\[line\]", "<hr/>", RegexOptions.IgnoreCase);
+        // [heading] 2 处
+        s = Regex.Replace(s, @"\[heading\](.*?)\[/heading\]",
+            "<h3>$1</h3>", RegexOptions.Singleline | RegexOptions.IgnoreCase);
+        // [youtube]11位ID[/youtube] 12 处：只给可点链接 —— 内嵌播放器在无代理/墙内环境只剩一块空白，
+        // 旧版连标签一起剥掉后正文里剩一串裸 ID
+        s = Regex.Replace(s, @"\[youtube\]\s*([A-Za-z0-9_\-]{6,20})\s*\[/youtube\]",
+            "<a href=\"https://www.youtube.com/watch?v=$1\" target=\"_blank\" rel=\"noopener\">▶ YouTube 视频</a>",
+            RegexOptions.IgnoreCase);
 
-    return s;
-}
+        // 剩下的未知 BBCode 当作纯文本剥掉标签语法，避免方括号毒化
+        // v0.58.0：列表闭合标记 [*] 的收尾 [/ *] / [/*] 也要清掉（* 不是字母，原规则匹配不到）
+        s = Regex.Replace(s, @"\[/?\*\]", "", RegexOptions.Singleline);
+        s = Regex.Replace(s, @"\[/?[a-zA-Z][a-zA-Z0-9_=:,/\.# -]*?\]", "", RegexOptions.Singleline);
+
+        return s;
+    }
 
     /// <summary>Newest MAIN file (fallback: newest file of any category).</summary>
     /// <param name="installedFolder">本机已装的包目录名。一个 mod 挂多条 MAIN 时（实测 mod 1839：
     /// CP 主包 182304 与散 xnb 素材包 182306 同日发布），只按上传时间会选中玩家没装的那条，
     /// 于是点「更新」永远装不到真正的包、⇧ 也永远消不掉。给了目录名就优先选与它同名的 MAIN。</param>
     public async Task<NexusFileInfo?> GetLatestMainFileAsync(int modId,
-        bool patient = false, string? installedFolder = null)
+        bool patient = false, string? installedFolder = null,
+        CancellationToken ct = default)
     {
-        var all = await ListFilesAsync(modId, patient);
+        var all = await ListFilesAsync(modId, patient, ct);
         return all is null ? null : PickMainFile(all, installedFolder);
     }
 
     /// <summary>按 fileId 精确取一条文件 —— .nxm 一键安装记的是「玩家点的那一条」，不是最新那一条，
     /// 只有 files.json 里对得上 fileId 的版本号才是他实际装到的版本。</summary>
-    public async Task<NexusFileInfo?> GetFileByIdAsync(int modId, long fileId, bool patient = false)
+    public async Task<NexusFileInfo?> GetFileByIdAsync(int modId, long fileId, bool patient = false,
+        CancellationToken ct = default)
     {
-        var all = await ListFilesAsync(modId, patient);
+        var all = await ListFilesAsync(modId, patient, ct);
         return all?.FirstOrDefault(x => x.F.FileId == fileId).F;
     }
 
-    private async Task<List<(NexusFileInfo F, long Ts)>?> ListFilesAsync(int modId, bool patient)
+    private async Task<List<(NexusFileInfo F, long Ts)>?> ListFilesAsync(int modId, bool patient,
+        CancellationToken ct = default)
     {
-        using var res = await SendApiAsync(patient ? SlowHttp : Http, $"{Base}/mods/{modId}/files.json");
+        using var res = await SendApiAsync(patient ? SlowHttp : Http, $"{Base}/mods/{modId}/files.json", ct: ct);
         if (!res.IsSuccessStatusCode) return null;
         using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
         if (!doc.RootElement.TryGetProperty("files", out var files)) return null;
@@ -560,7 +763,8 @@ public sealed class NexusService
                 var idArgs = string.Join(",", slice.Select(id =>
                     "{gameDomain:\"" + gameDomain + "\", modId:" + id + "}"));
                 var d = await GraphQlAsync(
-                    "{ legacyModsByDomain(ids:[" + idArgs + "]) { nodes { modId version updatedAt pictureUrl } } }");
+                    "{ legacyModsByDomain(ids:[" + idArgs + "]) { nodes { modId version updatedAt pictureUrl"
+                    + (IncludeAdultContent ? "" : " adultContent") + " } } }");
                 if (d is null) return null;
                 var root = d.Value;
                 if (!root.TryGetProperty("legacyModsByDomain", out var lb)
@@ -574,8 +778,13 @@ public sealed class NexusService
                         ? m1.GetInt32()
                         : int.TryParse(GetStr(n, "modId"), out var p) ? p : 0;
                     if (mid <= 0) continue;
+                    // v1.2.6：这条通道是匿名 GraphQL，服务端不知道账号的成人设置 ⇒ 自己滤。
+                    // 只撤封面图，不撤版本号：这些 mod 是用户自己装的，把整条记录删掉会让更新检查
+                    // 静默报「没有更新」，那才是把事实藏了；而封面是纯展示，跟着开关走。
+                    var adult = n.TryGetProperty("adultContent", out var ac) && ac.ValueKind == JsonValueKind.True;
                     result[mid] = new NexusModFingerprint(
-                        mid, GetStr(n, "version"), GetStr(n, "updatedAt"), GetStr(n, "pictureUrl"));
+                        mid, GetStr(n, "version"), GetStr(n, "updatedAt"),
+                        adult ? null : GetStr(n, "pictureUrl"));
                 }
             }
             return result;
@@ -695,6 +904,14 @@ public sealed class NexusService
             !nreq.TryGetProperty("nodes", out var nodes) || nodes.ValueKind != JsonValueKind.Array)
             return null;
 
+        return ParseRequirementNodes(nodes);
+    }
+
+    /// <summary>Requirements 的 nodes 数组 → 行。服务端把 <c>modId</c> 当<b>字符串</b>发
+    /// （实测 2026-10-08：43657 的 5 行全是 <c>"20537"</c> 这种），所以走 <see cref="GetStr"/>
+    /// 再 <c>TryParse</c>，不能按数字取。拆出来是为了让测试舱能拿真实返回喂真解析器。</summary>
+    internal static List<NexusRequirement> ParseRequirementNodes(JsonElement nodes)
+    {
         var list = new List<NexusRequirement>();
         foreach (var n in nodes.EnumerateArray())
             list.Add(new NexusRequirement(
@@ -795,8 +1012,11 @@ public sealed class NexusService
             var safeName = new string((modName ?? "")
                 .Where(c => char.IsLetterOrDigit(c) || c == ' ' || c == '-' || c == '_').ToArray()).Trim();
             if (string.IsNullOrEmpty(safeName)) return new List<NexusTranslationItem>();
+            // v1.2.6：这条名字通配搜以前不带成人条件 —— 详情页的「译本」卡片因此能把成人 mod
+            // 列给关着开关的用户看（Nexus 一审正是点名这条）。与 FindModByNameAsync 同款处理。
+            var adultCond = IncludeAdultContent ? "" : ", adultContent:{value:false, op:EQUALS}";
             var q = "{ mods(filter:{gameId:{value:\"" + gameId + "\"}, name:{value:\"" + safeName
-                + "\", op:WILDCARD}}, count:30) { nodes { modId name } } }";
+                + "\", op:WILDCARD}" + adultCond + "}, count:30) { nodes { modId name } } }";
             var d = await GraphQlAsync(q);
             if (d is null) return null;
             // v0.81.0：捕获 totalCount（调试功能：前端展示"服务端总数 vs 已加载数"）
@@ -904,10 +1124,15 @@ public sealed class NexusService
     }
 
     /// <summary>CDN download URL for a file. NeedsPremium=true on free accounts (HTTP 403).</summary>
-    public async Task<NexusDownloadResult> GetDownloadUrlAsync(int modId, long fileId)
+    public async Task<NexusDownloadResult> GetDownloadUrlAsync(int modId, long fileId,
+        CancellationToken ct = default, bool patient = false)
     {
-        using var res = await SendApiAsync(Http,
-            $"{Base}/mods/{modId}/files/{fileId}/download_link.json");
+        // v1.09.0：安装流程传 patient=true 走 SlowHttp(45s)。download_link 是玩家点了
+        // "安装"之后立刻要的那一下，15s 快速失败通道在 Nexus 边缘抖动（实测 TTFB
+        // 5.8s、历史 1.2–26.5s）下会把"值得等"的请求误杀成失败 —— 而它后面紧跟着
+        // 几十 MB 的下载，失败在这一步代价最大。批量/后台轮询仍走 15s 快速失败。
+        using var res = await SendApiAsync(patient ? SlowHttp : Http,
+            $"{Base}/mods/{modId}/files/{fileId}/download_link.json", ct: ct);
         if ((int)res.StatusCode == 403) return NexusDownloadResult.PremiumRequired;
         if (!res.IsSuccessStatusCode) return NexusDownloadResult.Fail($"HTTP {(int)res.StatusCode}");
 
@@ -929,10 +1154,6 @@ public sealed class NexusService
         h.Timeout = TimeSpan.FromMinutes(30);
         return h;
     }
-
-    /// <summary>流式下载：边下边写盘，不像 GetByteArrayAsync 那样整个读进内存。</summary>
-    public Task DownloadFileAsync(string url, string destPath) =>
-        DownloadFileAsync(url, destPath, null);
 
     /// <summary>
     /// 带实时进度回调的流式下载，供任务中心展示下载百分比和速度。
@@ -1004,6 +1225,31 @@ public sealed class NexusService
         string gameDomain = "stardewvalley", string? searchText = null, string? categoryName = null,
         string timeRange = "all", string direction = "DESC", bool forceIncludeAdult = false)
     {
+        // 同参数 10 分钟内直接吃上一份：审核要的就是「同一个用户不要把同一个查询打两遍」，
+        // 而这条恰好也是进页卡顿的主因（每次进页重新拉两条链，还要过 2 路闸门排队）。
+        // Surprise 榜带服务端随机种子 —— 「换一批」换新种子即新键，翻页种子不变。
+        var key = Key("browse|" + kind + "|" + offset + "|" + count + "|" + gameDomain + "|"
+            + (searchText ?? "") + "|" + (categoryName ?? "") + "|" + timeRange + "|" + direction + "|"
+            + (forceIncludeAdult ? 1 : 0) + "|" + (kind == "surprise" ? SurpriseSeed : 0));
+        var got = await CachedAsync<BrowseCache>(key, async () =>
+        {
+            var items = await BrowseModsCoreAsync(kind, offset, count, gameDomain, searchText,
+                categoryName, timeRange, direction, forceIncludeAdult);
+            return new BrowseCache(items, LastBrowseTotalCount);
+        }, persist: true, sane: c => c.Items is not null);   // 空列表是合法结果（搜不到东西），null 才是失败
+        if (got is null || got.Items is null) return null;
+        LastBrowseTotalCount = got.Total;   // 分页器读的正是这个字段，命中缓存也必须还原
+        return got.Items;
+    }
+
+    /// <summary>缓存里存的是「结果 + 服务端 totalCount」，命中后分页器仍显示正确的共 N 个。
+    /// internal 只为测试舱能造出「壳非 null、Items 是 null」那种失败形状（U24）。</summary>
+    internal sealed record BrowseCache(List<NexusModListEntry>? Items, int? Total);
+
+    private async Task<List<NexusModListEntry>?> BrowseModsCoreAsync(string kind, int offset, int count,
+        string gameDomain, string? searchText, string? categoryName,
+        string timeRange, string direction, bool forceIncludeAdult)
+    {
         // ─── Surprise 特殊路径：官网同款服务端 random 排序（seed 由 UI「换一批」控制）───
         if (kind == "surprise")
             return await FetchChunkedAsync(kind, offset, count, gameDomain, searchText, categoryName,
@@ -1046,9 +1292,12 @@ public sealed class NexusService
                 batch = await BrowseModsChunkAsync(kind, cur, want, gameDomain, searchText, categoryName,
                     sinceEpoch: sinceEpoch, dateOnUpdatedAt: dateOnUpdatedAt,
                     direction: direction, randomSeed: randomSeed, forceIncludeAdult: forceIncludeAdult);
-                if (batch is null) { await Task.Delay(900); batch = await BrowseModsChunkAsync(kind, cur, want, gameDomain, searchText, categoryName,
+                if (batch is null)
+                {
+                    await Task.Delay(900); batch = await BrowseModsChunkAsync(kind, cur, want, gameDomain, searchText, categoryName,
                     sinceEpoch: sinceEpoch, dateOnUpdatedAt: dateOnUpdatedAt,
-                    direction: direction, randomSeed: randomSeed, forceIncludeAdult: forceIncludeAdult); }
+                    direction: direction, randomSeed: randomSeed, forceIncludeAdult: forceIncludeAdult);
+                }
             }
             if (batch is null) return all.Count > 0 ? all : null;
             var added = 0;
@@ -1070,6 +1319,12 @@ public sealed class NexusService
     {
         try
         {
+            // v1.2.6：纯数字＝N网尾号精确查，改走 legacyModsByDomain —— 旧的
+            // mods(filter:{modId:{op:EQUALS}}) 已被服务端整条拒（见 BrowseByModIdAsync 注释）。
+            // 这条通道不需要 gameId，所以排在 EnsureGameIdAsync 之前。
+            if (int.TryParse(searchText?.Trim(), out var idExact) && idExact > 0)
+                return await BrowseByModIdAsync(idExact, gameDomain, categoryName, forceIncludeAdult);
+
             if (await EnsureGameIdAsync(gameDomain) is not { } gameId) return null;
 
             // v0.96.0：排序对照官网前端映射表（new=createdAt / updated=updatedAt / trending=endorsements
@@ -1080,11 +1335,11 @@ public sealed class NexusService
                 ? "random:{seed:" + rs + "}"
                 : kind switch
                 {
-                    "updated"     => $"updatedAt:{{direction:{dir}}}",
-                    "trending"    => $"endorsements:{{direction:{dir}}}",
-                    "downloads"   => $"downloads:{{direction:{dir}}}",
-                    "popular"     => $"downloads:{{direction:{dir}}}",
-                    _             => $"createdAt:{{direction:{dir}}}"
+                    "updated" => $"updatedAt:{{direction:{dir}}}",
+                    "trending" => $"endorsements:{{direction:{dir}}}",
+                    "downloads" => $"downloads:{{direction:{dir}}}",
+                    "popular" => $"downloads:{{direction:{dir}}}",
+                    _ => $"createdAt:{{direction:{dir}}}"
                 };
 
             // v0.71.0：过滤条件 —— 恒过滤成人内容；分类；搜索（纯数字=N网尾号精确，否则名称/作者 OR 模糊）
@@ -1122,10 +1377,8 @@ public sealed class NexusService
             var dateField = dateOnUpdatedAt ? "updatedAt" : "createdAt";
             if (sinceEpoch is long se)
                 conds.Add("{" + dateField + ":{value:\"" + se + "\", op:GTE}}");
-            var sel = "modId name summary version thumbnailUrl pictureUrl downloads endorsements createdAt updatedAt "
-                    + "uploader { name avatar } modCategory { name } fileSize";
             var q = "{ mods(filter:{filter:[" + string.Join(",", conds) + "], op:AND}, sort:{" + sort
-                + "}, offset:" + offset + ", count:" + count + ") { totalCount nodes { " + sel + " } } }";
+                + "}, offset:" + offset + ", count:" + count + ") { totalCount nodes { " + CardSel + " } } }";
             var d = await GraphQlAsync(q);
             if (d is null) return null;
             var root = d.Value;
@@ -1140,64 +1393,91 @@ public sealed class NexusService
                 && tv.TryGetInt32(out var tcv))
                 LastBrowseTotalCount = tcv;
 
-            var list = new List<NexusModListEntry>();
-            foreach (var n in nodes.EnumerateArray())
-            {
-                var mid = n.TryGetProperty("modId", out var m1) && m1.ValueKind == JsonValueKind.Number ? m1.GetInt32()
-                        : int.TryParse(GetStr(n, "modId"), out var p) ? p : 0;
-                string? up = null, upAv = null;
-                if (n.TryGetProperty("uploader", out var uo) && uo.ValueKind == JsonValueKind.Object)
-                { up = GetStr(uo, "name"); upAv = GetStr(uo, "avatar"); }
-                long fsize = n.TryGetProperty("fileSize", out var fs) && fs.ValueKind == JsonValueKind.Number
-                    && fs.TryGetInt64(out var fsl) ? fsl : 0;
-                string? cat = null;
-                if (n.TryGetProperty("modCategory", out var mc) && mc.ValueKind == JsonValueKind.Object) cat = GetStr(mc, "name");
-                long downloads = n.TryGetProperty("downloads", out var dl) && dl.ValueKind == JsonValueKind.Number && dl.TryGetInt64(out var dln) ? dln : 0;
-                int endor = n.TryGetProperty("endorsements", out var en) && en.ValueKind == JsonValueKind.Number ? en.GetInt32() : 0;
-                list.Add(new NexusModListEntry(
-                    mid, GetStr(n, "name"), GetStr(n, "summary"), GetStr(n, "version"), downloads, GetStr(n, "pictureUrl"),
-                    GetStr(n, "thumbnailUrl"), up, endor,
-                    GetStr(n, "createdAt"), GetStr(n, "updatedAt"), cat, upAv, fsize));
-            }
+            // 成人内容由服务端 filter 滤掉（关着的时候 adultContent:{value:false} 那条就在），
+            // 这条通道不需要本地补滤。
+            return ParseModNodes(nodes, hideAdult: false);
+        }
+        catch { return null; }
+    }
+
+    /// <summary>列表卡片要的字段。两条通道（mods(filter) / legacyModsByDomain）共用一份，
+    /// 否则尾号搜出来的卡片会比名字搜出来的少字段。
+    /// v1.2.6：<c>adultContent</c> 也进公共选择 —— 两条通道都要能知道自己给出的是不是成人页
+    /// （mods(filter) 那条在服务端滤，legacyModsByDomain 在本地滤；依赖解析要拿这个标志决定
+    /// 能不能把候选交给用户）。</summary>
+    private const string CardSel = "modId name summary version thumbnailUrl pictureUrl downloads endorsements createdAt updatedAt "
+        + "uploader { name avatar } modCategory { name } fileSize adultContent";
+    /// <summary>把 GraphQL 的 nodes 数组转成卡片列表。hideAdult=true 时跳过 adultContent 为真的节点。
+    /// internal 只为测试舱能喂真 JSON 进来（两条通道共用这一个解析器，改坏一边就两边都坏）。</summary>
+    internal static List<NexusModListEntry> ParseModNodes(JsonElement nodes, bool hideAdult)
+    {
+        var list = new List<NexusModListEntry>();
+        foreach (var n in nodes.EnumerateArray())
+        {
+            var isAdult = n.TryGetProperty("adultContent", out var ac) && ac.ValueKind == JsonValueKind.True;
+            if (hideAdult && isAdult)
+                continue;
+            var mid = n.TryGetProperty("modId", out var m1) && m1.ValueKind == JsonValueKind.Number ? m1.GetInt32()
+                    : int.TryParse(GetStr(n, "modId"), out var p) ? p : 0;
+            string? up = null, upAv = null;
+            if (n.TryGetProperty("uploader", out var uo) && uo.ValueKind == JsonValueKind.Object)
+            { up = GetStr(uo, "name"); upAv = GetStr(uo, "avatar"); }
+            long fsize = n.TryGetProperty("fileSize", out var fs) && fs.ValueKind == JsonValueKind.Number
+                && fs.TryGetInt64(out var fsl) ? fsl : 0;
+            string? cat = null;
+            if (n.TryGetProperty("modCategory", out var mc) && mc.ValueKind == JsonValueKind.Object) cat = GetStr(mc, "name");
+            long downloads = n.TryGetProperty("downloads", out var dl) && dl.ValueKind == JsonValueKind.Number && dl.TryGetInt64(out var dln) ? dln : 0;
+            int endor = n.TryGetProperty("endorsements", out var en) && en.ValueKind == JsonValueKind.Number ? en.GetInt32() : 0;
+            list.Add(new NexusModListEntry(
+                mid, GetStr(n, "name"), GetStr(n, "summary"), GetStr(n, "version"), downloads, GetStr(n, "pictureUrl"),
+                GetStr(n, "thumbnailUrl"), up, endor,
+                GetStr(n, "createdAt"), GetStr(n, "updatedAt"), cat, upAv, fsize, isAdult));
+        }
+        return list;
+    }
+
+    /// <summary>纯数字＝N网尾号精确查。<b>只能走 legacyModsByDomain</b>：
+    /// <c>mods(filter:{modId:{value:"7416",op:EQUALS}})</c> 已被服务端整条拒，实测 2026-10-03
+    /// 五种写法全部失败 —— 应用原样（filter 里本来就带 <c>{gameId:{value:"1303"}}</c>）、
+    /// gameId 加 <c>op:EQUALS</c>、去掉 adultContent 条件、modId 改 <c>op:IN</c>（枚举里没这个值）、
+    /// 顶层 <c>mods(gameId:)</c>（该字段不接受这个参数），错误恒为
+    /// 「gameId is required when filtering by modId」；同一个 filter 里 <c>name:{op:WILDCARD}</c> 照常工作，
+    /// 而 <c>modId:{op:WILDCARD}</c> 会返回 10 条无关结果（子串匹配，不能用）。
+    /// <para>legacyModsByDomain 一次可查一批，卡片字段它全有；不存在的尾号返回 0 个节点
+    /// ＝ 空结果（不是请求失败，别退化成 null 让 UI 报"加载失败"）。分类筛选在本地补做，
+    /// 与旧的服务端 <c>categoryName EQUALS</c> 语义对齐。</para></summary>
+    private async Task<List<NexusModListEntry>?> BrowseByModIdAsync(int modId, string gameDomain,
+        string? categoryName, bool forceIncludeAdult)
+    {
+        try
+        {
+            var d = await GraphQlAsync("{ legacyModsByDomain(ids:[{gameDomain:\"" + gameDomain + "\",modId:" + modId
+                + "}]) { nodes { " + CardSel + " } } }");
+            if (d is null) return null;
+            if (!d.Value.TryGetProperty("legacyModsByDomain", out var lb) || lb.ValueKind != JsonValueKind.Object
+                || !lb.TryGetProperty("nodes", out var nodes) || nodes.ValueKind != JsonValueKind.Array)
+                return null;
+
+            var list = ParseModNodes(nodes, hideAdult: !IncludeAdultContent && !forceIncludeAdult);
+            if (!string.IsNullOrWhiteSpace(categoryName))
+                list = list.Where(e => string.Equals(e.Category, categoryName, StringComparison.Ordinal)).ToList();
+            LastBrowseTotalCount = list.Count;
             return list;
         }
         catch { return null; }
     }
 
 
-    /// <summary>调 /v1/users/validate.json 拿当前 API Key 对应的账号信息。
-    /// v1.08.0 实测：该接口已无 avatar / member_id 字段 —— 用户 id 叫 user_id（读 member_id 恒为 0，
-    /// GraphQL 附加信息与头像回填整条链路因此从未跑起来）；头像直链可按
-    /// avatars.nexusmods.com/{user_id}/100 构造（当前接口把它错装在 profile_url 字段里，顺手纠正）。</summary>
-    public async Task<NexusUser?> ValidateAsync()
+    /// <summary>当前登录账号信息 —— 直接读 OAuth access token 的 JWT payload。
+    /// v1.2.6：不再打 /v1/users/validate.json。那个遗留端点只认老的个人 apikey，我们的 Bearer
+    /// 恒得 401，而旧代码拿到 401 后走的就是下面这条 JWT 兜底 —— 等于每次进页白送一个必然失败的
+    /// 请求（审核方看到的正是这种无意义流量）。账号信息本来就在 token 里：
+    /// sub=用户 id、user.username、user.premium_expiry。</summary>
+    public Task<NexusUser?> ValidateAsync()
     {
-        try
-        {
-            using var res = await SendApiAsync(Http, "https://api.nexusmods.com/v1/users/validate.json");
-            if (!res.IsSuccessStatusCode)
-            {
-                // 该遗留端点只认老 apikey，OAuth 的 Bearer 会 401 —— 账号信息改从 access token 的 JWT 里读
-                return BearerToken is { } bt && bt.Length > 0 ? AccountFromJwt(bt) : null;
-            }
-            using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
-            var r = doc.RootElement;
-            var memberId = r.TryGetProperty("user_id", out var ui) && ui.ValueKind == JsonValueKind.Number ? ui.GetInt32()
-                         : r.TryGetProperty("member_id", out var mi) && mi.ValueKind == JsonValueKind.Number ? mi.GetInt32() : 0;
-            var avatar = GetStr(r, "avatar") ?? "";
-            if (string.IsNullOrEmpty(avatar) && memberId > 0)
-                avatar = $"https://avatars.nexusmods.com/{memberId}/100";
-            var profileUrl = GetStr(r, "profile_url") ?? "";
-            if (profileUrl.Contains("avatars.nexusmods.com", StringComparison.OrdinalIgnoreCase))
-                profileUrl = $"https://www.nexusmods.com/users/{memberId}";
-            return new NexusUser(
-                GetStr(r, "name") ?? "",
-                GetStr(r, "email") ?? "",
-                profileUrl,
-                avatar,
-                r.TryGetProperty("is_premium", out var pp) && pp.ValueKind == JsonValueKind.True,
-                memberId);
-        }
-        catch { return null; }
+        var bt = BearerToken;
+        var me = string.IsNullOrEmpty(bt) ? null : AccountFromJwt(bt);
+        return Task.FromResult(me);
     }
 
     /// <summary>OAuth 的 access token 本身就是 nexus-user-service 签发的 JWT，payload 里带
@@ -1229,8 +1509,15 @@ public sealed class NexusService
         catch { return null; }
     }
 
-    /// <summary>v0.70.1：GraphQL user(id) 拉用户扩展信息（tooltip 卡片用）。失败返回 null。</summary>
+    /// <summary>v0.70.1：GraphQL user(id) 拉用户扩展信息（tooltip 卡片用）。失败返回 null。
+    /// v1.2.6：10 分钟缓存 —— 同一个用户的资料不会一分钟变两次，旧写法每次进页打一次。</summary>
     public async Task<NexusUserExtras?> GetUserExtrasAsync(int memberId)
+    {
+        if (memberId <= 0) return null;
+        return await CachedAsync<NexusUserExtras>(Key("extras|" + memberId), () => GetUserExtrasCoreAsync(memberId));
+    }
+
+    private async Task<NexusUserExtras?> GetUserExtrasCoreAsync(int memberId)
     {
         if (memberId <= 0) return null;
         // v1.08.0：user.id 是 Int! —— 旧写法 user(id:"123") 带引号被服务端整体拒绝
@@ -1295,13 +1582,20 @@ public sealed class NexusService
 
     /// <summary>头像图片以 data URI 返回（避免 WebView2 跨域和 Referer 限制）。
     /// v1.05.0：过滤 avatars.nexusmods.com/missing 占位图 —— 无头像用户的 GraphQL avatar
-    /// 字段会返回这个占位 URL，拉回来显示的是错误的「N 网占位头像」，改走首字母兜底。</summary>
+    /// 字段会返回这个占位 URL，拉回来显示的是错误的「N 网占位头像」，改走首字母兜底。
+    /// v1.2.6：加 10 分钟缓存。头像走的是 CDN（不进 API 闸门是对的，它不占 API 配额），
+    /// 但旧写法每次进页重新下载 + 重新 base64，正是 Nexus 页「先进页再闪一下头像」的来源。</summary>
     public async Task<string?> FetchAvatarAsync(string url)
+    {
+        if (string.IsNullOrWhiteSpace(url) || url.Contains("/missing", StringComparison.OrdinalIgnoreCase))
+            return null;
+        return await CachedAsync<string>("av|" + url, () => FetchAvatarCoreAsync(url));
+    }
+
+    private static async Task<string?> FetchAvatarCoreAsync(string url)
     {
         try
         {
-            if (string.IsNullOrWhiteSpace(url)) return null;
-            if (url.Contains("/missing", StringComparison.OrdinalIgnoreCase)) return null;
             using var res = await SlowHttp.GetAsync(url);
             if (!res.IsSuccessStatusCode) return null;
             // v1.08.0：无头像用户的 ID 直链会 307 重定向到 missing 占位图 —— 重定向后的最终 URL
@@ -1342,7 +1636,11 @@ public sealed record NexusModListEntry(
     int Id, string Name, string Summary, string Version, long Downloads, string PictureUrl,
     string? ThumbnailUrl = null, string? Uploader = null, int Endorsements = 0,
     string? CreatedAt = null, string? UpdatedAt = null, string? Category = null,
-    string? UploaderAvatar = null, long FileSize = 0);
+    string? UploaderAvatar = null, long FileSize = 0,
+    // Adult = N 网把这页标了成人内容。开关关着时它决定「能不能把这个候选交给用户」——
+    // 依赖解析会故意不带过滤去查（否则不开开关的人永远装不上成人 mod 的依赖），
+    // 但查到的成人候选不能直接端出去。
+    bool Adult = false);
 
 public sealed record NexusModDetail(
     int Id, string Name, string Author, string Version, string Summary,

@@ -3,7 +3,6 @@
 @inject GameService Game
 @inject LauncherService Launcher
 @inject ModService ModSvc
-@inject PortraitSkinService PortraitSkin
 @inject SteamService Steam
 @inject UpdateService Updater
 @inject PageRefreshService PageRefresh
@@ -102,9 +101,6 @@
         </div>
     </div>
 }
-
-@* 覆盖包被禁用不再弹提示：启停肖像已完全交给用户（立绘页那颗开关 / Mods 页禁用），
-   启动自检也尊重禁用态（见 PortraitSkinService.OverridePackDisabled 的两处让路）。 *@
 
 @code {
 
@@ -255,31 +251,14 @@
         // 覆盖包被禁用时不再弹窗拦一道：启停肖像由用户自己定（立绘页开关 / Mods 页禁用），
         // 启动自检会尊重禁用态并把选择留在配置里，重新启用后自动补齐。
 
-        // 先给反馈再干活：下面的「启动前自检」会跑一次肖像全量扫描（冷缓存 / 刚升 ScanCacheVer 时要几秒，
-        // 覆盖包不健康还要重建）。旧代码把 _launching=true 放在扫描之后 → 点完按钮半天不变，看着像卡死；
-        // 期间再点一次还会重入 Launch 造成双开。这里先把按钮翻成「启动中…」、让出 UI 线程并播动画，
-        // 再做自检与真正启动，全程可被 ✕ 取消。
+        // 先给反馈再干活：把按钮翻成「启动中…」、让出 UI 线程并播动画，再真正启动，
+        // 全程可被 ✕ 取消。（这里原本还要跑一次肖像全量扫描 + 覆盖包自检，随换肤子系统一起移除。）
         _launching = true;
         _launchCancelled = false;   // v1.1.2c：清掉上一次的取消标记
         StateHasChanged();
         try { await JS.InvokeVoidAsync("junigridJs.popAnimate", "#launch-btn"); } catch { }
 
-        // v1.2.2：启动前强制自检覆盖包 —— 有清单、已启用、补丁完整；
-        // 不完整就全量重建。保证「肖像页设置过」下次启动一定生效。
-        if (_cfg.LaunchMode == "smapi" && !string.IsNullOrWhiteSpace(_cfg.GamePath))
-        {
-            try
-            {
-                var gp = _cfg.GamePath!;
-                await Task.Run(() =>
-                {
-                    var scan = PortraitSkin.Scan(gp);
-                    PortraitSkin.EnsureOverridePackHealthy(gp, scan);
-                });
-            }
-            catch (Exception ex) { AppLog.Warn("AccountPanel", "覆盖包启动自检: " + ex.Message); }
-        }
-        if (_launchCancelled) return;   // 自检期间被 ✕ 取消 → 不再启动
+        if (_launchCancelled) return;   // 被 ✕ 取消 → 不再启动
 
         // v1.3.1：点启动时重探本地版本 —— AccountPanel 常驻 MainLayout，游戏在启动器
         // 外被 Steam 更新/降级后按钮仍显示旧快照（用户报告"按钮显示 1.6.8 游戏里
@@ -293,7 +272,7 @@
             _profile = Steam.GetProfile();
             StateHasChanged();
 
-            // 放到后台线程：启动前可能要放回聚焦暂存的档，那是同步磁盘活；
+            // 放到后台线程：启动前可能要放回抽屉里暂存的档，那是同步磁盘活；
             // （本机实测抽屉里 439 MB）。留在 UI 线程上的话，点一次「启动游戏」界面会白屏十几秒，
             // 连「启动中…」都画不出来 —— 看着就是卡死。await 让出线程，状态先渲染出来。
             LaunchResult result = await Task.Run(() => _cfg.LaunchMode == "steam"

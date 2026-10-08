@@ -113,18 +113,144 @@ public partial class UninstallWindow : Window
         catch { }
         Thread.Sleep(400);
 
+        // 换目录装过之后，老目录里那份 Uninstall.exe（= 主程序的副本）还在，还能双击。
+        // 快捷方式与卸载项都是<b>全局唯一</b>的：那时它们指向的是新装那份，
+        // 老副本一按就把它们抹掉 ⇒ 用户在控制面板里再也找不到"卸载 JuniGrid"，
+        // 桌面图标也没了，而新装那份还好端端地跑着。所以先问一句"这条登记说的是我不是"。
+        var registeredHere = RegisteredHere();
+
         // 2) 快捷方式
-        try
+        if (registeredHere)
         {
-            File.Delete(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), "JuniGrid.lnk"));
-            File.Delete(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonDesktopDirectory), "JuniGrid.lnk"));
-            var group = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Programs), "JuniGrid");
-            if (Directory.Exists(group)) Directory.Delete(group, true);
+            try
+            {
+                File.Delete(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), "JuniGrid.lnk"));
+                File.Delete(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonDesktopDirectory), "JuniGrid.lnk"));
+                var group = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Programs), "JuniGrid");
+                if (Directory.Exists(group)) Directory.Delete(group, true);
+            }
+            catch { }
         }
-        catch { }
 
         // 3) 注册表卸载项
-        try { Registry.CurrentUser.DeleteSubKeyTree(UninstallKeyPath, false); } catch { }
+        if (registeredHere)
+        {
+            try { Registry.CurrentUser.DeleteSubKeyTree(UninstallKeyPath, false); } catch { }
+        }
+    }
+
+    /// <summary>注册表里那条唯一的卸载项是不是登记着<b>本目录</b>这一份。</summary>
+    private bool RegisteredHere()
+    {
+        try
+        {
+            using var k = Registry.CurrentUser.OpenSubKey(UninstallKeyPath);
+            return KeyDescribesThisDir(k?.GetValue("InstallLocation") as string, _installDir);
+        }
+        catch { return false; }
+    }
+
+    /// <summary>判"这条卸载登记指向哪份安装"。抽出来单独钉：装到 E:\JuniGrid2 之后
+    /// E:\JuniGrid1 里那份副本仍然可执行，靠的就是这一句把它认出去。</summary>
+    internal static bool KeyDescribesThisDir(string? installLocation, string ownDir)
+    {
+        var a = NormDir(installLocation);
+        var b = NormDir(ownDir);
+        return a.Length > 0 && b.Length > 0 && a.Equals(b, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string NormDir(string? p)
+    {
+        if (string.IsNullOrWhiteSpace(p)) return "";
+        try
+        {
+            return Path.GetFullPath(p)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        }
+        catch { return p.TrimEnd('\\', '/'); }
+    }
+
+    /// <summary>装机目录里的安装清单文件名。格式与写它的一方一致：
+    /// 见 <c>installer/JuniGridInstaller/InstallRecycle.cs</c>（首行 <c>JGMF1</c>，之后每行一个相对路径）。</summary>
+    internal const string ManifestFile = "junigrid-files.txt";
+
+    /// <summary>读安装清单；没有清单、格式不认识、或条目要穿越出安装目录 ⇒ 一律不计入。</summary>
+    internal static List<string> ReadInstallManifest(string dir)
+    {
+        var list = new List<string>();
+        try
+        {
+            var p = Path.Combine(dir, ManifestFile);
+            if (!File.Exists(p)) return list;
+            var lines = File.ReadAllLines(p);
+            if (lines.Length == 0 || lines[0].Trim() != "JGMF1") return list;
+            foreach (var raw in lines.Skip(1))
+            {
+                var rel = raw.Trim().Replace('\\', '/');
+                if (rel.Length == 0 || Path.IsPathRooted(rel) || rel.Split('/').Contains("..")) continue;
+                list.Add(rel);
+            }
+        }
+        catch { }
+        return list;
+    }
+
+    /// <summary>按清单删掉我们自己写出去的文件，并把因此变空的目录收掉。
+    /// 正在运行的两个 exe 删不掉，交给延时 cmd。<b>清单以外的东西一个都不碰。</b></summary>
+    internal static int CleanByManifest(string dir, List<string> rels)
+    {
+        var deleted = 0;
+        foreach (var rel in rels)
+        {
+            var full = SafeCombine(dir, rel);
+            if (full is null) continue;
+            try
+            {
+                if (File.Exists(full)) { File.Delete(full); deleted++; }
+                else if (Directory.Exists(full)) { Directory.Delete(full, true); deleted++; }
+            }
+            catch { }
+        }
+        try
+        {
+            if (File.Exists(Path.Combine(dir, ManifestFile))) { File.Delete(Path.Combine(dir, ManifestFile)); deleted++; }
+        }
+        catch { }
+        try
+        {
+            foreach (var d in Directory.EnumerateDirectories(dir, "*", SearchOption.AllDirectories)
+                         .OrderByDescending(x => x.Length))
+                try { if (!Directory.EnumerateFileSystemEntries(d).Any()) Directory.Delete(d); } catch { }
+        }
+        catch { }
+        return deleted;
+    }
+
+    private static string? SafeCombine(string root, string rel)
+    {
+        try
+        {
+            var full = Path.GetFullPath(Path.Combine(root, rel.Replace('/', Path.DirectorySeparatorChar)));
+            var rootFull = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            return full.StartsWith(rootFull + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) ? full : null;
+        }
+        catch { return null; }
+    }
+
+    /// <summary>延时自删命令。两种情况都<b>绝不整树删</b>：
+    /// 最后一步统一是不带 <c>/s</c> 的 <c>rd</c> —— 目录里只要还剩一个文件它就失败、原样留着。
+    /// 这是"卸载不该端掉用户东西"的硬保证，不靠代码判断，靠文件系统本身：
+    /// 缓存目录现在可以合法地住在安装目录里（换目录安装要搬的就是它），整树删等于把
+    /// 886 MB 版本缓存和登录态一起端走。
+    /// 有清单 ⇒ 先按清单收干净我们的文件（<see cref="ScheduleSelfDelete"/>），这里再删两个 exe；
+    /// 没清单（老版本装的目录）⇒ 只删两个 exe，认不清的文件一律不动。</summary>
+    internal static string BuildSelfDeleteArguments(string dir)
+    {
+        var own = $"/c ping -n 3 127.0.0.1 > nul & del /q /f \"{dir}\\JuniGrid.exe\" & del /q /f \"{dir}\\Uninstall.exe\""
+                + $" & rd \"{dir}\"";
+        return own
+             + $" & ping -n 4 127.0.0.1 > nul & del /q /f \"{dir}\\JuniGrid.exe\" & del /q /f \"{dir}\\Uninstall.exe\" & rd \"{dir}\""
+             + $" & ping -n 8 127.0.0.1 > nul & del /q /f \"{dir}\\JuniGrid.exe\" & del /q /f \"{dir}\\Uninstall.exe\" & rd \"{dir}\"";
     }
 
     /// <summary>调度目录自删：必须在窗口关闭（进程即将退出）时才执行。
@@ -134,12 +260,16 @@ public partial class UninstallWindow : Window
         try
         {
             var dir = _installDir;
+            // 有清单就按清单把"我们写出去的文件"收干净（此刻进程还活着，两个 exe 留给延时 cmd）。
+            // 没清单就一个文件都不多删 —— 延时 cmd 只摘两个 exe，最后那次不带 /s 的 rd
+            // 会因为目录非空而失败，整目录原样留着（宁可留一堆 dll，也不能端掉用户的版本缓存）。
+            var manifest = ReadInstallManifest(dir);
+            if (manifest.Count > 0) CleanByManifest(dir, manifest);
+
             Process.Start(new ProcessStartInfo
             {
                 FileName = "cmd.exe",
-                Arguments = $"/c ping -n 3 127.0.0.1 > nul & rd /s /q \"{dir}\"" +
-                            $" & ping -n 4 127.0.0.1 > nul & rd /s /q \"{dir}\"" +
-                            $" & ping -n 8 127.0.0.1 > nul & rd /s /q \"{dir}\"",
+                Arguments = BuildSelfDeleteArguments(dir),
                 CreateNoWindow = true,
                 UseShellExecute = false,
             });

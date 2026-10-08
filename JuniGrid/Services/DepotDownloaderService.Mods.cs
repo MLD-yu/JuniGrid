@@ -1,11 +1,4 @@
-using System.Collections.Concurrent;
-using System.Diagnostics;
 using System.IO;
-using System.Runtime.InteropServices;
-using System.IO.Compression;
-using System.Net.Http;
-using System.Text;
-using System.Text.RegularExpressions;
 
 namespace JuniGrid.Services;
 
@@ -221,8 +214,12 @@ public sealed partial class DepotDownloaderService
         var dest = Path.Combine(StagingRoot, "_mods-orphan", SafeDirName(label),
             "Mods-" + DateTime.Now.ToString("yyyyMMdd_HHmmss"));
         var n = 0;
-        try { n = Directory.EnumerateFileSystemEntries(drawer)
-                .Count(e => !Path.GetFileName(e).StartsWith(".", StringComparison.Ordinal)); } catch { }
+        try
+        {
+            n = Directory.EnumerateFileSystemEntries(drawer)
+                .Count(e => !Path.GetFileName(e).StartsWith(".", StringComparison.Ordinal));
+        }
+        catch { }
         if (MoveDirectoryVerified(drawer, dest, null, null, "重下前保住 Mods 抽屉") == DirMove.Failed)
             throw new InvalidOperationException(
                 $"这个版本缓存里还有 {n} 个 mod 文件夹，但挪不动（多半是正被占用）—— 这次重下已中止，" +

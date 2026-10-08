@@ -661,6 +661,13 @@ public sealed partial class DepotDownloaderService
             if (Path.GetFileName(rel).Equals(".junigrid-size", StringComparison.OrdinalIgnoreCase)) continue;
             if (Path.GetFileName(rel).Equals(".junigrid-version", StringComparison.OrdinalIgnoreCase)) continue;
             if (Path.GetFileName(rel).Equals(CompleteMarkName, StringComparison.OrdinalIgnoreCase)) continue;
+            // 版本包里可能躺着一份【改造前】被整目录改名收进来的共享存储（<游戏>\JuniGrid）。
+            // 那是那个版本当年的库存，不是这个版本的本体文件 —— 铺回来会把现役那份盖掉，
+            // 而现役那份可能已经装了新包。共享存储只有一个位置：游戏目录里那一份。
+            if (rel.StartsWith(ContentOverrideService.SharedStoreFolder + Path.DirectorySeparatorChar,
+                    StringComparison.OrdinalIgnoreCase)
+                || rel.StartsWith(ContentOverrideService.SharedStoreFolder + "/", StringComparison.OrdinalIgnoreCase))
+                continue;
             if (rel.StartsWith("Mods" + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
                 || rel.StartsWith("Mods/", StringComparison.OrdinalIgnoreCase)
                 || rel.StartsWith("smapi" + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)

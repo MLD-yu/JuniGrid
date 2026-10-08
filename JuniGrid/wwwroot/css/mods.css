@@ -122,9 +122,8 @@ html[data-theme="dark"] .jg-tag.broken { background: rgba(240,181,90,.16); color
     overflow: hidden;
     text-overflow: ellipsis;
     margin-top: 2px;
-}/* hover 浮现的操作按钮 */
-.jg-modrow:hover .jg-modrow-actions,
-.jg-modrow.selected .jg-modrow-actions { opacity: 1; }.jg-rowbtn {
+}
+.jg-rowbtn {
     width: 30px; height: 30px;
     border-radius: 8px;
     border: 1px solid var(--jg-line-heavy);

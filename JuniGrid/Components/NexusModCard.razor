@@ -1,7 +1,7 @@
 @namespace JuniGrid.Components
 @using JuniGrid.Services
 @* v1.09：自 Nexus.razor 三处逐字相同的 jg-modcard2 卡片 markup 收敛而来（行为不变） *@
-<div class="jg-modcard2" @onclick="() => OnOpen.InvokeAsync(Mod.Id)">
+<div class="jg-modcard2 @(ShowMenu ? "jg-cardmenu-host" : "")" @onclick="() => OnOpen.InvokeAsync(Mod.Id)">
     <div class="jg-modcard2-cover-wrap">
         @if (!string.IsNullOrEmpty(Mod.ThumbnailUrl) || !string.IsNullOrEmpty(Mod.PictureUrl))
         {
@@ -11,14 +11,44 @@
         {
             <div class="jg-modcard2-cover jg-modcard2-fb">@(Mod.Name.Length>0 ? Mod.Name[..1].ToUpperInvariant() : "?")</div>
         }
-        @if (Installed)
+        @if (ShowMenu)
+        {
+            @* 素材包页：卡在这里 = 已经装好了，再写「已安装」是句废话 —— 换成三点菜单 *@
+            <button type="button" class="jg-cardmenu-btn" title='@Loc.T("更多操作")' aria-label='@Loc.T("更多操作")'
+                    @onclick:stopPropagation="true" @onclick="() => OnMenuToggle.InvokeAsync()">
+                <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                    <circle cx="12" cy="5" r="1.9"/>
+                    <circle cx="12" cy="12" r="1.9"/>
+                    <circle cx="12" cy="19" r="1.9"/>
+                </svg>
+            </button>
+        }
+        else if (Installed)
         {
             <span class="jg-modcard2-badge">@Loc.T("已安装")</span>
         }
     </div>
+    @if (ShowMenu && MenuOpen)
+    {
+        @* 菜单挂在卡片上（cover-wrap 有 overflow:hidden 会裁掉它）：与按钮同坐标（top/right 8px） *@
+        <div class="jg-cardmenu" @onclick:stopPropagation="true">
+            @if (OnMenuDetail.HasDelegate)
+            {
+                <button type="button" class="jg-sort-item" @onclick="() => OnMenuDetail.InvokeAsync()">@Loc.T("mod 详情页")</button>
+            }
+            @if (OnMenuFolder.HasDelegate)
+            {
+                <button type="button" class="jg-sort-item" @onclick="() => OnMenuFolder.InvokeAsync()">@Loc.T("打开文件所在位置")</button>
+            }
+            @if (OnMenuDelete.HasDelegate)
+            {
+                <button type="button" class="jg-sort-item danger" @onclick="() => OnMenuDelete.InvokeAsync()">@Loc.T("删除")</button>
+            }
+        </div>
+    }
     <div class="jg-modcard2-body">
         @* ─── v1.04.0：官网紧凑排列 —— 封面/标题/分类chip/两行简介 ─── *@
-        <div class="jg-modcard2-title">@Mod.Name</div>
+        <div class="jg-modcard2-title" data-tip="@Mod.Name">@Mod.Name</div>
         @if (!string.IsNullOrEmpty(Mod.Category))
         {
             <span class="jg-modcard2-cat-chip">@Mod.Category</span>
@@ -33,4 +63,12 @@
     [Parameter, EditorRequired] public NexusModListEntry Mod { get; set; } = null!;
     [Parameter] public bool Installed { get; set; }
     [Parameter, EditorRequired] public EventCallback<int> OnOpen { get; set; }
+
+    // ── 三点菜单（素材包页用；不传时卡片行为与以前完全一致）──
+    [Parameter] public bool ShowMenu { get; set; }
+    [Parameter] public bool MenuOpen { get; set; }
+    [Parameter] public EventCallback OnMenuToggle { get; set; }
+    [Parameter] public EventCallback OnMenuDetail { get; set; }
+    [Parameter] public EventCallback OnMenuFolder { get; set; }
+    [Parameter] public EventCallback OnMenuDelete { get; set; }
 }

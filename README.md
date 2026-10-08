@@ -1,7 +1,7 @@
 # JuniGrid
 
 一个面向 **星露谷物语** 的桌面 Mod 管理器与启动器，基于 .NET（WPF + Blazor WebView2）构建。
-
+本仓库为中文原版；英文版见 [JuniGrid-en](https://github.com/MLD-yu/JuniGrid-en)。
 
 ## 支持赞助
 
@@ -42,9 +42,29 @@ dotnet run --project JuniGrid/JuniGrid.csproj
 dotnet publish JuniGrid/JuniGrid.csproj -c Release
 ```
 
+## 测试
+
+两套都在仓库里，都不联网、不碰本机真实的 `%APPDATA%\JuniGrid` 配置，也不需要装游戏。
+
+```bash
+# C# 回归。xunit.v3 走 Microsoft.Testing.Platform：把测试项目当 exe 跑（dotnet run）。
+# 别用 dotnet test —— .NET 10 SDK 上它会直接报错：
+#   "Testing with VSTest target is no longer supported by Microsoft.Testing.Platform on .NET 10 SDK and later"
+dotnet run --project test/JuniGridTestHarness/JuniGridTestHarness.csproj -c Release
+
+# JS 契约冒烟（纯 node，不开浏览器）：每个 .razor/.cs 里的 JS interop 绑定名都必须真的
+# 定义在 window.junigridJs 上；全部 wwwroot/js 在 stub 沙箱里加载期不得抛错；
+# index.html 引用的 css/js 与磁盘文件双向核对。退出码非 0 即有 FAIL。
+node test/js-smoke/js-contract.mjs
+```
+
+- 测试自己把 `JUNIGRID_CONFIG_DIR` 指进临时目录（`TestSandbox`，在进程早期、任何静态字段读它之前）。**自己写程序去构造 `ConfigService` 时必须带这个环境变量**，否则会读写真实配置。
+- 涉及游戏本体的用例自带临时游戏目录：写 `.junigrid-version` 当版本戳，用真 XNB 头部字节造假原版，不依赖真实安装。
+- 用例之间不并行（`xunit.runner.json` 已关），因为它们共用沙箱文件。
+
 ## 下载或安装被拦截怎么办
 
-小众桌面软件、未签名安装包有时会被浏览器、Windows Defender 或 SmartScreen 提示风险。请确认安装包来自官方 GitHub Release，文件名是JuniGrid-cn-v1.1.0-setup.exe。
+小众桌面软件、未签名安装包有时会被浏览器、Windows Defender 或 SmartScreen 提示风险。请确认安装包来自官方 GitHub Release，文件名形如 `JuniGrid-cn-v<版本号>-setup.exe`（版本号随发版变化，以 Release 页实际列出的文件名为准）。
 
 1. 浏览器下载栏提示风险时，打开下载列表，点这条下载右侧的`···`三个点，选择`保留` / `仍要保留` / `显示更多` 后继续保留。
 2. Windows SmartScreen 弹出蓝色拦截窗口时，点`更多信息`，再点`仍要运行`。

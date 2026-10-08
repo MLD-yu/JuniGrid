@@ -174,6 +174,28 @@ public sealed class UpdateService
         => RecommendSmapiTag(gameVersion) is null && !string.IsNullOrWhiteSpace(gameVersion);
 
     /// <summary>
+    /// SMAPI 专属通道下详情页按钮的文案 —— 纯本地，不联网。
+    /// 为什么要有它：详情页的"已装"判据是去 Mods\ 找文件夹，而 SMAPI 装在游戏根目录，
+    /// 于是本机明明装着加载器，按钮却说「安装」。这里只说看得见的实事：
+    /// ① 主程序在 → 报已装（能抽到版本号就带上，抽不到不编版本号）；
+    /// ② 装的大版本与当前游戏版本推荐的大版本不符 → 报「&lt;版本&gt; 不适配本游戏」。
+    /// ② 不写成「装 SMAPI x.y.z」那样的祈使句：详情页的按钮对已装的 SMAPI 一律禁用
+    /// （换适配版是 Mod 页那条按游戏版本选包的通道干的活），灰按钮上写指令是骗人点击。
+    /// </summary>
+    public static string SmapiDetailLabel(bool installed, string? installedVersion, string? gameVersion)
+    {
+        if (!installed) return LocService.Tr("安装");
+        var v = (installedVersion ?? "").Trim();
+        var tag = RecommendSmapiTag(gameVersion);
+        if (tag is not null && v.Length > 0 && char.IsDigit(v[0]))
+        {
+            if (v.Split('.')[0] != (tag == SmapiLatest ? "4" : tag.Split('.')[0]))
+                return LocService.Tf("SMAPI {0} 不适配本游戏", v);
+        }
+        return v.Length > 0 ? LocService.Tf("SMAPI 已装 {0}", v) : LocService.Tr("SMAPI 已装");
+    }
+
+    /// <summary>
     /// 从 release 资产名里挑「玩家用」安装包：
     /// 优先 SMAPI-*-installer.zip / SMAPI.installer.zip，其次 SMAPI.zip；
     /// 排除 for-developers（开发者包，结构不同）、Z_OLD_*（归档旧包）、double-zipped。
@@ -557,16 +579,16 @@ public sealed class UpdateService
             // 都不影响原始目录；安装完成后会把备份合并回 Mods 并删掉临时备份。
             // v1.08：备份是几百 MB 的整目录复制，必须离开 UI 线程（旧版同步复制，
             // 点下下载整个界面冻结到备份结束）；进度条同时提示备份阶段。
-            progress?.Report(new InstallProgress("正在备份现有 Mods 目录…", 0, 0));
+            progress?.Report(new InstallProgress(LocService.Tr("正在备份现有 Mods 目录…"), 0, 0));
             var modsBackup = await Task.Run(() => BackupMods(gamePath), ct);
             if (modsBackup is not null)
-                progress?.Report(new InstallProgress("已备份现有 Mods 目录，开始下载 SMAPI…", 0, 0));
+                progress?.Report(new InstallProgress(LocService.Tr("已备份现有 Mods 目录，开始下载 SMAPI…"), 0, 0));
 
-            progress?.Report(new InstallProgress("正在下载 SMAPI 安装包…"));
-            progress?.Report(new InstallProgress("连接下载服务器…LocService.Tr(", 0, 0));
+            progress?.Report(new InstallProgress(LocService.Tr("正在下载 SMAPI 安装包…")));
+            progress?.Report(new InstallProgress(LocService.Tr("连接下载服务器…"), 0, 0));
             // v1.1.7：半截包放稳定路径 —— 暂停后继续可续传，不再每次新建时间戳目录导致断点丢失
             var zip = Path.Combine(StoragePaths.SmapiInstallerDir,
-                $")smapi-dl-{(info.LatestVersion ?? "latest").Replace('/', '-')}.zip");
+                $"smapi-dl-{(info.LatestVersion ?? "latest").Replace('/', '-')}.zip");
 
             // v1.5：本机已有同名安装包 → 跳过网络下载。有该版本抽屉就存在抽屉里（跟版本走），
             // 没有就存在通用安装包缓存的 keep 子目录（见 GetSmapiInstallerCacheDir）。
@@ -712,17 +734,17 @@ public sealed class UpdateService
                 $"{versionLabel ?? "manual"}-{stamp}");
             Directory.CreateDirectory(temp);
 
-            progress?.Report(new InstallProgress("正在备份现有 Mods 目录…", 0, 0));
+            progress?.Report(new InstallProgress(LocService.Tr("正在备份现有 Mods 目录…"), 0, 0));
             modsBackup = await Task.Run(() => BackupMods(gamePath));
             if (modsBackup is not null)
-                progress?.Report(new InstallProgress("已备份现有 Mods 目录…", 0, 0));
+                progress?.Report(new InstallProgress(LocService.Tr("已备份现有 Mods 目录…"), 0, 0));
 
-            progress?.Report(new InstallProgress("正在解压安装包…LocService.Tr("));
+            progress?.Report(new InstallProgress(LocService.Tr("正在解压安装包…")));
             await Task.Run(() => ExtractWithRetryAsync(zip, temp, progress));   // v1.08：离开 UI 线程
 
             // 兜底：如果这个 zip 是「double-zipped」外壳，解出来还是 zip，自动再解一层。
             var innerZip = Directory
-                .GetFiles(temp, ")*.zip", SearchOption.AllDirectories)
+                .GetFiles(temp, "*.zip", SearchOption.AllDirectories)
                 .FirstOrDefault(f => !string.Equals(f, zip, StringComparison.OrdinalIgnoreCase));
             if (innerZip is not null)
             {
@@ -827,7 +849,9 @@ public sealed class UpdateService
                 await Task.Run(() => TryDeleteBackup(modsBackup));   // v1.08：删除备份也是大 IO
             }
 
-            progress?.Report(new InstallProgress($"SMAPI {versionLabel ?? ""} 安装完成".TrimEnd(), 100, 0));
+            progress?.Report(new InstallProgress(string.IsNullOrWhiteSpace(versionLabel)
+                ? LocService.Tr("SMAPI 安装完成")
+                : LocService.Tf("SMAPI {0} 安装完成", versionLabel), 100, 0));
             Invalidate();
             return null;
         }
@@ -1087,9 +1111,13 @@ public sealed class UpdateService
     {
         try
         {
-            Process.Start(new ProcessStartInfo { FileName = url, UseShellExecute = true });
+            var p = Process.Start(new ProcessStartInfo { FileName = url, UseShellExecute = true });
+            // 记一条"交出去了"：ShellExecute 成功 ≠ 用户真看到窗口（默认浏览器被提权拦下、
+            // 或关联指向一个不该以管理员启动的程序时，这里成功而屏幕上什么都没发生 —— 2026-10-07
+            // 查「Premium 出口不开网页」就是卡在没有这条证据上）。
+            AppLog.Info("OpenUrl", "已交给系统：" + url + "（进程 " + (p is null ? "无" : p.Id.ToString()) + "）");
         }
-        catch (Exception __ex) { AppLog.Warn("UpdateService", __ex.Message); }
+        catch (Exception __ex) { AppLog.Warn("UpdateService", "OpenUrl 失败：" + __ex.Message); }
     }
 
     // ------------------------------------------------------------------

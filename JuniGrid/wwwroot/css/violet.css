@@ -1,0 +1,165 @@
+/* ============================================================
+   紫罗兰 Violet —— 氛围主题（data-accent="violet"）
+   与其它主题的区别集中在「氛围」，按钮/滑块等控件走标准派生：
+     1. 外壳（侧栏/顶导航背后）是一整片缓慢漂移的冷色夜幕；
+     2. 按钮、选中滑块、胶囊等：不特殊处理，正常紫色（标准派生）；
+     3. 开关、滚动条、文本选区有小幅紫青呼应；
+     4. 设置页预览卡不再有专属动效 —— 与其它主题卡完全同构（纯紫预览条）。
+   性能说明：背景漂移只动 background-position（低频 26s），
+   无 layout/filter 动画，WebView2 下开销可忽略。
+   全部动画尊重 prefers-reduced-motion。
+   ============================================================ */
+
+/* ── 夜色五色令牌（紫 → 蓝 → 青 → 绿 → 粉，冷色夜幕色谱）── */
+html[data-accent="violet"] {
+    --jg-violet-1: #7c3aed;   /* 主紫（= --jg-accent） */
+    --jg-violet-2: #2563eb;   /* 电离蓝 */
+    --jg-violet-3: #06b6d4;   /* 冰原青 */
+    --jg-violet-4: #34d399;   /* 极光绿（夜幕里唯一的高光） */
+    --jg-violet-5: #f472b6;   /* 霞粉 */
+    /* 首尾同色（紫）的闭环渐变：background-position 循环位移时无缝衔接 */
+    --jg-violet-grad: linear-gradient(115deg,
+        #7c3aed 0%, #2563eb 28%, #06b6d4 52%, #34d399 76%, #7c3aed 100%);
+}
+
+/* ── 关键帧 ── */
+/* 流光：渐变底 220% 宽，匀速横移一周（首尾同色 → 无缝）。目前仅热力图满格在用 */
+@keyframes jgVioletFlow {
+    from { background-position: 0% 0; }
+    to   { background-position: 200% 0; }
+}
+/* 夜幕漂移：三层径向光斑以不同节奏互相穿过，缓慢摆动 */
+@keyframes jgVioletDrift {
+    0%   { background-position: 0% 0%,    100% 0%,   50% 100%, 0 0; }
+    33%  { background-position: 42% 28%,  62% 40%,   28% 62%,  0 0; }
+    66%  { background-position: 78% 55%,  18% 78%,   66% 30%,  0 0; }
+    100% { background-position: 0% 0%,    100% 0%,   50% 100%, 0 0; }
+}
+/* 辉光呼吸：设置页选中卡的描边光晕涨落 */
+@keyframes jgVioletPulse {
+    0%, 100% { box-shadow: 0 0 0 2px var(--jg-accent),
+               0 0 14px color-mix(in srgb, var(--jg-violet-1) 38%, transparent); }
+    50%      { box-shadow: 0 0 0 2px var(--jg-accent),
+               0 0 30px color-mix(in srgb, var(--jg-violet-1) 62%, transparent); }
+}
+
+/* ============================================================
+   1. 外壳：整片缓慢漂移的夜幕
+   三层径向光斑叠在原 --jg-shell-grad 上，26s 一个周期。
+   光斑透明度刻意压低 —— 是「夜里的光」，不是「糊一脸颜料」。
+   ============================================================ */
+html[data-accent="violet"] .jg-shell {
+    background:
+        radial-gradient(38% 55% at 18% 22%,
+            color-mix(in srgb, var(--jg-violet-1) 30%, transparent), transparent 70%),
+        radial-gradient(42% 60% at 82% 12%,
+            color-mix(in srgb, var(--jg-violet-3) 26%, transparent), transparent 70%),
+        radial-gradient(50% 65% at 55% 95%,
+            color-mix(in srgb, var(--jg-violet-4) 20%, transparent), transparent 72%),
+        var(--jg-shell-grad);
+    background-size: 220% 220%, 240% 240%, 260% 260%, 100% 100%;
+    animation: jgVioletDrift 26s ease-in-out infinite;
+}
+/* 深色：夜幕本体更暗，光斑可以放肆一点 */
+html[data-theme="dark"][data-accent="violet"] .jg-shell {
+    background:
+        radial-gradient(38% 55% at 18% 22%,
+            color-mix(in srgb, var(--jg-violet-1) 42%, transparent), transparent 70%),
+        radial-gradient(42% 60% at 82% 12%,
+            color-mix(in srgb, var(--jg-violet-3) 36%, transparent), transparent 70%),
+        radial-gradient(50% 65% at 55% 95%,
+            color-mix(in srgb, var(--jg-violet-4) 28%, transparent), transparent 72%),
+        radial-gradient(45% 50% at 30% 80%,
+            color-mix(in srgb, var(--jg-violet-5) 18%, transparent), transparent 70%),
+        var(--jg-shell-grad);
+    background-size: 220% 220%, 240% 240%, 260% 260%, 280% 280%, 100% 100%;
+    animation: jgVioletDrift5 32s ease-in-out infinite;
+}
+@keyframes jgVioletDrift5 {
+    0%   { background-position: 0% 0%,   100% 0%,  50% 100%,  20% 80%,  0 0; }
+    33%  { background-position: 42% 28%, 62% 40%,  28% 62%,   70% 35%,  0 0; }
+    66%  { background-position: 78% 55%, 18% 78%,  66% 30%,   40% 10%,  0 0; }
+    100% { background-position: 0% 0%,   100% 0%,  50% 100%,  20% 80%,  0 0; }
+}
+
+/* 内容区：保持可读底色，只从顶部垂下一缕静态余晖（不抢戏） */
+html[data-accent="violet"] .jg-main {
+    background:
+        radial-gradient(70% 240px at 50% -80px,
+            color-mix(in srgb, var(--jg-violet-1) 10%, transparent), transparent 78%),
+        var(--jg-content);
+}
+html[data-theme="dark"][data-accent="violet"] .jg-main {
+    background:
+        radial-gradient(70% 240px at 50% -80px,
+            color-mix(in srgb, var(--jg-violet-1) 16%, transparent), transparent 78%),
+        var(--jg-content);
+}
+
+/* ============================================================
+   2. 按钮：不特殊处理。
+   主按钮 / 滑块 / 胶囊选中态全部走 base.css 派生系统
+   （--jg-accent 紫色 → color-mix 派生），与其它主题完全一致。
+   ============================================================ */
+
+/* ============================================================
+   3. 细节呼应层
+   ============================================================ */
+/* 开关（开态）：小尺寸用静态双色渐变，不做流动（会花眼） */
+html[data-accent="violet"] .jg-switch-row.on .jg-switch,
+html[data-accent="violet"] .jg-squish-host.on .jg-switch {
+    background: linear-gradient(90deg, var(--jg-violet-1), var(--jg-violet-3));
+}
+
+/* 文本选区：拖选文字时染一抹紫 */
+html[data-accent="violet"] ::selection {
+    background: color-mix(in srgb, var(--jg-violet-1) 34%, transparent);
+    color: inherit;
+}
+
+/* 滚动条：紫 → 青竖向渐变条 */
+html[data-accent="violet"] ::-webkit-scrollbar-thumb {
+    background: linear-gradient(180deg, var(--jg-violet-1), var(--jg-violet-3));
+    border-radius: 8px;
+}
+html[data-accent="violet"] ::-webkit-scrollbar-thumb:hover {
+    background: linear-gradient(180deg, var(--jg-violet-2), var(--jg-violet-4));
+}
+
+/* 设置页主题卡选中态：辉光呼吸（不只一个静态描边） */
+html[data-accent="violet"] .jg-accent-card.cur {
+    animation: jgVioletPulse 2.6s ease-in-out infinite;
+}
+
+/* 卡片 hover：浮起 + 紫色微光（原逻辑只改边框色） */
+html[data-accent="violet"] .jg-card {
+    transition: transform .18s ease, box-shadow .18s ease;
+}
+html[data-accent="violet"] .jg-card:hover {
+    box-shadow: 0 8px 28px color-mix(in srgb, var(--jg-violet-1) 14%, transparent);
+}
+
+/* 热力图满格（l4）：流动渐变而不是死色块 */
+html[data-accent="violet"] .jg-heat-cell.l4 {
+    background: var(--jg-violet-grad) !important;
+    background-size: 400% 100% !important;
+    animation: jgVioletFlow 10s linear infinite;
+}
+
+/* ============================================================
+   4. 设置页预览卡：无专属覆盖。
+   预览条 / 圆点一律走 effects.css 的通用规则（纯 --mock-accent 底色），
+   与其余主题卡完全同构。曾有的流动渐变条 + 呼吸点已按用户要求移除。
+   ============================================================ */
+
+/* ============================================================
+   5. 无障碍：用户系统开了「减少动态效果」就全部停掉，
+   保留配色、只去掉运动。
+   ============================================================ */
+@media (prefers-reduced-motion: reduce) {
+    html[data-accent="violet"] .jg-shell,
+    html[data-accent="violet"] .jg-accent-card.cur,
+    html[data-accent="violet"] .jg-heat-cell.l4 {
+        animation: none !important;
+    }
+}

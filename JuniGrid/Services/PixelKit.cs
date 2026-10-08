@@ -56,34 +56,6 @@ public static class PixelKit
         return EncodePng(outPx, dw, dh);
     }
 
-    /// <summary>把整张贴到 dw×dh 画布的左上角并按【64 格】平铺填满，输出 PNG 字节。
-    /// 用于场合资产：替身比本尊小时，CP 的 EditImage 会因"目标区域超出图像右边界"整条作废 ⇒
-    /// 那条场合没人钉 ⇒ 游戏在那个场合读别家的图。⚠ 不能留透明：立绘每格是一张表情，
-    /// 长对话会走到后面的格 ⇒ 透明 = 说话框里没脸。按格平铺保证每一格都是我们这张画的脸，
-    /// 且不会跨格撕开画面。</summary>
-    public static byte[] PadPng(DecodedTexture tex, int dw, int dh)
-    {
-        const int cell = 64;
-        var sc = Math.Max(1, tex.Width / cell);
-        var sr = Math.Max(1, tex.Height / cell);
-        var outPx = new byte[dw * dh * 4];      // BGRA
-        for (var y = 0; y < dh; y++)
-        {
-            var srow = Math.Min(tex.Height - 1, (y / cell) % sr * cell + y % cell);
-            for (var x = 0; x < dw; x++)
-            {
-                var scol = Math.Min(tex.Width - 1, (x / cell) % sc * cell + x % cell);
-                var si = (srow * tex.Width + scol) * 4;
-                var di = (y * dw + x) * 4;
-                outPx[di] = tex.PixelsRgba[si + 2];
-                outPx[di + 1] = tex.PixelsRgba[si + 1];
-                outPx[di + 2] = tex.PixelsRgba[si];
-                outPx[di + 3] = tex.PixelsRgba[si + 3];
-            }
-        }
-        return EncodePng(outPx, dw, dh);
-    }
-
     private static byte[] EncodePng(byte[] bgra, int w, int h)
     {
         var bmp = System.Windows.Media.Imaging.BitmapSource.Create(w, h, 96, 96,

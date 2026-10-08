@@ -316,3 +316,15 @@ void main(){
         states.set(el, true);   // 仅作「已初始化」标记；rAF 循环内自带 isConnected 自清理
     };
     })();
+
+    // ─── v1.2.6：进 Nexus 页后的三段初始化合成【一次】互操作 ───
+    // 上面三个函数各自都有幂等护栏（island.dataset.islandBound / wrap.__tipBound /
+    // grainient 的 states WeakMap），重复调用在 JS 侧几乎不花钱；贵的是 C#→JS 的往返。
+    // 以前 OnAfterRenderAsync 不看 firstRender，每渲染一次就串行打三次 —— 进一次页要渲染
+    // 六次（榜单到一次、登录信息到一次、已装集合到一次…），合计 18 跳 IPC 全排在画首屏的
+    // 时间窗里，那就是他说的「每次进这个页面都卡一下」。合并成一跳，行为不变。
+    junigridJs.nexusAfterRender = function (wrapId, bubbleId, islandId, btnId, inputId, grainSel) {
+        try { junigridJs.userTipInit(wrapId, bubbleId); } catch (e) { }
+        try { junigridJs.searchIslandInit(islandId, btnId, inputId); } catch (e) { }
+        try { junigridJs.grainientInit(grainSel); } catch (e) { }
+    };

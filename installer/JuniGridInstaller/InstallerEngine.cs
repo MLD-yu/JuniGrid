@@ -47,8 +47,94 @@ public sealed class InstallerEngine
         return Path.Combine(local, "Programs", "JuniGrid");
     }
 
-    public (string? uninstallCmd, string? location) FindLegacyInstall()
+    /// <summary>现在浏览器点「Mod Manager Download」会交给谁 —— 读 nxm 那棵注册表的 open\command，
+    /// 剥出 exe 路径。有一个【还活着的、不是我们的】程序在接（Vortex / MO2 / NMM），
+    /// 那就是用户已经在用的管理器，装 JuniGrid 不该把它顶掉：多数用户根本不知道 nxm 是什么，
+    /// 他们只知道「我点下载，平时那个程序会开」。
+    /// 没人接、或接的那个 exe 已经不存在（旧版本留下的死路径）⇒ 算空位，默认接管。</summary>
+    public static bool ForeignNxmHandlerInUse()
     {
+        // 测试逃生口：设了这条就用它判，一个注册表键都不读不动 ——
+        // "别的管理器在接"这条分支必须能在只有一台机器的情况下证伪，不然它就是没验过的假设。
+        var probe = Environment.GetEnvironmentVariable("JG_NXM_PROBE_CMD");
+        if (!string.IsNullOrEmpty(probe)) return IsForeignCommand(probe);
+
+        foreach (var cmd in NxmCommandsToCheck())
+            if (IsForeignCommand(cmd))
+            {
+                App.Log($"nxm 有别的管理器在接: {cmd} ⇒ 装机默认不接管");
+                return true;
+            }
+        return false;
+    }
+
+    /// <summary>这条命令指向的是"别人"吗：exe 还在、而且不是我们的 JuniGrid.exe。</summary>
+    internal static bool IsForeignCommand(string? cmd)
+    {
+        if (string.IsNullOrWhiteSpace(cmd)) return false;
+        var exe = ExeOf(cmd);
+        if (exe.Length == 0 || !File.Exists(exe)) return false;
+        return !Path.GetFileName(exe).Equals("JuniGrid.exe", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>验证入口：把"装机时那个勾会怎么默认"打在报告里（只读注册表，什么都不写）。</summary>
+    public static string DescribeNxmDefault()
+    {
+        var sb = new System.Text.StringBuilder();
+        var probe = Environment.GetEnvironmentVariable("JG_NXM_PROBE_CMD");
+        var foreign = ForeignNxmHandlerInUse();
+        sb.AppendLine("装机默认勾「Nexus 网页上的下载按钮打开 JuniGrid」 = " + (foreign ? "不勾" : "勾")
+            + (string.IsNullOrEmpty(probe) ? "" : "  【按 JG_NXM_PROBE_CMD 判，没读注册表】"));
+        if (!string.IsNullOrEmpty(probe)) sb.AppendLine("  探针命令: " + probe);
+        foreach (var cmd in NxmCommandsToCheck())
+        {
+            if (string.IsNullOrWhiteSpace(cmd)) { sb.AppendLine("  （无）"); continue; }
+            var exe = ExeOf(cmd);
+            sb.AppendLine($"  命令: {cmd}");
+            sb.AppendLine($"    exe: {exe} ‖ 存在={File.Exists(exe)} ‖ 是我们={(Path.GetFileName(exe)
+                .Equals("JuniGrid.exe", StringComparison.OrdinalIgnoreCase))}");
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>两个要看的命令：① 现在注册表里那条；② 我们自己压掉别人时存下的那条原命令。
+    /// 第二条是给"升级安装"准备的 —— 上一版抢过注，注册表里只剩我们，光看 ① 就永远以为用户没有别的管理器，
+    /// 而那条被压掉的 Vortex 命令还在，说明这台机器上确实有他装了的东西。</summary>
+    private static List<string?> NxmCommandsToCheck()
+    {
+        var list = new List<string?>();
+        foreach (var hive in new[] { Registry.ClassesRoot, Registry.CurrentUser })
+        {
+            try
+            {
+                using var k = hive.OpenSubKey(@"Software\Classes\nxm\shell\open\command");
+                list.Add(k?.GetValue(null) as string);
+            }
+            catch { list.Add(null); }
+        }
+        try
+        {
+            using var bk = Registry.CurrentUser.OpenSubKey(@"Software\JuniGrid");
+            list.Add(bk?.GetValue("NxmDisplacedCommand") as string);
+        }
+        catch { list.Add(null); }
+        return list;
+    }
+
+    /// <summary>从注册表命令里剥出 exe 路径：带引号取引号内，不带取第一个空格前。</summary>
+    private static string ExeOf(string cmd)
+    {
+        cmd = cmd.Trim();
+        if (cmd.StartsWith("\"", StringComparison.Ordinal))
+        {
+            var end = cmd.IndexOf('"', 1);
+            return end > 1 ? cmd[1..end] : "";
+        }
+        var sp = cmd.IndexOf(' ');
+        return sp > 0 ? cmd[..sp] : cmd;
+    }
+
+    public (string? uninstallCmd, string? location) FindLegacyInstall()    {
         try
         {
             using var k = Registry.CurrentUser.OpenSubKey(UninstallKeyPath);
@@ -59,10 +145,12 @@ public sealed class InstallerEngine
         catch { return (null, null); }
     }
 
-    public Task InstallAsync(string targetDir, bool desktopShortcut, IProgress<InstallProgress> progress, CancellationToken ct)
+    public Task InstallAsync(string targetDir, bool desktopShortcut,
+        IProgress<InstallProgress> progress, CancellationToken ct)
         => Task.Run(() => InstallCore(targetDir, desktopShortcut, progress, ct), ct);
 
-    private void InstallCore(string targetDir, bool desktopShortcut, IProgress<InstallProgress> progress, CancellationToken ct)
+    private void InstallCore(string targetDir, bool desktopShortcut,
+        IProgress<InstallProgress> progress, CancellationToken ct)
     {
         targetDir = Path.GetFullPath(targetDir);
         Directory.CreateDirectory(targetDir);
@@ -72,10 +160,29 @@ public sealed class InstallerEngine
         progress.Report(new InstallProgress("正在关闭正在运行的 JuniGrid…", 0.02));
         CloseRunningApp();
 
+        var legacy = FindLegacyInstall();
+
+        // 换目录安装＝搬家：先搬数据 → 再解包 → 最后清旧目录。顺序不能反 ——
+        // 先删旧的就没东西可搬了；不搬的话新装看不见 886 MB 版本缓存和 WebView2 里的登录态，
+        // 用户只会觉得"我换了个目录，怎么一切重来"。
+        // 必须排在旧版卸载器前面：老卸载器是延时 <c>rd /s /q</c> 整目录删，数据还躺在里面就会被它端走。
+        // 测试逃生口：JGINSTALLER_NOMIGRATE=1 跳过（与 NOLEGACY 同款）。
+        if (Environment.GetEnvironmentVariable("JGINSTALLER_NOMIGRATE") != "1")
+        {
+            var mig = InstallMigrate.Run(legacy.location, targetDir,
+                InstallMigrate.DefaultConfigPath(), dryRun: false, progress);
+            if (mig.Moved.Count > 0)
+                progress.Report(new InstallProgress(
+                    $"已把 {mig.Moved.Count} 个数据目录搬到新位置（{mig.Bytes / (1024 * 1024)} MB）"
+                    + (mig.ConfigPatched ? "，缓存目录也改指新位置" : ""), 0.04));
+            // 搬不动不是失败：旧目录一个字节都还在，应用照旧能找到它。说清楚，别装作搬过了。
+            foreach (var f in mig.Failed)
+                progress.Report(new InstallProgress("这个数据目录没搬成：" + f, 0.04));
+        }
+
         // 测试逃生口：设 JGINSTALLER_NOLEGACY=1 可跳过旧版静默卸载
         if (Environment.GetEnvironmentVariable("JGINSTALLER_NOLEGACY") != "1")
         {
-            var legacy = FindLegacyInstall();
             if (legacy.uninstallCmd is not null)
             {
                 var (exe, _) = SplitCommand(legacy.uninstallCmd);
@@ -111,12 +218,14 @@ public sealed class InstallerEngine
 
             long done = 0, lastReport = 0;
             var buf = new byte[1 << 16];
+            var written = new List<string>(entries.Count);
             foreach (var (rel, size) in entries)
             {
                 ct.ThrowIfCancellationRequested();
                 var dest = SafePath(targetDir, rel);
                 if (dest is null)
                     continue;
+                written.Add(rel);
                 Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
                 using var dst = File.Create(dest);
                 long remaining = size;
@@ -135,6 +244,11 @@ public sealed class InstallerEngine
                     }
                 }
             }
+
+            // 落一份文件清单：换目录安装时据此回收旧位置、卸载时据此只删自己写出去的文件。
+            // 写失败不影响安装（最多是以后回收退回「顶层白名单」模式）。
+            try { InstallRecycle.WriteManifest(targetDir, written); }
+            catch (Exception ex) { App.Log("写安装清单失败: " + ex.Message); }
         }
         progress.Report(new InstallProgress("正在安装文件…", 0.97));
 
@@ -146,10 +260,71 @@ public sealed class InstallerEngine
         CreateShortcuts(targetDir, desktopShortcut);
         WriteUninstallRegistry(targetDir);
 
+        // 「Nexus 网页上的下载按钮点了之后打开谁」的<b>初值</b>在这里落定 —— 装机这一刻是唯一能看出
+        // 用户意图的时机（应用每次开机都无条件抢注，就是把不知道 nxm 是什么的用户的东西抢走）。
+        // 只在这个键还不存在（全新用户）时写；已有值一律不动 —— 那是他在设置页里亲手做过的决定，
+        // 升级装机没资格替他改回来。之后这个开关只归设置页管。
+        InstallConfig.SetOneClickInstallIfAbsent(InstallMigrate.DefaultConfigPath(),
+            !ForeignNxmHandlerInUse());
+
         // v1.1.8：新机免装依赖 —— 缺 WebView2 运行时就用 payload 里的引导补装一次
         TryEnsureWebView2(targetDir, progress);
 
+        // 换目录安装 = 搬家：新位置已经装好、注册表与快捷方式也已指向它，最后一步才回收旧位置。
+        // 放在最后是有意的 —— 中途任何失败都不会出现「新的没装成、旧的也没了」。
+        // 旧位置用的是第 2 步（搬家之前）抓的那一份 —— 这里不能再查注册表，那时它已被我们改掉。
+        RecyclePreviousInstall(legacy.location, targetDir, progress);
+
         progress.Report(new InstallProgress("安装完成", 1.0, totalBytes, totalBytes));
+    }
+
+    private static string NormPath(string p)
+    {
+        try
+        {
+            return Path.GetFullPath(p)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        }
+        catch { return ""; }
+    }
+
+    /// <summary>回收上一次安装的位置 —— 只删我们自己写出去的文件，其余原样留着。
+    /// <b>旧位置必须由调用方传进来，绝不能在这里重读注册表</b>：
+    /// 这一步跑在 <see cref="WriteUninstallRegistry"/> 之后，注册表里的 InstallLocation
+    /// 那时已经是新目录了，重读回来就等于 oldN == newN，同址守卫会把整段回收
+    /// 静默短路（2026-10-04 实测：装到 E:\JuniGrid2 后，E:\JuniGrid1 那 182 MB 程序体原地留着）。
+    /// 组件夹具当时全绿，因为它测的是 <see cref="InstallRecycle.RecycleOldInstall"/>，
+    /// 没测"谁把哪个目录交给它"。回归钉子在 <c>installer/jg-installer-drift.py</c>
+    /// （M11a–c 查形状、RT1–RT5 跑真实入口），别删。</summary>
+    private void RecyclePreviousInstall(string? legacyLocation, string targetDir, IProgress<InstallProgress> progress)
+    {
+        try
+        {
+            var oldN = RecycleTargetOf(legacyLocation, targetDir);
+            if (oldN is null) return;
+
+            progress.Report(new InstallProgress("正在清理旧版本…", 0.995));
+            var r = InstallRecycle.RecycleOldInstall(oldN, PayloadTopLevelNames(), dryRun: false);
+            App.Log($"回收旧位置 {r.OldDir}：删 {r.Deleted} 项（清单={(r.HadManifest ? "有" : "无→白名单")}）"
+                    + $"，失败 {r.Failed.Count} 项，保留 {r.Remaining.Count} 项"
+                    + (r.DirRemoved ? "，目录已空并删除" : ""));
+        }
+        catch (Exception ex) { App.Log("回收旧位置失败: " + ex.Message); }
+    }
+
+    /// <summary>该回收哪个旧目录；null = 这次不回收。三条守卫：
+    /// ① 旧位置没记录或已不存在；② 同址覆盖（本来就该什么都不碰）；
+    /// ③ 新位置套在旧位置里面（装到 <c>C:\JuniGrid\new</c> 这种）⇒ 回收旧的会连新的一份一起端掉。
+    /// 单独抽出来是为了能被钉住 —— 上面那条 bug 的教训就是"守卫对、传参错"没人测得到。</summary>
+    internal static string? RecycleTargetOf(string? legacyLocation, string targetDir)
+    {
+        if (string.IsNullOrWhiteSpace(legacyLocation) || !Directory.Exists(legacyLocation)) return null;
+        var oldN = NormPath(legacyLocation);
+        var newN = NormPath(targetDir);
+        if (oldN.Length == 0 || newN.Length == 0) return null;
+        if (oldN.Equals(newN, StringComparison.OrdinalIgnoreCase)) return null;
+        if (newN.StartsWith(oldN + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)) return null;
+        return oldN;
     }
 
     /// <summary>
@@ -196,6 +371,20 @@ public sealed class InstallerEngine
         }
         catch { }
         return false;
+    }
+
+    /// <summary>本次安装包内含文件的顶层条目名（wwwroot、i18n、tools、JuniGrid.exe…）。
+    /// 回收旧位置时用作「没有清单」的兜底判据。开发构建里 payload 没嵌进来，返回空表。</summary>
+    public static List<string> PayloadTopLevelNames()
+    {
+        try
+        {
+            using var res = OpenResource();
+            return ReadPayloadHeader(res, out _)
+                .Select(e => e.rel.Replace('\\', '/').Split('/')[0])
+                .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        }
+        catch { return new List<string>(); }
     }
 
     private static Stream OpenResource()

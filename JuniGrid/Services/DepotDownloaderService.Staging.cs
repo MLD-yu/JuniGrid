@@ -1,11 +1,4 @@
-using System.Collections.Concurrent;
-using System.Diagnostics;
 using System.IO;
-using System.Runtime.InteropServices;
-using System.IO.Compression;
-using System.Net.Http;
-using System.Text;
-using System.Text.RegularExpressions;
 
 namespace JuniGrid.Services;
 
@@ -151,9 +144,16 @@ public sealed partial class DepotDownloaderService
 
     private static readonly Dictionary<string, string> BranchVersions = new(StringComparer.OrdinalIgnoreCase)
     {
-        ["1.01"] = "1.0.1", ["1.02"] = "1.0.2", ["1.03"] = "1.0.3", ["1.04"] = "1.0.4",
-        ["1.05"] = "1.0.5", ["1.051"] = "1.0.5.1", ["1.051b"] = "1.0.5.2",
-        ["1.06"] = "1.0.6", ["1.07"] = "1.0.7", ["1.11"] = "1.1.1",
+        ["1.01"] = "1.0.1",
+        ["1.02"] = "1.0.2",
+        ["1.03"] = "1.0.3",
+        ["1.04"] = "1.0.4",
+        ["1.05"] = "1.0.5",
+        ["1.051"] = "1.0.5.1",
+        ["1.051b"] = "1.0.5.2",
+        ["1.06"] = "1.0.6",
+        ["1.07"] = "1.0.7",
+        ["1.11"] = "1.1.1",
     };
 
     /// <summary>
@@ -352,7 +352,8 @@ public sealed partial class DepotDownloaderService
              : !string.IsNullOrWhiteSpace(folderKey) ? folderKey : null;
     }
 
-    private static void WriteManifestMeta(string stagingDir, string manifestId)    {
+    private static void WriteManifestMeta(string stagingDir, string manifestId)
+    {
         try { File.WriteAllText(Path.Combine(stagingDir, ManifestMetaName), manifestId); } catch { }
     }
 

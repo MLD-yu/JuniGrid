@@ -2,6 +2,7 @@
 @page "/tasks"
 @inject TaskCenterService Center
 @inject VersionDownloadService VerDl
+@inject InstallService Installer
 @inject IJSRuntime JS
 @implements IDisposable
 
@@ -78,6 +79,12 @@
                             else if (t.Status == "paused" && t.CanPause)
                             {
                                 <button class="jg-rowbtn" @onclick="() => Resume(t)" title='@Loc.T("继续")'>▶</button>
+                            }
+                            @* 重试只在真跑过、worker 还在的失败任务上出现：从磁盘恢复的历史失败行
+                               没有可重跑的东西，画出来按下去不会有任何动静。 *@
+                            else if (Center.CanRetry(t))
+                            {
+                                <button class="jg-rowbtn" @onclick="() => Retry(t)" title='@Loc.T("重试")'>↻</button>
                             }
                             @if (t.Status is "running" or "paused")
                             {
@@ -360,6 +367,34 @@
     }
 
     private void Pause(TaskItem t) => Center.Pause(t);
+    private void Retry(TaskItem t)
+    {
+        // 本次运行里真跑过的 → 原地重挂 worker 重跑
+        if (Center.Retry(t)) return;
+
+        // 重启后从磁盘恢复的失败行没有 worker，但行上带着 Nexus 号 → 按它重新发起一条。
+        // 号用完就摘：新任务自己会排到列表顶上，留着会让人再点出第二条。
+        if (t.NexusId is int modId)
+        {
+            t.NexusId = null;
+            Center.Notify();
+            _ = RedispatchAsync(modId);
+            return;
+        }
+
+        _ = JS.InvokeVoidAsync("junigridJs.toast", LocService.Tr("该任务需要重新发起（已保留已下载部分）"), "err");
+    }
+
+    private async Task RedispatchAsync(int modId)
+    {
+        var err = await Installer.InstallModDirectAsync(modId);
+        if (err is not null)
+            // Premium 这条出口服务自己已经打开过文件页了，toast 说这句人话，别把内部标记
+            // 「premium：…」原样甩给用户（那个前缀是给调用方分流用的，不是文案）。
+            await JS.InvokeVoidAsync("junigridJs.toast",
+                err.Contains("premium", StringComparison.OrdinalIgnoreCase)
+                    ? LocService.Tr("需要 Nexus Premium 会员，已改为网页方式") : err, "err");
+    }
     private void Resume(TaskItem t)
     {
         // 历史版本走 VersionDownloadService（自带 resume 字典）；其余走任务中心统一注册表

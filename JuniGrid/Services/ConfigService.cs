@@ -38,114 +38,125 @@ public sealed class ConfigService
         System.AppDomain.CurrentDomain.ProcessExit += (_, _) => Flush();
     }
 
-        private static string ConfigBackupPath => ConfigPath + ".bak";
+    private static string ConfigBackupPath => ConfigPath + ".bak";
 
-        public void Load()
+    public void Load()
+    {
+        var restoredFromBak = false;
+        try
         {
-            var restoredFromBak = false;
+            if (File.Exists(ConfigPath))
+            {
+                var loaded = JsonSerializer.Deserialize<JuniGridConfig>(
+                    File.ReadAllText(ConfigPath), JsonOpts);
+                if (loaded is not null)
+                {
+                    Current = loaded;
+                    // 只在「读进来的不是空壳」时覆盖 .bak —— 防止用清零后的配置顶掉好备份
+                    if (Current.ModCovers.Count + Current.ModProfiles.Count + Current.ModRemarks.Count > 0
+                        || Current.TotalLaunchCount > 0
+                        || !string.IsNullOrEmpty(Current.GamePath))
+                    {
+                        try { File.Copy(ConfigPath, ConfigBackupPath, overwrite: true); } catch { }
+                    }
+                }
+            }
+            else if (File.Exists(ConfigBackupPath))
+            {
+                // 主文件没了：从 .bak 救（与 playtime 同款防呆）
+                var loaded = JsonSerializer.Deserialize<JuniGridConfig>(
+                    File.ReadAllText(ConfigBackupPath), JsonOpts);
+                if (loaded is not null)
+                {
+                    Current = loaded;
+                    restoredFromBak = true;
+                    AppLog.Warn("Config", "junigrid.config.json 缺失，已从 .bak 恢复");
+                    try { AtomicFile.WriteAllText(ConfigPath, JsonSerializer.Serialize(Current, JsonOpts)); } catch { }
+                }
+            }
+        }
+        catch
+        {
+            // v1.1.2：损坏现场先留档 —— 之后再试 .bak，最后才退回默认
             try
             {
                 if (File.Exists(ConfigPath))
                 {
-                    var loaded = JsonSerializer.Deserialize<JuniGridConfig>(
-                        File.ReadAllText(ConfigPath), JsonOpts);
-                    if (loaded is not null)
-                    {
-                        Current = loaded;
-                        // 只在「读进来的不是空壳」时覆盖 .bak —— 防止用清零后的配置顶掉好备份
-                        if (Current.ModCovers.Count + Current.ModProfiles.Count + Current.ModRemarks.Count > 0
-                            || Current.TotalLaunchCount > 0
-                            || !string.IsNullOrEmpty(Current.GamePath))
-                        {
-                            try { File.Copy(ConfigPath, ConfigBackupPath, overwrite: true); } catch { }
-                        }
-                    }
-                }
-                else if (File.Exists(ConfigBackupPath))
-                {
-                    // 主文件没了：从 .bak 救（与 playtime 同款防呆）
-                    var loaded = JsonSerializer.Deserialize<JuniGridConfig>(
-                        File.ReadAllText(ConfigBackupPath), JsonOpts);
-                    if (loaded is not null)
-                    {
-                        Current = loaded;
-                        restoredFromBak = true;
-                        AppLog.Warn("Config", "junigrid.config.json 缺失，已从 .bak 恢复");
-                        try { AtomicFile.WriteAllText(ConfigPath, JsonSerializer.Serialize(Current, JsonOpts)); } catch { }
-                    }
+                    var backup = ConfigPath + ".corrupt-" + DateTime.Now.ToString("yyyyMMdd_HHmmss");
+                    File.Copy(ConfigPath, backup, true);
+                    AppLog.Error("Config", "配置文件解析失败，已备份为 " + Path.GetFileName(backup));
                 }
             }
-            catch
-            {
-                // v1.1.2：损坏现场先留档 —— 之后再试 .bak，最后才退回默认
-                try
-                {
-                    if (File.Exists(ConfigPath))
-                    {
-                        var backup = ConfigPath + ".corrupt-" + DateTime.Now.ToString("yyyyMMdd_HHmmss");
-                        File.Copy(ConfigPath, backup, true);
-                        AppLog.Error("Config", "配置文件解析失败，已备份为 " + Path.GetFileName(backup));
-                    }
-                }
-                catch { }
-                Current = new JuniGridConfig();
-                try
-                {
-                    if (File.Exists(ConfigBackupPath))
-                    {
-                        var bak = JsonSerializer.Deserialize<JuniGridConfig>(
-                            File.ReadAllText(ConfigBackupPath), JsonOpts);
-                        if (bak is not null)
-                        {
-                            Current = bak;
-                            restoredFromBak = true;
-                            AppLog.Warn("Config", "已从 .bak 恢复配置（主文件损坏）");
-                        }
-                    }
-                }
-                catch { /* .bak 也不行才用默认 */ }
-            }
-            SyncAdultFilter();
-            SyncStoragePaths();
-            // 覆盖记录键迁移：老键「宿主|文件」一个槽位只够记一个包，第二个汉化包会把第一个顶掉。
-            // 新键多一段来源槽位（N 网 modId，没有就退回包名），同一个文件因此能并存多条记录。
-            if (NormalizeOverlayKeys(Current)) Save(Current);
-            // v1.1.5：首次使用日期只补写一次（老用户从本次升级后开始起算）
-            // 仅当「本来就没有配置」或「从备份恢复出的旧配置缺该字段」时补写；
-            // 解析失败后的全新默认对象不许在这里立刻 Save 盖掉现场
-            if (Current.FirstRunDate is null)
-            {
-                Current.FirstRunDate = DateTime.Now.ToString("O");
-                if (!File.Exists(ConfigPath) || restoredFromBak || ConfigLooksIntact())
-                    Save(Current);
-            }
-        }
-
-        /// <summary>把两段式老覆盖键补成三段（多一段来源槽位）。返回是否动了 —— 动了才值得落盘。
-        /// 槽位取 N 网 modId，本地手放的包退回包名（包名来自 Windows 文件名，不可能含 '|'）。</summary>
-        private static bool NormalizeOverlayKeys(JuniGridConfig c)
-        {
-            var legacy = c.Overlays.Where(kv => kv.Key.Split('|').Length == 2).ToList();
-            if (legacy.Count == 0) return false;
-            foreach (var kv in legacy) c.Overlays.Remove(kv.Key);
-            foreach (var kv in legacy)
-            {
-                var slot = kv.Value.NexusModId?.ToString() ?? kv.Value.PackName;
-                if (string.IsNullOrWhiteSpace(slot)) slot = "legacy";
-                c.Overlays[kv.Value.Host + "|" + kv.Value.RelPath + "|" + slot] = kv.Value;
-            }
-            return true;
-        }
-
-        /// <summary>主配置存在且能解析 = 现场完好，允许补写 FirstRunDate。</summary>
-        private static bool ConfigLooksIntact()        {
+            catch { }
+            Current = new JuniGridConfig();
             try
             {
-                return File.Exists(ConfigPath)
-                    && JsonSerializer.Deserialize<JuniGridConfig>(File.ReadAllText(ConfigPath), JsonOpts) is not null;
+                if (File.Exists(ConfigBackupPath))
+                {
+                    var bak = JsonSerializer.Deserialize<JuniGridConfig>(
+                        File.ReadAllText(ConfigBackupPath), JsonOpts);
+                    if (bak is not null)
+                    {
+                        Current = bak;
+                        restoredFromBak = true;
+                        AppLog.Warn("Config", "已从 .bak 恢复配置（主文件损坏）");
+                    }
+                }
             }
-            catch { return false; }
+            catch { /* .bak 也不行才用默认 */ }
         }
+        SyncAdultFilter();
+        SyncStoragePaths();
+        // 覆盖记录键迁移：老键「宿主|文件」一个槽位只够记一个包，第二个汉化包会把第一个顶掉。
+        // 新键多一段来源槽位（N 网 modId，没有就退回包名），同一个文件因此能并存多条记录。
+        if (NormalizeOverlayKeys(Current)) Save(Current);
+        // 覆盖记录的宿主形状迁移：记在「没有清单的捆绑包壳顶层」上的那条账在 Mods 页没有宿主行可挂，
+        // 徽标、开关、还原全点不到（实机汉化包 28252 → Frontier Farm）。判据只看磁盘，搬完不再命中。
+        if (ModService.RelocateBundleTopOverlays(Current, Current.GamePath) > 0) Save(Current);
+        // 主题键迁移：这套主题原名「极光 aurora」，动效收敛后名不副实，已更名「紫罗兰 violet」。
+        // 老配置里存的是旧键，就地改写 —— 否则 data-accent 匹配不到任何主题块，会被打回默认色。
+        if (string.Equals(Current.Accent, "aurora", StringComparison.OrdinalIgnoreCase))
+        {
+            Current.Accent = "violet";
+            Save(Current);
+        }
+        // v1.1.5：首次使用日期只补写一次（老用户从本次升级后开始起算）
+        // 仅当「本来就没有配置」或「从备份恢复出的旧配置缺该字段」时补写；
+        // 解析失败后的全新默认对象不许在这里立刻 Save 盖掉现场
+        if (Current.FirstRunDate is null)
+        {
+            Current.FirstRunDate = DateTime.Now.ToString("O");
+            if (!File.Exists(ConfigPath) || restoredFromBak || ConfigLooksIntact())
+                Save(Current);
+        }
+    }
+
+    /// <summary>把两段式老覆盖键补成三段（多一段来源槽位）。返回是否动了 —— 动了才值得落盘。
+    /// 槽位取 N 网 modId，本地手放的包退回包名（包名来自 Windows 文件名，不可能含 '|'）。</summary>
+    private static bool NormalizeOverlayKeys(JuniGridConfig c)
+    {
+        var legacy = c.Overlays.Where(kv => kv.Key.Split('|').Length == 2).ToList();
+        if (legacy.Count == 0) return false;
+        foreach (var kv in legacy) c.Overlays.Remove(kv.Key);
+        foreach (var kv in legacy)
+        {
+            var slot = kv.Value.NexusModId?.ToString() ?? kv.Value.PackName;
+            if (string.IsNullOrWhiteSpace(slot)) slot = "legacy";
+            c.Overlays[kv.Value.Host + "|" + kv.Value.RelPath + "|" + slot] = kv.Value;
+        }
+        return true;
+    }
+
+    /// <summary>主配置存在且能解析 = 现场完好，允许补写 FirstRunDate。</summary>
+    private static bool ConfigLooksIntact()
+    {
+        try
+        {
+            return File.Exists(ConfigPath)
+                && JsonSerializer.Deserialize<JuniGridConfig>(File.ReadAllText(ConfigPath), JsonOpts) is not null;
+        }
+        catch { return false; }
+    }
 
     /// <summary>把「显示成人内容」单一开关同步到 NexusService 的静态查询开关
     /// （浏览 GraphQL 是否加 adult 过滤条件）。开关实际发生变化时递增 NexusService.AdultFilterVersion，
@@ -154,15 +165,20 @@ public sealed class ConfigService
     {
         var include = Current.ShowAdultContent;
         if (NexusService.IncludeAdultContent != include)
+        {
             NexusService.BumpAdultFilterVersion();
+            // 开关一翻，缓存里那份列表就是按旧偏好给的 —— 尤其从「显示」切到「隐藏」时，
+            // 不能让成人页还在内存里挂 10 分钟。
+            NexusService.ClearResponseCache();
+        }
         NexusService.IncludeAdultContent = include;
     }
 
-        /// <summary>v0.2.1：把统一缓存目录同步到 StoragePaths 静态入口 —— 各服务取路径零改动即时生效。</summary>
-        private void SyncStoragePaths()
-        {
-            StoragePaths.CacheRoot = string.IsNullOrWhiteSpace(Current.CacheRoot) ? null : Current.CacheRoot;
-        }
+    /// <summary>v0.2.1：把统一缓存目录同步到 StoragePaths 静态入口 —— 各服务取路径零改动即时生效。</summary>
+    private void SyncStoragePaths()
+    {
+        StoragePaths.CacheRoot = string.IsNullOrWhiteSpace(Current.CacheRoot) ? null : Current.CacheRoot;
+    }
 
     // v0.72.6：持久化协调器 —— Save() 不再每次全量写盘，改为 dirty 标记 + 250ms 防抖合并 +
     // 版本号快照 + 单写者后台落盘 + tmp 原子替换 + 异步重试。批量 63 个 mod 的 100+ 次
@@ -355,6 +371,15 @@ public sealed class JuniGridConfig
     /// </summary>
     public Dictionary<string, OverlayRecord> Overlays { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// 纯净版覆盖：直接写进游戏本体 <c>Content\</c> 的那些图（不需要 SMAPI）。
+    /// key = 资产名 + '|' + 包标识，**一张图一条**。同一个资产留得下多个包的账，
+    /// 但同时只有一份在位（一个文件装不下一张以上的表），新来的占槽、其余转成关闭且副本留着。
+    /// 没有这份记录就没有还原入口 —— 而这次动的是游戏本体，不是某个 mod 的目录。
+    /// </summary>
+    public Dictionary<string, ContentOverrideRecord> ContentOverrides { get; set; }
+        = new(StringComparer.OrdinalIgnoreCase);
+
     /// <summary>v1.01.0：Nexus 页搜索历史（对照官网 Recent Searches，最多 10 条，新词排前）。</summary>
     public List<string> NexusSearchHistory { get; set; } = new();
 
@@ -419,7 +444,7 @@ public sealed class JuniGridConfig
     public string NexusUserName { get; set; } = "";
     public string NexusUserEmail { get; set; } = "";
     public string NexusProfileUrl { get; set; } = "";
-    public bool   NexusIsPremium { get; set; }
+    public bool NexusIsPremium { get; set; }
 
     /// <summary>v1.1.1：界面主题（"light" | "dark"）。标题栏开关切换并落盘；
     /// 启动时 TitleBar 用它对齐前端（localStorage 为防闪白的同步快路径）。
@@ -431,7 +456,7 @@ public sealed class JuniGridConfig
     public string Language { get; set; } = "zh";
 
     /// <summary>颜色主题（强调色预设）："system"（默认，强调色跟随 Windows 系统色，按钮保持中性墨色）
-    /// | forest | mint | honey | parchment | sky | rose。每个预设自带浅色 + 深色两套调色板，
+    /// | forest | mint | honey | parchment | sky | rose | violet。每个预设自带浅色 + 深色两套调色板，
     /// 由 base.css 的 html[data-accent=…] / html[data-theme=dark][data-accent=…] 块驱动。</summary>
     public string Accent { get; set; } = "system";
 
@@ -466,6 +491,9 @@ public sealed class JuniGridConfig
     public Dictionary<int, string> NexusCategories { get; set; } = new();
     /// <summary>mod 文件夹 → 官网分类英文名（检查更新/补封面时顺手缓存，与 ModCovers 同生命周期）。</summary>
     public Dictionary<string, string> ModCategories { get; set; } = new();
+    /// <summary>已经查过官网、但没拿到分类的 mod 文件夹（Nexus 那边没配分类、或请求失败）。
+    /// 没有这份名单，回填每进一次 Mods 页就会把它们重查一遍 —— 白烧限流额度。</summary>
+    public List<string> ModCategoryTried { get; set; } = new();
 
     /// <summary>vNext：更新检查指纹缓存 —— Nexus modId → (updatedAt 指纹, 上次精查到的最新 MAIN 文件版本, 精查时间)。
     /// 进 Mod 页先跑一次免 key 的 GraphQL 批量指纹比对：updatedAt 没变的 mod 直接复用缓存版本号
@@ -484,33 +512,15 @@ public sealed class JuniGridConfig
     /// 未命中才做免 key 搜索并回写。只用于展示 —— 安装仍以下载后的 UniqueID 校验为准。</summary>
     public Dictionary<string, DependencyDisplayEntry> DependencyDisplays { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
-    /// <summary>v1.3.0 立绘页：每个角色当前生效的皮肤 —— 角色 id → 包 Folder（相对 Mods/）。
-    /// v2 规格：只有这一个字典（选中某皮肤 = 大头照+精灵图一起切换）；键为角色 id 或 "Horse"。</summary>
+    // ── 以下五本肖像换肤状态：换肤子系统已整体移除，没有任何代码再读写它们。
+    //    ⚠ 但不能删字段。新旧两个 app 共用同一个 %APPDATA%\JuniGrid\junigrid.config.json，
+    //    删掉属性 ⇒ 新 app 存盘时这几本键就整个消失 ⇒ 旧 app（junigrid-blazor）回来时
+    //    用户的皮肤选择与锁定全没了。所以留着当只读占位，值一律原样往返。
+    //    真要清掉，前提是先把新 app 的数据根改成另一个目录（StoragePaths.AppDataDir）。
     public Dictionary<string, string> PortraitSkins { get; set; } = new(StringComparer.OrdinalIgnoreCase);
-
-    /// <summary>v1.7.7：同一个内容包里多画风（Donut's 的 assets/Dawn、assets/Donut、…
-    /// 由 CP 配置 token 选一套）—— 角色 id → 画风目录名。
-    /// ⚠ PortraitSkins 的值格式**不能动**（老配置要能原样读），所以画风另存一本；
-    /// 逐季指定画风时键用 "角色 id␟季节"（␟ 不可能出现在角色 id 里，两本不会撞键）。</summary>
     public Dictionary<string, string> PortraitSkinVariants { get; set; } = new(StringComparer.OrdinalIgnoreCase);
-
-    /// <summary>v1.4 覆盖包机制：用户显式点了「默认」的角色 id。覆盖包会把这些角色的
-    /// 原版立绘拷进去以最高优先级 Load，压过其它启用包的同名补丁；不在名单里的角色
-    /// = 从未碰过，游戏里按 mod 自己的默认走。</summary>
     public List<string> PortraitVanillaDefaults { get; set; } = new();
-
-    /// <summary>
-    /// v1.7 肖像锁定：角色 id → 锁定条目（JSON 字符串，见 PortraitLockInfo）。
-    /// 锁定后 UI 整卡禁用，游戏内该 NPC 四季一律显示锁定时选中的那一张图
-    /// （不再跟季节变体轮换）。合并卡按成员 id 各写一条。
-    /// </summary>
     public Dictionary<string, string> PortraitLocks { get; set; } = new(StringComparer.OrdinalIgnoreCase);
-
-    /// <summary>
-    /// v1.7「一键恢复默认」：强制走【原版 xnb】的角色 id（冈瑟/马龙/法师这类
-    /// 原版有默认、SVE 也重绘了默认的，统一回原版而不是扩展包默认像）。
-    /// 用户之后再手动选皮肤时由 SelectSkin 移出本名单。
-    /// </summary>
     public List<string> PortraitTrueVanilla { get; set; } = new();
 
     /// <summary>首页统计缓存：上次探测到的游戏版本 / SMAPI / Mod 数。
@@ -576,6 +586,10 @@ public sealed class DependencyDisplayEntry
     /// （与依赖 UID 的作者段对不上就是搜错了，例：ChaseXavier.Miku 曾被认成 lucasedu11 的 4291）。
     /// 老配置没这个字段＝空串＝不可信，下次会重新解析。</summary>
     public string Uploader { get; set; } = "";
+    /// <summary>v1.5.2：这条结果是<b>父包官网 Requirements 表</b>给的（"requirements"）还是全站搜索
+    /// 猜的（空）。前者是作者自己登记的权威映射，没有上传者可比，所以靠这个字段而不是靠
+    /// <see cref="Uploader"/> 过可信闸；老配置没这个字段＝按搜索猜的处理。</summary>
+    public string Source { get; set; } = "";
 }
 
 /// <summary>启动器从 Nexus 安装过的 MAIN 文件快照（更新粘住判定用）。</summary>

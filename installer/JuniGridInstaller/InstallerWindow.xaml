@@ -253,6 +253,7 @@
               <ColumnDefinition Width="54" />
             </Grid.ColumnDefinitions>
             <TextBox x:Name="PathBox" Margin="18,0,12,0" VerticalContentAlignment="Center"
+                     TextChanged="OnPathChanged"
                      Background="Transparent" BorderThickness="0"
                      Foreground="#F4F7F5" CaretBrush="#F4F7F5" FontSize="14" />
             <Button x:Name="BtnBrowse" Grid.Column="1" Style="{StaticResource FolderButton}" Click="OnBrowse">
@@ -262,7 +263,14 @@
           </Grid>
         </Border>
         <TextBlock x:Name="PathHint" Text="请输入有效的安装路径" Foreground="{StaticResource ErrorBrush}" FontSize="12" Margin="4,8,0,0" Visibility="Collapsed" />
+        <!-- 换目录安装 = 搬家：把"数据会先搬过来"写在用户正要按的那个按钮上方，
+             而不是另弹一个"是否删除旧版本？"——那种框没人会读。 -->
+        <TextBlock x:Name="MoveHint" Foreground="#B9C4BD" FontSize="12" Margin="4,8,0,0"
+                   TextWrapping="Wrap" Visibility="Collapsed" />
         <CheckBox x:Name="DeskShortcut" Content="创建桌面快捷方式" IsChecked="True" Margin="2,18,0,0" Style="{StaticResource DarkCheck}" />
+        <!-- 「Nexus 网页的下载按钮归谁」不在这里问：装机只在配置里还没有这个键时写一个初值
+             （扫到别的管理器在接就不抢），之后归设置页的「一键安装」管。装机界面上放一个勾，
+             老用户升级时会被默认值悄悄改掉他自己关过的开关。 -->
         <Button x:Name="BtnInstall" Style="{StaticResource AccentButton}" Content="开 始 安 装" Height="56" FontSize="18" Margin="0,24,0,0" Click="OnInstall" />
         <Button x:Name="BtnBack" Style="{StaticResource GhostButton}" Content="返 回" Margin="0,16,0,0" HorizontalAlignment="Center" Click="OnBack" />
       </StackPanel>

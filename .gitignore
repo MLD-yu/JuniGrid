@@ -13,7 +13,13 @@ jh/
 jh2/
 vectrus/
 _revert-backup-*/
-index.html
+
+# 根目录「新版本介绍」网页原型（进行中的本地工作，不进库）。
+# /index.html 必须锚定：裸 index.html 会把 JuniGrid/wwwroot/index.html 一起忽略
+/index.html
+/app.js
+/styles.css
+/assets/
 
 # installer payload & build output (generated from publish/sc)
 installer/JuniGridInstaller/payload.lz

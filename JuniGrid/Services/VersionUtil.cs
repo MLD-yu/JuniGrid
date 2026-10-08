@@ -44,6 +44,58 @@ internal static class VersionUtil
     private static bool HasSuffix(string v)
         => v.Trim().TrimStart('v', 'V').IndexOfAny(new[] { '-', '+', ' ' }) >= 0;
 
+    /// <summary>v1.7.x：a 是否严格低于 b —— 给 manifest 的依赖 MinimumVersion 用。
+    /// 与 <see cref="IsNewer"/> 的区别就在预发布标签上：SMAPI 按 SemVer 判依赖，
+    /// <c>0.6.4-beta</c> 在它眼里<b>低于</c> <c>0.6.4</c>，而 IsNewer 把后缀整段剥掉，
+    /// 那种场合会判成"够用"而跟着 SMAPI 一起沉默（这次 完美手册 被跳过就是沉默的另一种写法）。
+    /// 任一侧读不出版本号一律返回 false：判不准就不指控，宁可漏报也不给一条假的「版本过旧」。</summary>
+    public static bool IsOlderThan(string? a, string? b)
+        => TrySplit(a, out var ap, out var apre) && TrySplit(b, out var bp, out var bpre)
+           && Compare(ap, apre, bp, bpre) < 0;
+
+    /// <summary>拆成「核心数字段」+「预发布段」。构建元数据（+ 之后）不参与比较。</summary>
+    private static bool TrySplit(string? v, out int[] core, out string[] pre)
+    {
+        core = Array.Empty<int>(); pre = Array.Empty<string>();
+        if (string.IsNullOrWhiteSpace(v)) return false;
+        var s = v.Trim();
+        var plus = s.IndexOf('+');
+        if (plus >= 0) s = s[..plus];
+        var dash = s.IndexOf('-');
+        var preRaw = dash > 0 ? s[(dash + 1)..] : "";
+        if (dash > 0) s = s[..dash];
+        var segs = s.Split('.', StringSplitOptions.RemoveEmptyEntries);
+        if (segs.Length is 0 or > 3) return false;
+        var nums = new int[segs.Length];
+        for (var i = 0; i < segs.Length; i++)
+            if (!int.TryParse(segs[i], out nums[i])) return false;
+        core = nums;
+        pre = preRaw.Length == 0 ? Array.Empty<string>() : preRaw.Split('.');
+        return true;
+    }
+
+    private static int Compare(int[] ac, string[] ap, int[] bc, string[] bp)
+    {
+        for (var i = 0; i < Math.Max(ac.Length, bc.Length); i++)
+        {
+            var x = i < ac.Length ? ac[i] : 0;
+            var y = i < bc.Length ? bc[i] : 0;
+            if (x != y) return x.CompareTo(y);
+        }
+        if (ap.Length == 0) return bp.Length == 0 ? 0 : 1;      // 同号：正式版 > 预发布版
+        if (bp.Length == 0) return -1;
+        for (var i = 0; i < Math.Min(ap.Length, bp.Length); i++)
+        {
+            var an = int.TryParse(ap[i], out var na);
+            var bn = int.TryParse(bp[i], out var nb);
+            if (an && bn) { var c = na.CompareTo(nb); if (c != 0) return c; }
+            else if (an) return -1;                              // 数字段 < 字母段
+            else if (bn) return 1;
+            else { var c = string.CompareOrdinal(ap[i], bp[i]); if (c != 0) return c; }
+        }
+        return ap.Length.CompareTo(bp.Length);                   // 前缀全等：段少的更低
+    }
+
     private static int[] Parts(string v)
     {
         var s = v.Trim().TrimStart('v', 'V');

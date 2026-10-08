@@ -1,0 +1,374 @@
+{
+ "PIF": {
+  "nodes": [
+   {
+    "modId": 20537,
+    "name": "PIF - Personal Rooms",
+    "summary": "PIF is a framework for new rooms in your farmhouse.It's especially useful on tiny farms and in multiplayer, as time stops in that room on days when the player didn't play.Access to your personal rooms will be locked for other players when",
+    "version": "1.4.6",
+    "thumbnailUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/thumbnails/20537/20537-1710339902-1020838652.gif",
+    "pictureUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/20537/20537-1710339902-1020838652.gif",
+    "downloads": 348772,
+    "endorsements": 3581,
+    "adultContent": false,
+    "uploader": {
+     "name": "DeLiXxN"
+    }
+   },
+   {
+    "modId": 28043,
+    "name": "(CR) Kisaa's Tiny Rooms Pack for PIF",
+    "summary": "A pack of 12 versatile tiny rooms to spice up your farmhouse or cabin. Some rooms upgrade alongside the farmhouse. Now with 7 new rooms!",
+    "version": "2.0.1",
+    "thumbnailUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/thumbnails/28043/28043-1738090007-1071331963.png",
+    "pictureUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/28043/28043-1738090007-1071331963.png",
+    "downloads": 107360,
+    "endorsements": 827,
+    "adultContent": false,
+    "uploader": {
+     "name": "crystalinerose"
+    }
+   },
+   {
+    "modId": 25552,
+    "name": "Balcony (PIF)",
+    "summary": "Adds a cute little balcony to decorate and grow a few crops. With dynamic background!",
+    "version": "1.1.3",
+    "thumbnailUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/thumbnails/25552/25552-1727444898-1750009577.png",
+    "pictureUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/25552/25552-1727444898-1750009577.png",
+    "downloads": 67363,
+    "endorsements": 922,
+    "adultContent": false,
+    "uploader": {
+     "name": "Sharogg"
+    }
+   },
+   {
+    "modId": 25435,
+    "name": "Cozy Backyard (PIF)",
+    "summary": "A cozy backyard for your farmhouse that slightly increases in size with each farmhouse upgrade.",
+    "version": "1.0.2",
+    "thumbnailUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/thumbnails/25435/25435-1719159808-475758824.png",
+    "pictureUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/25435/25435-1719159808-475758824.png",
+    "downloads": 43874,
+    "endorsements": 762,
+    "adultContent": false,
+    "uploader": {
+     "name": "Sharogg"
+    }
+   },
+   {
+    "modId": 28723,
+    "name": "HxW Tea Conservatory for CP and PIF",
+    "summary": "HxW Tea Conservatory - a tea-themed space with room for plants and decor ! Available with PIF OR as a new custom building!",
+    "version": "1.2",
+    "thumbnailUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/thumbnails/28723/28723-1729455871-1610597109.png",
+    "pictureUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/28723/28723-1729455871-1610597109.png",
+    "downloads": 38135,
+    "endorsements": 589,
+    "adultContent": false,
+    "uploader": {
+     "name": "Wildflourmods"
+    }
+   },
+   {
+    "modId": 28537,
+    "name": "Door Mania (PIF) and more wall decor",
+    "summary": "Adds two catalogues, one with over 200 doors to use with PIF, and one with a bunch of other wall decorations.",
+    "version": "1.1.0",
+    "thumbnailUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/thumbnails/28537/28537-1733416808-56944763.png",
+    "pictureUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/28537/28537-1733416808-56944763.png",
+    "downloads": 36882,
+    "endorsements": 609,
+    "adultContent": false,
+    "uploader": {
+     "name": "Sharogg"
+    }
+   },
+   {
+    "modId": 29289,
+    "name": "(CR) Kisaa's Extra Floors Pack for PIF",
+    "summary": "A pack of 2 undecorated extra floors that expand alongside farmhouse upgrades. For when you need more floors without needing to walk around too much in a big farmhouse.",
+    "version": "1.0.1",
+    "thumbnailUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/thumbnails/29289/29289-1731237527-1951300813.png",
+    "pictureUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/29289/29289-1731237527-1951300813.png",
+    "downloads": 35737,
+    "endorsements": 354,
+    "adultContent": false,
+    "uploader": {
+     "name": "crystalinerose"
+    }
+   },
+   {
+    "modId": 22515,
+    "name": "Vintner Vault (PIF)",
+    "summary": "A caskable storage vacility for PIF",
+    "version": "1.0.0",
+    "thumbnailUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/thumbnails/22515/22515-1713115691-1133056869.png",
+    "pictureUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/22515/22515-1713115691-1133056869.png",
+    "downloads": 22413,
+    "endorsements": 238,
+    "adultContent": false,
+    "uploader": {
+     "name": "DeLiXxN"
+    }
+   }
+  ]
+ },
+ "DLX": {
+  "nodes": [
+   {
+    "modId": 44017,
+    "name": "KcatClo dlx",
+    "summary": "老乡 滴泪系小衣服要不要",
+    "version": "1.6.15",
+    "thumbnailUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/thumbnails/44017/44017-1774178233-2122282641.png",
+    "pictureUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/44017/44017-1774178233-2122282641.png",
+    "downloads": 1215,
+    "endorsements": 18,
+    "adultContent": false,
+    "uploader": {
+     "name": "Kittenpurrsss"
+    }
+   }
+  ]
+ },
+ "DLX.PIF": {
+  "nodes": []
+ },
+ "Tilesheets": {
+  "nodes": [
+   {
+    "modId": 4736,
+    "name": "DaisyNiko's Tilesheets",
+    "summary": "just the tilesheets",
+    "version": "1.12",
+    "thumbnailUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/thumbnails/4736/4736-1753608539-1341377208.png",
+    "pictureUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/4736/4736-1753608539-1341377208.png",
+    "downloads": 2982690,
+    "endorsements": 42888,
+    "adultContent": false,
+    "uploader": {
+     "name": "DaisyNiko"
+    }
+   },
+   {
+    "modId": 9599,
+    "name": "Lumisteria Tilesheets - Indoor",
+    "summary": "This mod is a resource mod for map modder adding a new tilesheet containing various furnitures to use in their map. Pls read the instructions to know how the mod works !",
+    "version": "1.4.0",
+    "thumbnailUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/thumbnails/9599/9599-1649793216-1756365486.png",
+    "pictureUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/9599/9599-1649793216-1756365486.png",
+    "downloads": 1601119,
+    "endorsements": 19168,
+    "adultContent": false,
+    "uploader": {
+     "name": "Lumisteria"
+    }
+   },
+   {
+    "modId": 10448,
+    "name": "Lumisteria Tilesheets - Outdoor",
+    "summary": "This mod is a resource mod for map modder adding a new tilesheet containing various buildings to use in their map. Pls read the instructions to know how the mod works !",
+    "version": "1.3.0",
+    "thumbnailUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/thumbnails/10448/10448-1688069811-995469952.png",
+    "pictureUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/10448/10448-1688069811-995469952.png",
+    "downloads": 1415610,
+    "endorsements": 15810,
+    "adultContent": false,
+    "uploader": {
+     "name": "Lumisteria"
+    }
+   },
+   {
+    "modId": 20139,
+    "name": "HxW Tilesheets",
+    "summary": "A resource for modders including (most) of the H&W furniture suite to be used for your maps!",
+    "version": "2.0.0",
+    "thumbnailUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/thumbnails/20139/20139-1707423014-1593109988.png",
+    "pictureUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/20139/20139-1707423014-1593109988.png",
+    "downloads": 968670,
+    "endorsements": 8792,
+    "adultContent": false,
+    "uploader": {
+     "name": "HimeTarts"
+    }
+   },
+   {
+    "modId": 15707,
+    "name": "MixedBag's Tilesheets",
+    "summary": "A mixed bag of useful tilesheets. No aesthetics inside. Basically just town paths.",
+    "version": "3.1.1",
+    "thumbnailUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/thumbnails/15707/15707-1677804703-1265780752.png",
+    "pictureUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/15707/15707-1677804703-1265780752.png",
+    "downloads": 270659,
+    "endorsements": 4054,
+    "adultContent": false,
+    "uploader": {
+     "name": "JefGrizli"
+    }
+   },
+   {
+    "modId": 10908,
+    "name": "Medieval DNT ( DaisyNiko's Tilesheets retexture )",
+    "summary": "Retexture of some decor on DaisyNiko's Tilesheets.",
+    "version": "1.1",
+    "thumbnailUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/thumbnails/10908/10908-1693685528-2007394488.png",
+    "pictureUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/10908/10908-1693685528-2007394488.png",
+    "downloads": 206046,
+    "endorsements": 2960,
+    "adultContent": false,
+    "uploader": {
+     "name": "Gweniaczek"
+    }
+   },
+   {
+    "modId": 28434,
+    "name": "crystalinerose Tilesheets",
+    "summary": "Kisaa's mapmaking resources, featuring: transparent/seasonal bridges, docks, flowering (+ non-flowering) cliff vines, river objects, water and lighting features, seasonal deco foliage, clutter, and mines tilesheet expansion. Has native",
+    "version": "1.3.2",
+    "thumbnailUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/thumbnails/28434/28434-1728319308-128501513.png",
+    "pictureUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/28434/28434-1728319308-128501513.png",
+    "downloads": 194688,
+    "endorsements": 1881,
+    "adultContent": false,
+    "uploader": {
+     "name": "crystalinerose"
+    }
+   },
+   {
+    "modId": 13743,
+    "name": "Alvadea's Tilesheets",
+    "summary": "It's a unique tilesheet made by Alvadea. Can be used in custom maps.",
+    "version": "2.2.1",
+    "thumbnailUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/thumbnails/13743/13743-1662901268-1256019742.png",
+    "pictureUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/13743/13743-1662901268-1256019742.png",
+    "downloads": 119920,
+    "endorsements": 1542,
+    "adultContent": false,
+    "uploader": {
+     "name": "Alvadea"
+    }
+   }
+  ]
+ },
+ "Sharogg": {
+  "nodes": [
+   {
+    "modId": 27117,
+    "name": "Sharogg's Tilesheets (indoor and outdoor structures)",
+    "summary": "A map making resource that adds several new tilesheets including an outdoor tilesheet with several wooden bridges, waterspouts, cliff foliage and an indoor tilesheet with extended room borders, wainscoting, pillars and more. Compatible with",
+    "version": "1.3.0",
+    "thumbnailUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/thumbnails/27117/27117-1784214880-1830802045.png",
+    "pictureUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/27117/27117-1784214880-1830802045.png",
+    "downloads": 109260,
+    "endorsements": 1234,
+    "adultContent": false,
+    "uploader": {
+     "name": "Sharogg"
+    }
+   },
+   {
+    "modId": 36778,
+    "name": "Sharogg's Panoramas (MMAP)",
+    "summary": "Adds textures to make dynamic panoramas with MMAP for use with custom maps, including example files.",
+    "version": "1.0.0",
+    "thumbnailUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/thumbnails/36778/36778-1755513422-886361909.png",
+    "pictureUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/36778/36778-1755513422-886361909.png",
+    "downloads": 79036,
+    "endorsements": 413,
+    "adultContent": false,
+    "uploader": {
+     "name": "Sharogg"
+    }
+   },
+   {
+    "modId": 25552,
+    "name": "Balcony (PIF)",
+    "summary": "Adds a cute little balcony to decorate and grow a few crops. With dynamic background!",
+    "version": "1.1.3",
+    "thumbnailUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/thumbnails/25552/25552-1727444898-1750009577.png",
+    "pictureUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/25552/25552-1727444898-1750009577.png",
+    "downloads": 67363,
+    "endorsements": 922,
+    "adultContent": false,
+    "uploader": {
+     "name": "Sharogg"
+    }
+   },
+   {
+    "modId": 25435,
+    "name": "Cozy Backyard (PIF)",
+    "summary": "A cozy backyard for your farmhouse that slightly increases in size with each farmhouse upgrade.",
+    "version": "1.0.2",
+    "thumbnailUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/thumbnails/25435/25435-1719159808-475758824.png",
+    "pictureUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/25435/25435-1719159808-475758824.png",
+    "downloads": 43874,
+    "endorsements": 762,
+    "adultContent": false,
+    "uploader": {
+     "name": "Sharogg"
+    }
+   },
+   {
+    "modId": 21567,
+    "name": "Sunroom Greenhouse",
+    "summary": "Greenhouse interior inspired by Caroline's sunroom, in three different sizes with an optional cellar and a seasonal background. Now with two additional background options!",
+    "version": "1.2.1",
+    "thumbnailUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/thumbnails/21567/21567-1727448244-1826188255.png",
+    "pictureUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/21567/21567-1727448244-1826188255.png",
+    "downloads": 39052,
+    "endorsements": 498,
+    "adultContent": false,
+    "uploader": {
+     "name": "Sharogg"
+    }
+   },
+   {
+    "modId": 28537,
+    "name": "Door Mania (PIF) and more wall decor",
+    "summary": "Adds two catalogues, one with over 200 doors to use with PIF, and one with a bunch of other wall decorations.",
+    "version": "1.1.0",
+    "thumbnailUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/thumbnails/28537/28537-1733416808-56944763.png",
+    "pictureUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/28537/28537-1733416808-56944763.png",
+    "downloads": 36882,
+    "endorsements": 609,
+    "adultContent": false,
+    "uploader": {
+     "name": "Sharogg"
+    }
+   },
+   {
+    "modId": 26134,
+    "name": "Calcifer Fireplaces (Ghibli)",
+    "summary": "Adds fireplaces that have Calcifer in them instead of the normal flame animation as additional furniture items.",
+    "version": "1.0.2",
+    "thumbnailUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/thumbnails/26134/26134-1727445689-616675538.png",
+    "pictureUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/26134/26134-1727445689-616675538.png",
+    "downloads": 23139,
+    "endorsements": 436,
+    "adultContent": false,
+    "uploader": {
+     "name": "Sharogg"
+    }
+   },
+   {
+    "modId": 28132,
+    "name": "Personal Hot Springs (PIF)",
+    "summary": "Adds two fully decoratable hot spring rooms for PIF.",
+    "version": "1.0.0",
+    "thumbnailUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/thumbnails/28132/28132-1727445631-8020388.png",
+    "pictureUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/28132/28132-1727445631-8020388.png",
+    "downloads": 21877,
+    "endorsements": 472,
+    "adultContent": false,
+    "uploader": {
+     "name": "Sharogg"
+    }
+   }
+  ]
+ },
+ "Sharogg.Tilesheets": {
+  "nodes": []
+ }
+}

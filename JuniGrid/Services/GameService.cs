@@ -97,6 +97,28 @@ public sealed class GameService
         return null;   // 读不到版本 → 视为未识别，避免与 GitHub 版本比较时抖动
     }
 
+    /// <summary>SMAPI 住在游戏根目录（主程序 + smapi-internal/），不在 Mods\ 里 —— 所以
+    /// 「扫 Mods 判已装」对它永远为假，浏览页/详情页/依赖栏各自补过一遍特判。这里是一个入口：
+    /// 装了没有看主程序文件在不在，版本号能读到就带上（读不到 Installed 仍为 true，
+    /// 不能因为抽不出版本就说人没装 —— 那是 ProbeSmapiVersion 的口径，不是"装没装"的口径）。</summary>
+    public (bool Installed, string? Version) SmapiState(string? gamePath, bool freshRead = false)
+    {
+        if (!HasSmapiLoader(gamePath)) return (false, null);
+        return (true, ProbeSmapiVersion(gamePath!, freshRead));
+    }
+
+    /// <summary>游戏根下有没有 SMAPI 的主程序文件（exe 或 dll 任一）。
+    /// 单独抽出来是给安装路由用的：「装了没有」这件事全应用只能有一个问法，
+    /// 否则浏览页、详情页、依赖栏、安装路由会各说各话（历史上正是这样补了四遍特判）。</summary>
+    public static bool HasSmapiLoader(string? gamePath)
+    {
+        if (string.IsNullOrWhiteSpace(gamePath) || !Directory.Exists(gamePath)) return false;
+        // exe 与 dll 任一即算装了：正常安装两者都有，但覆盖/中断安装会只剩一个，
+        // 命令桥那条判据看的是 dll，依赖栏看的是 exe，两边都不该说假话。
+        return File.Exists(Path.Combine(gamePath, "StardewModdingAPI.exe"))
+            || File.Exists(Path.Combine(gamePath, "StardewModdingAPI.dll"));
+    }
+
     // ------------------------------------------------------------------
     // SMAPI 自己的图标（从 exe 里抽取，转成 data URI 给界面用）
     // ------------------------------------------------------------------

@@ -179,7 +179,7 @@
     border-radius: 14px; padding: 14px 16px 18px;
     background: #17181d;
     box-shadow: 0 6px 22px rgba(0,0,0,.14), inset 0 0 0 1px rgba(255,255,255,.06);
-}.jg-nexus-scope .jg-trend-grain { position: absolute; inset: 0; z-index: 0; opacity: .92; }.jg-nexus-scope .jg-home-sec-hero > *:not(.jg-trend-grain) { position: relative; z-index: 1; }.jg-nexus-scope .jg-user-tip-logout { color: #c0453a !important; margin-left: 12px; }.jg-nexus-scope .jg-user-tip-logout:hover { color: #e05347 !important; }.jg-nexus-scope .jg-nexus-logo { cursor: pointer; }/* ─── v1.01.0：Nexus 页美化（退出登录按钮 / 米色板块 / 搜索历史 / 返回箭头 / 查看全部）─── */
+}.jg-nexus-scope .jg-trend-grain { position: absolute; inset: 0; z-index: 0; opacity: .92; }.jg-nexus-scope .jg-home-sec-hero > *:not(.jg-trend-grain) { position: relative; z-index: 1; }.jg-nexus-scope .jg-nexus-logo { cursor: pointer; }/* ─── v1.01.0：Nexus 页美化（退出登录按钮 / 米色板块 / 搜索历史 / 返回箭头 / 查看全部）─── */
 /* 板块背景改米色 #F5F5DC，Grainient canvas 透明度调低免得盖过底色 */
 .jg-nexus-scope .jg-hero-cream { background: var(--jg-well); }.jg-nexus-scope .jg-hero-cream .jg-trend-grain { opacity: .45; }/* 退出登录：红底白字（detail.css 已定，此处只压 Nexus 作用域旧尺寸） */
 .jg-nexus-scope .jg-user-tip-logoutbtn {

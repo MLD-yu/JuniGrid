@@ -171,7 +171,7 @@
             {
                 var accent = a.Key == "system" ? SystemHex : a.Accent;
                 var cur = Cfg.Current.Accent == a.Key;
-                <button class="jg-accent-card @(cur ? "cur" : "")" @onclick="() => SetAccent(a.Key)">
+                <button class="jg-accent-card @(cur ? "cur" : "")" data-key="@a.Key" @onclick="() => SetAccent(a.Key)">
                     <span class="jg-accent-mock" style="@($"--mock-accent:{accent}")">
                         <span class="jg-mock-bar"></span>
                         <span class="jg-mock-dot @(cur ? "on" : "")"></span>
@@ -362,6 +362,13 @@
                                 <span class="jg-store-main" style="flex:1;min-width:0">
                                     <span class="jg-store-name" style="display:flex;align-items:center;gap:6px">
                                         @Loc.T(c.Name)
+                                        @if (c.Destructive)
+                                        {
+                                            <span class="jg-help-tip jg-help-tip--danger">
+                                                <span class="jg-help-tip-btn">⚠</span>
+                                                <span class="jg-help-tip-bubble">@Loc.T("删除此缓存会造成数据丢失，请勿随意删除！！！")</span>
+                                            </span>
+                                        }
                                         <svg class="jg-acc-chev" viewBox="0 0 16 16" fill="none" aria-hidden="true"
                                              style="display:inline-block;vertical-align:middle">
                                             <path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
@@ -415,10 +422,25 @@
                     <div class="jg-store-main">
                         <div class="jg-store-name">
                             @Loc.T(c.Name)
+                            @if (c.Destructive)
+                            {
+                                <span class="jg-help-tip jg-help-tip--danger">
+                                    <span class="jg-help-tip-btn">⚠</span>
+                                    <span class="jg-help-tip-bubble">@Loc.T("删除此缓存会造成数据丢失，请勿随意删除！！！")</span>
+                                </span>
+                            }
                             @if (c.Movable) { <span class="jg-store-tag">@Loc.T("可迁移")</span> }
                             @if (!c.Cleanable) { <span class="jg-store-tag">@Loc.T("固定")</span> }
                         </div>
                         <div class="jg-store-path" title="@c.DisplayPath">@Loc.T(c.Note) · @c.DisplayPath</div>
+                        @* 警示必须落在行面上，不能只藏在 hover 的 Tip 里：这行挂在「缓存与存储」页、
+                           徽章只写「固定」，用户读成"搬不走的一坨缓存"就会自己开文件夹全删 ——
+                           而人工隔离批次（_quarantine）只有这一行能捞回来。
+                           占用还没算出来时也先亮着（宁可多提示），只有确认是 0 才收起来。 *@
+                        @if (c.Id == "saveshidden" && (Storage.IsComputing(c.Id) || Storage.GetSize(c.Id) != 0))
+                        {
+                            <div class="jg-store-warn">@Loc.T("⚠ 这里不是缓存 —— 是被收起来的存档本体（含人工隔离批次），别手动删")</div>
+                        }
                     </div>
                     <div class="jg-store-size">@FmtSize(c.Id)</div>
                     @if (c.Cleanable)
@@ -494,7 +516,7 @@
                 </div>
                 <div class="jg-sponsor">
                     <div class="jg-sponsor-title">@Loc.T("赞助支持：")</div>
-                    <div class="jg-sponsor-sub">@Loc.T("如果它能帮到你，可以请作者喝杯咖啡")</div>
+                    <div class="jg-sponsor-sub">@Loc.T("如果你喜欢 JuniGrid，可以请作者喝杯咖啡吗")</div>
                     <div class="jg-sponsor-tabs">
                         <button type="button" class="jg-sponsor-tab @(_sponsorWechat ? "active" : "")" @onclick='() => _sponsorWechat = true'>@Loc.T("微信")</button>
                         <button type="button" class="jg-sponsor-tab @(!_sponsorWechat ? "active" : "")" @onclick='() => _sponsorWechat = false'>@Loc.T("支付宝")</button>
@@ -576,6 +598,7 @@
         ("parchment", "羊皮纸", "Parchment", "#b07b45"),
         ("sky",       "天蓝",   "Sky",       "#2f80d8"),
         ("rose",      "玫红",   "Rose",      "#dd4a72"),
+        ("violet",    "紫罗兰", "Violet",    "#7c3aed"),
     };
 
     private void SetAccent(string key)
@@ -1001,11 +1024,12 @@
     }
 
     /// <summary>v1.4.5：下载任务结束自动刷新手风琴列表（之前只在展开时加载一次，
-    /// 下载完成后新版本不出现，让人以为"只剩一个版本"）。刷新后强制面板高度归位 auto——
-    /// GSAP 展开动画会把 height 固定为当时内容的高度，内容变多后不归位就会溢出/裁剪。</summary>
+    /// 下载完成后新版本不出现，让人以为"只剩一个版本"）。
+    /// 高度不用在这里收尾：展开动画结束时 accordionToggle 已经把 height 归位 auto
+    /// （junigrid.core.js 的 onComplete），auto 的面板随后加条目自己会长。</summary>
     private void OnCenterChangedForVerCache()
     {
-        _ = InvokeAsync(async () =>
+        _ = InvokeAsync(() =>
         {
             if (!_verAccOpen) return;
             var running = Center.Snapshot().Any(t => t.Kind == "gameversion" && t.Status == "running");
@@ -1013,10 +1037,6 @@
             {
                 LoadVerCaches();
                 StateHasChanged();
-                await Task.Delay(50);   // 等 Blazor 把新条目渲染进 DOM 再量高
-                try { await JS.InvokeVoidAsync("junigridJs.eval",
-                    "var p=document.querySelector('#jg-vercache-panel'); if(p&&p.classList.contains('open')){p.style.height='auto';p.style.overflow='';}"); }
-                catch { }
             }
         });
     }
@@ -1030,13 +1050,6 @@
         // 等 Blazor 把全部条目渲染进 DOM 再量高，否则 GSAP 只按旧内容高度展开
         await Task.Delay(30);
         try { await JS.InvokeVoidAsync("junigridJs.accordionToggle", "#jg-vercache-panel", _verAccOpen); } catch { }
-        if (_verAccOpen)
-        {
-            await Task.Delay(420);   // 等展开动画结束
-            try { await JS.InvokeVoidAsync("junigridJs.eval",
-                "var p=document.querySelector('#jg-vercache-panel'); if(p&&p.classList.contains('open')){p.style.height='auto';p.style.overflow='';p.style.maxHeight='320px';}"); }
-            catch { }
-        }
     }
 
     // 版本缓存是硬删（Depot.DeleteStagedPackage → Directory.Delete），不进回收站、删了要重下几 GB

@@ -272,11 +272,11 @@
     @if (!_initialLoading && TotalMissingUids.Count > 0)
     {
         <div class="jg-card" style="margin-top:12px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;border-left:3px solid #f2b544">
-            <span style="font-size:13px"> @Loc.T("检测到") <b>@TotalMissingUids.Count</b>@Loc.F(" 个缺失依赖，影响 {0} 个 mod ", MissingAffectedMods)</span>
+            <span style="font-size:13px"> @Loc.T("检测到") <b>@TotalMissingUids.Count</b>@Loc.F(" 个依赖没装或版本过旧，影响 {0} 个 mod ", MissingAffectedMods)</span>
             <button class="jg-pill-dark" style="padding:7px 16px;font-size:12.5px"
                     disabled="@(_depInstalling || Installer.Busy)"
                     @onclick="() => AskInstallMissingDeps(null)">
-                @(_depInstalling ? Loc.T("正在安装…（进度见右下角任务）") : Loc.T("一键安装缺失依赖"))
+                @(_depInstalling ? Loc.T("正在安装…（进度见右下角任务）") : Loc.T("一键安装/更新依赖"))
             </button>
             <button class="jg-pill-ghost" style="padding:7px 14px;font-size:12.5px"
                     @onclick='() => SetFilter("missing")'>@Loc.T("查看列表")</button>
@@ -328,6 +328,8 @@
                     var st = GetState(m.Folder);
                     var cover = GetCover(m);
                     var missing = MissingDeps(m);
+                    var stale = StaleDeps(m);
+                    var toInstall = DepsToInstall(m);
                     @* v1.1.8：@key 换成"启禁用不会变"的身份键（UID，没 UID 的散装文件夹退回 folder）。
                        旧 key 是 Folder#序号 —— 启禁用就是把 Folder 改名（X ↔ .X），于是每次点开关
                        这一行都被销毁重建：封面重新解码闪一下、正在跑的开关动画被掐断、
@@ -355,7 +357,7 @@
                                 @* 有效本地版本：优先展示「启动器已装上的 N 网文件版本」，
                                    避免作者忘改 manifest 时列表永远停在 0.0.1 *@
                                 <span class="ver">@NexusUpdateTruth.EffectiveLocalVersion(Cfg.Current, m)</span>
-                                @if (m.IsConvertedPortraitPack)
+                                @if (m.IsConvertedPack)
                                 {
                                     <span class="jg-tag" data-tip='@Loc.T("JuniGrid 把 Portraiture 素材转成的 CP 包，不参与 N 网版本比对")'>@Loc.T("已转换")</span>
                                 }
@@ -433,8 +435,56 @@
                             @if (missing.Count > 0)
                             {
                                 @* v1.2.5：显示解析出的 mod 名而不是裸 UID —— 玩家看到
-                                   "ChaseXavier.Miku" 这种字符串并不能知道要下哪个 mod。 *@
-                                <div class="jg-mod-updmsg failed" style="white-space:normal">@Loc.F(" 缺少依赖：{0} ", string.Join("、", missing.Select(DepLabel)))</div>
+                                   "ChaseXavier.Miku" 这种字符串并不能知道要下哪个 mod。
+                                   v1.5.1：名字做成可点入口，点了直接进那个 mod 的详情页
+                                   （解析不到 Nexus 页面的保持纯文字：宁可不给入口，
+                                   也不能把人领到别人的 mod 页上）。 *@
+                                <div class="jg-mod-updmsg failed" style="white-space:normal">
+                                    @Loc.F(" 缺少依赖：{0} ", "")
+                                    @for (var i = 0; i < missing.Count; i++)
+                                    {
+                                        if (i > 0) { <text>、</text> }
+                                        var depUid = missing[i];
+                                        var depDi = _depNames.TryGetValue(depUid, out var dd) ? dd : null;
+                                        var depId = depDi?.ModId ?? InstalledDepNexusId(depUid);
+                                        @if (depId is > 0)
+                                        {
+                                            <button type="button" class="jg-dep-link" @onclick:stopPropagation="true"
+                                                    title="@Loc.T("点击查看 mod 详情")"
+                                                    @onclick="() => OpenDepByUid(depUid, depId)">@DepLabel(depUid)</button>
+                                        }
+                                        else
+                                        {
+                                            <span>@DepLabel(depUid)</span>
+                                        }
+                                    }
+                                </div>
+                            }
+                            @if (stale.Count > 0)
+                            {
+                                @* SMAPI 对「装得不够新」和对「没装」的处置一模一样（本 mod 整条 Skipped），
+                                   所以同样标红；带上本机版本与要求的版本，玩家才知道该把谁换成哪一版。
+                                   v1.5.1：装了的那批本地条目自带 NexusModId，点名字直接开详情页。 *@
+                                <div class="jg-mod-updmsg failed" style="white-space:normal">
+                                    @Loc.F(" 依赖版本过旧：{0} ", "")
+                                    @for (var i = 0; i < stale.Count; i++)
+                                    {
+                                        if (i > 0) { <text>、</text> }
+                                        var staleUid = stale[i].Uid;
+                                        var staleDi = _depNames.TryGetValue(staleUid, out var sd) ? sd : null;
+                                        var staleId = staleDi?.ModId ?? InstalledDepNexusId(staleUid);
+                                        @if (staleId is > 0)
+                                        {
+                                            <button type="button" class="jg-dep-link" @onclick:stopPropagation="true"
+                                                    title="@Loc.T("点击查看 mod 详情")"
+                                                    @onclick="() => OpenDepByUid(staleUid, staleId)">@DepLabel(staleUid)</button>
+                                        }
+                                        else
+                                        {
+                                            <span>@DepLabel(staleUid)</span>
+                                        }
+                                    }
+                                </div>
                             }
                             @* v1.08：检查失败/超时不再在行内显示红字，统一收进筛选栏提示 *@
                         </div>
@@ -462,29 +512,23 @@
                                     </svg>
                                 </button>
                                 <div class="jg-sort-menu">
-                                    @if (missing.Count > 0)
+                                    @if (toInstall.Count > 0)
                                     {
-                                        <button class="jg-sort-item" @onclick="() => MenuAct(() => AskInstallMissingDeps(missing))">@Loc.F(" 安装缺失依赖（{0}） ", missing.Count)</button>
+                                        <button class="jg-sort-item" @onclick="() => MenuAct(() => AskInstallMissingDeps(toInstall))">@Loc.F(" 安装/更新依赖（{0}） ", toInstall.Count)</button>
                                     }
-                                    @if (!m.IsConvertedPortraitPack
+                                    @if (!m.IsConvertedPack
                                          && m.NexusModId is not null
                                          && NexusUpdateTruth.ShouldShowUpdate(Cfg.Current, m, st.RemoteVersion, st.RemoteFileId))
                                     {
                                         <button class="jg-sort-item" @onclick="() => MenuAct(() => OpenUpdatePage(m))">@Loc.F(" 更新到 {0} ", st.RemoteVersion)</button>
                                     }
-                                    @if (m.IsConvertedPortraitPack && m.NexusModId is not null)
+                                    @if (m.IsConvertedPack && m.NexusModId is not null)
                                     {
                                         <button class="jg-sort-item" @onclick="() => MenuAct(() => OpenUpdatePage(m))"> @Loc.T("打开 N 网原包页") </button>
                                     }
                                     @if (m.NexusModId is not null)
                                     {
                                         <button class="jg-sort-item" @onclick="() => MenuAct(() => _ = OpenDetail(m))">@Loc.T("mod 详情")</button>
-                                    }
-                                    @if (LoosePortraitCandidate(m))
-                                    {
-                                        @* 手工拖进来的裸 PNG/XNB 素材目录：安装管线只在下装那一刻转换，
-                                           这种手放的以前没人管 —— 给一个显式入口，点了才转 *@
-                                        <button class="jg-sort-item" @onclick="() => MenuAct(() => AskConvertPortrait(m))"> @Loc.T("转成 CP 肖像包") </button>
                                     }
                                     <button class="jg-sort-item" @onclick="() => MenuAct(() => OpenRemark(m))">@Loc.T("备注 / 重命名")</button>
                                     <button class="jg-sort-item" @onclick="() => MenuAct(() => OpenFolder(m))">@Loc.T("打开文件所在位置")</button>
@@ -609,20 +653,6 @@
         </div>
     }
 
-    @if (_pendingConvert is not null)
-    {
-        <div class="jg-modal-overlay" @onclick="CancelConvertPortrait">
-            <div class="jg-modal" @onclick:stopPropagation style="max-width:520px">
-                <div class="jg-modal-title">@Loc.T("转成 CP 肖像包")</div>
-                <div class="jg-modal-body"> @Loc.T("将把") <b>@_pendingConvert.Folder</b> @Loc.T("里的裸图片转成一个标准 Content Patcher 肖像包， 之后由启动器的立绘页接管（不用装 Portraiture 也能生效）。") <div style="margin-top:10px"> @Loc.T("· 原目录")<b>@Loc.T("整体挪去留底")</b>@Loc.T("（缓存目录下的") <code>mods-backup\@(_pendingConvert.Folder)-raw-@Loc.T("时间戳")</code>@Loc.T("）， 不会删除，随时能挪回 Mods；")<br /> @Loc.T("· ⚠ 转完之后这几个角色的立绘由启动器的覆盖包控制，") <b>@Loc.T("Portraiture 的「按 P 实时切换」对它们失效")</b>@Loc.T("（覆盖包优先级更高）。") </div>
-                </div>
-                <div class="jg-modal-actions">
-                    <button type="button" class="jg-pill-ghost" data-modal-close @onclick="CancelConvertPortrait">@Loc.T("取消")</button>
-                    <button type="button" class="jg-pill-dark" @onclick="ConfirmConvertPortrait">@Loc.T("转换")</button>
-                </div>
-            </div>
-        </div>
-    }
 
     @* ── v1.2.0：一键安装缺失依赖 —— 确认弹窗（空列表 = 全部缺失依赖）── *@
     @if (_pendingDepUids is not null)
@@ -742,9 +772,10 @@
                     @* 只留这一句：宿主 mod 更新把覆盖端走，是唯一会让人"以为汉化还在生效"的坑。 *@
                     <div style="margin-top:8px;font-size:12px;opacity:.6">@Loc.T("宿主 mod 更新过一次的话汉化会失效，打开一次开关就能重新应用。")</div>
                 </div>
+                @* 这里不放「全部删除」：那颗金色主按钮 + 无确认 = 一眼被当成"保存/确定"，
+                   按下去就把宿主 mod 上所有覆盖包（汉化本体）全删了。逐行的「删除」够用。 *@
                 <div class="jg-modal-actions">
                     <button type="button" class="jg-pill-ghost" @onclick="CloseOverlayList">@Loc.T("关闭")</button>
-                    <button type="button" class="jg-pill-dark" @onclick="RevertAllOverlay">@Loc.T("全部删除")</button>
                 </div>
             </div>
         </div>
@@ -847,7 +878,6 @@
     private SmapiUpdateInfo? _smapiUpdate;
     private bool _smapiUpdating;
     private ModEntry? _pendingDeleteMod;   // 待确认删除的单个 mod（弹窗确认后真正卸载）
-    private ModEntry? _pendingConvert;     // 待确认「转成 CP 肖像包」的裸素材目录
     private bool _pendingBatchDelete;      // 待确认的批量删除（弹窗确认后真正卸载）
     // v1.09：删除确认弹窗里的"移入mod回收站"复选框 —— 默认不勾（沿用旧的彻底删除），
     // 勾选后删除的 mod 进 Mods/.junigrid_trash 常驻回收站，可从 设置→存储 打开手动还原
@@ -1101,46 +1131,6 @@
         _pendingDeleteMod = m;
     }
 
-    /// <summary>这一行是不是「手工拖进来的裸肖像素材目录」。判定要求整棵子树没有 manifest.json、
-    /// 且至少一张图的文件名对得上原版角色名 —— 所以 SVE、Downtown Zuzu 这类"包内有图"的不会被列进来。</summary>
-    private bool LoosePortraitCandidate(ModEntry m)
-    {
-        if (m.HasManifest) return false;
-        var gp = Cfg.Current.GamePath;
-        if (string.IsNullOrWhiteSpace(gp)) return false;
-        return PortraitSkinService.LooksLikeLoosePortraitFolder(gp, Path.Combine(gp, "Mods", m.Folder));
-    }
-
-    private void AskConvertPortrait(ModEntry m)
-    {
-        CloseDropdownsForDialog();
-        _pendingConvert = m;
-    }
-    private void CancelConvertPortrait() => _pendingConvert = null;
-
-    private async Task ConfirmConvertPortrait()
-    {
-        var m = _pendingConvert;
-        _pendingConvert = null;
-        if (m is null) return;
-        var gp = Cfg.Current.GamePath;
-        string? err = null, name = null;
-        // 转换要拷图/解 XNB/写 content.json，几百 MB 的素材包不能睡在 UI 线程上
-        await Task.Run(() => err = ModSvc.ConvertLoosePortraitFolder(gp, m.Folder, out name));
-        if (err is null)
-        {
-            ShowNotice("ok", LocService.Tf("已转成 CP 肖像包「{0}」；原素材挪去缓存目录的 mods-backup 留底，随时能挪回 Mods", name));
-            AppLog.Warn("Mods", $"素材目录转 CP 包：{m.Folder} → {name}");
-            Rescan();
-            PageRefresh.Request("portraits");
-        }
-        else
-        {
-            ShowNotice("err", err);
-            AppLog.Warn("Mods", $"转换失败：{m.Folder} — {err}");
-        }
-        StateHasChanged();
-    }
 
     private void AskBatchDelete()
     {
@@ -1359,6 +1349,76 @@
         catch (Exception ex) { AppLog.Warn("Mods", "分类表拉取失败: " + ex.Message); }
     }
 
+    /// <summary>这个 mod 的官网分类是不是已经能显示了 —— 与 GetNexusCategory 的前两档同口径
+    /// （含禁用行的 "." 前缀变体），否则回填会每次都把已解决的行重查一遍。</summary>
+    private bool HasCachedCategory(string folder)
+    {
+        if (Cfg.Current.ModCategories.ContainsKey(folder)) return true;
+        var norm = folder.Split('/'); norm[0] = norm[0].TrimStart('.');
+        var key = string.Join('/', norm);
+        return key != folder && Cfg.Current.ModCategories.ContainsKey(key);
+    }
+
+    private int _catBackfillRunning;
+
+    /// <summary>官网分类回填。刻意和 BackfillCoversAsync 分开：封面只在【缺封面】时才发请求，
+    /// 而分类要覆盖所有带 NexusModId 的行。实测 119 个 mod 只有 3 个有分类 —— 因为旧路径下分类是
+    /// 封面回填的副产品（still 集合），封面缓存齐了就永远轮不到。</summary>
+    private async Task BackfillCategoriesAsync()
+    {
+        if (Interlocked.Exchange(ref _catBackfillRunning, 1) == 1) return;
+        try
+        {
+            await EnsureCategoriesAsync();
+            if (Cfg.Current.NexusCategories.Count == 0) return;   // 分类表还没拉到，下次再说
+            var tried = new HashSet<string>(Cfg.Current.ModCategoryTried, StringComparer.OrdinalIgnoreCase);
+            var need = _mods
+                .Where(m => m.NexusModId is not null && !HasCachedCategory(m.Folder) && !tried.Contains(m.Folder))
+                .ToList();
+            if (need.Count == 0) return;
+
+            var markFrom = Cfg.Current.ModCategoryTried.Count;
+            var found = 0;
+            var semaphore = new SemaphoreSlim(2);
+            await Task.WhenAll(need.Select(async m =>
+            {
+                if (Leave.IsCancellationRequested) return;   // 已离开本页 ⇒ 分类回填不占下一屏的槽
+                await semaphore.WaitAsync();
+                try
+                {
+                    var info = await Nexus.GetModAsync(m.NexusModId!.Value);
+                    if (info?.CategoryId is int cid && Cfg.Current.NexusCategories.TryGetValue(cid, out var cname))
+                    {
+                        Cfg.Current.ModCategories[m.Folder] = cname;
+                        found++;
+                    }
+                    else
+                        Cfg.Current.ModCategoryTried.Add(m.Folder);   // 官网确实没给分类，或这行查不动
+                }
+                catch (Exception ex)
+                {
+                    AppLog.Warn("Mods", "分类回填失败(" + m.Folder + "): " + ex.Message);
+                    Cfg.Current.ModCategoryTried.Add(m.Folder);
+                }
+                finally { semaphore.Release(); }
+            }));
+
+            // 整批几乎全空 = 大概率是被限流/Key 失效，不是这些 mod 真没分类。
+            // 这时把刚记下的 tried 撤回去，下次进页面还能重试；否则一次 403 就把全部行永久判死。
+            if (found <= 1 && need.Count > 8)
+            {
+                Cfg.Current.ModCategoryTried.RemoveRange(markFrom, Cfg.Current.ModCategoryTried.Count - markFrom);
+                AppLog.Warn("Mods", $"分类回填：{need.Count} 个只命中 {found} 个，判为整体失败，不记已试过");
+                return;
+            }
+
+            AppLog.Warn("Mods", $"分类回填：查 {need.Count} 个，命中 {found} 个，累计已试过 {Cfg.Current.ModCategoryTried.Count} 个");
+            Cfg.Save(Cfg.Current);
+            await InvokeAsync(StateHasChanged);
+        }
+        finally { Interlocked.Exchange(ref _catBackfillRunning, 0); }
+    }
+
     /// <summary>v0.71.6：点排序下拉外部遮罩收回。</summary>
     private async Task CloseSort()
     {
@@ -1418,9 +1478,13 @@
     };
 
     /// <summary>筛选项的悬停解释：只有容易被误读的那条需要。</summary>
-    private string? FilterTip(string key) => key == "broken"
-        ? Loc.T("SMAPI 兼容性清单给的维护状态（需非官方版 / 有替代版 / 已失效 / 已过期 / 作者弃养），不代表当前版本用不了 —— 能不能用看游戏启动日志")
-        : null;
+    private string? FilterTip(string key) => key switch
+    {
+        "broken" => Loc.T("SMAPI 兼容性清单给的维护状态（需非官方版 / 有替代版 / 已失效 / 已过期 / 作者弃养），不代表当前版本用不了 —— 能不能用看游戏启动日志"),
+        // 光看标签会以为这里只有"没装"的；版本过旧那批同样让依赖方跑不起来，得说清
+        "missing" => Loc.T("没装、以及装了但版本低于 manifest 要求的，都算 —— SMAPI 对这两种的处置一样：依赖方整条不加载"),
+        _ => null,
+    };
 
     /// <summary>已装 UniqueID 集合（v1.2.3：指向 ReindexMods 维护的缓存，不再每次访问全表重建）。</summary>
     private HashSet<string> InstalledUids => _installedUids;
@@ -1440,7 +1504,8 @@
                     break;
                 case "missing":
                     // v1.1.4：缺依赖筛选 —— 含 ContentPackFor 宿主缺失（SMAPI 同样会 Skipped）
-                    q = q.Where(m => MissingDeps(m).Count > 0);
+                    // 版本过旧的那批也在这里：SMAPI 对两者的处置是同一条（依赖方不加载）
+                    q = q.Where(m => MissingDeps(m).Count > 0 || StaleDeps(m).Count > 0);
                     break;
                 case "broken":
                     q = q.Where(IsBroken);
@@ -1474,7 +1539,7 @@
         "enabled" => _mods.Count(m => !m.Disabled),
         "disabled" => _mods.Count(m => m.Disabled),
         "updatable" => _mods.Count(m => IsUpdatable(m)),
-        "missing" => _mods.Count(m => MissingDeps(m).Count > 0),
+        "missing" => _mods.Count(m => MissingDeps(m).Count > 0 || StaleDeps(m).Count > 0),
         "broken" => _mods.Count(IsBroken),
         _ => 0,
     };
@@ -1598,7 +1663,7 @@
     private void OpenOverlayList(ModEntry m)
     {
         _overlayHost = OverlayHostOf(m);
-        _ = EnsureOverlayMetaAsync();
+        _ = GuardedFireAndForget(EnsureOverlayMetaAsync(), "元信息加载");
     }
     private void CloseOverlayList() => _overlayHost = null;
 
@@ -1675,14 +1740,6 @@
         _ = JS.InvokeVoidAsync("junigridJs.toast",
             err ?? (gone ? Loc.T("已清除该覆盖记录") : Loc.T("已还原被覆盖的文件")), err is null ? "ok" : "err");
         if (err is null) Rescan();
-    }
-
-    private void RevertAllOverlay()
-    {
-        foreach (var g in OverlayGroups()) ModSvc.RevertOverlayGroup(Cfg.Current.GamePath, g.Host, g.Slot, Cfg);
-        _overlayHost = null;
-        _ = JS.InvokeVoidAsync("junigridJs.toast", Loc.T("已还原被覆盖的文件"), "ok");
-        Rescan();
     }
 
     // summary 是 markdown（"broken, use [unofficial version](https://…)"）。徽标悬停已经不抄整段了，
@@ -2054,6 +2111,41 @@
         return missing;
     }
 
+    /// <summary>装了、但版本低于 manifest 要求的依赖 —— MissingDeps 之外的第三条出路。
+    /// SMAPI 对「没装」和「装得不够新」的处置完全一样（依赖方整条 Skipped），
+    /// 启动器这边的说法不一样：一个要去装，一个要换成更新的版本，所以分开列、一起装。</summary>
+    private List<StaleDepRow> StaleDeps(ModEntry m)
+    {
+        if (_staleDepsCache.TryGetValue(m.Folder, out var cached)) return cached;
+        var list = new List<StaleDepRow>();
+        if (m.DependencyMinVersions.Count > 0)
+        {
+            foreach (var d in m.Dependencies.Concat(m.ContentPackIds))
+            {
+                var dep = d?.Trim();
+                if (string.IsNullOrWhiteSpace(dep)
+                    || !m.DependencyMinVersions.TryGetValue(dep, out var need)
+                    || !_installedVersions.TryGetValue(dep, out var have)
+                    || !VersionUtil.IsOlderThan(have, need)) continue;
+                if (list.Any(x => x.Uid.Equals(dep, StringComparison.OrdinalIgnoreCase))) continue;
+                var e = _mods.FirstOrDefault(x => string.Equals(x.UniqueID.Trim(), dep, StringComparison.OrdinalIgnoreCase));
+                list.Add(new StaleDepRow(dep, string.IsNullOrWhiteSpace(e?.Name) ? dep : e!.Name,
+                    string.IsNullOrWhiteSpace(have) ? "?" : have.Trim(), need.Trim()));
+            }
+        }
+        _staleDepsCache[m.Folder] = list;
+        return list;
+    }
+
+    /// <summary>这一行需要动手的依赖 = 没装的 + 装得不够新的（一键安装那条通道两者同走）。</summary>
+    private List<string> DepsToInstall(ModEntry m)
+    {
+        var all = new List<string>(MissingDeps(m));   // 拷贝：MissingDeps 返回的是缓存里那个列表本体
+        foreach (var s in StaleDeps(m))
+            if (!all.Contains(s.Uid, StringComparer.OrdinalIgnoreCase)) all.Add(s.Uid);
+        return all;
+    }
+
     // ------------------------------------------------------------------
     // v1.2.0：一键安装缺失依赖（横幅 + 行级入口）
     // ------------------------------------------------------------------
@@ -2070,12 +2162,14 @@
     /// <summary>并行解析依赖的展示名与封面（免 key 搜索；失败保持 UID 显示并标"未找到"）。</summary>
     private async Task ResolveDepNamesAsync(List<string> uids)
     {
-        var todo = uids.Where(u => !_depNameTried.Contains(u)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        // 本机已装的依赖（「版本过旧」那批）名字本地条目就有，发搜索请求纯属白费
+        var todo = uids.Where(u => !_depNameTried.Contains(u) && !_installedVersions.ContainsKey(u))
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         if (todo.Count == 0) return;
         foreach (var u in todo) _depNameTried.Add(u);
         await Task.WhenAll(todo.Select(async u =>
         {
-            var info = await Installer.ResolveDependencyDisplayAsync(u);
+            var info = await Installer.ResolveDependencyDisplayAsync(u, ParentNexusIdsForDep(u));
             if (info is not null)
             {
                 _depNames[u] = info;
@@ -2084,11 +2178,32 @@
         }));
     }
 
+    /// <summary>这个依赖是被哪些已装 mod 声明为前置的 → 那些父包的 Nexus 页面号。
+    /// 官网的 Requirements 表（作者手填、每行直接带 modId）挂在<b>父包</b>身上，
+    /// 所以要先回答"谁要求它"，才能去问"它到底是哪个 mod"。父包没有 Nexus 页面号
+    /// （manifest UpdateKeys 缺失/无效）时这里就是空列表，解析退回全站搜索。</summary>
+    private List<int> ParentNexusIdsForDep(string uid)
+    {
+        var ids = new List<int>();
+        foreach (var m in _mods)
+        {
+            if (m.NexusModId is not > 0 || ids.Contains(m.NexusModId.Value)) continue;
+            if (m.Dependencies.Concat(m.ContentPackIds)
+                    .Any(d => string.Equals(d?.Trim(), uid, StringComparison.OrdinalIgnoreCase)))
+                ids.Add(m.NexusModId.Value);
+        }
+        return ids;
+    }
+
     /// <summary>行内展示：有名字就用名字；搜过却没搜到就带着 UID 明说"未找到对应 mod"，
     /// 而不是甩一串玩家看不懂的字符；还在搜就先给 UID。
     /// 同包子模块单独一条 —— 它压根没有 N 网页面，报"未找到"会让人以为我们搜过了却没有。</summary>
     private string DepLabel(string uid)
     {
+        // 本机装着、只是版本不够的前置：名字和两个版本号本地就有，不必去搜，也不该只报个名字
+        // —— 玩家要的是「哪个版本算够」，否则下一条「可更新」他自己还得去对 manifest。
+        if (_staleByUid.TryGetValue(uid, out var stale))
+            return Loc.F("{0}（本机 {1}，需要 ≥{2}）", stale.Name, stale.Have, stale.Need);
         if (_depNames.TryGetValue(uid, out var di) && !string.IsNullOrWhiteSpace(di.Name)) return di.Name!;
         if (ModService.BundledParentOf(uid, InstalledUids) is string parentUid)
         {
@@ -2103,20 +2218,22 @@
             : uid;
     }
 
-    /// <summary>全部缺失依赖的并集（横幅 + 一键安装入口）。</summary>
+    /// <summary>全部要动手的依赖并集（横幅 + 确认弹窗 + 一键安装入口）：
+    /// 没装的 + 装了但版本不够的。SMAPI 对这两种都是「依赖方直接 Skipped」，
+    /// 出路也都是去下一个够新的版本，所以共用一条通道、共用一个计数。</summary>
     private List<string> TotalMissingUids
     {
         get
         {
             var set = new List<string>();
             foreach (var m in _mods)
-                foreach (var d in MissingDeps(m))
+                foreach (var d in DepsToInstall(m))
                     if (!set.Contains(d, StringComparer.OrdinalIgnoreCase)) set.Add(d);
             return set;
         }
     }
 
-    private int MissingAffectedMods => _mods.Count(m => MissingDeps(m).Count > 0);
+    private int MissingAffectedMods => _mods.Count(m => MissingDeps(m).Count > 0 || StaleDeps(m).Count > 0);
 
     /// <summary>uids 为 null = 全部缺失依赖；否则只装这一批（传给确认弹窗与安装管线）。</summary>
     private void AskInstallMissingDeps(List<string>? uids)
@@ -2124,7 +2241,19 @@
         _depError = null;
         _pendingDepUids = uids ?? new List<string>();
         // v1.2.1：弹窗立即打开（先显示 UID），封面/mod 名后台异步解析、逐个补上
-        _ = ResolveDepNamesAsync(_pendingDepUids.Count > 0 ? _pendingDepUids : TotalMissingUids);
+        _ = GuardedFireAndForget(ResolveDepNamesAsync(_pendingDepUids.Count > 0 ? _pendingDepUids : TotalMissingUids),
+            "依赖名解析");
+    }
+
+    /// <summary>fire-and-forget 的异常收尸：没人 await 的 Task 抛异常时，异常对象直到 GC 才被
+    /// finalizer 线程重抛 —— 运行期界面无感知，日志里只留下一条迟到的
+    /// 「ERR [Task] unobserved」（2026-10-05 02:34 实测两条，都指回Mods 页的封面回填）。
+    /// 这里就地兜住并记成一条能定位的警告：至少让人知道"这次网络抖了"，而不是幽灵异常。</summary>
+    private static async Task GuardedFireAndForget(Task t, string what)
+    {
+        try { await t.ConfigureAwait(false); }
+        catch (OperationCanceledException) { /* 页面已离开，正常 */ }
+        catch (Exception ex) { AppLog.Warn("Mods", what + "失败: " + ex.Message); }
     }
 
     private void CancelInstallDeps() => _pendingDepUids = null;
@@ -2136,6 +2265,23 @@
         if (di?.ModId is not int id) return;
         _pendingDepUids = null;   // 离开当前页前收起弹窗，返回列表时不残留
         Nav.NavigateTo($"mod/{id}" + (string.IsNullOrWhiteSpace(di.Uid) ? "" : "/" + Uri.EscapeDataString(di.Uid)));
+    }
+
+    /// <summary>v1.5.1：列表行里点依赖名（名字已解析出 Nexus 页面）→ 同一个详情页。
+    /// uid 一起带上：详情页靠它判「本机装着但版本过旧」这条出路。</summary>
+    private void OpenDepByUid(string uid, int nexusId)
+    {
+        if (nexusId <= 0) return;
+        Nav.NavigateTo($"mod/{nexusId}" + (string.IsNullOrWhiteSpace(uid) ? "" : "/" + Uri.EscapeDataString(uid)));
+    }
+
+    /// <summary>这条依赖在本机是否装着、装着的话它的 Nexus 页面号是多少（0 = 没装/没登记）。
+    /// 「装了但版本过旧」那批走这条 —— 本地条目本来就带 NexusModId，不必再发搜索。</summary>
+    private int InstalledDepNexusId(string uid)
+    {
+        var e = _mods.FirstOrDefault(m => string.Equals(m.UniqueID.Trim(), uid.Trim(),
+            StringComparison.OrdinalIgnoreCase));
+        return e?.NexusModId ?? 0;
     }
 
     private async Task ConfirmInstallDeps()
@@ -2167,7 +2313,7 @@
     /// <summary>是否「有可用更新」：N 网 MAIN 文件版本/ fileId 口径（见 NexusUpdateTruth）。</summary>
     private bool IsUpdatable(ModEntry m)
     {
-        if (m.IsConvertedPortraitPack) return false;
+        if (m.IsConvertedPack) return false;
         var st = GetState(m.Folder);
         return NexusUpdateTruth.ShouldShowUpdate(Cfg.Current, m, st.RemoteVersion, st.RemoteFileId);
     }
@@ -2268,7 +2414,7 @@
     {
         foreach (var m in _mods)
         {
-            if (m.IsConvertedPortraitPack)
+            if (m.IsConvertedPack)
             {
                 _states[m.Folder] = new ModUpdateState { Status = "latest" };
                 continue;
@@ -2325,6 +2471,13 @@
     // vNext：跨页静态快照 —— 离开 /mods 时把扫描结果留住；从其它页回来先用快照
     // 秒显列表（零磁盘 IO、零等待），后台再重扫磁盘刷新。组件销毁后仍存活。
     private static IReadOnlyList<ModEntry>? _svMods;
+    // v1.2.6：工具条视图快照。原先只快照列表数据和滚动位置，筛选/排序/搜索没跟上 ——
+    // 在「已启用」下进详情页返回后视图被打回「全部」，而滚动位置仍按已启用那批行恢复，
+    // 两者对不上。四项必须同进退，所以一起存。
+    private static string? _svFilter;
+    private static string? _svSort;
+    private static string? _svSearch;
+    private static bool _svSearchOpen;
     // vNext：SMAPI 版本/图标探测结果跨页缓存（图标是 exe 抽取 + base64，每次进页都做太浪费）
     private static string? _svSmapiPath;
     private static string? _svSmapiVersionCache;
@@ -2332,6 +2485,12 @@
 
     protected override void OnInitialized()
     {
+        // v1.2.6：视图快照在 OnInitialized 恢复（比 OnInitializedAsync 更早，且同步）——
+        // 放到后面会让首屏先亮一帧「全部」再翻成「已启用」。
+        if (_svFilter is not null) _filter = _svFilter;
+        if (_svSort is not null) _sortMode = _svSort;
+        SearchText = _svSearch ?? "";
+        _searchOpen = _svSearchOpen;
         // v1.08：从任务中心恢复 SMAPI 任务状态 —— 页面离开再回来组件会重建，
         // _smapiUpdating 归零会导致按钮重新可点、重复创建下载任务。
         _smapiUpdating = Center.Items.Any(t =>
@@ -2415,13 +2574,28 @@
     // 批量改名 63 次触发 63×N 个 Rescan 回调 → UI 卡死（"进详情再回来才卡"的根因）。
     private bool _disposed;
 
+    /// <summary>离开本页时叫停在飞的 N 网扇出（更新检查 / 精查 / 封面与分类回填）。
+    /// AUP 二审盯着的就是这个：旧写法 Dispose 只解绑事件，那几路扇出会一路打完才停，
+    /// 表现成「人已经不在 Mods 页了，客户端还在连着发请求」，同时占着 NexusService 的 2 个槽，
+    /// 让下一个页面的请求排在后面（用户在别处看到的「进页卡一下」）。
+    /// 只叫停<b>只读</b>的检测与回填；「自动更新」那条流水线（RunUpdatePipeline）会真下载装机，
+    /// 离开页面不能把它掐在半截，所以那边不接这个令牌。
+    /// 只 Cancel 不 Dispose —— 组件释放后仍可能有旧续体读 Token，别留 ObjectDisposedException 的口子。</summary>
+    private readonly CancellationTokenSource LeaveCts = new();
+    private CancellationToken Leave => LeaveCts.Token;
+
     public void Dispose()
     {
         _disposed = true;
+        try { LeaveCts.Cancel(); } catch { }
         Installer.OnChanged -= OnInstallerChanged;
         PageRefresh.OnRefresh -= OnPageRefresh;
         // vNext：留下扫描快照 —— 从其它页回来时先用它秒显列表，后台再重扫磁盘
         _svMods = _mods;
+        _svFilter = _filter;
+        _svSort = _sortMode;
+        _svSearch = SearchText;
+        _svSearchOpen = _searchOpen;
         if (_modsWatcherSlot is not null)
             DepotDownloaderService.UnregisterModWatcher(_modsWatcherSlot);
         _modsWatcherSlot = null;
@@ -2631,17 +2805,12 @@
                 // v1.1.8：这一轮在后台线程跑，不冻窗口，但它也要记账 —— 点完开关之后
                 // 那段"还在转"的时间全在这里头（磁盘忙完才 StateHasChanged）。
                 var __t = System.Diagnostics.Stopwatch.GetTimestamp();
-                double __cleanup = 0, __convert = 0, __rehome = 0;
+                double __cleanup = 0, __rehome = 0;
                 var scanned = await Task.Run(() =>
                 {
                     try { ModSvc.CleanupDuplicateCopies(Cfg.Current.GamePath); }
                     catch (Exception ex) { AppLog.Warn("Mods", "多副本清理失败: " + ex.Message); }
                     __cleanup = ElapsedMs(__t);
-                    // 手工丢进 Mods 的裸图目录自动转成 CP 包（判定与手动入口同一个；失败只记日志）。
-                    // 转完目录本身带 manifest 了，下一轮判定自然不再命中，watcher 回环会自己收敛。
-                    try { ModSvc.AutoConvertLoosePortraits(Cfg.Current.GamePath); }
-                    catch (Exception ex) { AppLog.Warn("Mods", "裸肖像目录自动转换失败: " + ex.Message); }
-                    __convert = ElapsedMs(__t);
                     // 孤儿区自动归位：判得出唯一归属才搬，判不出的一律留在收件箱；全程只移动不删除
                     try { DepotQr.RehomeOrphanMods(Cfg.Current.GamePath); }
                     catch (Exception ex) { AppLog.Warn("Mods", "孤儿 Mods 归位失败: " + ex.Message); }
@@ -2649,8 +2818,8 @@
                     return ModSvc.Scan(Cfg.Current.GamePath);
                 });
                 ModsPerf($"后台重扫一轮",
-                    ("判重清理", __cleanup), ("裸肖像转换", __convert - __cleanup),
-                    ("孤儿归位", __rehome - __convert), ("磁盘扫描", ElapsedMs(__t) - __rehome));
+                    ("判重清理", __cleanup), ("孤儿归位", __rehome - __cleanup),
+                    ("磁盘扫描", ElapsedMs(__t) - __rehome));
                 if (_disposed || DepotDownloaderService.IsApplyInProgress) return;
                 Rescan(scanned);
                 StateHasChanged();
@@ -2704,29 +2873,39 @@
         // 调用，旧写法每次访问 InstalledUids 都全表重建 HashSet（每页渲染 O(N²) 次分配）。
         _installedUids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         _disabledUids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        _installedVersions = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var m in _mods)
             if (!string.IsNullOrWhiteSpace(m.UniqueID))
             {
                 _installedUids.Add(m.UniqueID.Trim());
+                _installedVersions[m.UniqueID.Trim()] = m.Version ?? "";
                 if (m.Disabled) _disabledUids.Add(m.UniqueID.Trim());
             }
         // 捆绑包里不单独成行的子包：SMAPI 照样加载，所以依赖它不算缺（Enabled 那份进已装集合）；
         // 顶层被禁用时子包一起算禁用 —— 它们是「依赖被禁用」，不是「缺依赖」。
+        // 子包没有条目也就没有版本号，版本判据对它们一律不指控（见 VersionUtil.IsOlderThan）。
         var hidden = ModSvc.HiddenChildUids;
         _installedUids.UnionWith(hidden.Enabled);
         _installedUids.UnionWith(hidden.Disabled);
         _disabledUids.UnionWith(hidden.Disabled);
         // v1.2.5：缺失依赖缓存随重扫一并失效（依赖列表与 UID 集合都只在重扫时变化）
         _missingDepsCache.Clear();
+        _staleDepsCache.Clear();
         // 覆盖型包（汉化补丁）的健康度随重扫刷新。绝大多数人一条都没有 → 先短路，
         // 别为了空表去哈希文件。
         _overlayHealth = Cfg.Current.Overlays.Count > 0
             ? ModService.OverlayHealth(Cfg.Current.GamePath, Cfg.Current)
             : new ModService.OverlayReport(new(), new());
+        // 过旧依赖按 UID 汇总一份：行内标签和确认弹窗都要说清「本机多少、要多少」，
+        // 而「要多少」记在提要求的那个 mod 身上，渲染期不该为了一行文字再反查全表。
+        _staleByUid = new Dictionary<string, StaleDepRow>(StringComparer.OrdinalIgnoreCase);
+        foreach (var m in _mods)
+            foreach (var s in StaleDeps(m))
+                _staleByUid[s.Uid] = s;
         // 缺失依赖的展示名后台解析，列表行才显示得出"是哪个 mod"而不是裸 UID。
         // 只在出现没搜过的 UID 时才真发请求（见 _depNameTried），重扫不会反复打网络。
         var missingAll = TotalMissingUids;
-        if (missingAll.Count > 0) _ = ResolveDepNamesAsync(missingAll);
+        if (missingAll.Count > 0) _ = GuardedFireAndForget(ResolveDepNamesAsync(missingAll), "依赖名解析");
     }
 
     /// <summary>v1.2.4：返回列表的快照与重扫结果是否一致（文件夹/启禁/版本/N网ID）。
@@ -2753,6 +2932,16 @@
     /// 「装了」与「能加载」是两件事：SMAPI 对禁用依赖照样把依赖方 Skipped，
     /// 而缺依赖判定看不出来 —— 这一集专门用来给那种行打「依赖被禁用」标签。</summary>
     private HashSet<string> _disabledUids = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>已装 UniqueID → manifest 里的 Version（ReindexMods 时重建）。
+    /// 「装了」与「装得够新」是第三件事：SMAPI 对版本不足的依赖照样 Skipped 依赖方，
+    /// 只看 UID 在不在的判据对这条完全静音（实测 完美手册 因 StardewUI 版本过旧被跳过）。</summary>
+    private Dictionary<string, string> _installedVersions = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, List<StaleDepRow>> _staleDepsCache = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>UID → 过旧详情（ReindexMods 汇总）。给 DepLabel 和确认弹窗用。</summary>
+    private Dictionary<string, StaleDepRow> _staleByUid = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>一条「装了但版本低于要求」的依赖，带上门禁和实际到场的版本号。</summary>
+    private sealed record StaleDepRow(string Uid, string Name, string Have, string Need);
 
     // ------------------------------------------------------------------
     // 行交互：左键多选 / hover 按钮
@@ -3122,8 +3311,6 @@
                 RescanAndRestate();
         }
         __t = System.Diagnostics.Stopwatch.GetTimestamp();
-        // v1.6.8：启禁用改变肖像页内容 → 实时重扫
-        PageRefresh.Request("portraits");
         // v0.49.0：状态变化后立即写回当前存档
         PersistCurrentToActive();
         Cfg.Save(Cfg.Current);
@@ -3136,8 +3323,6 @@
         if (err is not null) ShowNotice("err", err);
         else ShowNotice("ok", toTrash ? LocService.Tf("已移入回收站 {0}", m.Name) : $"已删除 {m.Name}");
         Rescan();
-        // v1.6.8：删除/卸载可能移除肖像包 → 让已打开的肖像页实时重扫
-        PageRefresh.Request("portraits");
     }
 
     // ------------------------------------------------------------------
@@ -3267,8 +3452,6 @@
                 ? $"已{(disabled ? "禁用" : "启用")} {selCount} 个mod"
                 : $"{failed} 个操作失败");
         ClearSelection();
-        // v1.6.8：批量启禁改变肖像页内容 → 实时重扫
-        PageRefresh.Request("portraits");
 
         // v0.72.9：批量改名后统一迁移封面/分类缓存 —— v0.72.7 把 MigrateFolderCaches
         // 从批量路径里漏掉了，导致改名后 _states/ModCovers/ModCategories 的 key 还是
@@ -3288,7 +3471,7 @@
         RescanAndRestate();
         // v0.72.9：显式触发一次封面回填（带并发闸门，不会叠加）——批量改名后 folder 变了，
         // 需要重新拉取新 key 下的封面。
-        if (NexusService.IsAuthenticated) _ = BackfillCoversAsync();
+        if (NexusService.IsAuthenticated) _ = GuardedFireAndForget(BackfillCoversAsync(), "封面回填");
 
         PersistCurrentToActive();
         Cfg.Save(Cfg.Current);
@@ -3364,7 +3547,7 @@
         }
         ShowNotice("ok", LocService.Tf("正在系统内依次更新 {0} 个 mod…（后台进行，完成后会提示）", targets.Count));
         if (NexusService.IsAuthenticated)
-            _ = BackfillCoversAsync();
+            _ = GuardedFireAndForget(BackfillCoversAsync(), "封面回填");
         await RunUpdatePipeline(targets);
         // v0.68.1：GitHub 源 release 没挂 zip、系统内装不了的，补开其下载页
         foreach (var m in targets)
@@ -3426,6 +3609,7 @@
                 var semaphore = new SemaphoreSlim(2);
                 await Task.WhenAll(still.Select(async m =>
                 {
+                    if (Leave.IsCancellationRequested) return;   // 已离开本页 ⇒ 别继续单查 mods/{id}.json
                     await semaphore.WaitAsync();
                     try
                     {
@@ -3493,7 +3677,7 @@
         // vP0：JuniGrid 转换的 Portraiture→CP 包不参与 —— 本地 Version=1.0.0 是
         // 转换器占位，NexusModId 边车指向原素材包，比对必然误报「有更新」。
         var targets = _mods
-            .Where(m => !m.IsConvertedPortraitPack)
+            .Where(m => !m.IsConvertedPack)
             .Where(m => m.NexusModId is not null || m.GitHubRepo is not null
                         || !string.IsNullOrEmpty(m.UniqueID))
             // v0.44.0：60 分钟内已查过的跳过（瞬时不发请求），远程版本状态仍保留显示
@@ -3504,7 +3688,9 @@
             .ToList();
 
         // v0.46.0：首次检查更新时顺手拉官方分类表（有 key 才拉得动）
-        if (NexusService.IsAuthenticated) _ = EnsureCategoriesAsync();
+        // v1.x：顺带把缺官网分类的行回填上 —— BackfillCategoriesAsync 内部先 ensure 分类表，
+        // 所以这里不再单独调 EnsureCategoriesAsync
+        if (NexusService.IsAuthenticated) _ = GuardedFireAndForget(BackfillCategoriesAsync(), "分类回填");
 
         // v1.6.8：未配 Nexus Key 时不再丢弃 N 网源 mod —— smapi.io 快道免 Key 即可
         // 判定可更新；需要 Key 的 files.json 精查只在配了 Key 的机器上参与。
@@ -3525,7 +3711,7 @@
         // 安装只能由用户确认后走 RunUpdatePipeline。
         await RunCheckPipeline(targets);
         // 封面回填不依赖 API Key（GraphQL 免 key）——配置清零后这里必须能跑
-        _ = BackfillCoversAsync();
+        _ = GuardedFireAndForget(BackfillCoversAsync(), "封面回填");
     }
 
     /// <summary>v0.68.0：只检测版本、绝不下载安装的并行流水线。
@@ -3744,7 +3930,7 @@
                 id = keyOf(m),
                 // 转换包不带原包 updateKey —— 否则 smapi.io 会把原 N 网版本
                 // 挂到合成 UID 上，装成 1.0.0 永远显示可更新
-                updateKeys = m.IsConvertedPortraitPack
+                updateKeys = m.IsConvertedPack
                     ? Array.Empty<string>()
                     : (m.NexusModId is int nid ? new[] { $"nexus:{nid}" } : Array.Empty<string>())
                       .Concat(m.GitHubRepo is string gh ? new[] { $"github:{gh}" } : Array.Empty<string>()).ToArray(),
@@ -3910,7 +4096,7 @@
         await smapiTask;   // v1.08：精查前等快道结果（此时通常已并行完成）
         // 替代版名字解析不挡精查：它只影响徽标提示的第二句，查完自己上屏。
         // 不用 Task.Run —— 就地 await 才留在 Blazor 的同步上下文里，改组件状态才安全。
-        _ = ResolveAltsAndRefreshAsync(targets);
+        _ = GuardedFireAndForget(ResolveAltsAndRefreshAsync(targets), "替代关系解析");
 
         // v1.6.8：未配 Nexus API Key → 跳过需要 Key 的 files.json 精查，
         // 全部按 smapi.io 快道的版本号判定可更新（更新动作走行内 ⇧ 手动通道）；
@@ -3948,6 +4134,7 @@
             var byId = new System.Collections.Concurrent.ConcurrentDictionary<int, Task<NexusFileInfo?>>();
             await Task.WhenAll(precise.Select(async m =>
             {
+                if (Leave.IsCancellationRequested) return;   // 人已离开 Mods 页 ⇒ 不再开新的精查
                 await semaphore.WaitAsync();
                 try { await CheckOnlyOne(m, byId, fpUpdatedAt); }
                 finally { semaphore.Release(); }
@@ -3985,7 +4172,7 @@
         var prevRemote = _states.TryGetValue(m.Folder, out var prev) ? prev.RemoteVersion : null;
         var st = _states[m.Folder] = new ModUpdateState { Status = "checking", RemoteVersion = prevRemote };
         _lastCheckedUtc[m.Folder] = DateTime.UtcNow;
-        if (m.IsConvertedPortraitPack)
+        if (m.IsConvertedPack)
         {
             // 转换包：内容已随最近一次转换落地，不与 N 网原包版本比对
             st.Status = "latest";
@@ -4526,7 +4713,8 @@
             }
             finally
             {
-                if (task.Status is "done" or "failed")
+                // 失败不摘 worker —— 「重试」要用它，条目在 Remove 时回收
+                if (task.Status == "done")
                     Center.UnregisterResume(task);
             }
         }
@@ -4609,7 +4797,8 @@
             }
             finally
             {
-                if (task.Status is "done" or "failed")
+                // 失败不摘 worker —— 「重试」要用它，条目在 Remove 时回收
+                if (task.Status == "done")
                     Center.UnregisterResume(task);
             }
         }

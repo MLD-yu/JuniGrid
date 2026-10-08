@@ -250,18 +250,22 @@
     padding: 9px 2px;
     border-bottom: 1px solid var(--jg-line);
 }.jg-store-row:last-child { border-bottom: none; }.jg-store-main { flex: 1; min-width: 0; }.jg-store-name { font-weight: 600; font-size: 13px; display: flex; align-items: center; gap: 6px; }.jg-store-path { font-size: 11px; opacity: .55; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }.jg-store-size { flex: none; font-weight: 600; font-size: 13px; font-variant-numeric: tabular-nums; min-width: 64px; text-align: right; }
-/* v1.4.4：版本缓存手风琴 */
-.jg-acc-head {
+/* v1.4.4：版本缓存手风琴。类名与详情页那套手风琴同名，所以这里<b>一律限定在自己的作用域里</b>：
+   misc.css 在 detail.css 之后加载，裸写 .jg-acc-head / .jg-acc-inner 会把详情页的吸顶实色背景
+   覆盖成 transparent、把它的内边距也改掉 —— 症状就是译本列表从「Translations」标题底下穿过去。 */
+.jg-acc-head[aria-controls="jg-vercache-panel"] {
     display: flex; align-items: center; gap: 10px;
     width: 100%; border: none; background: none; color: inherit;
     padding: 9px 2px; cursor: pointer; text-align: left; font: inherit;
 }
 .jg-acc-chev { flex: none; width: 16px; height: 16px; color: var(--jg-text-3); }
 .jg-acc-panel { height: 0; overflow: hidden; }
-.jg-acc-inner { padding: 0 2px 10px 26px; display: flex; flex-direction: column; gap: 6px; }
-/* 版本缓存手风琴：收起必须 hidden（否则空态/列表会漏到面板外）；展开后内部滚动 */
+#jg-vercache-panel .jg-acc-inner { padding: 0 2px 10px 26px; display: flex; flex-direction: column; gap: 6px; }
+/* 版本缓存手风琴：收起态必须 hidden（否则空态/列表会漏到面板外）；展开后<b>放开裁剪</b>。
+   展开动画期间 JS 会临时挂 inline overflow:hidden（junigrid.core.js accordionToggle），
+   收尾时清空，所以这里给 visible 不会把滑动弄没，只把「?」气泡被面板顶边切掉半截修掉。 */
 #jg-vercache-panel { overflow: hidden; }
-#jg-vercache-panel.open { max-height: 320px; overflow-y: auto; overflow-x: hidden; }
+#jg-vercache-panel.open { overflow: visible; }
 #jg-vercache-panel .jg-acc-inner { height: auto !important; overflow: visible !important; max-height: none !important; }
 .jg-acc-item {
     display: flex; align-items: center; gap: 10px;
@@ -271,6 +275,19 @@
 .jg-acc-item-name { flex: 1; font-weight: 600; font-variant-numeric: tabular-nums; }
 .jg-acc-item-size { color: var(--jg-text-3); font-size: 12px; font-variant-numeric: tabular-nums; }
 .jg-acc-empty { font-size: 12px; opacity: .6; padding: 4px 0 8px; }
+/* 「缓存与存储」里那行收起来的存档专用：整行都是 11px 灰字，警示要抢一眼，
+   所以给足字号 + 描边底色（不只靠字色），深浅两套都走 --jg-danger 令牌。 */
+.jg-store-warn {
+    font-size: 12.5px;
+    font-weight: 700;
+    color: var(--jg-danger);
+    background: color-mix(in srgb, var(--jg-danger) 9%, transparent);
+    border: 1px solid color-mix(in srgb, var(--jg-danger) 32%, transparent);
+    border-radius: 8px;
+    padding: 3px 8px;
+    margin-top: 4px;
+    line-height: 1.45;
+}
 .jg-store-tag {
     flex: none;
     font-size: 10px;
@@ -492,7 +509,13 @@
     cursor: help;
     user-select: none;
     transform-origin: center;
-}.jg-help-tip-bubble {
+}/* 数据丢失类缓存的「⚠」：复用同一个问号组件（GSAP 弹性气泡按类名委托，无需另写 JS），
+   只把圆底换成 --jg-danger 令牌，浅/深主题各自跟随；⚠ 字形比 ? 宽，字号收一点才不顶边。 */
+.jg-help-tip--danger .jg-help-tip-btn {
+    background: var(--jg-danger);
+    font-size: 10px;
+}
+.jg-help-tip-bubble {
     position: absolute;
     bottom: calc(100% + 12px);
     left: 50%;
@@ -579,8 +602,6 @@
 .jg-ver-modal { width: min(560px, 94vw); }
 
 
-.jg-ver-tab.on { background: var(--jg-card); color: var(--jg-text); box-shadow: 0 1px 2px rgba(0,0,0,.06); }
-.jg-ver-tab:hover:not(.on) { color: var(--jg-text); }
 .jg-ver-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
 .jg-ver-head-meta { display:flex; align-items:center; gap:8px; }
 .jg-ver-title { font-size: 16.5px; font-weight: 700; }
@@ -595,7 +616,6 @@
 html[data-theme="dark"] .jg-ver-lockchip.on { color: #2fdd8d; }
 .jg-ver-sec { font-size: 12.5px; font-weight: 600; color: var(--jg-text-2); margin: 2px 0 8px; }
 
-.jg-official-card.cur { border-color: var(--jg-accent, #7aa2ff); }
 
 
 
@@ -604,26 +624,14 @@ html[data-theme="dark"] .jg-ver-lockchip.on { color: #2fdd8d; }
 
 
 
-
-.jg-official-actions .jg-ver-mini { white-space:nowrap; padding:5px 8px; }
-
-/* 打开的下拉必须压住下方兄弟（已下载/版本列表叠在一起时） */
-.jg-ver-branchdd.open { z-index: 20; }
 /* v1.4.5：版本弹窗下拉遮罩修层 —— .jg-dd-overlay 全局 z-index 9000，会盖住菜单(30)/打开态(20)：
    菜单"看得见"(遮罩透明)但点击全落在遮罩上，一点选项就关闭、永远选不中（实测）。
    弹窗内把遮罩压到 15，低于打开态 20 / 菜单 30，遮罩仍负责"点空白处关闭"。 */
 .jg-ver-modal .jg-dd-overlay { z-index: 15; }
-.jg-ver-branchdd .jg-sort-trigger { width: 100%; justify-content: space-between; }
-.jg-ver-branchdd .jg-sort-menu { width: 100%; max-height: 250px; overflow-y: auto; z-index: 30; }
 .jg-ver-item-meta { margin-left: auto; font-size: 11px; opacity: .55; font-variant-numeric: tabular-nums; }
 /* v1.4.5：统一版本列表行 —— 已下载置顶、点击即切换/下载 */
 .jg-ver-vlist { max-height: 340px; overflow-y: auto; border: 1px solid var(--jg-track, rgba(255,255,255,.08)); border-radius: 10px; padding: 4px; }
 
-.jg-ver-vrow .jg-ver-vbtn { flex: 1; display: flex; justify-content: space-between; align-items: center; background: var(--jg-well); border: 1px solid transparent; border-radius: 10px; padding: 10px 12px; color: var(--jg-text); cursor: pointer; font-size: 13px; text-align: left; }
-.jg-ver-vrow .jg-ver-vbtn:hover:not(:disabled) { background: var(--jg-hover); }
-.jg-ver-vrow .jg-ver-vbtn.cur { border-color: var(--jg-accent, #7aa2ff); }
-.jg-ver-vrow .jg-ver-vbtn:disabled { opacity: .55; cursor: default; }
-.jg-ver-vrow .jg-ver-vname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .jg-ver-note { font-size: 12px; line-height: 1.55; border-radius: 10px; padding: 9px 12px; margin-bottom: 10px; background: var(--jg-well); color: var(--jg-text-2); }
 .jg-ver-note.warn { background: rgba(245,166,35,.10); color: #9a6b0a; }
 html[data-theme="dark"] .jg-ver-note.warn { color: #f0b95a; }
@@ -642,8 +650,6 @@ html[data-theme="dark"] .jg-ver-note.ok { color: #2fdd8d; }
 .jg-ver-mini.primary:hover:not(:disabled) { filter: brightness(1.2); color: var(--jg-on-ink); }
 .jg-ver-mini.primary:disabled { opacity: .4; cursor: not-allowed; }
 .jg-ver-mini.danger { color: #ff7b96; }
-
-.jg-ver-addrow .jg-ver-input { margin-bottom: 0; }
 
 
 
@@ -669,3 +675,4 @@ html[data-theme="dark"] .jg-ver-note.ok { color: #2fdd8d; }
 
 
 .jg-ver-mini.link { background: transparent; border: none; color: var(--jg-accent, #7aa2ff); cursor: pointer; padding: 2px 0; font-size: 11px; }
+

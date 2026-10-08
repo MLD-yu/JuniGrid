@@ -164,6 +164,15 @@ public sealed class NexusOAuthService
             _cfg.Save(c);
             return user;
         }
+        catch (OperationCanceledException ex) when (!ct.IsCancellationRequested)
+        {
+            // 不是用户按的「取消」。HttpClient 自己 20s 到点会在里面包一个 TimeoutException —— 那按请求超时说；
+            // 没有 TimeoutException 的就是回调监听器 5 分钟到点（浏览器那边没回来），两者下一步动作不同。
+            LastError = ex.InnerException is TimeoutException
+                ? DescribeLoginFailure(ex)
+                : LocService.Tr("授权超时（5 分钟没等到浏览器回调）");
+            return null;
+        }
         catch (OperationCanceledException)
         {
             LastError = LocService.Tr("已取消");
@@ -171,9 +180,58 @@ public sealed class NexusOAuthService
         }
         catch (Exception ex)
         {
-            LastError = ex.Message;
+            LastError = DescribeLoginFailure(ex);
             return null;
         }
+    }
+
+    /// <summary>把登录请求的异常按「坏在哪一层」翻成一句能照着做的话，并把完整异常链记进日志。
+    /// 判据只用异常类型：异常文案会随系统语言变（本机实测 SocketException 出中文而 HttpRequestException
+    /// 出英文），拿字符串比会静默失灵。认不出的形状原样带出，不猜。</summary>
+    internal static string DescribeLoginFailure(Exception ex)
+    {
+        var proxy = DepotDownloaderService.ReadSystemProxy();
+        AppLog.Warn("NOAUTH", $"登录请求失败：{Chain(ex)}实际出口={(proxy ?? "直连")}");
+        return DescribeLoginFailure(ex, proxy);
+    }
+
+    /// <summary>代理值单独开一个重载，是为了能在测试台里喂固定值做断言：直接测上面那个的话，
+    /// 结果取决于跑测试这台机器的注册表，换台机器就退化成空断言（同 ApplyDdProxyEnv 的理由）；
+    /// 而且它会把异常链写进真日志，测试台不该往玩家的日志里灌东西。</summary>
+    internal static string DescribeLoginFailure(Exception ex, string? proxy)
+    {
+        bool cert = false, broken = false, unreachable = false, timedOut = false;
+        for (Exception? e = ex; e is not null; e = e.InnerException)
+            switch (e)
+            {
+                case System.Security.Authentication.AuthenticationException: cert = true; break;
+                case System.IO.IOException: broken = true; break;      // 含 HttpIOException（隧道截断）与握手中途被重置
+                case SocketException se when se.SocketErrorCode == SocketError.TimedOut: timedOut = true; break;
+                case SocketException se when se.SocketErrorCode is SocketError.ConnectionRefused
+                    or SocketError.HostNotFound or SocketError.HostUnreachable or SocketError.NetworkUnreachable:
+                    unreachable = true; break;
+                case TimeoutException: timedOut = true; break;
+            }
+
+        var layer = cert ? LocService.Tr("安全连接没建立起来")
+                  : broken ? LocService.Tr("连接中途断了")
+                  : unreachable ? LocService.Tr("连不上 N 网")
+                  : timedOut ? LocService.Tr("连 N 网超时了")
+                  : null;
+        if (layer is null) return ex.Message;
+        // 开着系统代理时这一层断在加速器手里是实测过的情形（2026-10-05：一位用户开着加速器登不上、关掉就好），
+        // 所以这一支给「先关加速器」；没开代理就别说这句，会把人往错方向引。
+        return layer + (proxy is null ? LocService.Tr("，请重试") : LocService.Tr("，先关掉加速器再登录试试"));
+    }
+
+    /// <summary>异常链逐层展开成一行 —— 只有 `ex.Message` 的话分不出「握手被重置」和「证书不被信任」，
+    /// 而这两支的用户下一步动作不同，丢掉了就只能靠猜。</summary>
+    static string Chain(Exception ex)
+    {
+        var sb = new StringBuilder();
+        for (Exception? e = ex; e is not null; e = e.InnerException)
+            sb.Append(e.GetType().Name).Append(": ").Append(e.Message.ReplaceLineEndings(" ").Trim()).Append(" ← ");
+        return sb.ToString();
     }
 
     private static readonly NexusService _nexus = new();   // 无状态 API 门面 —— 仅用于登录后那次 validate 调用
@@ -183,6 +241,7 @@ public sealed class NexusOAuthService
     public void Logout()
     {
         NexusService.BearerToken = null;
+        NexusService.ClearResponseCache();   // 换账号/登出后不能继续挂上一账号的用户资料与头像
         var c = _cfg.Current;
         c.NexusAccessToken = "";
         c.NexusRefreshToken = "";
@@ -209,6 +268,7 @@ public sealed class NexusOAuthService
         c.NexusTokenExpiresAt = DateTime.Now.AddSeconds(expiresIn > 0 ? expiresIn - 60 : 3600);
         _cfg.Save(c);
         NexusService.BearerToken = access;
+        NexusService.ClearResponseCache();   // 登录成功后，登录前那份匿名结果不算数
     }
 
     /// <summary>在 loopback 监听器上等待并返回 OAuth 回调参数。

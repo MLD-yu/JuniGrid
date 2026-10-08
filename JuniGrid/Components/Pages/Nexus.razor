@@ -844,9 +844,16 @@
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        try { await JS.InvokeVoidAsync("junigridJs.userTipInit", "jgUserTip", "jgUserTipBubble"); } catch { }
-        try { await JS.InvokeVoidAsync("junigridJs.searchIslandInit", "jgNexusIsland", "jgNexusIslandBtn", "jgNexusIslandInput"); } catch { }
-        try { await JS.InvokeVoidAsync("junigridJs.grainientInit", "#jgTrendGrain"); } catch { }
+        // v1.2.6：这三段以前各打一次 JS（且不看 firstRender，每次渲染都串行打）⇒ 进一次页
+        // 六轮渲染 = 18 次 IPC，全压在首屏时间窗里。合并成一次；三个 init 在 JS 侧都有幂等护栏。
+        try
+        {
+            await JS.InvokeVoidAsync("junigridJs.nexusAfterRender",
+                "jgUserTip", "jgUserTipBubble",
+                "jgNexusIsland", "jgNexusIslandBtn", "jgNexusIslandInput",
+                "#jgTrendGrain");
+        }
+        catch { }
     }
     // ─── v0.74.0：官网风首页模式（home=两板块 / browse=完整浏览页）───
     private string _viewMode = "home";
@@ -1049,6 +1056,9 @@
     private void OnPageRefresh(string key)
     {
         if (key != "nexus") return;
+        // 点导航栏那个「刷新」= 用户明确要新数据：先作废 10 分钟响应缓存，否则下面几条链
+        // 全部命中缓存，看起来"点了没反应"。自动进页不经过这里，仍然吃缓存（0 请求）。
+        NexusService.ClearResponseCache();
         _ = InvokeAsync(async () =>
         {
             // vNext：手动刷新 = 从头看起 —— 归顶并把 0 写进滚动存档（前进导航回来
@@ -1118,6 +1128,10 @@ protected override async Task OnInitializedAsync()
         }
         // v0.75.0：首页全部加载完才关闭首屏加载态
         StateHasChanged();
+        // AUP 审的就是「一个客户端消耗多少请求」，所以把数落在日志里：本页每次进页一行，
+        // 网络次数为 0 就是缓存兜住了（截图即可回给审核方，不用口头保证）。
+        var (req, chits, cmiss) = NexusService.TakeTrafficDelta();
+        AppLog.Info("Nexus", $"[流量] 本次进页 网络 {req} 次 ‖ 缓存命中 {chits} ‖ 未命中 {cmiss} ‖ 本进程累计网络 {NexusService.ApiRequests} 次");
         // v1.04.0：分类 facets 后台拉取已随「标签选择」功能删除
     }
 
@@ -1133,8 +1147,8 @@ protected override async Task OnInitializedAsync()
                 if (m.NexusModId is int id) ids.Add(id);
             }
             // SMAPI 装在游戏根目录、不在 Mods 文件夹里，上面的扫描扫不到；
-            // 只要探测到已装 SMAPI，就把它的 Nexus mod ID 加进来，卡片才会显示「已安装」
-            if (Game.ProbeSmapiVersion(gamePath) is not null) ids.Add(SmapiNexusId);
+            // 判据与详情页按钮共用 Game.SmapiState（抽不到版本号也算装了，别说成没装）
+            if (Game.SmapiState(gamePath).Installed) ids.Add(SmapiNexusId);
         }
         catch { /* 扫描失败则全部按未安装处理 */ }
         return ids;

@@ -1,0 +1,180 @@
+{
+ "43657": {
+  "modName": "Sunrooms and Greenhouses (PIF)",
+  "nodes": [
+   {
+    "modName": "Content Patcher",
+    "notes": "",
+    "url": "",
+    "modId": "1915",
+    "externalRequirement": false
+   },
+   {
+    "modName": "Misc Map Actions Properties - MMAP",
+    "notes": "Optional - for spawning butterflies",
+    "url": "",
+    "modId": "28423",
+    "externalRequirement": false
+   },
+   {
+    "modName": "PIF - Personal Rooms",
+    "notes": "",
+    "url": "",
+    "modId": "20537",
+    "externalRequirement": false
+   },
+   {
+    "modName": "Sharogg's Tilesheets (indoor and outdoor structures)",
+    "notes": "Min version 1.2.2",
+    "url": "",
+    "modId": "27117",
+    "externalRequirement": false
+   },
+   {
+    "modName": "SMAPI - Stardew Modding API",
+    "notes": "",
+    "url": "",
+    "modId": "2400",
+    "externalRequirement": false
+   }
+  ]
+ },
+ "25552": {
+  "modName": "Balcony (PIF)",
+  "nodes": [
+   {
+    "modName": "SMAPI - Stardew Modding API",
+    "notes": "",
+    "url": "",
+    "modId": "2400",
+    "externalRequirement": false
+   },
+   {
+    "modName": "Content Patcher",
+    "notes": "",
+    "url": "",
+    "modId": "1915",
+    "externalRequirement": false
+   },
+   {
+    "modName": "PIF - Personal Rooms",
+    "notes": "",
+    "url": "",
+    "modId": "20537",
+    "externalRequirement": false
+   },
+   {
+    "modName": "DaisyNiko's Tilesheets",
+    "notes": "",
+    "url": "",
+    "modId": "4736",
+    "externalRequirement": false
+   }
+  ]
+ },
+ "27117": {
+  "modName": "Sharogg's Tilesheets (indoor and outdoor structures)",
+  "nodes": [
+   {
+    "modName": "Content Patcher",
+    "notes": "",
+    "url": "",
+    "modId": "1915",
+    "externalRequirement": false
+   },
+   {
+    "modName": "SMAPI - Stardew Modding API",
+    "notes": "",
+    "url": "",
+    "modId": "2400",
+    "externalRequirement": false
+   },
+   {
+    "modName": "Cross-Mod Compatibility Tokens (CMCT)",
+    "notes": "only for automatic selection of water colour for Better Water 2",
+    "url": "",
+    "modId": "28284",
+    "externalRequirement": false
+   }
+  ]
+ },
+ "27049": {
+  "modName": "Wildflour's Atelier Goods - An Artisan Goods Expansion",
+  "nodes": [
+   {
+    "modName": "Calcifer",
+    "notes": "Optional but Highly Recommended",
+    "url": "",
+    "modId": "20628",
+    "externalRequirement": false
+   },
+   {
+    "modName": "Cauldron",
+    "notes": "REQUIRED",
+    "url": "",
+    "modId": "22926",
+    "externalRequirement": false
+   },
+   {
+    "modName": "Content Patcher",
+    "notes": "REQUIRED",
+    "url": "",
+    "modId": "1915",
+    "externalRequirement": false
+   },
+   {
+    "modName": "Extra Machine Configs (EMC)",
+    "notes": "REQUIRED",
+    "url": "",
+    "modId": "22256",
+    "externalRequirement": false
+   },
+   {
+    "modName": "Farm Type Manager (FTM)",
+    "notes": "Required if you enable Wild Food; not needed if you don't",
+    "url": "",
+    "modId": "3231",
+    "externalRequirement": false
+   },
+   {
+    "modName": "HxW Tilesheets",
+    "notes": "REQUIRED",
+    "url": "",
+    "modId": "20139",
+    "externalRequirement": false
+   },
+   {
+    "modName": "Item Extensions",
+    "notes": "Required if you enable Mixed Seeds; not needed if you don't",
+    "url": "",
+    "modId": "20357",
+    "externalRequirement": false
+   },
+   {
+    "modName": "Machine Control Panel",
+    "notes": "Optional but Highly Recommended if you use Automate!",
+    "url": "",
+    "modId": "28261",
+    "externalRequirement": false
+   },
+   {
+    "modName": "Unlockable Bundles",
+    "notes": "REQUIRED",
+    "url": "",
+    "modId": "17265",
+    "externalRequirement": false
+   },
+   {
+    "modName": "Bush Bloom Mod",
+    "notes": "Required if you enable Wild Food; not needed if you don't",
+    "url": "",
+    "modId": "15792",
+    "externalRequirement": false
+   }
+  ]
+ },
+ "2400": {
+  "modName": "SMAPI - Stardew Modding API",
+  "nodes": []
+ }
+}

@@ -154,3 +154,12 @@
 .jg-card-click .jg-ver-card-sub { display: flex; align-items: center; }
 .jg-ver-hint { margin-left: auto; font-size: 11px; color: var(--jg-text-4); opacity: 0; transition: opacity .18s ease; }
 .jg-card-click:hover .jg-ver-hint { opacity: 1; }
+
+/* ── v1.5.1：Mod 行里「缺少依赖：X、Y」的依赖名做成可点入口（点进该 mod 详情页）。
+   这一行共用 .jg-mod-updmsg.failed 的红色，链接跟着继承色、只用点线下划线区分 ——
+   另起一种颜色会让整句读起来像两种状态。 ── */
+.jg-dep-link { background: none; border: none; padding: 0; font: inherit; color: inherit;
+    cursor: pointer; text-decoration: underline; text-decoration-style: dotted;
+    text-underline-offset: 2px; }
+.jg-dep-link:hover { text-decoration-style: solid; }
+.jg-dep-link:disabled, .jg-dep-link[data-clickable="false"] { cursor: default; text-decoration: none; }

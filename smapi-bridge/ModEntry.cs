@@ -27,7 +27,7 @@ namespace JuniGrid.CommandBridge
     public class ModEntry : Mod
     {
         private const string PipeName = "junigrid-cmdbridge";
-        private const string BridgeVersion = "1.0.0";
+        private const string BridgeVersion = "1.0.1";
         private static readonly TimeSpan RunTimeout = TimeSpan.FromSeconds(20);
 
         private object _manager = null!;
@@ -75,6 +75,28 @@ namespace JuniGrid.CommandBridge
             // 游戏被强杀留下的旧文件由启动器那边的 pid 存活校验兜住。
 
             helper.Events.GameLoop.SaveLoaded += (_, _) => WriteHandshake();
+
+            // v1.0.1：DDF 字典保活。换季/大规模资产失效后，dictionary.zh-CN 的重建顺序
+            // 可能把 Content Patcher 的补丁与 DDF 自己的 CopyFrom 解析拍错序 ⇒ 对话框
+            // 退回 vanilla 布局、像框空白（Skimpy 大表左上角 64×64 是透明区，原版头像
+            // 裁进去就是一张空纸 —— 2026-10-06 实测春季 12 潘妮）。读档和每天开始各
+            // 失效重建一次，在安静时点让字典按正确顺序长出来。
+            helper.Events.GameLoop.SaveLoaded += (_, _) => InvalidateDdfDictionary();
+            helper.Events.GameLoop.DayStarted += (_, _) => InvalidateDdfDictionary();
+        }
+
+        private void InvalidateDdfDictionary()
+        {
+            try
+            {
+                var n = Helper.GameContent.InvalidateCache(a =>
+                    a.Name.StartsWith("aedenthorn.DialogueDisplayFramework/dictionary", false, true));
+                this.Monitor.Log($"[字典保活] DDF dictionary 失效重建 {n} 个变体", LogLevel.Info);
+            }
+            catch (Exception ex)
+            {
+                this.Monitor.Log("[字典保活] 失效失败：" + ex.Message, LogLevel.Trace);
+            }
         }
 
         // ── 反射装配 ────────────────────────────────────────────────────

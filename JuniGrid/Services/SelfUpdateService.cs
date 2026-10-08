@@ -43,13 +43,61 @@ public sealed class SelfUpdateService
         return h;
     }
 
-    /// <summary>启动后台预检查（不阻塞 UI，失败静默），顺带清掉已装完的旧安装包缓存。</summary>
-    public void StartBackgroundCheck()
+    /// <summary>启动后台预检查（不阻塞 UI，失败静默）：清掉已装完的旧安装包缓存，
+    /// 并清掉旧肖像页留在 <c>Mods</c> 里的覆盖包。
+    /// <para>覆盖包那份<b>不能</b>只挂在"自更新落地那一次"上 —— 绝大多数人是自己下载 setup.exe
+    /// 覆盖装的，那条路上 <see cref="CleanupOldInstallers"/> 压根不会返回 true，于是包一直躺在
+    /// Mods 里被 Content Patcher 加载，而这一版没有立绘页，界面上没有任何地方能关它
+    /// （孤儿检测也看不见：它只遍历本体覆盖那本账，而肖像页从不写那本账）。
+    /// 判据本身幂等（哪儿都没有就返回 0），所以每次启动扫一遍比"赌对那一次"可靠。</para></summary>
+    public void StartBackgroundCheck(string? gamePath, DepotDownloaderService depot)
         => _ = Task.Run(async () =>
         {
             CleanupOldInstallers();
+            PurgePortraitOverrides(PortraitTargets(gamePath, depot));
             try { await CheckAsync(); } catch { }
         });
+
+    /// <summary>旧肖像页写进 Mods 的覆盖包名。立绘页已随换肤子系统一起删掉，包留在 Mods 里
+    /// 仍会被 Content Patcher 加载：~ = 启用态，.~ = 禁用态，后两个是改名前的旧名。</summary>
+    private static readonly string[] PortraitOverrideNames =
+    {
+        "~JuniGrid Portrait Overrides",
+        ".~JuniGrid Portrait Overrides",
+        "JuniGrid Portrait Overrides",
+        ".JuniGrid Portrait Overrides",
+    };
+
+    /// <summary>要扫的 Mods 目录：当前游戏 + 每一个已暂存版本各自的抽屉。</summary>
+    private static List<string> PortraitTargets(string? gamePath, DepotDownloaderService depot)
+    {
+        var dirs = new List<string>();
+        if (!string.IsNullOrWhiteSpace(gamePath)) dirs.Add(Path.Combine(gamePath, "Mods"));
+        try { dirs.AddRange(depot.ListStagedPackages().Select(p => Path.Combine(p.Path, "Mods"))); }
+        catch { }
+        return dirs;
+    }
+
+    /// <summary>硬删这些覆盖包，直接 Delete 不进 Mods/.junigrid_trash（回收站是给用户手删
+    /// mod 用的，这份是应用自己造的）。哪儿都没有就什么都不做，返回 0。</summary>
+    public static int PurgePortraitOverrides(List<string> modsDirs)
+    {
+        var deleted = 0;
+        foreach (var mods in modsDirs)
+        {
+            if (!Directory.Exists(mods)) continue;
+            foreach (var name in PortraitOverrideNames)
+            {
+                var full = Path.Combine(mods, name);
+                if (!Directory.Exists(full)) continue;
+                try { Directory.Delete(full, recursive: true); deleted++; }
+                catch (Exception ex) { AppLog.Warn("SelfUpdate", $"删除旧肖像覆盖包失败：{full} — {ex.Message}"); }
+            }
+        }
+        if (deleted > 0)
+            AppLog.Warn("SelfUpdate", $"启动清理：已删除旧肖像页覆盖包 {deleted} 份（直接删除，未进回收站）");
+        return deleted;
+    }
 
     /// <summary>请求 GitHub 最新版本并与当前版本比较（API 失败自动走 HTML 回落）。</summary>
     public async Task<SelfUpdateInfo?> CheckAsync()
@@ -116,14 +164,16 @@ public sealed class SelfUpdateService
         { UseShellExecute = true });
     }
 
-    /// <summary>启动时清理：缓存安装包的版本 <= 当前应用版本 = 已装完，删掉缓存。</summary>
-    private static void CleanupOldInstallers()
+    /// <summary>启动时清理：缓存安装包的版本 <= 当前应用版本 = 已装完，删掉缓存。
+    /// 返回 true = 这次确实清掉过一份，也就是更新已经落地。</summary>
+    private static bool CleanupOldInstallers()
     {
+        var landed = false;
         try
         {
             var dir = StoragePaths.SelfUpdateDir;
-            if (!Directory.Exists(dir)) return;
-            if (!Version.TryParse(AppInfo.Version.Trim(), out var current)) return;
+            if (!Directory.Exists(dir)) return false;
+            if (!Version.TryParse(AppInfo.Version.Trim(), out var current)) return false;
 
             foreach (var exe in Directory.GetFiles(dir, "JuniGrid-cn-v*-setup.exe"))
             {
@@ -135,6 +185,7 @@ public sealed class SelfUpdateService
                     File.Delete(exe);
                     if (File.Exists(exe + ".done")) File.Delete(exe + ".done");
                     AppLog.Warn("SelfUpdate", $"已清理旧版安装包缓存：{Path.GetFileName(exe)}");
+                    landed = true;
                 }
             }
         }
@@ -142,9 +193,13 @@ public sealed class SelfUpdateService
         {
             AppLog.Warn("SelfUpdate", $"清理安装包缓存失败：{ex.Message}");
         }
+        return landed;
     }
 
     // 通道 1：GitHub API（信息全，但有限流；直连不通依次换镜像 —— gh-proxy 可代理 API）
+    // <para><b>403/429 例外</b>：那是匿名配额（60 次/小时/IP）打满，镜像代理的是同一个 API、
+    // 同一个来源 IP，换过去只会再吃一次 403。实测每次开机因此白打四条请求、刷四条日志，
+    // 而真正拿到版本的是下面那条不受配额限制的 HTML 回落 —— 所以这两种状态码直接跳出镜像循环。</para>
     private async Task<SelfUpdateInfo?> TryCheckViaApiAsync()
     {
         foreach (var api in UpdateService.GithubUrls(AppInfo.LatestApiUrl))
@@ -154,7 +209,10 @@ public sealed class SelfUpdateService
                 using var resp = await Http.GetAsync(api);
                 if (!resp.IsSuccessStatusCode)
                 {
-                    AppLog.Warn("SelfUpdate", $"API 通道失败：HTTP {(int)resp.StatusCode}（{new Uri(api).Host}），换下一通道");
+                    var code = (int)resp.StatusCode;
+                    AppLog.Warn("SelfUpdate", $"API 通道失败：HTTP {code}（{new Uri(api).Host}）"
+                        + (code is 403 or 429 ? "，配额打满，换镜像没用 → 走 HTML 回落" : "，换下一通道"));
+                    if (code is 403 or 429) return null;
                     continue;
                 }
                 using var doc = JsonDocument.Parse(await resp.Content.ReadAsStreamAsync());

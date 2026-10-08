@@ -545,9 +545,8 @@
             Cfg.Save(cfg);
             RefreshLibrary();
             _ = JS.InvokeVoidAsync("junigridJs.toast", LocService.Tf("已切换到 {0}", st.Label), "ok");
-            // P0-1/P0-3：Mods 整包替换 + 立绘扫描数据失效 —— 广播已打开的页面重扫
+            // P0-1/P0-3：Mods 整包替换 → 广播已打开的页面重扫
             PageRefresh.Request("mods");
-            PageRefresh.Request("portraits");
             // 首页与侧栏的版本号/ SMAPI 状态都是按磁盘本体算的，不重读会停在切换中途那次空值
             PageRefresh.Request("version");
             await OnVersionChanged.InvokeAsync();

@@ -1,0 +1,1691 @@
+@namespace JuniGrid.Components.Pages
+@page "/packs"
+@inject ConfigService Cfg
+@inject NexusService Nexus
+@inject NavigationManager Nav
+@inject PageRefreshService PageRefresh
+@inject IJSRuntime JS
+@implements IDisposable
+
+<div class="jg-page jg-nexus-scope jg-packs-page">
+    @* ── 头部：标题 + 说明气泡 + 统计 + 全局动作 ── *@
+    <div class="jg-packs-head">
+        <div>
+            <div style="display:flex;align-items:center;gap:14px">
+                <h1 style="margin-top:0;margin-bottom:4px">@Loc.T("内容包")</h1>
+                <span class="jg-help-tip jg-help-tip--down">
+                    <span class="jg-help-tip-btn">?</span>
+                    <span class="jg-help-tip-bubble">@Loc.T("本页管理内容包：包内图像直接写入游戏本体的 Content，无需 SMAPI 即可生效。「按包」提供整包总开关；「按对象」把可替换的内容（人物、马、房屋、树木等）排成网格，点击对应对象即可替换。")</span>
+                </span>
+            </div>
+            <div style="opacity:.7;font-size:13px">
+                @if (_initialLoading)
+                {
+                    <span>@Loc.T("正在加载内容包…")</span>
+                }
+                else if (_groups.Count == 0)
+                {
+                    @if (_all.Count > 0)
+                    {
+                        @* 账一条都没少，只是都不在这一桶里 —— 这时候说"暂无此类包"
+                           等于让人以为包没了，还原入口也就找不到了 *@
+                        <text>@Loc.F("当前版本（{0}）没有记录 · 另有 {1} 个包属于其他版本", _curVer, OtherCount())</text>
+                    }
+                    else
+                    {
+                        <span>@Loc.T("暂无此类包")</span>
+                    }
+                }
+                else
+                {
+                    <text>@Loc.F("{0} 个包 · {1} 个对象", _groups.Count, _targets.Count)</text>
+                }
+            </div>
+        </div>
+        <div class="jg-pt-actions">
+            @* 包被删掉（Mods 页删除 / 移入回收站 / 空壳与多副本清理）【不会】撤回它写进游戏本体的图 ——
+               撤回入口只有这一页的 SetPackEnabled / DeletePack。而包没了之后用户不会再在列表里找它，
+               于是这些覆盖可以无限期留着：压住肖像页的一切选择，还让 SMAPI 每次启动报
+               "content files were modified"（2026-10-06 实测：一条 101 张立绘的账躺了两天）。
+               这里只点名 + 告诉他人去哪儿撤回，不自动写盘。 *@
+            @foreach (var o in _orphans)
+            {
+                <span class="jg-pill-ghost"
+                      title='@Loc.F("{0} 修改了游戏本体的 {1} 个文件；删除该包不会自动撤回。请在下方列表中找到该包并点击「全部还原」以恢复原版", o.PackName, o.EnabledCount)'>
+                    @o.PackName · @Loc.F("包已删除，本体覆盖仍在生效（{0} 个文件）", o.EnabledCount)
+                </span>
+            }
+            <button type="button" class="jg-pill-ghost" title='@Loc.T("将本页所有包还原为游戏原版图像（记录与副本均保留，可再次启用）")'
+                    disabled="@(_busy || _inPlace == 0)" @onclick="OnRevertAll">
+                <svg class="jg-pt-act-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg> @Loc.T("全部还原") </button>
+        </div>
+    </div>
+
+    @* ── 进页面的第一屏：与 Mod / Nexus 页同款骨架屏 ──
+       账本重读放在首次渲染之后（见 OnAfterRenderAsync），所以这里画得出来东西：
+       放在 OnInitialized 里同步跑的话，浏览器在它跑完之前整页是空白的，
+       人只会以为点没点上，而不会知道在算。 *@
+    @if (_initialLoading)
+    {
+        <div class="jg-pt-grid jg-pk-grid" aria-hidden="true">
+            @for (var i = 0; i < 12; i++)
+            {
+                <div class="jg-shimmer jg-pk-skeleton-card"></div>
+            }
+        </div>
+    }
+
+    @* 过滤后一屏空了但别的桶里有账：这一整块（含版本 chips）必须还在，
+       否则人看到的是"一个包都没有"，而切回去的开关正好被藏起来了 *@
+    @if (!_initialLoading && (_groups.Count > 0 || ShowVerChips))
+    {
+        @* ── 工具行：视图切换 + 分类 chips + 搜索 ── *@
+        <div class="jg-mods-toolbar" style="margin-top:10px">
+            <div class="jg-pk-seg" role="tablist" aria-label='@Loc.T("视图")'>
+                <button type="button" role="tab" aria-selected="@(_view == "packs")"
+                        class="jg-pk-seg-btn @(_view == "packs" ? "active" : "")"
+                        @onclick='() => SetView("packs")'>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></svg>
+                    @Loc.T("按包")
+                </button>
+                <button type="button" role="tab" aria-selected="@(_view == "targets")"
+                        class="jg-pk-seg-btn @(_view == "targets" ? "active" : "")"
+                        @onclick='() => SetView("targets")'>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
+                    @Loc.T("按对象")
+                </button>
+            </div>
+            <div class="jg-chips" role="group">
+                @if (_view == "targets")
+                {
+                    <button class="jg-chip @(_tcat.Length == 0 ? "active" : "")" @onclick='() => SetTCat("")'>
+                        @Loc.T("全部") · @_targets.Count
+                    </button>
+                    @foreach (var c in TargetCategories())
+                    {
+                        var name = c;
+                        <button class="jg-chip @(_tcat == name ? "active" : "")" @onclick="() => SetTCat(name)">
+                            @Loc.T(name) · @_targets.Count(t => t.Category == name)
+                        </button>
+                    }
+                }
+                else
+                {
+                    <button class="jg-chip @(_cat.Length == 0 ? "active" : "")" @onclick='() => SetCat("")'>
+                        @Loc.T("全部") · @_groups.Count
+                    </button>
+                    @foreach (var bucket in CategoryList())
+                    {
+                        var name = bucket;
+                        <button class="jg-chip @(_cat == name ? "active" : "")" @onclick="() => SetCat(name)">
+                            @name · @CountIn(name)
+                        </button>
+                    }
+                }
+            </div>
+            @* 两个视图共用同一批账，所以版本 chips 在"按对象"里也得在 ——
+               不然空桶的提示写着"切到上面「其它版本」"，而那个开关刚好不在 *@
+            @if (ShowVerChips)
+            {
+                @* 替图是按当时那副本体编的：换版本之后旧戳的包不能再直接回放，
+                   所以账分两桶摆 —— 本版本一桶，其它版本一桶（点开就知道有几个要重编）。 *@
+                <div class="jg-chips" role="group" aria-label='@Loc.T("游戏版本")'>
+                    <button class="jg-chip @(_ver == "cur" ? "active" : "")" @onclick='() => SetVer("cur")'
+                            title='@Loc.F("当前游戏版本为 {0}：这些包要么按该版本编码，要么属于未记录版本的旧账", _curVer)'>
+                        @Loc.F("本版本 {0}", _curVer) · @CurCount()
+                    </button>
+                    <button class="jg-chip @(_ver == "other" ? "active" : "")" @onclick='() => SetVer("other")'
+                            title='@Loc.T("这些包的记录属于其他游戏版本，启用前会先按当前版本重新编码")'>
+                        @Loc.T("其它版本") · @OtherCount()
+                    </button>
+                    <button class="jg-chip @(_ver == "all" ? "active" : "")" @onclick='() => SetVer("all")'>
+                        @Loc.T("全部") · @_all.Count
+                    </button>
+                </div>
+            }
+            @if (_view == "targets")
+            {
+                <div class="jg-search-x @(_searchOpen ? "open" : "")">
+                    <button class="jg-search-btn" @onclick="ToggleSearch">
+                        <img src="assets/search.svg" alt='@Loc.T("搜索")' style="width:18px;height:18px;display:block" />
+                    </button>
+                    <div class="jg-search-field">
+                        <input class="jg-search-input" placeholder='@Loc.T("搜对象名（NPC / 马 / 房子…）")' @bind="SearchText" @bind:event="oninput" />
+                        <button class="jg-search-clear" @onclick="ClearSearchAndClose">✕</button>
+                    </div>
+                </div>
+            }
+        </div>
+
+        @* ══════════════ 按对象：能盖的东西摆成网格，逐对象挑版本 ══════════════ *@
+        @if (!_initialLoading && _view == "targets")
+        {
+            var visible = VisibleTargets().ToList();
+            if (visible.Count == 0)
+            {
+                <div class="jg-card" style="margin-top:12px">@Loc.T("没有符合筛选条件的对象。")</div>
+            }
+            else
+            {
+                foreach (var cat in TargetCategories())
+                {
+                    if (_tcat.Length != 0 && _tcat != cat) continue;
+                    var inCat = visible.Where(t => t.Category == cat).ToList();
+                    if (inCat.Count == 0) continue;
+                    <section class="jg-home-sec">
+                        <div class="jg-home-sec-head">
+                            <span class="jg-home-sec-title">@Loc.T(cat)</span>
+                            <span style="font-size:13px;opacity:.6">@Loc.F("{0} 个对象 · {1} 个覆盖中", inCat.Count, inCat.Count(t => t.AnyOn))</span>
+                        </div>
+                        <div class="jg-pt-grid jg-pk-grid">
+                            @foreach (var t in inCat)
+                            {
+                                var tLocal = t;
+                                var active = tLocal.Active;
+                                var st = active is not null
+                                    ? ContentOverrideService.StateOf(GamePath, active)
+                                    : ContentOverrideService.OverrideState.Off;
+                                var drift = st is ContentOverrideService.OverrideState.Foreign
+                                            or ContentOverrideService.OverrideState.Gone;
+                                var inert = st == ContentOverrideService.OverrideState.AlreadyVanilla;
+                                <div class="jg-pt-slot">
+                                    @* 覆盖中不再描边框：盖没盖看卡下包名就够（原版/包名），边框+黄点一屏几十张太吵 *@
+                                    <button class="jg-pt-card jg-pk-card"
+                                            data-tip="@(tLocal.AnyOn
+                                                ? Loc.F("当前：{0} —— 点击更换或还原", ContentOverrideTargets.DisplayPack(active!))
+                                                : Loc.T("当前为原版图像 —— 点击选择要应用的版本"))"
+                                            @onclick="() => OpenTarget(tLocal)" aria-label="@Loc.T(tLocal.Name)">
+                                        <span class="jg-pt-tilt">
+                                            <span class="jg-pk-cover">
+                                                @{
+                                                    var thumb = CardThumb(tLocal);
+                                                    var isFont = tLocal.Category == "字体";
+                                                }
+                                                @if (thumb is not null)
+                                                {
+                                                    <img src="@thumb" alt="" draggable="false" loading="lazy" decoding="async" />
+                                                }
+                                                else if (isFont)
+                                                {
+                                                    @* 字体图集解不出时才回落成文字事实（PNG 字体、或没见过的压缩格式） *@
+                                                    <span class="jg-pk-cover-font">
+                                                        <span class="jg-pk-cover-font-a">@FontAssetPath(tLocal)</span>
+                                                        <span class="jg-pk-cover-font-b">@FontFacts(tLocal)</span>
+                                                    </span>
+                                                }
+                                                else
+                                                {
+                                                    <span class="jg-shimmer jg-pk-cover-wait"></span>
+                                                }
+                                            </span>
+                                            <span class="jg-pt-name">@Loc.T(tLocal.Name)</span>
+                                            <span class="jg-pk-sub @(tLocal.AnyOn && !drift && !inert ? "on" : (drift ? "drift" : ""))">
+                                                @if (tLocal.AnyOn && !inert)
+                                                {
+                                                    @if (drift)
+                                                    {
+                                                        @Loc.T("已失效")
+                                                    }
+                                                    else
+                                                    {
+                                                        @ContentOverrideTargets.DisplayPack(active!)
+                                                    }
+                                                }
+                                                else
+                                                {
+                                                    @* 账上开着、盘上已经是原版（Steam 验证 / 更新换过本体）：
+                                                       游戏里看到的就是原版，卡片不能再说"当前是某个包" *@
+                                                    @Loc.T("原版")
+                                                }
+                                            </span>
+                                        </span>
+                                    </button>
+                                </div>
+                            }
+                        </div>
+                    </section>
+                }
+            }
+        }
+        else if (!_initialLoading)
+        {
+            @* ══════════════ 按包：整包总开关（原有视图） ══════════════ *@
+            @if (_groups.Count == 0)
+            {
+                <div class="jg-card" style="margin-top:12px">
+                    @Loc.F("当前版本（{0}）没有记录。切换至上方「其它版本」可查看那 {1} 个包 —— 启用前会先按当前版本重新编码。", _curVer, OtherCount())
+                </div>
+            }
+            @foreach (var bucket in CategoryList())
+            {
+                if (_cat.Length != 0 && _cat != bucket) continue;
+                var packs = _groups.Where(x => CategoryOf(x) == bucket).ToList();
+                <section class="jg-home-sec">
+                    <div class="jg-home-sec-head">
+                        <span class="jg-home-sec-title">@bucket</span>
+                        <span style="font-size:13px;opacity:.6">@Loc.F("{0} 个包", packs.Count)</span>
+                    </div>
+                    <div class="jg-browse2">
+                        @foreach (var p in packs)
+                        {
+                            var pLocal = p;
+                            @* 卡在这里 = 已经装好了，「已安装」角标是句废话 —— 换成三点菜单：
+                               mod 详情页 / 打开文件所在位置 / 删除（删除原来蹲在详情弹窗里，挪出来） *@
+                            <NexusModCard Mod="CardFor(pLocal)" Installed="@pLocal.AnyOn" OnOpen="OnCardOpen"
+                                          ShowMenu="true" MenuOpen="@(_menuSlot == pLocal.Slot)"
+                                          OnMenuToggle="() => ToggleCardMenu(pLocal.Slot)"
+                                          OnMenuDetail="() => CardMenuAct(() => GoPackDetailPage(pLocal))"
+                                          OnMenuFolder="() => CardMenuAct(() => OpenPackFolder(pLocal))"
+                                          OnMenuDelete="() => CardMenuAct(() => _ = DeletePack(pLocal))" />
+                        }
+                    </div>
+                </section>
+            }
+        }
+    }
+    else
+    {
+        @* ── 空状态：说清楚这页装什么、去哪装，一句话指路 ── *@
+        <div class="jg-pk-empty">
+            <svg class="jg-pk-empty-art" viewBox="0 0 220 120" fill="none" aria-hidden="true">
+                <rect x="14" y="26" width="52" height="52" rx="9" stroke="currentColor" stroke-width="2.5" opacity=".55"/>
+                <path d="M22 66 34 52l10 10 8-8 8 12" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" opacity=".55"/>
+                <circle cx="30" cy="40" r="4" fill="currentColor" opacity=".55"/>
+                <rect x="84" y="14" width="52" height="52" rx="9" stroke="currentColor" stroke-width="2.5" opacity=".9"/>
+                <path d="M92 54 104 40l10 10 8-8 8 12" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" opacity=".9"/>
+                <circle cx="100" cy="28" r="4" fill="currentColor" opacity=".9"/>
+                <rect x="154" y="42" width="52" height="52" rx="9" stroke="currentColor" stroke-width="2.5" opacity=".7"/>
+                <path d="M162 82 174 68l10 10 8-8 8 12" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" opacity=".7"/>
+                <circle cx="170" cy="56" r="4" fill="currentColor" opacity=".7"/>
+                <path d="M118 84l3.2 7.2L128 94l-6.8 2.8L118 104l-3.2-7.2L108 94l6.8-2.8L118 84Z" fill="currentColor" opacity=".85"/>
+            </svg>
+            <div class="jg-pk-empty-title">@Loc.T("暂无内容包")</div>
+            <button type="button" class="jg-pill-dark" @onclick="GoNexus">
+                <svg class="jg-pt-act-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14"/><path d="m19 12-7 7-7-7"/></svg> @Loc.T("前往 Nexus Mods 查找内容包")
+            </button>
+            <div class="jg-pk-empty-note">@Loc.T("这页只管直接盖本体 Content 的包；带 manifest 的 mod 在 Mod 管理页。")</div>
+        </div>
+    }
+
+    @* ── 对象弹窗：这个对象有哪些版本，逐个应用（原版也在其中）── *@
+    @* ── 对象弹窗：一个对象（人物 = 一个角色，含他全部形象）挑一个包盖上。
+       手势与立绘页【相反】：单击只管当前形象，长按才统一全部形象 —— 立绘页是"默认全季统一、
+       长按才固定到当季"。放大预览挪到缩略图上（不然单击被应用占了就没法看细节）。
+       形象 chips 只列原版真有对应文件的：默认 / 冬季 / 沙滩 / JojaMart / 医院 / 风衣，
+       春到秋在原版就是同一张默认图，不做三个假 chip 骗人。 ── *@
+    @if (_openTarget is not null)
+    {
+        var t = _openTarget;
+        var variant = _tVariantKey == t.Key && t.Variants.Contains(_tVariant) ? _tVariant : t.Variants[0];
+        var assets = t.AssetsOf(variant);
+        var activeNow = t.ActiveOf(variant);
+        var multi = t.VariantCount > 1;
+        <div class="jg-modal-overlay" @onclick="CloseTarget">
+            <div class="jg-modal jg-pk-tmodal" @onclick:stopPropagation>
+                <div class="jg-modal-title">@Loc.T(t.Name)</div>
+                <div class="jg-pk-tmodal-sub">
+                    <span>@t.Sub</span>
+                    @if (multi)
+                    {
+                        <span style="opacity:.5;flex:none">·</span>
+                        <span>@Loc.F("{0} 个形象", t.VariantCount)</span>
+                    }
+                    <span style="opacity:.5;flex:none">·</span>
+                    @if (activeNow is not null)
+                    {
+                        @* 与立绘页同款：mod 名可点 → 直接进该 mod 的详情页；原版没有详情页不可点 *@
+                        var curName = ContentOverrideTargets.DisplayPack(activeNow);
+                        <span class="jg-pk-curlink" data-tip='@Loc.T("点击进入该 mod 的详情页")'
+                              @onclick="() => GoTargetPackDetail(t)">@Loc.F("当前：{0}", curName)</span>
+                    }
+                    else
+                    {
+                        <span>@Loc.T("当前：原版")</span>
+                    }
+                </div>
+                @if (multi)
+                {
+                    <div class="jg-chips jg-pk-variant-chips" role="group">
+                        @foreach (var v in t.Variants)
+                        {
+                            var vv = v;
+                            <button type="button" class="jg-chip @(vv == variant ? "active" : "")"
+                                    @onclick="() => PickVariant(t.Key, vv)">
+                                @Loc.T(vv)
+                            </button>
+                        }
+                    </div>
+                    <div class="jg-pk-gesture-hint">
+                        @Loc.T("单击仅替换当前形象 · 长按应用于全部形象 · 点击缩略图放大")
+                    </div>
+                }
+                <div class="jg-pk-verlist">
+                    @* 原版行：把【当前形象】（长按则全部形象）退回游戏原版图 *@
+                    @{
+                        var vanillaActive = activeNow is null;
+                        var vKey = t.Key + "|";
+                    }
+                    <button type="button" class="jg-pk-ver @(vanillaActive ? "active" : "") @(_pressKey == vKey ? "pressing" : "")"
+                            disabled="@_busy"
+                            @onpointerdown="() => PressStart(vKey, () => ApplyVersion(t, null))"
+                            @onpointerup="() => PressEnd(vKey)"
+                            @onpointerleave="() => PressCancel(vKey)"
+                            @onpointercancel="() => PressCancel(vKey)"
+                            @oncontextmenu:preventDefault
+                            @onclick="() => RowClick(() => ApplyVariant(t, null, variant))">
+                        <span class="jg-pk-ver-thumbs" @onclick:stopPropagation
+                              @onclick="() => RowClick(() => OpenTargetLightbox(t, null, variant))">
+                            @foreach (var asset in assets)
+                            {
+                                var vsrc = ContentOverrideTargets.VanillaSource(GamePath, asset);
+                                var vthumb = vsrc is null ? null : PackThumbService.Get(vsrc, PackThumbService.KindOf(asset));
+                                <span class="jg-pk-ver-thumb @(PackThumbService.KindOf(asset) == PackThumbService.Kind.Sprite ? "tall" : "")">
+                                    @if (vthumb is not null)
+                                    {
+                                        <img src="@vthumb" alt="" draggable="false" loading="lazy" decoding="async" />
+                                    }
+                                    else
+                                    {
+                                        <span class="jg-pt-cover-empty"></span>
+                                    }
+                                </span>
+                            }
+                        </span>
+                        <span class="jg-pk-ver-meta">
+                            <span class="jg-pk-ver-name">@Loc.T("原版")</span>
+                            <span class="jg-pk-ver-sub">@Loc.T("游戏原版图像")</span>
+                        </span>
+                    </button>
+                    @foreach (var ver in t.VersionsOf(variant))
+                    {
+                        var slot = ver.Key;
+                        var recs = ver.ToList();
+                        var packTitle = ContentOverrideTargets.DisplayPack(recs[0]);
+                        var active = recs.Any(r => r.Asset.Equals(assets[0], StringComparison.OrdinalIgnoreCase)
+                            && r.Enabled) || recs.Any(r => assets.Contains(r.Asset, StringComparer.OrdinalIgnoreCase) && r.Enabled);
+                        var mine = recs.Count(r => assets.Contains(r.Asset, StringComparer.OrdinalIgnoreCase));
+                        var hasP = recs.Any(r => r.Asset.StartsWith("Portraits/", StringComparison.OrdinalIgnoreCase));
+                        var hasC = recs.Any(r => r.Asset.StartsWith("Characters/", StringComparison.OrdinalIgnoreCase));
+                        var rKey = t.Key + "|" + slot;
+                        <button type="button" class="jg-pk-ver @(active ? "active" : "") @(_pressKey == rKey ? "pressing" : "")"
+                                disabled="@_busy"
+                                data-tip="@packTitle"
+                                @onpointerdown="() => PressStart(rKey, () => ApplyVersion(t, slot))"
+                                @onpointerup="() => PressEnd(rKey)"
+                                @onpointerleave="() => PressCancel(rKey)"
+                                @onpointercancel="() => PressCancel(rKey)"
+                                @oncontextmenu:preventDefault
+                                @onclick="() => RowClick(() => ApplyVariant(t, slot, variant))">
+                            <span class="jg-pk-ver-thumbs" @onclick:stopPropagation
+                                  @onclick="() => RowClick(() => OpenTargetLightbox(t, slot, variant))">
+                                @foreach (var asset in assets)
+                                {
+                                    var src = ContentOverrideTargets.VersionSource(GamePath, recs, asset);
+                                    var th = src is null ? null : PackThumbService.Get(src, PackThumbService.KindOf(asset));
+                                    <span class="jg-pk-ver-thumb @(PackThumbService.KindOf(asset) == PackThumbService.Kind.Sprite ? "tall" : "") @(src is null ? "miss" : "")">
+                                        @if (th is not null)
+                                        {
+                                            <img src="@th" alt="" draggable="false" loading="lazy" decoding="async" />
+                                        }
+                                        else
+                                        {
+                                            <span class="jg-pt-cover-empty"></span>
+                                        }
+                                    </span>
+                                }
+                            </span>
+                            <span class="jg-pk-ver-meta">
+                                <span class="jg-pk-ver-name">@packTitle</span>
+                                <span class="jg-pk-ver-sub">
+                                    @if (t.IsPerson)
+                                    {
+                                        @(hasP && hasC ? Loc.T("立绘 + 行走图") : hasP ? Loc.T("立绘") : Loc.T("行走图"))
+                                    }
+                                    else
+                                    {
+                                        @Loc.F("覆盖 {0} 个文件", mine)
+                                    }
+                                </span>
+                            </span>
+                            @* 这个包没画全该角色的所有形象 ⇒ 长按统一时会有形象盖不上，先说清 *@
+                            @if (multi && recs.Select(r => ContentOverrideTargets.VariantOf(r.Asset))
+                                    .Distinct(StringComparer.OrdinalIgnoreCase).Count() < t.VariantCount)
+                            {
+                                <span class="jg-pk-ver-off">@Loc.F("只有 {0} 个形象", recs.Select(r =>
+                                    ContentOverrideTargets.VariantOf(r.Asset)).Distinct(StringComparer.OrdinalIgnoreCase).Count())</span>
+                            }
+                        </button>
+                        @* 同一个包里这张目标还有别的配色（实测 Yomi 发型包：4 个配色撞同一张
+                           Characters/Farmer/hairstyles）：点一下就换。一张表同时只有一份在位，
+                           所以这是"换"不是"加"，也不再多记一条账。 *@
+                        @if (ColorChips(recs) is { Count: > 0 } chips)
+                        {
+                            <div class="jg-chips jg-pk-color-chips" role="group" aria-label='@Loc.T("配色")'>
+                                @foreach (var c in chips)
+                                {
+                                    <button type="button" class="jg-chip @(c.Active ? "active" : "")"
+                                            disabled="@_busy" data-tip="@Loc.F("换成「{0}」", c.Label)"
+                                            @onclick="() => PickColor(t.Name, slot, c.Asset, c.Label)">@c.Label</button>
+                                }
+                            </div>
+                        }
+                    }
+                </div>
+                <div class="jg-modal-actions">
+                    <button type="button" class="jg-pill-ghost" @onclick="CloseTarget">@Loc.T("关闭")</button>
+                </div>
+            </div>
+        </div>
+    }
+
+    @* ── 大图弹层：点击版本行/包内单图弹出，长按行才是"使用"。弹层里按状态出使用按钮，
+       免得不知道长按的人找不着入口；不适配的图只给原因、不出按钮。
+       透明像素画用棋盘格衬底，深浅主题都看得清。 ── *@
+    @if (_lbImages is not null)
+    {
+        <div class="jg-modal-overlay jg-pk-lb-overlay" @onclick="CloseLightbox">
+            <div class="jg-pk-lb" @onclick:stopPropagation role="dialog" aria-label='@Loc.T("大图预览")'>
+                <div class="jg-pk-lb-head">
+                    <div style="min-width:0">
+                        <div class="jg-pk-lb-title">@_lbTitle</div>
+                        <div class="jg-pk-lb-sub">@_lbSub</div>
+                    </div>
+                    <button type="button" class="jg-pk-lb-close" @onclick="CloseLightbox" aria-label='@Loc.T("关闭")'>✕</button>
+                </div>
+                <div class="jg-pk-lb-body">
+                    <div class="jg-pk-lb-canvas">
+                        @* inner 是缩放层（JS 写 zoom）；canvas 只做视口 + 平移。
+                           这层必须在 razor 标记里 —— JS 自建容器会让 Blazor 差分找不到子节点 *@
+                        <div class="jg-pk-lb-inner">
+                            @foreach (var img in _lbImages)
+                            {
+                                var url = PackThumbService.GetLarge(img.Path, img.Kind);
+                                <figure class="jg-pk-lb-fig">
+                                    <span class="jg-pk-lb-frame">
+                                        @if (url is not null)
+                                        {
+                                            <img src="@url" alt="@img.Label" draggable="false" decoding="async" />
+                                        }
+                                        else
+                                        {
+                                            <span class="jg-shimmer jg-pk-lb-wait"></span>
+                                        }
+                                    </span>
+                                    @* 只有一张图时不写图注（"包里的图"是废话：弹层就是从那个包点开的）。
+                                       多张并列才需要标注区分原版 / 哪个包。 *@
+                                    @if (_lbImages.Count > 1)
+                                    {
+                                        <figcaption>@img.Label</figcaption>
+                                    }
+                                </figure>
+                            }
+                            @if (_lbImages.Count == 0)
+                            {
+                                <div class="jg-pk-lb-note">@(_lbNote ?? Loc.T("该版本在此对象下没有图像。"))</div>
+                            }
+                        </div>
+                    </div>
+                </div>
+                <div class="jg-pk-lb-actions">
+                    @if (_lbActive)
+                    {
+                        <span class="jg-pk-ver-on">@Loc.T("使用中")</span>
+                    }
+                    @if (_lbApply is not null)
+                    {
+                        <button type="button" class="jg-pill-dark" disabled="@_busy" @onclick="ApplyFromLightbox">
+                            @_lbApplyLabel
+                        </button>
+                    }
+                    <button type="button" class="jg-pill-ghost" @onclick="CloseLightbox">@Loc.T("关闭")</button>
+                </div>
+            </div>
+        </div>
+    }
+
+    @* ── 包详情：这个包装了哪几张图、装没装上、为什么有的没装上 ── *@
+    @if (_open is not null)
+    {
+        var p = _open;
+        var onCount = p.ImageItems.Count(r => r.Enabled);
+        <div class="jg-modal-overlay" @onclick="() => CloseDetail()">
+            <div class="jg-modal jg-pk-dmodal" @onclick:stopPropagation style="max-width:600px">
+                @* 「打开文件夹」跟着【包】走，所以钉在包标题后面；大图弹层是逐张图的地方，
+                   把整包的动作塞在那儿等于每张图都长一颗不属于它的按钮 *@
+                <div class="jg-pk-dmodal-head">
+                    <div class="jg-modal-title" title="@PackName(p)">@PackName(p)</div>
+                    <button type="button" class="jg-pill-ghost jg-pk-dmodal-folder"
+                            title='@Loc.T("打开内容包所在的文件夹")' @onclick="() => OpenPackFolder(p)">
+                        <svg class="jg-pt-act-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg> @Loc.T("打开文件夹")
+                    </button>
+                </div>
+                <div class="jg-modal-body">
+                    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+                        @if (p.Category.Length > 0)
+                        {
+                            <span class="jg-modcard2-cat-chip">@p.Category</span>
+                        }
+                        <span style="font-size:12px;opacity:.7">@Loc.F("已运用 {0} / {1} 个", onCount, p.ImageItems.Count)</span>
+                        @if (p.DriftedCount > 0)
+                        {
+                            <span style="font-size:12px;color:#e5484d">@Loc.F("{0} 个文件已失效", p.DriftedCount)</span>
+                        }
+                        @if (p.VanillaCount > 0)
+                        {
+                            <span style="font-size:12px;opacity:.7">@Loc.F("{0} 个文件已还原为原版", p.VanillaCount)</span>
+                        }
+                        @if (p.Skipped > 0)
+                        {
+                            <span style="font-size:12px;color:#b25e09">@Loc.F("{0} 个文件与本游戏版本不兼容", p.Skipped)</span>
+                        }
+                        @* 语言变体这条不藏起来：中文客户端可能读的是那张变体 ⇒ 装了却看不见，
+                           而人会以为是这个功能坏了。 *@
+                        @if (p.LocaleRiskCount > 0)
+                        {
+                            <span style="font-size:12px;opacity:.7">@Loc.T("若游戏语言为中文，可能看不到效果")</span>
+                        }
+                    </div>
+
+                    @* 包里每张图一行，与对象弹窗的版本行同一套手势、同一套样式：
+                       点击放大（原分辨率），长按盖上/还原单张；不适配的也列出来（禁用态，只能放大看原因）。
+                       一行 = 一张图：不是图的账（对话表/事件脚本/日程）不列，
+                       同一张图的语言副本并到基名这一行 —— 长按这一行会把 12 份一起盖上/还原。*@
+                    <div class="jg-pk-verlist">
+                        @foreach (var r in p.ImageItems)
+                        {
+                            var rec = r;
+                            // 状态按【这一行代表的那张图的全部文件】算，不看基名那一条：
+                            // 基名可能被单独关掉过，而语言副本还盖着（见 ImageGroupState）。
+                            var st = ContentOverrideService.ImageGroupState(GamePath, Cfg, rec.Slot, rec.Asset);
+                            var drift = st is ContentOverrideService.OverrideState.Foreign
+                                        or ContentOverrideService.OverrideState.Gone;
+                            var inert = st == ContentOverrideService.OverrideState.AlreadyVanilla;
+                            var kind = PackThumbService.KindOf(rec.Asset);
+                            var th = rec.StoreId.Length > 0
+                                ? PackThumbService.Get(ContentOverrideService.StoreFile(GamePath, rec.StoreId, rec.Asset), kind)
+                                : null;
+                            var iKey = "i|" + rec.Slot + "|" + rec.Asset;
+                            var sizeNote = ResizedNoteFor(p, rec);
+                            @* 这张表在包内有多个配色 ⇒ 行【上方】一排 chips，一个 chip 一个配色，
+                               点谁就用谁（跟工具行那排分类 chips 同一个位置感）。
+                               一行装不下就横向滚，不折行把卡片撑高。*@
+                            @if (rec.Variants.Count > 1)
+                            {
+                                <div class="jg-chips jg-pk-color-chips" role="group" aria-label='@Loc.T("配色")'>
+                                    @foreach (var f in FactsOf(rec))
+                                    {
+                                        var pick = f;
+                                        <button type="button" class="jg-chip @(pick.Label == rec.VariantLabel ? "active" : "")"
+                                                disabled="@_busy"
+                                                title="@(pick.Label == rec.VariantLabel ? Loc.T("当前在位的配色") : Loc.F("换成「{0}」", pick.Label))"
+                                                @onclick="() => PickColor(PackName(p), rec.Slot, rec.Asset, pick.Label)">@pick.Label</button>
+                                    }
+                                </div>
+                            }
+                            <button type="button" class="jg-pk-ver @(st == ContentOverrideService.OverrideState.InPlace ? "active" : "") @(_pressKey == iKey ? "pressing" : "")"
+                                    disabled="@_busy"
+                                    @onpointerdown="() => PressStart(iKey, () => TogglePackAsset(p, rec))"
+                                    @onpointerup="() => PressEnd(iKey)"
+                                    @onpointerleave="() => PressCancel(iKey)"
+                                    @onpointercancel="() => PressCancel(iKey)"
+                                    @oncontextmenu:preventDefault
+                                    @onclick="() => RowClick(() => OpenPackItemLightbox(p, rec))">
+                                <span class="jg-pk-ver-thumbs">
+                                    <span class="jg-pk-ver-thumb @(kind == PackThumbService.Kind.Sprite ? "tall" : "")">
+                                        @if (th is not null)
+                                        {
+                                            <img src="@th" alt="" draggable="false" loading="lazy" decoding="async" />
+                                        }
+                                        else
+                                        {
+                                            <span class="jg-pt-cover-empty"></span>
+                                        }
+                                    </span>
+                                </span>
+                                <span class="jg-pk-ver-meta">
+                                    <span class="jg-pk-ver-name">@rec.Asset</span>
+                                    <span class="jg-pk-ver-sub">@(sizeNote is null ? RowSub(rec) : RowSub(rec) + " · " + sizeNote)</span>
+                                </span>
+                                @* 在位的行已经有边框+底色，不再叠「使用中」胶囊；「已不在位」是另一回事，保留。
+                                   条件不再 && rec.Enabled —— st 已经是整组算出来的，关着的行只会是 Off *@
+                                @if (drift)
+                                {
+                                    <span class="jg-pk-ver-on jg-pk-ver-on--drift">@Loc.T("已失效")</span>
+                                }
+                                @* 盘上已经是原版（Steam 验证过 / 更新换过本体）：这是件已经做完的事，
+                                   不是故障，所以给中性字而不是红字「已不在位」 *@
+                                else if (inert)
+                                {
+                                    <span class="jg-pk-ver-off jg-pk-ver-off--ok">@Loc.T("已被还原为原版")</span>
+                                }
+                            </button>
+                        }
+                        @foreach (var sk in ParseSkips(p))
+                        {
+                            var skip = sk;
+                            <button type="button" class="jg-pk-ver jg-pk-ver--skip"
+                                    title='@Loc.T("此文件无法安装，可放大查看原因")'
+                                    @onclick="() => RowClick(() => OpenSkipLightbox(skip))">
+                                <span class="jg-pk-ver-thumbs">
+                                    <span class="jg-pk-ver-thumb jg-pk-ver-thumb--skip">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="m5.5 5.5 13 13"/></svg>
+                                    </span>
+                                </span>
+                                <span class="jg-pk-ver-meta">
+                                    <span class="jg-pk-ver-name">@skip.Name</span>
+                                    <span class="jg-pk-ver-sub">@skip.Reason</span>
+                                </span>
+                                <span class="jg-pk-ver-off">@Loc.T("不可用")</span>
+                            </button>
+                        }
+                        @* 账上已经找不到对应记录的尺寸备注：正常情况不该有，留作兜底。
+                           能对上记录的都并回上面那张自己的行了 —— 以前这类备注自己占一行卡片，
+                           于是"装上了但比本体高"的那批图在一包里出现两遍（一次正常行、一次备注行），
+                           而备注本身是整包一份、抄到每条记录上的，跟"这一张图"无关
+                           （用户 2026-10-07：为什么有两个玛鲁沙滩图，一个没问题一个不适配）。*@
+                        @foreach (var rz in ParseResized(p).Where(x => !RowCovers(p, RecordFor(p, x))))
+                        {
+                            @* 账上已经没有这张的记录（被还原过 / 记录被删了），所以没有副本可预览，
+                               只能给当初那句说明 —— 不留行就等于把这件事也一起抹掉了。*@
+                            <div class="jg-pk-ver jg-pk-ver--rz">
+                                <span class="jg-pk-ver-thumbs">
+                                    <span class="jg-pk-ver-thumb jg-pk-ver-thumb--rz">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 14h7v6M10 10h11"/></svg>
+                                    </span>
+                                </span>
+                                <span class="jg-pk-ver-meta">
+                                    <span class="jg-pk-ver-name">@rz.Name</span>
+                                    <span class="jg-pk-ver-sub">@rz.Reason · @Loc.T("安装时已按原样写入")</span>
+                                </span>
+                            </div>
+                        }
+                        @if (p.Skipped > ParseSkips(p).Count)
+                        {
+                            <div style="padding:2px 12px;font-size:11.5px;opacity:.5">
+                                @Loc.F("…另有 {0} 个不适配文件未列出", p.Skipped - ParseSkips(p).Count)
+                            </div>
+                        }
+                    </div>
+
+                    <div style="margin-top:8px;font-size:12px;opacity:.6">
+                        @Loc.T("切换游戏版本前请先执行「全部还原」—— 否则被修改过的图像会被当作该版本的原版存入版本缓存。")
+                    </div>
+                </div>
+                <div class="jg-modal-actions">
+                    @* 删除挪进卡片三点菜单；关闭靠点遮罩 / 按 ESC。剩下的主按钮是整包开关：
+                       没盖上 = 一键运用全部贴图，盖着 = 一键还原全部贴图 *@
+                    <button type="button" class="jg-pill-dark" disabled="@_busy" @onclick="() => TogglePack(p)">
+                        @(p.AnyOn ? Loc.T("一键还原") : Loc.T("一键运用"))
+                    </button>
+                </div>
+            </div>
+        </div>
+    }
+
+    @* 卡片三点菜单的点击外关闭遮罩（与 Mods 页同款 .jg-dd-overlay；
+       菜单打开的那张卡由 CSS :has 抬到遮罩之上） *@
+    <div class="jg-dd-overlay @(_menuSlot is not null ? "open" : "")" data-dd="pkcard" @onclick="CloseCardMenu"></div>
+
+    @if (_toast is not null)
+    {
+        <div class="jg-pt-toast">@_toast</div>
+    }
+</div>
+
+@code {
+    private string GamePath => Cfg.Current.GamePath ?? "";
+    /// <summary>按当前游戏版本过滤后的一屏（列表、分类、搜索用的都是它）。</summary>
+    private List<ContentOverrideService.PackGroup> _groups = new();
+    /// <summary>过滤前的全部包 —— 版本 chips 上的数与「全部还原」的是不是该按下去都看它，
+    /// 因为还原从来不分版本。</summary>
+    private List<ContentOverrideService.PackGroup> _all = new();
+    private string _curVer = "";
+    private string _ver = "cur";              // cur = 本版本 | other = 其它版本 | all = 全部
+    private List<ContentOverrideTargets.TargetGroup> _targets = new();
+    private ContentOverrideService.PackGroup? _open;
+    private ContentOverrideTargets.TargetGroup? _openTarget;
+    /// <summary>对象弹窗当前停在哪个形象。<c>_tVariantKey</c> 记下它属于哪个对象 ——
+    /// 换个对象还留着上一个角色的「冬季」，会一进来就选到不存在的形象上。</summary>
+    private string _tVariantKey = "";
+    private string _tVariant = ContentOverrideTargets.DefaultVariant;
+    private string _view = "packs";         // packs | targets
+    private string _cat = "";               // 按包：N 网分类筛选
+    private string _tcat = "";              // 按对象：对象分类筛选
+    private string SearchText { get; set; } = "";
+    private bool _searchOpen;
+    private bool _busy;
+    /// <summary>进页面的第一屏还没算完。与 Mod / Nexus 页同款闸门：骨架屏期间真实列表不渲染，
+    /// 否则人看到的是整页空白 —— 账本重读是同步的，跑完之前浏览器什么都画不出来。</summary>
+    private bool _initialLoading = true;
+    private bool _disposed;
+    private int _inPlace;
+    /// <summary>包已经不在了、但它对本体的覆盖还在生效的账（见 <c>AuditOrphans</c>）。
+    /// 只点名、不自动写盘 —— 判错一次就会把用户故意留下的画风静默改掉。</summary>
+    private List<ContentOverrideService.OrphanOverrideGroup> _orphans = new();
+    private string? _toast;
+    private System.Threading.Timer? _toastTimer;
+    private string? _menuSlot;              // 三点菜单打开着的包（按包视图，一档只开一个）
+    private DotNetObjectReference<Packs>? _dotNetRef;
+
+    /// <summary>对象卡片的缩略图源缓存：Reload 时算一次（含 File.Exists），渲染期只查表 ——
+    /// 每张卡每帧都 stat 磁盘是 OneDrive/冷盘上的热点（立绘页踩过）。</summary>
+    private readonly Dictionary<string, (string Path, PackThumbService.Kind Kind)?> _cardSrc = new(StringComparer.Ordinal);
+
+    /// <summary>没补到分类的包归进这里，而不是藏起来 —— 少一张卡就是少一个还原入口。</summary>
+    private const string Uncat = "未分类";
+
+    protected override void OnInitialized()
+    {
+        PackThumbService.Changed += OnThumbsChanged;
+        PageRefresh.OnRefresh += OnPageRefresh;
+        _dotNetRef = DotNetObjectReference.Create(this);
+        // 老位置（C 盘配置目录）的覆盖库存搬进游戏目录旁的 JuniGrid 文件夹 ——
+        // 幂等，只有第一次真搬；搬不动只记日志，界面照常。
+        if (!string.IsNullOrWhiteSpace(GamePath))
+        {
+            try { ContentOverrideService.MigrateLegacyStore(GamePath); } catch { }
+            // 老账没有版本戳 → 先按"原版实际躺在哪一层"补上，界面才分得出哪个包属于哪一版；
+            // 顺手丢掉没有记录引用的副本目录（每次写盘都换新随机 id，历史上攒下过 39 个无主的）。
+            try { ContentOverrideService.BackfillVersions(Cfg, GamePath); } catch { }
+            try { ContentOverrideService.PruneUnreferencedStores(Cfg, GamePath); } catch { }
+        }
+        // 账本重读【不】在这里跑：OnInitialized 同步跑完之前浏览器连骨架屏都画不出来，
+        // 人只会看到整页空白卡住（盖满一个 1554 张表的包时一次 Reload 是秒级）。
+        // 挪到 OnAfterRenderAsync 首渲染之后 —— 先让骨架屏落地，再算账。
+    }
+
+    private void Reload()
+    {
+        var gp = GamePath;
+        _all = string.IsNullOrWhiteSpace(gp)
+            ? new List<ContentOverrideService.PackGroup>()
+            : ContentOverrideService.Groups(gp, Cfg);
+        _curVer = string.IsNullOrWhiteSpace(gp)
+            ? ""
+            : ContentOverrideService.OriginalVersionSegment(gp);
+        _groups = _all.Where(VerMatch).ToList();
+        if (string.IsNullOrWhiteSpace(gp))
+            _targets = new List<ContentOverrideTargets.TargetGroup>();
+        else
+        {
+            // 按对象与按包必须是同一批账，所以走同一个版本桶；再 AND 上"这一条在界面上算一行"：
+            // 对话表/事件脚本/日程那些不是图的账，和同一张图的语言副本，都不该各占一张卡。
+            var shown = ContentOverrideService.ShownRowPredicate(gp, Cfg);
+            Func<ContentOverrideRecord, bool> ver = _ver switch
+            {
+                "all" => _ => true,
+                "cur" => RecCur,
+                _ => r => !RecCur(r),
+            };
+            _targets = ContentOverrideTargets.Build(Cfg, r => ver(r) && shown(r));
+        }
+        // 「全部还原」从来不分版本，所以它该不该按得看过滤前的数 ——
+        // 只看这一屏的话，别的版本桶里在位的图会让按钮一直灰着。
+        _inPlace = _all.Sum(g => g.Items.Count(r => r.Enabled));
+        _orphans = string.IsNullOrWhiteSpace(gp)
+            ? new List<ContentOverrideService.OrphanOverrideGroup>()
+            : ContentOverrideService.AuditOrphans(gp, Cfg);
+        _cardSrc.Clear();
+        foreach (var t in _targets)
+            _cardSrc[t.Key] = ContentOverrideTargets.CardThumbSource(gp, t);
+        // 字体以前在这里被整条跳过（图集是单通道遮罩块，纹理解码解不出 ⇒ 只能摆灰 Aa）。
+        // 现在 XnbDecoder.TryDecodeFont 能解，字体卡也走同一条出图的路，解不出才回落文字事实。
+    }
+
+    /// <summary>进页就把全部对象卡的封面排进后台生成 —— 点开就是热的，不一张张后蹦。</summary>
+    private void PrewarmCards()
+    {
+        var jobs = _cardSrc.Values.Where(v => v is not null)
+            .Select(v => v!.Value).ToList();
+        if (jobs.Count > 0)
+            _ = Task.Run(() => PackThumbService.Prewarm(jobs));
+    }
+
+    private string? CardThumb(ContentOverrideTargets.TargetGroup t)
+    {
+        if (!_cardSrc.TryGetValue(t.Key, out var src) || src is null) return null;
+        return PackThumbService.Get(src.Value.Path, src.Value.Kind);
+    }
+
+    private void OnThumbsChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        _disposed = true;
+        PackThumbService.Changed -= OnThumbsChanged;
+        PageRefresh.OnRefresh -= OnPageRefresh;
+        _toastTimer?.Dispose();
+        _pressCts?.Cancel();
+        try { _ = JS.InvokeVoidAsync("junigridJs.packsEsc", (object?)null); } catch { }
+        _dotNetRef?.Dispose();
+    }
+
+    /// <summary>ESC 逐层退：大图 → 对象弹窗 → 包详情 → 卡片菜单（JS 侧 packsEsc 兜底挂钩）。</summary>
+    [JSInvokable]
+    public void OnEscapeClose()
+    {
+        if (_lbImages is not null) CloseLightbox();
+        else if (_openTarget is not null) CloseTarget();
+        else if (_open is not null) CloseDetail();
+        else if (_menuSlot is not null) _menuSlot = null;
+        else return;
+        StateHasChanged();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            // 首渲染画的是骨架屏；账本重读放到这里，算完才换成真列表。
+            // 放在 OnInitialized 里的话，浏览器在它跑完之前什么都画不出来。
+            await Task.Run(() =>
+            {
+                try { Reload(); }
+                catch (Exception ex) { AppLog.Warn("Packs", ex.Message); }
+            });
+            if (_disposed) return;
+            PrewarmCards();
+            _initialLoading = false;
+            StateHasChanged();
+            // 磁吸/倾斜/聚光灯：文档级一次性委托，卡片复用 .jg-pt-slot/.jg-pt-card 即自动生效
+            try { await JS.InvokeVoidAsync("junigridJs.ptMagnetic"); } catch { }
+            // 分类 chips 单行 + 左右拖动：也是文档级委托，切视图重渲染不用重绑
+            try { await JS.InvokeVoidAsync("junigridJs.chipsDrag", ".jg-packs-page .jg-mods-toolbar .jg-chips"); } catch { }
+            // ESC 关弹窗：文档级挂钩（幂等，重复调用会先摘旧 handler）
+            try { await JS.InvokeVoidAsync("junigridJs.packsEsc", _dotNetRef); } catch { }
+        }
+        // 大图弹层开着就确保缩放手势已绑上（幂等：JS 侧 __pkz 防重复绑定）
+        if (_lbImages is not null)
+        {
+            try { await JS.InvokeVoidAsync("junigridJs.pkZoomInit", ".jg-pk-lb-body"); } catch { }
+        }
+        if (!firstRender) return;
+        if (Cfg.Current.NexusCategories.Count == 0)
+        {
+            try
+            {
+                var cats = await Nexus.GetCategoriesAsync();
+                if (cats is { Count: > 0 })
+                {
+                    Cfg.Current.NexusCategories = cats;
+                    Cfg.Save(Cfg.Current);
+                }
+            }
+            catch (Exception ex) { AppLog.Warn("Packs", ex.Message); }
+        }
+        try { await EnsureMetaAsync(); }
+        catch (Exception ex) { AppLog.Warn("Packs", ex.Message); }
+        await RefreshAndRejudgeAsync();
+    }
+
+    /// <summary>顶栏点「内容包」图标（人已在本页时才会发信号）→ 与 Mod 页同款：重读账 + 自动重判。</summary>
+    private void OnPageRefresh(string key)
+    {
+        if (key != "packs" || _disposed) return;
+        _ = InvokeAsync(RefreshAndRejudgeAsync);
+    }
+
+    /// <summary>按【当前的】判定规则重跑一遍还挂着"不适配"的包：账上那些字是安装当时的快照，
+    /// 规则修好后不会自己变（实测 2026-10-05 修完逻辑，账上仍挂着 25 条误报），所以进页和刷新时补装。
+    /// ⚠ 这条会写游戏本体的 Content，全程占住 <c>_busy</c>；没补上东西也不出声（多数时候零条要重判）。</summary>
+    private async Task RefreshAndRejudgeAsync()
+    {
+        if (_busy || _disposed) return;
+        _busy = true;
+        Reload();
+        StateHasChanged();
+
+        var gp = GamePath;
+        var slots = string.IsNullOrWhiteSpace(gp)
+            ? new List<(string Key, string PackName, int Skipped)>()
+            : ContentOverrideService.SlotsNeedingRejudge(Cfg);
+        var fixedCount = 0;
+        var failed = new List<string>();
+        if (slots.Count > 0)
+            await Task.Run(() =>
+            {
+                // 单个包失败不中断后面的 —— 一个包的原包备份丢了，不该让另外几个也修不成。
+                foreach (var (slot, name, _) in slots)
+                {
+                    try
+                    {
+                        var r = ContentOverrideService.Rejudge(Cfg, gp, slot);
+                        if (r.Error is null) fixedCount += r.NewlyInstalled;
+                        else failed.Add($"{name}：{r.Error}");
+                    }
+                    catch (Exception ex) { failed.Add($"{name}：{ex.Message}"); }
+                }
+            });
+        if (_disposed) return;
+
+        if (slots.Count > 0)
+        {
+            var openSlot = _open?.Slot;
+            Reload();
+            if (openSlot is not null) _open = _groups.FirstOrDefault(g => g.Slot == openSlot);
+        }
+        _busy = false;
+        if (fixedCount > 0 || failed.Count > 0)
+            Toast(failed.Count > 0
+                ? Loc.F("重新检查完成：新增 {0} 个文件，{1} 个包未能重新检查", fixedCount, failed.Count)
+                : Loc.F("重新检查完成：新增 {0} 个文件", fixedCount));
+        StateHasChanged();
+    }
+
+    // ───────────────────── 视图切换 / 筛选 / 搜索 ─────────────────────
+
+    private void SetView(string v) { _view = v; _menuSlot = null; }    private void GoNexus() => Nav.NavigateTo("nexus");
+    private void SetCat(string c) { _cat = c; }
+
+    /// <summary>切版本桶。分类 chips 是渲染期过滤，版本桶是 <c>Reload</c> 里过滤的
+    /// （对象视图也要跟着换桶，就得重算一次），所以这里必须重跑 Reload，
+    /// 否则点了 chips 列表一动不动。</summary>
+    private void SetVer(string v)
+    {
+        _ver = v;
+        _menuSlot = null;
+        Reload();
+    }
+
+    /// <summary>一条账属不属于"当前这一版"。版本空白 = 老账且原版在哪一层都查不出来，
+    /// 按当前版本处理（它当初就是照着当时那副本体编的，而那副本体如今就是现役本体）；
+    /// 只有明确记着别的版本戳的才算旧账。</summary>
+    private bool RecCur(ContentOverrideRecord r)
+        => r.Version.Length == 0 || r.Version.Equals(_curVer, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>一个包进哪一桶看它【每一行】的戳：重编是按行发生的，
+    /// 同一个包里出现两种戳时两桶都该看得见它，而不是替它挑一个。</summary>
+    private bool VerMatch(ContentOverrideService.PackGroup g)
+        => _ver switch
+        {
+            "all" => true,
+            "cur" => g.Items.Any(RecCur),
+            _ => g.Items.Any(r => !RecCur(r)),
+        };
+
+    private int CurCount() => _all.Count(g => g.Items.Any(RecCur));
+    private int OtherCount() => _all.Count(g => g.Items.Any(r => !RecCur(r)));
+
+    /// <summary>只有一个版本时这排 chips 纯属噪音（切了也没东西变），所以只在账上真出现
+    /// 第二个版本戳时才出来 —— 版本分层是为了"切过版本之后看得清"，不是为了多一排按钮。</summary>
+    private bool ShowVerChips => OtherCount() > 0;
+
+    /// <summary>字体卡第一行：这张卡盖的到底是哪张资产（SmallFont 与它的 zh-CN 变体不是一张图）。</summary>
+    private static string FontAssetPath(ContentOverrideTargets.TargetGroup t)
+        => t.Assets.FirstOrDefault() ?? t.Name;
+
+    /// <summary>字体卡第二行，只摆能核对的事实：
+    /// 「整份替换」= 字体不比像素尺寸，整个文件换掉（与图类覆盖的机制差别，值得说清）；
+    /// 「N 个语言变体」= 中文客户端读的是 <名>.zh-CN 那一张，而我们只换基名 ⇒ 装了可能看不见。
+    /// 这条是字体包"没效果"的头号原因，摆在卡面上比藏在弹窗里有用。</summary>
+    private string FontFacts(ContentOverrideTargets.TargetGroup t)
+    {
+        var asset = FontAssetPath(t);
+        var sib = string.IsNullOrWhiteSpace(GamePath) || asset.Length == 0
+            ? 0 : ContentOverrideService.LocaleSiblings(GamePath, asset).Count;
+        return sib > 0
+            ? Loc.T("整份替换") + " · " + Loc.F("{0} 个语言变体", sib)
+            : Loc.T("整份替换");
+    }
+
+    /// <summary>版本行下面那行小字。账上记的版本不是当前本体那一版时要说出来 ——
+    /// 长按它不会回放旧字节，而是拿原包对当前本体重编一遍（不说的话，人只会奇怪
+    /// "为什么点一下要等"或"为什么这张和截图上不一样"）。</summary>
+    private string RowSub(ContentOverrideRecord r)    {
+        var s = (r.Encoded ? "PNG→XNB" : "XNB") + " · "
+            + (r.Enabled ? Loc.T("长按可还原此图像") : Loc.T("长按可应用此图像"));
+        if (r.Version.Length > 0 && !r.Version.Equals(_curVer, StringComparison.OrdinalIgnoreCase))
+            s += " · " + Loc.F("记录于 {0}，启用前将按当前版本重新编码", r.Version);
+        return s;
+    }
+    private void SetTCat(string c) { _tcat = c; }
+    private void CloseDetail() { _open = null; }
+    private void CloseTarget() { _openTarget = null; }
+
+    // ───────────────────── 按包卡片：三点菜单 ─────────────────────
+
+    private void ToggleCardMenu(string slot)
+        => _menuSlot = _menuSlot == slot ? null : slot;
+
+    private void CloseCardMenu()
+    {
+        if (_menuSlot is null) return;
+        _menuSlot = null;
+        StateHasChanged();
+    }
+
+    /// <summary>菜单动作统一收口：先收菜单再执行（与 Mods 页 MenuAct 同款）。</summary>
+    private void CardMenuAct(Action act)
+    {
+        _menuSlot = null;
+        act();
+        StateHasChanged();
+    }
+
+    /// <summary>mod 详情页：有 N 网页号直接进；手装的包没有页号，学立绘页给一句实话。</summary>
+    private void GoPackDetailPage(ContentOverrideService.PackGroup p)
+    {
+        if (p.NexusModId is int id) Nav.NavigateTo("/mod/" + id);
+        else Toast(Loc.T("该包并非从 Nexus 安装，无详情页"));
+    }
+
+    /// <summary>对象弹窗里「当前：xxx」→ 当前在位那个包的详情页。</summary>
+    private void GoTargetPackDetail(ContentOverrideTargets.TargetGroup t)
+    {
+        if (t.Active?.NexusModId is int id) Nav.NavigateTo("/mod/" + id);
+        else Toast(Loc.T("该包并非从 Nexus 安装，无详情页"));
+    }
+
+    /// <summary>打开素材包文件夹：优先打开【完整原包】（下载时原样保留、结构不变的 mod 目录），
+    /// 老账（没有原包记录）退回逐资产副本目录；都不存在就给一句实话。</summary>
+    private void OpenPackFolder(ContentOverrideService.PackGroup p)
+    {
+        var packDir = p.Items.FirstOrDefault(r => r.PackDir.Length > 0)?.PackDir;
+        if (packDir is not null)
+        {
+            var dir = ContentOverrideService.PackOriginalDir(GamePath, packDir);
+            if (System.IO.Directory.Exists(dir)) { OpenFolderDir(dir); return; }
+        }
+        var storeId = p.Items.FirstOrDefault(r => r.StoreId.Length > 0)?.StoreId;
+        if (storeId is null) { Toast(Loc.T("该包未保留文件副本")); return; }
+        OpenFolderDir(ContentOverrideService.StoreDir(GamePath, storeId));
+    }
+
+    private void OpenFolderDir(string dir)
+    {
+        try
+        {
+            if (System.IO.Directory.Exists(dir))
+                System.Diagnostics.Process.Start("explorer.exe", $"\"{dir}\"");
+            else
+                Toast(Loc.T("文件夹不存在，可能已被移动或删除"));
+        }
+        catch { }
+    }
+
+    private List<string> TargetCategories()
+        => _targets.Select(t => t.Category).Distinct()
+            .OrderBy(ContentOverrideTargets.CategoryOrder).ToList();
+
+    private IEnumerable<ContentOverrideTargets.TargetGroup> VisibleTargets()
+    {
+        foreach (var t in _targets)
+        {
+            if (SearchText.Length > 0
+                && !t.Name.Contains(SearchText, StringComparison.OrdinalIgnoreCase)
+                && !t.Sub.Contains(SearchText, StringComparison.OrdinalIgnoreCase))
+                continue;
+            yield return t;
+        }
+    }
+
+    private async Task ToggleSearch()
+    {
+        _searchOpen = !_searchOpen;
+        try { await JS.InvokeVoidAsync("junigridJs.searchToggle", ".jg-search-x", _searchOpen); } catch { }
+    }
+
+    private async Task ClearSearchAndClose()
+    {
+        SearchText = "";
+        _searchOpen = false;
+        try { await JS.InvokeVoidAsync("junigridJs.searchToggle", ".jg-search-x", false); } catch { }
+    }
+
+    // ───────────────────── 按对象：弹窗与逐版本应用 ─────────────────────
+
+    private void OpenTarget(ContentOverrideTargets.TargetGroup t)
+    {
+        _openTarget = t;
+        _tVariantKey = "";        // 形象选择跟着对象走，不跨对象残留
+        // 弹窗里的版本缩略图按需排产（原版 + 各包副本），后台生成完 Changed 会刷新
+        _ = Task.Run(() =>
+        {
+            var gp = GamePath;
+            var jobs = new List<(string, PackThumbService.Kind)>();
+            foreach (var asset in t.Assets)
+            {
+                var kind = PackThumbService.KindOf(asset);
+                var v = ContentOverrideTargets.VanillaSource(gp, asset);
+                if (v is not null) jobs.Add((v, kind));
+                foreach (var ver in t.Versions)
+                {
+                    var s = ContentOverrideTargets.VersionSource(gp, ver.ToList(), asset);
+                    if (s is not null) jobs.Add((s, kind));
+                }
+            }
+            PackThumbService.Prewarm(jobs);
+        });
+    }
+
+    private void PickVariant(string key, string variant)
+    {
+        _tVariantKey = key;
+        _tVariant = variant;
+    }
+
+    /// <summary>把指定那几张资产盖成 slot（null = 退回原版）。逐资产走 SetEnabled：同一张图同时
+    /// 只能有一个版本在位，新版本上位时兄弟版本自动转关 —— 这就是"几十张肖像的包可以一个 NPC
+    /// 一个 NPC 地挑"的实现。盖的范围由调用方给：单击给当前形象那几张，长按给全部形象。</summary>
+    private async Task ApplyAssets(ContentOverrideTargets.TargetGroup t, string? slot,
+        List<string> assets, string okToast)
+    {
+        if (_busy) return;
+        _busy = true;
+        var gp = GamePath;
+        string? err = null;
+        var applied = 0;
+        await Task.Run(() =>
+        {
+            foreach (var asset in assets)
+            {
+                ContentOverrideRecord? r = slot is null
+                    ? t.Records.FirstOrDefault(x => x.Enabled
+                        && x.Asset.Equals(asset, StringComparison.OrdinalIgnoreCase))
+                    : t.Records.FirstOrDefault(x => x.Slot.Equals(slot, StringComparison.OrdinalIgnoreCase)
+                        && x.Asset.Equals(asset, StringComparison.OrdinalIgnoreCase));
+                if (r is null) continue;
+                // 界面上的一行 = 一张图的全部文件（基名 + 这个包账上的语言副本）。
+                // 只动基名那张的话，中文客户端读的还是 .zh-CN 那份，
+                // 症状就是"这包关掉了却还有半包没还原"。
+                foreach (var file in ContentOverrideService.SlotSiblings(Cfg, r.Slot, r.Asset))
+                {
+                    var one = ContentOverrideService.SetEnabled(Cfg, gp,
+                        ContentOverrideService.KeyOf(file, r.Slot), slot is not null);
+                    if (one is not null) err = one;
+                    else applied++;
+                }
+            }
+        });
+        if (err is not null) Toast(err);
+        else if (slot is null && applied == 0) { /* 本来就是原版，点了等于没点 —— 不弹成功谎报 */ }
+        else Toast(okToast);
+        Reload();
+        _openTarget = _targets.FirstOrDefault(x => x.Key == t.Key);
+        _busy = false;
+        StateHasChanged();
+    }
+
+    private string ScopeToast(ContentOverrideTargets.TargetGroup t, string? slot, string scope)
+    {
+        if (slot is null) return Loc.F("已把「{0}」还原为原版", scope);
+        var pack = ContentOverrideTargets.DisplayPack(t.Records.First(r =>
+            r.Slot.Equals(slot, StringComparison.OrdinalIgnoreCase)));
+        return Loc.F("已把「{0}」换成「{1}」", scope, pack);
+    }
+
+    /// <summary>长按 = 这个对象的全部形象都用它。</summary>
+    private Task ApplyVersion(ContentOverrideTargets.TargetGroup t, string? slot)
+        => ApplyAssets(t, slot, t.Assets, ScopeToast(t, slot,
+            t.VariantCount > 1 ? Loc.F("{0} 的全部 {1} 个形象", t.Name, t.VariantCount) : t.Name));
+
+    /// <summary>单击 = 只换当前形象。与立绘页相反：那边轻点就是全季统一，长按才固定到当季。</summary>
+    private Task ApplyVariant(ContentOverrideTargets.TargetGroup t, string? slot, string variant)
+        => ApplyAssets(t, slot, t.AssetsOf(variant), ScopeToast(t, slot,
+            t.VariantCount > 1 ? Loc.F("{0} 的「{1}」形象", t.Name, Loc.T(variant)) : t.Name));
+
+    /// <summary>这一行那个包里，某张目标是否还有别的配色可换（有就给出全部版本，含在位那个）。</summary>
+    private static List<(string Asset, string Label, bool Active)> ColorChips(List<ContentOverrideRecord> recs)
+    {
+        var list = new List<(string Asset, string Label, bool Active)>();
+        foreach (var r in recs.Where(r => r.Variants.Count > 1))
+            list.AddRange(r.Variants.Select(v => (r.Asset, v,
+                string.Equals(v, r.VariantLabel, StringComparison.Ordinal))));
+        return list;
+    }
+
+    /// <summary>换配色：拿原包备份里那一版，按<b>当前</b>本体重编一份盖上去（一张表只有一份在位，
+    /// 所以是换不是加）。账上那条记录不新增，只换 <c>VariantLabel</c> 与副本。</summary>
+    private async Task PickColor(string what, string slot, string asset, string label)
+    {
+        if (_busy) return;
+        _busy = true;
+        var gp = GamePath;
+        string? err = null;
+        await Task.Run(() => err = ContentOverrideService.SwitchVariant(Cfg, gp, asset, slot, label));
+        if (err is not null) Toast(err);
+        else Toast(Loc.F("已把「{0}」换成配色「{1}」", what, label));
+        Reload();
+        // 重扫之后把弹窗指回"同一个包 / 同一个对象"，不然换完配色弹窗会跳没
+        _open = _groups.FirstOrDefault(x => x.Slot == slot);
+        _openTarget = _targets.FirstOrDefault(x => x.Key == _openTarget?.Key);
+        _busy = false;
+        StateHasChanged();
+    }
+
+    /// <summary>一个记录的配色清单。老记录（加 VariantFacts 之前装的）只有名字没有说明，
+    /// 照样要能筛能换，所以按名字补一份空说明。</summary>
+    private static List<ContentOverrideVariant> FactsOf(ContentOverrideRecord r)
+        => r.VariantFacts.Count == r.Variants.Count
+            ? r.VariantFacts
+            : r.Variants.Select(v => new ContentOverrideVariant(v, "")).ToList();
+
+    /// <summary>这张资产【安装当时】留下的尺寸说明；没有则 null。
+    /// <para>说明原本是整包一份、抄到包里每条记录上的（<c>ResizedNote</c>），界面按它逐行再渲染一批
+    /// 卡片 —— 于是"装上了但比本体高/矮"的那批图一包里出现两遍：一次正常行、一次备注行，
+    /// 右边那颗胶囊还写着状态，看着像两张不同的图（用户 2026-10-07：为什么有两个玛鲁沙滩图）。
+    /// 现在说明并回它自己那一行的小字，备注栏只留对不上记录的。</para></summary>
+    private static string? ResizedNoteFor(ContentOverrideService.PackGroup p, ContentOverrideRecord rec)
+    {
+        foreach (var rz in ParseResized(p))
+            if (rz.Reason.Length > 0 && SameRow(RecordFor(p, rz), rec))
+                return rz.Reason;
+        return null;
+    }
+
+    /// <summary>这条备注认领的那条记录，和界面上这一行是不是【同一张图】。
+    /// 按基名比：语言副本并成一行之后，行是基名那条，而包里那 11 份副本各自留过自己的
+    /// 尺寸备注 —— 只比整名的话那些备注会掉进兜底栏，又变成同一张图列两遍
+    /// （<see cref="ResizedNoteFor"/> 上面记的就是这个已经修过的坑）。</summary>
+    private static bool SameRow(ContentOverrideRecord? a, ContentOverrideRecord? b)
+        => a is not null && b is not null
+           && ContentOverrideService.LocaleBase(a.Asset).Equals(
+               ContentOverrideService.LocaleBase(b.Asset), StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>这条尺寸备注是否已经被某个显示行认领了。记录都没了（被还原过 / 删过账）的
+    /// 返回 false —— 那种还得单独留一行，不然这件事就彻底没人说了。</summary>
+    private static bool RowCovers(ContentOverrideService.PackGroup p, ContentOverrideRecord? rec)
+        => rec is not null && p.ImageItems.Any(r => SameRow(r, rec));
+
+
+    // ───────────────────── 按包：原有逻辑 ─────────────────────
+
+    private static string PackName(ContentOverrideService.PackGroup g)
+        => string.IsNullOrWhiteSpace(g.PackTitle) ? g.PackName : g.PackTitle;
+
+    private string CategoryOf(ContentOverrideService.PackGroup g)
+        => string.IsNullOrWhiteSpace(g.Category) ? Loc.T(Uncat) : g.Category;
+
+    private List<string> CategoryList()
+        => _groups.Select(CategoryOf).Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(x => x == Loc.T(Uncat))
+            .ThenBy(x => x, StringComparer.OrdinalIgnoreCase).ToList();
+
+    private int CountIn(string bucket) => _groups.Count(x => CategoryOf(x) == bucket);
+
+    /// <summary>卡片组件的 OnOpen 只回传一个 int，而这类包没有 Mods 目录可当身份 ——
+    /// 就用【这一屏列表里的序号】当 id，点开时按同一个序号映射回包。Reload 会重建这个顺序，
+    /// 卡片与 _groups 始终出自同一次计算，所以不会串到别的包上。</summary>
+    private NexusModListEntry CardFor(ContentOverrideService.PackGroup g)
+    {
+        var on = g.ImageItems.Count(r => r.Enabled);
+        var bits = new List<string> { Loc.F("{0} 个图像文件", g.ImageItems.Count) };
+        // 全关掉时直接说「已还原」，而不是留一张看不出区别的卡：角标已经没了，
+        // 摘要里再不算数的话，人分不清"这包没装"和"这包装了但被我关了"。
+        if (on == 0) bits.Add(Loc.T("已还原"));
+        else if (on != g.ImageItems.Count) bits.Add(Loc.F("已运用 {0}", on));
+        if (g.DriftedCount > 0) bits.Add(Loc.F("{0} 个文件已失效", g.DriftedCount));
+        if (g.VanillaCount > 0) bits.Add(Loc.F("{0} 个文件已还原为原版", g.VanillaCount));
+        // 版本戳与当前本体不同时必须在卡面上就说出来：这包的字节是别的版本编的，
+        // 打开时走的是"照当前本体重编"那条路，不是回放。
+        if (g.StampedVersion.Length > 0 && !g.StampedVersion.Equals(_curVer, StringComparison.OrdinalIgnoreCase))
+            bits.Add(Loc.F("记录于 {0}", g.StampedVersion));
+        if (g.Skipped > 0) bits.Add(Loc.F("{0} 个文件不适配", g.Skipped));
+        return new NexusModListEntry(Math.Max(0, _groups.IndexOf(g)), PackName(g),
+            string.Join(" · ", bits), "", 0, g.PackCover,
+            Category: string.IsNullOrWhiteSpace(g.Category) ? null : g.Category);
+    }
+
+    private void OnCardOpen(int id)
+    {
+        _menuSlot = null;   // 开着菜单点卡面 = 进详情，菜单顺手收掉
+        if (id >= 0 && id < _groups.Count) _open = _groups[id];
+        // 详情行的逐图缩略图按需排产，后台生成完 Changed 会刷新。
+        // 只排显示出来的那些行 —— 一个 1554 份文件的包，语言副本与文本表都不在这一屏里，
+        // 照 Items 排队就是一千多个解不开的解码任务。
+        if (_open is null) return;
+        var jobs = _open.ImageItems.Where(r => r.StoreId.Length > 0)
+            .Select(r => (ContentOverrideService.StoreFile(GamePath, r.StoreId, r.Asset),
+                PackThumbService.KindOf(r.Asset))).ToList();
+        if (jobs.Count > 0) _ = Task.Run(() => PackThumbService.Prewarm(jobs));
+    }
+
+    private async Task TogglePack(ContentOverrideService.PackGroup p)
+    {
+        if (_busy) return;
+        _busy = true;
+        var gp = GamePath;
+        var turnOn = !p.AnyOn;
+        await Task.Run(() =>
+        {
+            try
+            {
+                var err = ContentOverrideService.SetPackEnabled(Cfg, gp, p.Slot, turnOn);
+                if (err is not null) Toast(err);
+            }
+            catch (Exception ex) { Toast(LocService.Tr("操作失败：") + ex.Message); }
+        });
+        Reload();
+        _open = _groups.FirstOrDefault(g => g.Slot == p.Slot);
+        _busy = false;
+        StateHasChanged();
+    }
+
+    private async Task DeletePack(ContentOverrideService.PackGroup p)
+    {
+        if (_busy) return;
+        _busy = true;
+        var gp = GamePath;
+        await Task.Run(() =>
+        {
+            try
+            {
+                // 盘上那张是别人放的 ⇒ 服务层会拒绝删账（删了就成了"界面没这个包、本体躺着无主图"），
+                // 这话必须传到用户耳朵里，不能只是静默地"没删掉"。
+                var err = ContentOverrideService.DeletePack(Cfg, gp, p.Slot);
+                if (err is not null) Toast(err);
+            }
+            catch (Exception ex) { Toast(LocService.Tr("删除失败：") + ex.Message); }
+        });
+        _open = null;
+        if (_groups.Count == 0) _cat = "";
+        Reload();
+        _busy = false;
+        StateHasChanged();
+    }
+
+    private async Task OnRevertAll()
+    {
+        if (_busy) return;
+        _busy = true;
+        var gp = GamePath;
+        await Task.Run(() =>
+        {
+            try
+            {
+                var (n, held) = ContentOverrideService.RevertAll(Cfg, gp);
+                Toast(held > 0
+                    ? Loc.F("已还原 {0} 个文件；另有 {1} 个文件当前为外部写入，未作覆盖", n, held)
+                    : Loc.F("已还原 {0} 个图像文件", n));
+            }
+            catch (Exception ex) { Toast(LocService.Tr("还原失败：") + ex.Message); }
+        });
+        Reload();
+        _openTarget = null;
+        _busy = false;
+        StateHasChanged();
+    }
+
+    /// <summary>分类名与封面从 N 网各补一次再写回记录，之后离线也认得。
+    /// 只有带页号的包补得到；没页号的留在「未分类」，不拿包名去猜一个分类 ——
+    /// 猜错的话人会在错的分类底下找不着自己的包。</summary>
+    private async Task EnsureMetaAsync()
+    {
+        var need = Cfg.Current.ContentOverrides.Values
+            .Where(v => v.NexusModId is int
+                && (string.IsNullOrEmpty(v.CategoryName) || string.IsNullOrEmpty(v.PackTitle)
+                    || string.IsNullOrEmpty(v.PackCover)))
+            .GroupBy(v => v.Slot, StringComparer.OrdinalIgnoreCase)
+            .Select(g => g.First()).ToList();
+        foreach (var rec in need)
+        {
+            NexusModInfo? info;
+            try { info = await Nexus.GetModAsync(rec.NexusModId!.Value); }
+            catch { continue; }
+            if (info is null) continue;
+            var changed = false;
+            // 名字与封面各判各的：原来的写法把封面赋值嵌在【PackTitle 为空】里面，
+            // 于是"有名字、缺封面"的包（旧版本写下的记录就是这样）永远轮不到补封面，
+            // 卡片会一直停在字母块上 —— 而界面看起来像是 N 网图挂了。
+            if (string.IsNullOrEmpty(rec.PackTitle) && !string.IsNullOrWhiteSpace(info.Name))
+            {
+                foreach (var s in Cfg.Current.ContentOverrides.Values.Where(v => v.Slot == rec.Slot))
+                    s.PackTitle = info.Name;
+                changed = true;
+            }
+            if (string.IsNullOrEmpty(rec.PackCover) && !string.IsNullOrWhiteSpace(info.PictureUrl))
+            {
+                // 同一包的所有记录一起写：卡片取的是分组里第一条，而"第一条"由 Groups 的排序决定，
+                // 未必是这里循环拿到的那条 —— 只写 rec 的话封面可能落在一张不显示的记录上。
+                foreach (var s in Cfg.Current.ContentOverrides.Values.Where(v => v.Slot == rec.Slot))
+                    s.PackCover = info.PictureUrl;
+                changed = true;
+            }
+            if (string.IsNullOrEmpty(rec.CategoryName) && info.CategoryId is int cid
+                && Cfg.Current.NexusCategories.TryGetValue(cid, out var cname))
+            {
+                foreach (var s in Cfg.Current.ContentOverrides.Values.Where(v => v.Slot == rec.Slot))
+                    s.CategoryName = cname;
+                changed = true;
+            }
+            if (!changed) continue;
+            Cfg.Save(Cfg.Current);
+            Reload();
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private void Toast(string msg)
+    {
+        _toast = msg;
+        _toastTimer?.Dispose();
+        _toastTimer = new System.Threading.Timer(_ =>
+            _ = InvokeAsync(() => { _toast = null; StateHasChanged(); }),
+            null, 3200, System.Threading.Timeout.Infinite);
+    }
+
+    // ───────────────────── 长按使用 / 点击放大 ─────────────────────
+    //
+    // 版本行的手势分工：按住不动 480ms = 盖上这个版本（行上有充能条动画，时长一致），
+    // 提前松手 = 点开大图。click 在 pointerup 之后必然触发，所以长按成功后要吞掉
+    // 紧跟着的那一下 click，否则盖完版本还会弹一次大图。
+
+    private const int LongPressMs = 480;
+    private string? _pressKey;                  // 正在按下的行（CSS 充能条跟着它走）
+    private CancellationTokenSource? _pressCts;
+    private bool _skipNextClick;                // 长按已触发 ⇒ 松开那一下的 click 不是"看大图"
+    private DateTime _lastLongPressUtc;         // 兜底：button 被 disabled 后 click 可能不触发，靠时间窗再挡一次
+
+    // ── 大图弹层状态：自包含（标题/副题/说明/使用动作），对象版本与包内单图共用一套 ──
+    private string _lbTitle = "";
+    private string _lbSub = "";
+    private string? _lbNote;                    // 没有图可显示时的说明（不适配原因等）
+    private bool _lbActive;                     // 显示「使用中」胶囊（此时不出使用按钮）
+    private string _lbApplyLabel = "";
+    private Func<Task>? _lbApply;               // null = 不提供使用动作（不适配的图只能看）
+    private List<LbImage>? _lbImages;
+
+    private sealed record LbImage(string Label, string Path, PackThumbService.Kind Kind);
+
+    /// <summary>大图弹层副题的手势提示已删（2026-10-07 他要求）：滚轮缩放现在不需要按 Ctrl，
+    /// 拖动/双击也不用教 —— 弹层里能滚能拖是默认预期，写出来反而像说明书。</summary>
+    private static bool IsFontAsset(string asset)
+        => asset.StartsWith("Fonts/", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>字体大图后面挂的那句免责。为什么必须留：这张图是【所有字形平铺的一张表】，
+    /// 不是游戏里某句话的样子，而且游戏会把文字染成 UI 颜色 —— 不写这句，人拿这张表去
+    /// 对游戏里的字，对不上就成了"你解错了"。
+    /// ⚠ 措辞里【不写 DXT5】：实测字体图集是 BC4 单通道遮罩，按 DXT5 整块解出来是彩色雪花。</summary>
+    private string LbFontNote(string asset)
+        => IsFontAsset(asset)
+            ? " · " + Loc.T("字体预览为整张字形表，由图集遮罩解码生成，实际效果以游戏内显示为准")
+            : "";
+
+    private void PressStart(string key, Func<Task> apply)
+    {
+        if (_busy) return;
+        _pressCts?.Cancel();
+        _pressKey = key;
+        var cts = new CancellationTokenSource();
+        _pressCts = cts;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(LongPressMs, cts.Token);
+                _skipNextClick = true;
+                _lastLongPressUtc = DateTime.UtcNow;
+                await InvokeAsync(async () =>
+                {
+                    if (_pressKey == key) _pressKey = null;
+                    await apply();
+                });
+            }
+            catch (TaskCanceledException) { /* 提前松手 = 想看大图，不是想用 */ }
+        });
+    }
+
+    private void PressEnd(string key)
+    {
+        if (_pressKey == key) _pressKey = null;
+        _pressCts?.Cancel();
+    }
+
+    private void PressCancel(string key) => PressEnd(key);
+
+    private void RowClick(Action open)
+    {
+        if (_skipNextClick) { _skipNextClick = false; return; }
+        if ((DateTime.UtcNow - _lastLongPressUtc).TotalMilliseconds < LongPressMs + 250) return;
+        open();
+    }
+
+    /// <summary>对象弹窗里点缩略图 → 大图（原版 slot = null），只看【当前形象】那几张。
+    /// 在位的版本只给「使用中」胶囊，不再出使用按钮 —— 对同一个版本再盖一次是空操作，
+    /// 出了按钮只会换来一句谎报。</summary>
+    private void OpenTargetLightbox(ContentOverrideTargets.TargetGroup t, string? slot, string variant)
+    {
+        var gp = GamePath;
+        var person = ContentOverrideTargets.IsPerson(t.Assets[0]);
+        var assets = t.AssetsOf(variant);
+        List<ContentOverrideRecord>? recs = null;
+        if (slot is not null)
+        {
+            var group = t.Versions.FirstOrDefault(g => g.Key.Equals(slot, StringComparison.OrdinalIgnoreCase));
+            if (group is null) return;
+            recs = group.ToList();
+        }
+        var onNow = t.ActiveOf(variant);
+        _lbTitle = slot is null ? Loc.T("原版") : ContentOverrideTargets.DisplayPack(recs![0]);
+        _lbSub = t.Name + (t.VariantCount > 1 ? " · " + Loc.T(variant) : "") + " · " + t.Sub
+            + LbFontNote(t.Assets.FirstOrDefault() ?? "");
+        _lbNote = null;
+        _lbActive = slot is null ? onNow is null
+            : onNow is not null && onNow.Slot.Equals(slot, StringComparison.OrdinalIgnoreCase);
+        // 弹层里的「使用」只管当前形象 —— 人在这儿看的就是这一张，别替他改全部
+        _lbApply = _lbActive ? null : () => ApplyVariant(t, slot, variant);
+        _lbApplyLabel = slot is null ? Loc.T("还原为原版") : Loc.T("使用这个版本");
+        _lbImages = new List<LbImage>();
+        foreach (var asset in assets)
+        {
+            var src = slot is null
+                ? ContentOverrideTargets.VanillaSource(gp, asset)
+                : ContentOverrideTargets.VersionSource(gp, recs!, asset);
+            if (src is null) continue;
+            var kind = PackThumbService.KindOf(asset);
+            var label = person
+                ? (kind == PackThumbService.Kind.Portrait ? Loc.T("立绘") : Loc.T("行走图"))
+                : System.IO.Path.GetFileNameWithoutExtension(asset);
+            _lbImages.Add(new LbImage(label, src, kind));
+        }
+        _ = Task.Run(() => PackThumbService.Prewarm(_lbImages.Select(i => (i.Path, i.Kind)), large: true));
+    }
+
+    /// <summary>包详情里的单张图 → 大图。使用动作是【这张图的开/关】（Toggle），
+    /// 标签跟着当前状态走；在位的图一样给按钮 —— 对单图来说"还原"是有意义的动作。</summary>
+    private void OpenPackItemLightbox(ContentOverrideService.PackGroup p, ContentOverrideRecord r)
+    {
+        var kind = PackThumbService.KindOf(r.Asset);
+        var src = r.StoreId.Length > 0 ? ContentOverrideService.StoreFile(GamePath, r.StoreId, r.Asset) : null;
+        _lbTitle = r.Asset[(r.Asset.LastIndexOf('/') + 1)..];
+        _lbSub = r.Asset + LbFontNote(r.Asset);
+        _lbImages = new List<LbImage>();
+        if (src is not null && System.IO.File.Exists(src))
+            _lbImages.Add(new LbImage(Loc.T("包里的图"), src, kind));
+        _lbNote = _lbImages.Count == 0 ? Loc.T("该副本文件已不在磁盘上，无法预览。") : null;
+        _lbActive = false;   // 单图不摆「使用中」胶囊：按钮文案（使用/还原）已经把状态说清了
+        _lbApplyLabel = r.Enabled ? Loc.T("还原此图像") : Loc.T("应用此图像");
+        _lbApply = () => TogglePackAsset(p, r);
+        if (_lbImages.Count > 0)
+            _ = Task.Run(() => PackThumbService.Prewarm(_lbImages.Select(i => (i.Path, i.Kind)), large: true));
+    }
+
+    /// <summary>不适配的图 → 大图。安装当时副本就没留下来，只能给原因；
+    /// 没有使用动作（按钮不出现），但弹层/缩放手势与其他图完全一致。</summary>
+    private void OpenSkipLightbox(SkipItem sk)
+    {
+        _lbTitle = sk.Name;
+        _lbSub = Loc.T("此文件未安装 · 仅可查看");
+        _lbImages = new List<LbImage>();
+        _lbNote = sk.Reason.Length > 0 ? sk.Reason
+            : Loc.T("安装时未匹配到游戏本体，没有可预览的图像。");
+        _lbActive = false;
+        _lbApply = null;
+    }
+
+    private void CloseLightbox()
+    {
+        _lbImages = null;
+        _lbApply = null;
+        _lbNote = null;
+    }
+
+    private async Task ApplyFromLightbox()
+    {
+        var apply = _lbApply;
+        CloseLightbox();
+        if (apply is not null) await apply();
+    }
+
+    // ───────────────────── 包详情：逐图开关与不适配项 ─────────────────────
+
+    /// <summary>长按包内一张图：盖上（开着 → 还原回原版）。逐资产走 SetEnabled，
+    /// 与对象弹窗的"一个版本上位、兄弟转关"是同一套规矩。
+    /// <para>动的是【这一行代表的那张图】的全部文件 —— 基名加上这个包账上的语言副本，
+    /// 一次点完 12 份。只动基名的话中文客户端读的还是另一份。</para></summary>
+    private async Task TogglePackAsset(ContentOverrideService.PackGroup p, ContentOverrideRecord r)
+    {
+        if (_busy) return;
+        _busy = true;
+        var gp = GamePath;
+        // 开关跟着这一行【显示】的状态走（整组算出来的），不跟着基名那一条的 Enabled：
+        // 基名关着而语言副本还盖着时，这一行显示的就是"在位"，长按它该是全关掉。
+        var turnOn = ContentOverrideService.ImageGroupState(gp, Cfg, r.Slot, r.Asset)
+                     != ContentOverrideService.OverrideState.InPlace;
+        string? err = null;
+        var done = 0;
+        await Task.Run(() =>
+        {
+            foreach (var f in ContentOverrideService.SlotSiblings(Cfg, r.Slot, r.Asset))
+            {
+                var one = ContentOverrideService.SetEnabled(Cfg, gp,
+                    ContentOverrideService.KeyOf(f, r.Slot), turnOn);
+                if (one is not null) { err = one; break; }
+                done++;
+            }
+        });
+        var what = done > 1 ? Loc.F("{0}（{1} 个文件）", r.Asset, done) : r.Asset;
+        Toast(err ?? (turnOn ? Loc.F("已盖上：{0}", what) : Loc.F("已还原：{0}", what)));
+        Reload();
+        _open = _groups.FirstOrDefault(g => g.Slot == p.Slot);
+        _busy = false;
+        StateHasChanged();
+    }
+
+    /// <summary>不适配条目（安装时留在账上的 SkippedNote 逐行解析）：文件名 + 原因。
+    /// 也用于解析 ResizedNote —— 那批是"装上了但尺寸不同"，结构与不适配条目完全一样
+    /// （都写成"文件名：说明"），所以共用一个 record，只是渲染样式不同。</summary>
+    private sealed record SkipItem(string Name, string Reason);
+
+    private static List<SkipItem> ParseSkips(ContentOverrideService.PackGroup p) => ParseNote(p.SkippedNote);
+
+    private static List<SkipItem> ParseResized(ContentOverrideService.PackGroup p) => ParseNote(p.ResizedNote);
+
+    /// <summary>「尺寸不同」栏的一条备注 → 账上对应的那张图。备注里带着完整资产路径
+    /// （"游戏的 Portraits/Alex_Winter 是 128×384"），退一步再按文件名比。找不到就是账上
+    /// 真没这张了（被还原/记录被删），那一行只留当初的说明。</summary>
+    private static ContentOverrideRecord? RecordFor(ContentOverrideService.PackGroup p, SkipItem rz)
+        => ContentOverrideTargets.RecordForNote(p.Items, rz.Name, rz.Reason);
+
+    private static List<SkipItem> ParseNote(string note)
+    {
+        var list = new List<SkipItem>();
+        foreach (var line in note.Split('\n',
+                     StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var i = line.IndexOf('：');
+            list.Add(i > 0 ? new SkipItem(line[..i], line[(i + 1)..]) : new SkipItem(line, ""));
+        }
+        return list;
+    }
+}

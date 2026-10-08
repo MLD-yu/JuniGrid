@@ -381,12 +381,9 @@ window.junigridJs.animateMinimize = function () {
 // ============================================================
 // v1.1.2：深浅主题（WPF 覆盖层圆形揭示方案的 JS 侧接口）
 // 切换动画本体在宿主侧（MainWindow.RevealThemeSwitchAsync：
-// CapturePreview 截旧主题 → 覆盖层挖圆洞），这里只提供状态读写与
+// CapturePreview 截旧主题 → 覆盖层挖圆洞），这里只提供
 // 无动画瞬时切换（由 C# 在覆盖层就位后调用）。
 // ============================================================
-window.junigridJs.getTheme = function () {
-    return document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light';
-};
 // 无动画应用主题（瞬时生效，供宿主在覆盖层就位后调用）
 window.junigridJs.applyTheme = function (theme) {
     var t = theme === 'dark' ? 'dark' : 'light';

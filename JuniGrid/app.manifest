@@ -2,6 +2,18 @@
 <assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
   <assemblyIdentity version="1.0.0.0" name="JuniGrid.app"/>
 
+  <!-- 必须显式声明 asInvoker：清单里没有 requestedExecutionLevel 时，Windows 一边会开着
+       UAC 文件/注册表虚拟化（装进 Program Files 的用户写自己目录被悄悄塞进 VirtualStore，
+       表现为「设置存了没生效」「删了还在」），一边对文件名带 install/setup/update 的
+       同名兄弟走「安装程序检测」强制提权。写 HKCU 和本地缓存不需要管理员，就在这里钉死。 -->
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security>
+      <requestedPrivileges>
+        <requestedExecutionLevel level="asInvoker" uiAccess="false" />
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+
   <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
     <application>
       <!-- Windows 10 / 11 -->

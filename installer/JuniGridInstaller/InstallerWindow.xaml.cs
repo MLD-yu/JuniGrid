@@ -102,6 +102,45 @@ public partial class InstallerWindow : Window
         Close();
     }
 
+    private void OnPathChanged(object sender, TextChangedEventArgs e) => UpdateMoveHint();
+
+    /// <summary>换目录安装时把后果写在按钮上方：旧位置的数据会先搬过来，旧目录再清理。
+    /// 同址覆盖时这行不出现 —— 那种情况本来什么都不用搬，不该吓用户。</summary>
+    private void UpdateMoveHint()
+    {
+        try
+        {
+            if (MoveHint is null) return;                       // InitializeComponent 期间会先触发一次
+            var (_, loc) = _engine.FindLegacyInstall();
+            if (string.IsNullOrWhiteSpace(loc) || !Directory.Exists(loc))
+            {
+                MoveHint.Visibility = Visibility.Collapsed; return;
+            }
+            var oldN = Norm(loc);
+            var newN = Norm(Expand(PathBox.Text ?? ""));
+            if (oldN.Length == 0 || newN.Length == 0
+                || oldN.Equals(newN, StringComparison.OrdinalIgnoreCase))
+            {
+                MoveHint.Visibility = Visibility.Collapsed; return;
+            }
+            // 说清楚搬什么、什么时候搬：用户心里的模型是"我那些东西跟着我去新目录"，
+            // 这句话就是那条模型的兑现，不能写成"旧位置会被清理"那种听着像要丢东西的说法。
+            MoveHint.Text = "上次安装在 " + loc + " —— 先把里面的下载缓存、游戏版本缓存、mod 备份和登录态"
+                + "搬到新目录，再装新版本，最后清理旧目录里我们自己留下的文件。你手动放进旧目录的东西不动。";
+            MoveHint.Visibility = Visibility.Visible;
+        }
+        catch { if (MoveHint is not null) MoveHint.Visibility = Visibility.Collapsed; }
+    }
+
+    private static string Norm(string p)
+    {
+        try
+        {
+            return Path.GetFullPath(p).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        }
+        catch { return ""; }
+    }
+
     private bool ValidatePath()
     {
         var dir = Expand(PathBox.Text);

@@ -65,7 +65,6 @@
         Cfg.Current.TranslationEnabled = _transOn;
         Cfg.Save(Cfg.Current);
         try { await JS.InvokeVoidAsync("junigridJs.transSetEnabled", _transOn); } catch { }
-        // v1.1.5：主题/避让同步钩子由 App 端轮询 junigridJs.getTheme()，无需在此通知
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)

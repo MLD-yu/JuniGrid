@@ -87,7 +87,13 @@
         _ = Task.Run(async () =>
         {
             await Task.Delay(1000);
-            await CheckForSelfUpdateAsync();
+            // v1.09.0：整个委托裹catch —— 这是【应用启动时】的 fire-and-forget，
+            // 那一刻网络最容易抖（刚开机、代理刚连上）。原先 CheckForSelfUpdateAsync
+            // 通篇无 catch，抖一下就抛出一个无人观察的 Task 异常，只在 GC 时以
+            // 「ERR [Task] unobserved」浮出（用户完全无感，日志里两条幽灵就是这么来的）。
+            // 检查更新失败本来就该静默（按钮保持隐藏，下次进页面还会再试）。
+            try { await CheckForSelfUpdateAsync(); }
+            catch (Exception ex) { AppLog.Warn("SelfUpdate", "启动自更新检查失败（已忽略）: " + ex.Message); }
         });
     }
 

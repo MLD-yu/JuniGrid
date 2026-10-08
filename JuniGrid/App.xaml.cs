@@ -130,6 +130,23 @@ public partial class App : Application
         return m.Success ? m.Groups[1].Value : cmd;
     }
 
+    /// <summary>抢注 nxm 前问一句：这条"上一个处理器"的值值不值得记进备份（关开关时照它交还）。
+    /// 不记的三种：没有值、指向已经不存在的 exe、以及<b>另一份 JuniGrid 自己</b>。
+    /// 最后一种是关键 —— 自己人一旦进了备份，"关闭开关"就只是把链接从一份 JuniGrid 交给
+    /// 另一份，用户等于关不掉；那份再被删掉，交还目标就成了死路径，谁都收不到下载。
+    /// 所以备份里只允许留下真正的下家（Vortex / NMM），它不会被后来的副本冲掉。</summary>
+    private static bool IsOurHandlerExe(string? exe) =>
+        !string.IsNullOrEmpty(exe)
+        && Path.GetFileName(exe).Equals("JuniGrid.exe", StringComparison.OrdinalIgnoreCase);
+
+    internal static bool ShouldRecordNxmBackup(string? currentCmd)
+    {
+        if (string.IsNullOrWhiteSpace(currentCmd)) return false;
+        var exe = ExeOf(currentCmd);
+        if (string.IsNullOrEmpty(exe) || !File.Exists(exe)) return false;
+        return !IsOurHandlerExe(exe);
+    }
+
     /// <summary>设置页开关关闭时调用：把我们压掉的那条原命令交还给上一个管理器。
     /// 只删键是不够的 —— 删掉的正是别家写进去的那个值，删完谁都没有；对方会不会自己再写回来
     /// 取决于它自己的时机，我们控制不了。抢注时已把原值备份，所以这里能确定性地还原。
@@ -143,7 +160,9 @@ public partial class App : Application
                 saved = k?.GetValue(NxmBackupValue) as string;
             var back = ExeOf(saved);
 
-            if (back is { Length: > 0 } && File.Exists(back))
+            // 备份里如果是我们自己人（修复之前留下的旧值），也不能交还 —— 那等于"关了开关，
+            // 链接还是进 JuniGrid"。这种备份视同没有，走下面"清掉我们自己的登记"那条。
+            if (back is { Length: > 0 } && File.Exists(back) && !IsOurHandlerExe(back))
             {
                 // 原样写回，一个字都不能改：这条值本身就是完整命令行（自带引号和参数）。
                 // 早先这里误传给 WriteSelf，于是整条又被包一层引号、再追加一个 "%1"，
@@ -253,8 +272,12 @@ public partial class App : Application
                 if (!oursDead) return;
             }
 
-            // 只有确实压掉了一个还能用的管理器才记备份；指向死路径的旧值不值得留档
-            if (cur is { Length: > 0 } && path is { Length: > 0 } && File.Exists(path))
+            // 只有确实压掉了一个【还能用的、而且不是我们自己另一份】的管理器才记备份。
+            // 自己人不能当"上一个管理器"：机器上留着两份 JuniGrid 时，每次启动都会把备份
+            // 顶成另一份自己，于是用户关掉开关只是把链接从一份 JuniGrid 交给另一份（等于关不掉），
+            // 那份再被删掉的话交还目标成了死路径 —— 谁都收不到下载。2026-10-03 实测：
+            // 备份值 = "C:\Users\...\Programs\JuniGrid\JuniGrid.exe" "%1"，Vortex 的名字早就没了。
+            if (ShouldRecordNxmBackup(cur))
                 try
                 {
                     using var bk = Registry.CurrentUser.CreateSubKey(NxmBackupKey);
@@ -474,16 +497,22 @@ public partial class App : Application
             main.Show();
 
             // 竞态兜底：无论前端「ui-ready」握手或 Splash.IntroCompleted 有没有按时
-            // 到位，主窗口都必须在有限时间内滑入，绝不出现“淡出后空窗、进程还活着”。
+            // 到位，主窗口都必须在有限时间内滑入，绝不出现"淡出后空窗、进程还活着"。
             // 每 300ms 复查一次；主窗一旦可见就停。动画全程约 5s，兜底放宽到 6s，
             // 保证动画真正播完（IntroCompleted）后才切页，避免抢切。
+            //
+            // 关键：用 Stopwatch 记【真实墙钟】，不用"每次 Tick 累加 300ms"当计时器。
+            // DispatcherTimer 的 Tick 要等 Dispatcher 空闲，而本兜底存在的唯一理由
+            // 就是 Dispatcher 忙/卡（前端握手迟到、动画事件丢失）—— 那样累加的
+            // elapsedMs 永远不涨，兜底在它唯一该生效的场景里恰好失效。
+            // 2026-10-05 14:05:11 实测白屏：uiReady 迟到 8s，兜底也没救回来。
+            // 换成墙钟后，Tick 哪怕迟到几秒才跑，判据仍是真实经过的时间。
+            var sw = System.Diagnostics.Stopwatch.StartNew();
             var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(300) };
-            long elapsedMs = 0;
             timer.Tick += (_, _) =>
             {
-                elapsedMs += 300;
                 if (revealed) { timer.Stop(); return; }
-                if (elapsedMs >= 6000) { introDone = true; uiReady = true; }
+                if (sw.ElapsedMilliseconds >= 6000) { introDone = true; uiReady = true; }
                 TryReveal();
             };
             timer.Start();

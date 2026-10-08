@@ -77,6 +77,32 @@ dotnet publish (Join-Path $installerDir 'JuniGridInstaller') -c Release -r win-x
     -p:DebugType=none -p:Version=$version -o $out
 if ($LASTEXITCODE -ne 0) { throw "Installer publish failed" }
 
+# 5b) 回归防线：M10 搬家清单漂移 / M11 回收调用链形状 / RT* 守卫行为 / 搬家·配置·nxm 三套夹具
+#     必须跑在 publish 之后、拷进 dist-tmp 之前：
+#       · RT* 要跑真实入口，用的是刚 publish 出来的 exe（早一步跑就是在验上一版）
+#       · 拷进 dist-tmp 就等于发出去了，缺陷不能带着走
+$guards = @(
+    (Join-Path $installerDir 'jg-installer-drift.py'),
+    (Join-Path $installerDir 'jg-migrate-verify.py'),
+    (Join-Path $installerDir 'jg-oneclick-verify.py'),
+    (Join-Path $installerDir 'jg-nxm-verify.py')
+)
+$probe = Join-Path $out 'JuniGridSetup.exe'
+$env:PYTHONIOENCODING = "utf-8"   # 防线脚本要打印中文，控制台默认 GBK 会把 print 打崩
+foreach ($guard in $guards) {
+    if (-not (Test-Path $guard)) {
+        throw "缺少回归防线脚本 $guard —— 防线空转比没有防线更危险，打包中止"
+    }
+    Write-Host "=== 安装器回归防线: $(Split-Path $guard -Leaf) ==="
+    if (Test-Path $probe) {
+        python $guard --exe $probe
+    } else {
+        Write-Host "NOTE: 未找到 $probe"
+        python $guard
+    }
+    if ($LASTEXITCODE -ne 0) { throw "安装器回归防线未通过（$(Split-Path $guard -Leaf)），已中止拷贝到 dist-tmp" }
+}
+
 # 6) Copy to dist-tmp (name matches SelfUpdateService expectations)
 $dist = Join-Path $repo 'dist-tmp'
 New-Item -ItemType Directory -Force $dist | Out-Null

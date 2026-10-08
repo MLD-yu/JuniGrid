@@ -1,11 +1,4 @@
-using System.Collections.Concurrent;
-using System.Diagnostics;
 using System.IO;
-using System.Runtime.InteropServices;
-using System.IO.Compression;
-using System.Net.Http;
-using System.Text;
-using System.Text.RegularExpressions;
 
 namespace JuniGrid.Services;
 
@@ -18,7 +11,6 @@ public sealed partial class DepotDownloaderService
         ApplyGate.Wait();
         t.Lap(LocService.Tr("等闸门"));
         Interlocked.Increment(ref _applyActive);
-        PortraitSkinService.SuspendReads();   // 立绘扫描/预热是 Mods 目录的大读者，先让它别开新任务
         SetModWatchersEnabled(false);         // Mods 页的 FileSystemWatcher 是常驻句柄，不关它改名必败
         t.Lap(LocService.Tr("挂起读者与监听"));
         try
@@ -34,10 +26,6 @@ public sealed partial class DepotDownloaderService
             // 必须趁游戏目录还没被碰之前拦下来。Task.Run 包一层：这里可能是 UI 线程，静默等待不能睡在 UI 上。
             Task.Run(() => EnsureModsQuiescent(gamePath, progress)).GetAwaiter().GetResult();
             t.Lap(LocService.Tr("等 Mods 停笔"));
-            // 已经起跑的那一轮扫描/预热收手之后再动目录：文件被自家打开着，Directory.Move
-            // 就会失败并退化成整棵拷贝（实测一次切换 4.3 秒，两趟全走拷贝）。
-            PortraitSkinService.WaitUntilIdle(800);   // 最多等 0.8 秒：等不到就照旧走拷贝
-            t.Lap(LocService.Tr("等立绘收手"));
             // 存档只有一个目录、所有版本共用，而它会被单向升级（见 SaveVersionService）——
             // 趁游戏目录还没被碰，先把上次收起来的档放回、再给「切过去就回不去」的档留底。
             PrepareSavesFor(staging, progress);
@@ -61,7 +49,6 @@ public sealed partial class DepotDownloaderService
         finally
         {
             SetModWatchersEnabled(true);
-            PortraitSkinService.ResumeReads();
             Interlocked.Decrement(ref _applyActive);
             try { ApplyGate.Release(); } catch (SemaphoreFullException) { }
             // 抛异常时也报：少了哪几段就说明停在哪一段，比只看一行错误文本好定位
@@ -202,49 +189,216 @@ public sealed partial class DepotDownloaderService
     }
 
 
-    /// <summary>把当前游戏目录整个收成「当前版本」的缓存包：同盘改名 → 补 manifest 元数据 →
-    /// 让包自含 SMAPI。返回包路径；不该做或做不成时返回 null，调用方按老路走（② 删掉旧本体）。</summary>
-    private static string? TryAdoptCurrentBody(string gamePath, string targetStaging,
+    /// <summary>收存当前本体，但把游戏目录里的【共享存储】留在原地。
+    /// 共享存储 = <c>&lt;游戏&gt;\JuniGrid</c>：纯净版覆盖的原版仓库、素材包原样备份、我们写进去
+    /// 那份的副本。它记的是"这张替图长什么样"，与哪个版本现役无关；而
+    /// <see cref="TryAdoptCurrentBody"/> 是整目录改名（同盘）或整目录复制（跨盘），
+    /// 不先挪走就会被收进版本包里，下次切回该版本时又被当成这个版本自带的东西。
+    /// 挪到游戏目录的【同级】—— 与游戏目录必然同盘，改名≈瞬时，不会退化成复制。</summary>
+    private static string? AdoptCurrentBodyWithSharedStore(string gamePath, string targetStaging,
         string currentGameVersion, IProgress<Progress>? progress)
     {
+        var parked = ParkSharedStore(gamePath);
+        try { return TryAdoptCurrentBody(gamePath, targetStaging, currentGameVersion, progress); }
+        finally { RestoreSharedStore(gamePath, parked); }
+    }
+
+    /// <summary>把共享存储挪到游戏目录同级。返回挪去的落点；null = 没挪（那儿根本没有这个文件夹，
+    /// 或挪不动）。挪不动时【不拦切换】—— 让它跟着版本包走就是改造前的行为，
+    /// 比因为一个缓存文件夹搬不动而拒绝换版本更好交代；东西还在，只是位置不对。</summary>
+    private static string? ParkSharedStore(string gamePath)
+    {
+        var store = ContentOverrideService.SharedStoreDir(gamePath);
+        var aside = SharedStoreAside(gamePath);
         try
         {
-            // 包名前缀抄目标包（413150-413151-…）：ApplyStaging 手上没有 appId/depotId，
-            // 而这两者本来就来自同一份 Steam 配置，抄现成的最不容易错。
-            var targetName = Path.GetFileName(targetStaging.TrimEnd(Path.DirectorySeparatorChar, '/'));
-            var seg = targetName.Split('-');
-            var prefix = seg.Length >= 3 ? seg[0] + "-" + seg[1] : "413150-413151";
-            var parts = prefix.Split('-');
-            var pkg = Path.Combine(StagingRoot, prefix + "-" + SanitizeFolderName(currentGameVersion));
-            if (Directory.Exists(pkg)) return null;
-
-            // Steam 清单要在移动之前找：包落在缓存盘，从那儿向上溯找不到 steamapps。
-            var manifest = SteamService.ReadInstalledDepotManifest(
-                SteamService.FindAppManifest(gamePath, parts[0]), parts[1]);
-
-            progress?.Report(new Progress(LocService.Tf("正在把当前本体收进版本 {0} 的缓存…", currentGameVersion), null));
-            Directory.Move(gamePath, pkg);
-
-            if (!string.IsNullOrWhiteSpace(manifest)) WriteManifestMeta(pkg, manifest!);
-            // 包自含 SMAPI（v1.6.8 口径）：④ 恢复时优先用包内这份，共享池只兜底。
-            if (IsCompleteSmapiSnapshot(pkg) && !IsCompleteSmapiSnapshot(Path.Combine(pkg, "smapi")))
-                CopySmapiFiles(pkg, Path.Combine(pkg, "smapi"));
-            WriteSizeCache(pkg);
-            // 归档来的这份就是现役本体，天然完整（缺东西的话游戏本身就跑不起来）。
-            TryWriteCompleteMark(pkg);
-            AppLog.Warn("DepotDownloader",
-                $"当前本体已收进版本包 {pkg}（manifest={manifest ?? "未知"}）—— 切回该版本不必再回 Steam 校验");
-            return pkg;
+            var hasStore = Directory.Exists(store);
+            var hasAside = Directory.Exists(aside);
+            if (hasAside)
+            {
+                if (hasStore)
+                {
+                    AppLog.Warn("DepotDownloader",
+                        $"共享存储有两份（游戏目录里和 {aside}），本次两份都不动");
+                    return null;
+                }
+                Directory.Move(aside, store);      // 上次中断留下的：先放回，再走正常流程
+                hasStore = true;
+            }
+            if (!hasStore) return null;
+            Directory.Move(store, aside);
+            return aside;
         }
         catch (Exception ex)
         {
-            // 跨盘、被 Steam/资源管理器占用、权限不足都会撞到这里。移动失败时游戏目录原样未动，
-            // 所以退回老行为（② 删旧本体），不因为"存不下"就不让人切换。
-            AppLog.Warn("DepotDownloader",
-                $"当前本体未能收进版本包（{ex.Message}）—— 游戏目录未动，本次切换按旧行为覆盖");
+            AppLog.Warn("DepotDownloader", "共享存储没能挪出来，本次它会跟着版本包走：" + ex.Message);
             return null;
         }
     }
+
+    private static void RestoreSharedStore(string gamePath, string? aside)
+    {
+        if (aside is null) return;
+        var store = ContentOverrideService.SharedStoreDir(gamePath);
+        try
+        {
+            Directory.CreateDirectory(gamePath);
+            // 游戏目录里已经有一份（版本包里带回来的那份）：绝不拿挪走这份去盖它 ——
+            // 两份内容谁新说不准，留在原地至少看得见，盖错了就没了。
+            if (Directory.Exists(store))
+            {
+                AppLog.Warn("DepotDownloader",
+                    $"共享存储没放回：{store} 已有一份，挪走的那份仍完整留在 {aside}");
+                return;
+            }
+            Directory.Move(aside, store);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warn("DepotDownloader", $"共享存储放回失败，它还在 {aside}：{ex.Message}");
+        }
+    }
+
+    private static string SharedStoreAside(string gamePath)
+        => Path.Combine(Path.GetDirectoryName(Path.GetFullPath(
+               gamePath.TrimEnd(Path.DirectorySeparatorChar, '/')))!, ".junigrid-shared-store");
+
+    /// <summary>把当前游戏目录整个收成「当前版本」的缓存包：补 manifest 元数据 → 让包自含 SMAPI。
+    /// 同盘＝改名（瞬时、零拷贝）；跨盘＝复制＋逐文件校验，<b>校验过了才删源</b>。
+    /// 返回包路径＝已收好；返回 null＝这次不收（该版本已有包，或改名被占用/权限挡住，
+    /// 那种情况下 ② 自己也会因占用报错，不会假装成功）。
+    /// <b>跨盘复制做不到时抛 <see cref="DepotException"/> 拦住本次切换。</b>老代码在这里是
+    /// "失败就 return null"，于是 ② 把旧本体删了 —— 切换显示成功，用户下次切回来才发现
+    /// 要重下 ~660 MB，而且中间没有任何地方告诉过他"这个版本没被保留"（2026-10-03 实测连丢两次）。
+    /// 静默删是不可接受的：存不下就该停下来问，而不是替用户决定丢什么。</summary>
+    private static string? TryAdoptCurrentBody(string gamePath, string targetStaging,
+        string currentGameVersion, IProgress<Progress>? progress)
+    {
+        // 包名前缀抄目标包（413150-413151-…）：ApplyStaging 手上没有 appId/depotId，
+        // 而这两者本来就来自同一份 Steam 配置，抄现成的最不容易错。
+        var targetName = Path.GetFileName(targetStaging.TrimEnd(Path.DirectorySeparatorChar, '/'));
+        var seg = targetName.Split('-');
+        var prefix = seg.Length >= 3 ? seg[0] + "-" + seg[1] : "413150-413151";
+        var parts = prefix.Split('-');
+        var pkg = Path.Combine(StagingRoot, prefix + "-" + SanitizeFolderName(currentGameVersion));
+        if (Directory.Exists(pkg)) return null;
+        // StagingRoot 的 getter 只算路径不建目录 —— 全新缓存（刚装完机、刚换过缓存目录）时
+        // 父目录不存在，Directory.Move 会抛 DirectoryNotFoundException 被下面当成"不收"，
+        // 于是 ② 把旧本体删掉：这跟跨盘无关，是"第一次切版本必然丢一次"。先把父目录建出来。
+        try { Directory.CreateDirectory(Path.GetDirectoryName(pkg)!); } catch { }
+
+        // Steam 清单要在移动之前找：包落在缓存盘，从那儿向上溯找不到 steamapps。
+        string? manifest = null;
+        try
+        {
+            manifest = SteamService.ReadInstalledDepotManifest(
+                SteamService.FindAppManifest(gamePath, parts[0]), parts[1]);
+        }
+        catch { }
+
+        var srcRoot = Path.GetPathRoot(Path.GetFullPath(gamePath)) ?? "";
+        var destRoot = Path.GetPathRoot(pkg) ?? "";
+        var sameVol = string.Equals(srcRoot, destRoot, StringComparison.OrdinalIgnoreCase);
+
+        if (sameVol)
+        {
+            try
+            {
+                progress?.Report(new Progress(LocService.Tf("正在把当前本体收进版本 {0} 的缓存…", currentGameVersion), null));
+                Directory.Move(gamePath, pkg);
+            }
+            catch (Exception ex)
+            {
+                AppLog.Warn("DepotDownloader",
+                    $"当前本体未能收进版本包（{ex.Message}）—— 游戏目录未动，本次切换按旧行为覆盖");
+                return null;
+            }
+        }
+        else
+        {
+            var need = StorageService.DirSize(gamePath);
+            long free;
+            try { free = new DriveInfo(destRoot).AvailableFreeSpace; } catch { free = 0; }
+            if (!CrossVolumeFits(need, free))
+                throw new DepotException(LocService.Tf(
+                    "版本缓存和游戏不在同一个盘：收存当前版本要复制 {0}，缓存盘只剩 {1}，放不下。"
+                    + "本次切换已停止，你的游戏一个文件都没动 —— 到「设置 → 存储」把缓存目录挪到游戏所在的盘就能切。",
+                    Human(need), Human(free)));
+
+            progress?.Report(new Progress(LocService.Tf(
+                "正在把当前版本复制到缓存盘（跨盘，约 {0}，可能要几分钟）…", Human(need)), null));
+            try { ParallelCopyDirectory(gamePath, pkg, skipTrash: false, progress, "收进版本缓存"); }
+            catch (Exception ex)
+            {
+                DeleteHalfPackage(pkg);
+                throw new DepotException(LocService.Tf(
+                    "复制当前版本到缓存盘失败：{0}。本次切换已停止，你的游戏一个文件都没动。", ex.Message));
+            }
+            var missing = VerifyTree(gamePath, pkg);
+            if (missing is not null)
+            {
+                DeleteHalfPackage(pkg);
+                throw new DepotException(LocService.Tf(
+                    "复制到版本缓存后校验没过（{0}）。本次切换已停止，你的游戏一个文件都没动。", missing));
+            }
+            // 校验过了才动源。删不干净也不要紧：② 会把游戏目录里的残留扫进 .junigrid-old-body 再清，
+            // 而包已经是完整的一份，不会因此丢东西。
+            try { DeleteTreeParallel(gamePath); }
+            catch (Exception ex)
+            {
+                AppLog.Warn("DepotDownloader", "跨盘复制已完成，清理源目录时还有残留（不影响版本包）：" + ex.Message);
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(manifest)) WriteManifestMeta(pkg, manifest!);
+        // 包自含 SMAPI（v1.6.8 口径）：④ 恢复时优先用包内这份，共享池只兜底。
+        if (IsCompleteSmapiSnapshot(pkg) && !IsCompleteSmapiSnapshot(Path.Combine(pkg, "smapi")))
+            CopySmapiFiles(pkg, Path.Combine(pkg, "smapi"));
+        WriteSizeCache(pkg);
+        // 归档来的这份就是现役本体，天然完整（缺东西的话游戏本身就跑不起来）。
+        TryWriteCompleteMark(pkg);
+        AppLog.Warn("DepotDownloader",
+            $"当前本体已收进版本包 {pkg}（manifest={manifest ?? "未知"}，{(sameVol ? "同盘改名" : "跨盘复制")}）"
+            + " —— 切回该版本不必再回 Steam 校验");
+        return pkg;
+    }
+
+    /// <summary>跨盘收存前"装不装得下"：留 256 MB 余量（复制途中还要写临时文件、robocopy 也要地方）。
+    /// need 读不出来（0）时放行 —— 宁可复制失败后拦住，也不能因为量不出来就说不行。</summary>
+    internal static bool CrossVolumeFits(long needBytes, long freeBytes) =>
+        needBytes <= 0 || freeBytes >= needBytes + 256L * 1024 * 1024;
+
+    /// <summary>源里每一个文件都必须在目标里且大小一致。null＝通过；否则一句人话说明缺什么。
+    /// 这条是"删源之前唯一的凭据"，所以宁可严：空目录也算不过。</summary>
+    internal static string? VerifyTree(string src, string dest)
+    {
+        int n = 0;
+        foreach (var f in Directory.EnumerateFiles(src, "*", SearchOption.AllDirectories))
+        {
+            n++;
+            var rel = Path.GetRelativePath(src, f);
+            var to = Path.Combine(dest, rel);
+            long len;
+            try { len = new FileInfo(f).Length; } catch { continue; }
+            if (!File.Exists(to)) return LocService.Tf("目标里找不到 {0}", rel);
+            long got;
+            try { got = new FileInfo(to).Length; }
+            catch (Exception ex) { return LocService.Tf("{0} 读不到大小：{1}", rel, ex.Message); }
+            if (got != len) return LocService.Tf("{0} 大小不一致（源 {1}，副本 {2}）", rel, len, got);
+        }
+        return n == 0 ? LocService.Tr("源目录里一个文件都没数到") : null;
+    }
+
+    private static void DeleteHalfPackage(string pkg)
+    {
+        try { if (Directory.Exists(pkg)) DeleteTreeParallel(pkg); }
+        catch (Exception ex) { AppLog.Warn("DepotDownloader", "半截版本包没删掉 " + pkg + "：" + ex.Message); }
+    }
+
+    private static string Human(long bytes) =>
+        bytes >= 1024L * 1024 * 1024
+            ? $"{bytes / 1024.0 / 1024 / 1024:0.0} GB"
+            : $"{bytes / 1024.0 / 1024:0} MB";
 
     /// <summary>
     /// v1.5：切换版本时 Mods / SMAPI 按版本隔离。
@@ -269,7 +423,6 @@ public sealed partial class DepotDownloaderService
         // ⓪ 归档出来的包：② 万一失败时要把它报给用户（旧版本整份还在里面）
         string? adoptedPkg = null;
 
-        PortraitSkinService.KeepSuspended();   // 每进一个阶段给挂起续期（见 PortraitSkinService）
         var curStaging = FindStagingByVersionLabel(currentGameVersion);
         var gameModsHasEntries = Directory.Exists(gameMods)
             && Directory.EnumerateFileSystemEntries(gameMods).Any();
@@ -290,7 +443,7 @@ public sealed partial class DepotDownloaderService
             && UpdateService.RecommendSmapiTag(currentGameVersion) is not null
             && Directory.Exists(gamePath))
         {
-            var adopted = TryAdoptCurrentBody(gamePath, staging, currentGameVersion!, progress);
+            var adopted = AdoptCurrentBodyWithSharedStore(gamePath, staging, currentGameVersion!, progress);
             if (adopted is not null)
             {
                 curStaging = adopted;
@@ -350,20 +503,20 @@ public sealed partial class DepotDownloaderService
                 }
                 else
                 {
-                progress?.Report(new Progress(LocService.Tf("正在把当前 Mods 存入版本 {0}…", currentGameVersion), null));
-                // 抽屉里可能躺着上一批还没被认领走的条目（改名快路径会连整个 dest 删掉）→ 先挪隔离区
-                var grave = Path.Combine(StagingRoot, "_mods-orphan", "_copyleft",
-                    SafeDirName(currentGameVersion ?? "unknown") + "-" + DateTime.Now.ToString("yyyyMMdd_HHmmss"));
-                if (MoveDirectoryVerified(gameMods, destMods, grave, progress, "存入 Mods") == DirMove.Failed)
-                    modsMoveError =
-                        LocService.Tf("把当前 Mods 存入版本 {0} 的缓存时核对不通过 —— 已保留游戏目录里的 Mods 未动。", currentGameVersion) +
-                        LocService.Tr("请清理磁盘空间或关闭占用 Mods 的程序后重试；实在不行先到 Mods 页手动备份。");
-                else
-                {
-                    modsMovedTo = destMods;
-                    AppLog.Warn("DepotDownloader", $"Mods 已移入 {curStaging}");
-                    WriteSizeCache(curStaging);
-                }
+                    progress?.Report(new Progress(LocService.Tf("正在把当前 Mods 存入版本 {0}…", currentGameVersion), null));
+                    // 抽屉里可能躺着上一批还没被认领走的条目（改名快路径会连整个 dest 删掉）→ 先挪隔离区
+                    var grave = Path.Combine(StagingRoot, "_mods-orphan", "_copyleft",
+                        SafeDirName(currentGameVersion ?? "unknown") + "-" + DateTime.Now.ToString("yyyyMMdd_HHmmss"));
+                    if (MoveDirectoryVerified(gameMods, destMods, grave, progress, "存入 Mods") == DirMove.Failed)
+                        modsMoveError =
+                            LocService.Tf("把当前 Mods 存入版本 {0} 的缓存时核对不通过 —— 已保留游戏目录里的 Mods 未动。", currentGameVersion) +
+                            LocService.Tr("请清理磁盘空间或关闭占用 Mods 的程序后重试；实在不行先到 Mods 页手动备份。");
+                    else
+                    {
+                        modsMovedTo = destMods;
+                        AppLog.Warn("DepotDownloader", $"Mods 已移入 {curStaging}");
+                        WriteSizeCache(curStaging);
+                    }
                 }
             }
         }
@@ -450,12 +603,12 @@ public sealed partial class DepotDownloaderService
         catch (Exception ex) { AppLog.Warn("DepotDownloader", "存 SMAPI 到版本包失败: " + ex.Message); }
 
         // ①c userdata 备份（节流 + 只留最近几份）
-        try { BackupSteamUserData("413150"); } catch (Exception ex)
+        try { BackupSteamUserData("413150"); }
+        catch (Exception ex)
         {
             AppLog.Warn("DepotDownloader", "备份 Steam userdata 失败: " + ex.Message);
         }
 
-        PortraitSkinService.KeepSuspended();   // 每进一个阶段给挂起续期（见 PortraitSkinService）
         // ② 清理并写入本体。失败时若 Mods 已改名迁出，先迁回。
         try
         {
@@ -470,6 +623,10 @@ public sealed partial class DepotDownloaderService
                 var name = Path.GetFileName(entry);
                 if (name.Equals("Mods", StringComparison.OrdinalIgnoreCase)) continue;
                 if (name.Equals(".junigrid-old-body", StringComparison.OrdinalIgnoreCase)) continue;
+                // 共享存储（纯净版覆盖的原版仓库 / 素材包 / 副本）全版本共用，不是"旧本体"的一部分。
+                // 走到这里的是【该版本已有包】的路径 —— 没有 ⓪ 的整目录改名来把它收走，
+                // 不豁免就等于第二次离开这个版本时把它扫进 .junigrid-old-body 删掉。
+                if (name.Equals(ContentOverrideService.SharedStoreFolder, StringComparison.OrdinalIgnoreCase)) continue;
                 try
                 {
                     var dest = Path.Combine(oldBody, name);
@@ -511,7 +668,6 @@ public sealed partial class DepotDownloaderService
             throw;
         }
 
-        PortraitSkinService.KeepSuspended();   // 每进一个阶段给挂起续期（见 PortraitSkinService）
         // ③ 恢复目标版本的 Mods：同盘优先从 staging 整棵改名进来
         progress?.Report(new Progress(LocService.Tr("正在恢复该版本的 Mods…"), null));
         try
@@ -692,24 +848,6 @@ public sealed partial class DepotDownloaderService
             AppLog.Warn("DepotDownloader", $"SMAPI 已恢复（来源：{restoredFrom}，游戏 {targetGameVer}）");
             // 示例 mod 在 Mods/ 里，不跟 SMAPI exe 走 —— 切完补上，避免「能跑 SMAPI 却没有 Console Commands」
             EnsureSmapiSampleMods(gamePath);
-            // 立绘覆盖也是写在当前 Mods 里的，换版本后重新生成
-            Task.Run(() =>
-            {
-                try
-                {
-                    var portraits = PortraitSkinService.Live;
-                    if (portraits is not null)
-                    {
-                        var scan = portraits.Scan(gamePath);
-                        portraits.SyncToDisk(gamePath, scan);
-                        AppLog.Warn("DepotDownloader", "已按当前 Mods 重新生成立绘覆盖包");
-                    }
-                }
-                catch (Exception ex)
-                {
-                    AppLog.Warn("DepotDownloader", "切版本后重建立绘覆盖失败: " + ex.Message);
-                }
-            });
         }
         else if (smapiTag is null)
             AppLog.Warn("DepotDownloader", $"游戏 {targetGameVer} 无适配 SMAPI，切换后不装加载器");
