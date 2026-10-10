@@ -121,6 +121,10 @@ public static class ResumableDownload
                         report($"正在下载… {FormatBytes(written)} / {FormatBytes(totalBytes)}", percent, speed);
                     }
                 }
+                // 流读到 0 不等于下完了：镜像提前关流时这里同样是 0，旧代码就此 return，
+                // 把半截文件当成功交给上层（自更新那条路还会给它写 .done，下次点击直接拿
+                // 一个残缺的 setup.exe 去启动）。长度已知就对一下，短了当中断处理。
+                EnsureComplete(written, totalBytes);
                 return;
             }
             catch (Exception ex) when (attempt < MaxAttempts
@@ -142,6 +146,16 @@ public static class ResumableDownload
                 }
             }
         }
+    }
+
+    /// <summary>流读到 EOF 之后必须过这一关才算"下完了"。
+    /// 服务器/镜像提前关流时 <c>ReadAsync</c> 同样返回 0，只看 EOF 就会把半截文件当成功。
+    /// 拿不到 Content-Length（<paramref name="totalBytes"/> 为 0）时无从判断，交给上层的
+    /// 哈希校验兜底。</summary>
+    internal static void EnsureComplete(long written, long totalBytes)
+    {
+        if (totalBytes > 0 && written < totalBytes)
+            throw new IOException($"下载不完整（{written}/{totalBytes} 字节）");
     }
 
     /// <summary>v1.1.2：4xx 等永久性下载错误 —— 重试没有意义，立即失败（由任务中心显示原因）</summary>

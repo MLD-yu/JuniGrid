@@ -144,7 +144,11 @@ junigridJs.taskDrop = function (panelSel, arrowSel, open) {
             }
         })
             .to(arrow, { rotation: 0, duration: 0.3, ease: 'power2.inOut' }, 0)
-            .to(panel, { height: 0, autoAlpha: 0, duration: 0.32, ease: 'power2.in' }, 0);
+            // immediateRender：收起这支用的是 to()，GSAP 默认到下一帧才写起始值。
+            // 调用方（Blazor）会在同一批里把 .open 摘掉，面板 CSS 的 height:0 就抢在动画之前
+            // 把它拍平（实测 12ms 拍平 vs 21ms 才挂内联样式），于是 0→0 空播、看着就是"啪"地跳。
+            // 立刻把当前高度写成内联，class 再怎么翻都压不住它。展开那支的 fromTo 本来就有这个语义。
+            .to(panel, { height: 0, autoAlpha: 0, duration: 0.32, ease: 'power2.in', immediateRender: true }, 0);
     }
 };
 

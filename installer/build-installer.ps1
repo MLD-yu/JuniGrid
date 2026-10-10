@@ -109,3 +109,20 @@ New-Item -ItemType Directory -Force $dist | Out-Null
 $dest = Join-Path $dist ("JuniGrid-cn-v{0}-setup.exe" -f $version)
 Copy-Item (Join-Path $out 'JuniGridSetup.exe') $dest -Force
 Write-Host ("Output: {0}  ({1:N1} MB)" -f $dest, ((Get-Item $dest).Length / 1MB))
+
+# 7) 微软 SmartScreen 申诉材料。未签名文件的信誉绑在哈希上，每次构建哈希都变 ⇒ 每次发版
+#    都得重新提一次。这里只把"填表要抄的东西"生成好；提交本身得人来做（要用他的账号，
+#    而且那是对微软发出的对外动作）。放在防线之后：防线没过就走不到这儿，不会生成一份
+#    指向坏产物的申诉材料。
+$sha = (Get-FileHash $dest -Algorithm SHA256).Hash.ToLower()
+$size = (Get-Item $dest).Length
+$note = Get-Content (Join-Path $installerDir 'smartscreen-submission-note.txt') -Raw
+$note = $note.Replace('{VERSION}', $version)
+$note = $note.Replace('{FILE}', (Split-Path $dest -Leaf))
+$note = $note.Replace('{SHA}', $sha)
+$note = $note.Replace('{SIZE}', "$size")
+$noteOut = Join-Path $dist ("jg-smartscreen-submission-v{0}.txt" -f $version)
+Set-Content -Path $noteOut -Value $note -Encoding ASCII -NoNewline
+Write-Host ("SHA-256 : {0}" -f $sha)
+Write-Host ("Size    : {0} bytes" -f $size)
+Write-Host ("申诉材料 : {0}  （表单里「产品」一栏要选 Microsoft Defender SmartScreen，不是反病毒）" -f $noteOut)

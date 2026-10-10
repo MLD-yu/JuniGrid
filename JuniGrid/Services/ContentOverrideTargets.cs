@@ -4,9 +4,12 @@ namespace JuniGrid.Services;
 
 /// <summary>
 /// 素材包页「按对象」视图的分组模型：把 ContentOverrides 的逐资产账重组为【人认识的对象】——
-/// 一个 NPC（立绘 + 行走图并成一张卡）、一匹马、一栋房子、一棵树……
+/// 一个人的立绘、一个人走路的身子、一匹马、一栋房子、一棵树……
 /// 网格上一个格子 = 这里的一个 <see cref="TargetGroup"/>，点开弹窗按【版本】（哪个包画的）
 /// 逐个应用，与立绘页"一个角色一张卡、点卡换肤"的交互同构。
+///
+/// 一张卡只装<b>一半</b>：立绘和行走图分开成交付、也分开挑，并成一张卡就会让"当前：某某包"
+/// 这句话只说中半个对象（2026-10-10 定）。
 ///
 /// 应用粒度落到 <see cref="ContentOverrideService.SetEnabled"/> 的逐资产开关上：
 /// 同一个资产同时只能有一个版本在位（一张表装不下两张图），切换时兄弟版本自动转关 ——
@@ -14,7 +17,7 @@ namespace JuniGrid.Services;
 /// </summary>
 public static class ContentOverrideTargets
 {
-    /// <summary>一个可覆盖对象。Key：人物 = <c>P|名字</c>，其余 = <c>A|资产路径</c>。</summary>
+    /// <summary>一个可覆盖对象。Key：人物 = <c>P|哪一半|名字</c>，其余 = <c>A|资产路径</c>。</summary>
     public sealed record TargetGroup(string Key, string Name, string Category, string Sub,
         List<ContentOverrideRecord> Records)
     {
@@ -40,7 +43,7 @@ public static class ContentOverrideTargets
             => Records.GroupBy(r => r.Slot, StringComparer.OrdinalIgnoreCase)
                 .OrderBy(g => DisplayPack(g.First()), StringComparer.OrdinalIgnoreCase);
 
-        /// <summary>人物组（立绘 + 行走图并成的那张卡）。非人物组一张图一个对象。</summary>
+        /// <summary>人物组（一个人的一半：立绘或行走图，带他自己的各个形象）。非人物组一张图一个对象。</summary>
         public bool IsPerson => Key.StartsWith("P|", StringComparison.Ordinal);
 
         /// <summary>这个对象名下有几个形象（默认 / 冬季 / 沙滩…）。1 = 弹窗里不必出形象 chips。</summary>
@@ -64,7 +67,8 @@ public static class ContentOverrideTargets
                 .OrderBy(g => DisplayPack(g.First()), StringComparer.OrdinalIgnoreCase);
         }
 
-        /// <summary>这个形象此刻在位的是哪个包（null = 原版）。</summary>
+        /// <summary>这个形象此刻在位的是哪个包（null = 原版）。一张卡就是一半，
+        /// 所以这句现在是真的 —— 以前立绘与行走图并成一张卡时，它只报第一条，会骗人。</summary>
         public ContentOverrideRecord? ActiveOf(string variant)
         {
             var hit = AssetsOf(variant);
@@ -73,11 +77,17 @@ public static class ContentOverrideTargets
         }
     }
 
+    /// <summary>人物资产分两半：Portraits = 立绘、Characters = 行走图；非人物没有"另一半"。
+    /// 返回的是界面用词（也就是目录的键）。</summary>
+    public static string? HalfOf(string asset)
+        => asset.StartsWith("Portraits/", StringComparison.OrdinalIgnoreCase) ? "立绘"
+            : asset.StartsWith("Characters/", StringComparison.OrdinalIgnoreCase) ? "行走图" : null;
+
     /// <summary>包显示名：N 网补到的标题优先，没补到用安装时的包名。</summary>
     public static string DisplayPack(ContentOverrideRecord r)
         => string.IsNullOrWhiteSpace(r.PackTitle) ? r.PackName : r.PackTitle;
 
-    /// <summary>这个资产是"人物"的一部分（立绘或行走图）—— 两者按名字并成同一张卡。</summary>
+    /// <summary>这个资产是不是人物的一半（立绘或行走图）—— 同一个人的同一半按本名并成一张卡。</summary>
     public static bool IsPerson(string asset)
         => asset.StartsWith("Portraits/", StringComparison.OrdinalIgnoreCase)
         || asset.StartsWith("Characters/", StringComparison.OrdinalIgnoreCase);
@@ -125,13 +135,17 @@ public static class ContentOverrideTargets
         => variant == DefaultVariant ? -1 : Array.FindIndex(VariantSuffixes,
             v => v.Label.Equals(variant, StringComparison.OrdinalIgnoreCase));
 
-    /// <summary>对象分类（界面 chips 与分区标题用）。返回稳定的中文键，页面再过 Loc.T。</summary>
+    /// <summary>对象分类（界面 chips 与分区标题用）。返回稳定的中文键，页面再过 Loc.T。
+    /// <para>立绘与行走图是<b>两类东西</b>：一个是脸、一个是走路的身子，包的作者分开交、
+    /// 玩家也分开挑（2026-10-10 定）。以前两者都算"人物"，一张卡里混着两半，
+    /// 于是"A 包的立绘 + B 包的行走图"在界面上看起来像不可能。</para></summary>
     public static string CategoryOf(string asset)
     {
         var top = asset.Split('/')[0];
         return top.ToLowerInvariant() switch
         {
-            "portraits" or "characters" => "人物",
+            "portraits" => "立绘",
+            "characters" => "行走图",
             "animals" => "动物",
             "buildings" => "建筑",
             "terrainfeatures" => "树木植被",
@@ -146,18 +160,19 @@ public static class ContentOverrideTargets
         };
     }
 
-    /// <summary>分类在界面上的排序（人物最前）。</summary>
+    /// <summary>分类在界面上的次序（立绘、行走图最前）。</summary>
     public static int CategoryOrder(string category) => category switch
     {
-        "人物" => 0,
-        "动物" => 1,
-        "建筑" => 2,
-        "树木植被" => 3,
-        "界面杂图" => 4,
-        "地图图块" => 5,
-        "地图贴图" => 6,
-        "字体" => 7,
-        _ => 8,
+        "立绘" => 0,
+        "行走图" => 1,
+        "动物" => 2,
+        "建筑" => 3,
+        "树木植被" => 4,
+        "界面杂图" => 5,
+        "地图图块" => 6,
+        "地图贴图" => 7,
+        "字体" => 8,
+        _ => 9,
     };
 
     /// <summary>常见资产的叫法；没收录的用文件名原样（NPC id、Cursors_2 这类人不看也知道是啥）。</summary>
@@ -183,13 +198,16 @@ public static class ContentOverrideTargets
         foreach (var r in cfg.Current.ContentOverrides.Values)
         {
             if (take is not null && !take(r)) continue;
-            // 人物按【本名】并组：Abigail / Abigail_Winter / Abigail_Beach 与它们的行走图
-            // 是同一个人的不同形象，不是三个对象。老写法用整叶名当键，一个角色被拆成 3 张卡。
+            // 人物按【哪一半 + 本名】并组：Abigail / Abigail_Winter / Abigail_Beach 是同一个人的
+            // 不同形象，不该拆成三张卡（老写法用整叶名当键，踩过）；但<b>立绘和行走图是两张卡</b>
+            // —— 它们分开交付、分开挑，混在一张里就会说"当前：某某行走图包"，让人以为这张脸
+            // 的立绘也被占了（2026-10-10）。
             // 非人物按【去掉语言后缀的资产路径】并组：两个包盖同一张图，一个交出
             // LooseSprites/Cursors、另一个只交出 Cursors.de-DE，那还是一张卡
             // （实测 1083 与 13113 就是这样被拆成两张的）。
-            var key = IsPerson(r.Asset) ? "P|" + PersonRoot(Leaf(r.Asset))
-                                        : "A|" + ContentOverrideService.LocaleBase(r.Asset);
+            var key = IsPerson(r.Asset)
+                ? "P|" + HalfOf(r.Asset) + "|" + PersonRoot(Leaf(r.Asset))
+                : "A|" + ContentOverrideService.LocaleBase(r.Asset);
             if (!byKey.TryGetValue(key, out var list)) byKey[key] = list = new List<ContentOverrideRecord>();
             list.Add(r);
         }
@@ -201,18 +219,11 @@ public static class ContentOverrideTargets
             // 名字与副标题都按【去掉语言后缀】那张资产给：卡面上写 Cursors，
             // 而不是恰好被当代表的那份 Cursors.de-DE。
             var assetKey = ContentOverrideService.LocaleBase(first.Asset);
-            var name = person ? key[2..]
+            var name = person ? key[(key.IndexOf('|', 2) + 1)..]
                 : FriendlyNames.TryGetValue(assetKey, out var nice) ? nice : Leaf(assetKey);
             // 副标题：非人物对象给完整资产路径（"TerrainFeatures/tree1" 这种才知道盖的是哪张）；
-            // 人物给成员资产的自然描述（立绘 / 立绘+行走图）。
-            string sub;
-            if (person)
-            {
-                var hasP = records.Any(r => r.Asset.StartsWith("Portraits/", StringComparison.OrdinalIgnoreCase));
-                var hasC = records.Any(r => r.Asset.StartsWith("Characters/", StringComparison.OrdinalIgnoreCase));
-                sub = hasP && hasC ? "立绘 + 行走图" : hasP ? "立绘" : "行走图";
-            }
-            else sub = assetKey;
+            // 人物给这一半的名字 —— 一张卡就是一半，不需要再并列。
+            var sub = person ? HalfOf(first.Asset) ?? assetKey : assetKey;
             result.Add(new TargetGroup(key, name, CategoryOf(first.Asset), sub, records));
         }
         return result
@@ -229,11 +240,7 @@ public static class ContentOverrideTargets
     {
         var on = records.FirstOrDefault(r => r.Enabled
             && r.Asset.Equals(asset, StringComparison.OrdinalIgnoreCase));
-        if (on is not null)
-        {
-            var copy = ContentOverrideService.StoreFile(gamePath, on.StoreId, on.Asset);
-            return File.Exists(copy) ? copy : null;
-        }
+        if (on is not null) return ContentOverrideService.PackImageSource(gamePath, on);
         return VanillaSource(gamePath, asset);
     }
 
@@ -279,9 +286,7 @@ public static class ContentOverrideTargets
     public static string? VersionSource(string gamePath, List<ContentOverrideRecord> slotRecords, string asset)
     {
         var r = slotRecords.FirstOrDefault(x => x.Asset.Equals(asset, StringComparison.OrdinalIgnoreCase));
-        if (r is null || r.StoreId.Length == 0) return null;
-        var copy = ContentOverrideService.StoreFile(gamePath, r.StoreId, r.Asset);
-        return File.Exists(copy) ? copy : null;
+        return r is null ? null : ContentOverrideService.PackImageSource(gamePath, r);
     }
 
     /// <summary>对象卡片的预览源：按资产序（立绘→行走图→其他）取第一张有图的。</summary>

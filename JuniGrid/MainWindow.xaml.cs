@@ -144,6 +144,20 @@ public partial class MainWindow : Window
             // v0.2.2：配置最早加载 —— 缓存位置（含 WebView2 目录）由它决定
             var configService = new ConfigService();
 
+            // v1.2.7：默认缓存落点已从 %TEMP%\JuniGrid 改成安装目录 —— "配置里那一栏空着"的含义
+            // 变了，所以必须先把历史默认位置里的东西搬过来，WebView2 才能定地址（它只能在
+            // 初始化之前搬）。搬不动的 webview2 会写进 PendingWebView2MoveFrom，下面的待搬链
+            // 于是本会话继续用旧目录，绝不静默切到空的新目录。
+            StorageService.MigrateFromLegacyTempRoot(configService.Current.CacheRoot,
+                out var wv2StuckFromTemp, out var tempMoved);
+            if (tempMoved > 0) Log($"旧默认缓存位置已搬入 {StoragePaths.DefaultCacheRoot}（{tempMoved} 项）");
+            if (wv2StuckFromTemp is not null
+                && string.IsNullOrWhiteSpace(configService.Current.PendingWebView2MoveFrom))
+            {
+                configService.Current.PendingWebView2MoveFrom = wv2StuckFromTemp;
+                configService.Save(configService.Current);
+            }
+
             // v0.2.2：上次更改缓存目录时 WebView2 正被占用无法搬 → 趁 WebView2 还没初始化，先执行遗留迁移
             var wv2Use = StoragePaths.WebView2Dir;
             var wv2From = configService.Current.PendingWebView2MoveFrom;

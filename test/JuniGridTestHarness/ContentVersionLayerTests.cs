@@ -21,7 +21,7 @@ internal sealed class GameSandbox : IDisposable
 
     public GameSandbox(string version = "1.6.15")
     {
-        Dir = Path.Combine(Path.GetTempPath(), "jg-ver-" + Guid.NewGuid().ToString("N")[..8]);
+        Dir = TempDirs.Create("ver");
         Directory.CreateDirectory(Path.Combine(Dir, "Content"));
         Directory.CreateDirectory(Path.Combine(Dir, "Mods"));
         File.WriteAllText(Path.Combine(Dir, "Stardew Valley.exe"), "");
@@ -59,7 +59,7 @@ internal sealed class GameSandbox : IDisposable
     /// <summary>造一个裸素材包目录：每个资产一张同尺寸 xnb，填充字节故意不同，便于确认"写进去的确实是包里那张"。</summary>
     public string WritePack(string packName, params (string Asset, int W, int H)[] items)
     {
-        var src = Path.Combine(Path.GetTempPath(), "jg-pack-" + Guid.NewGuid().ToString("N")[..8]);
+        var src = TempDirs.Create("pack");
         foreach (var (asset, w, h) in items)
             Write(Path.Combine(src, asset.Replace('/', Path.DirectorySeparatorChar) + ".xnb"),
                   VanillaXnb(w, h, 0x77));
@@ -73,6 +73,7 @@ internal sealed class GameSandbox : IDisposable
     }
 
     public string Content(string asset) => ContentOverrideService.AssetFullPath(Dir, asset);
+
     public string Sha(string path) => File.Exists(path)
         ? Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path))) : "(无文件)";
 
@@ -92,6 +93,12 @@ internal sealed class GameSandbox : IDisposable
 
     public void Dispose()
     {
+        // 退场前把自己那份写盘排干净。ConfigService.Save 是防抖的（后台延迟写），而所有沙盒共用
+        // %TEMP%\jg-test-config 里那一个配置文件 —— 不 Flush 就等于留一发延时的子弹：
+        // 下一个类的测试刚 ResetConfigDir 把盘清成默认态，这条迟到的写就把 gamePath 顶成
+        // 本沙盒的临时目录（实机症状：加一个新测试类改动顺序后，
+        // ConfigServiceTests.MissingMainFile_IsRestoredFromBak 从 .bak 救回的是别人的路径）。
+        Cfg.Flush();
         try { Directory.Delete(Dir, true); } catch (IOException) { }
         GC.SuppressFinalize(this);
     }
@@ -234,6 +241,143 @@ public class ContentVersionLayerTests
         Assert.NotEqual(oldStore, face.StoreId);
         Assert.Equal(face.AppliedSha256, s.Sha(s.Content(Face)));
         Assert.False(body.Enabled);                                     // 只开这一行，兄弟不该被顺手打开
+    }
+
+    /// <summary>实机 2026-10-09「No More Bowlegs」：一个包 6 张图，只有 Abigail 一张还盖着，
+    /// 另外 5 张盘上早就是原版（用户自己还原过）。旧那道闸问的是"<b>包里有没有哪一行标着开着</b>"，
+    /// 于是那一张把另外 5 张全锁死，还给出一句"该包当前仍处于应用状态，请先执行「全部还原」" ——
+    /// 对那 5 张是假的，而且照做会把 Abigail 也一起撤掉。判据必须是
+    /// <b>这次要重算的那几张，盘上是不是我们自己写进去的那份</b>。</summary>
+    [Fact]
+    public void Reencode_IsNotBlockedByAnUnrelatedRowStillCovered()
+    {
+        using var s = new GameSandbox("1.6.15");
+        s.WriteVanilla(Face, 128, 320);
+        s.WriteVanilla(Body, 64, 128);
+        var rows = s.Install("packA", s.WritePack("packA", (Face, 128, 320), (Body, 64, 128)));
+        var face = rows.Single(r => r.Asset == Face);
+        var body = rows.Single(r => r.Asset == Body);
+
+        // 只关 Body：它回到原版；Face 保持开着 = 盘上仍是我们那份
+        Assert.Null(ContentOverrideService.SetEnabled(s.Cfg, s.Dir,
+            ContentOverrideService.KeyOf(body.Asset, body.Slot), false));
+        Assert.Equal(face.AppliedSha256, s.Sha(s.Content(Face)));
+        Assert.NotEqual(body.AppliedSha256, s.Sha(s.Content(Body)));
+
+        s.SetVersion("1.6.16");                       // 两行都变陈旧 ⇒ 打开只能走重编
+        Assert.Null(ContentOverrideService.SetEnabled(s.Cfg, s.Dir,
+            ContentOverrideService.KeyOf(body.Asset, body.Slot), true));
+
+        Assert.True(body.Enabled);
+        Assert.Equal("1.6.16", body.Version);
+        Assert.Equal(body.AppliedSha256, s.Sha(s.Content(Body)));      // 真的重算并盖上去了
+        Assert.Equal("1.6.15", face.Version);                          // 没被顺手改动
+        Assert.Equal(face.AppliedSha256, s.Sha(s.Content(Face)));
+    }
+
+    /// <summary>反过来：要重算的那张【正盖着】时必须仍然拦 —— 这道闸防的是"拿我们上次贴的图
+    /// 当原版底"，那是会把错图烤进本体、再把错图当原版还原出去的死循环。
+    /// 变异点：把拦的条件从 InPlace 松成"盘上不是当前版原版"，这条会假绿在别的判据上；
+    /// 所以这里连盘一起断言（那张图一个字节都没动）。</summary>
+    [Fact]
+    public void Reencode_StillRefusesTheRowThatIsActuallyCovered()
+    {
+        using var s = new GameSandbox("1.6.15");
+        s.WriteVanilla(Face, 128, 320);
+        var rows = s.Install("packA", s.WritePack("packA", (Face, 128, 320)));
+        var face = rows[0];
+        var before = s.Sha(s.Content(Face));
+
+        s.SetVersion("1.6.16");
+        var err = ContentOverrideService.SetEnabled(s.Cfg, s.Dir,
+            ContentOverrideService.KeyOf(face.Asset, face.Slot), true);
+
+        Assert.NotNull(err);
+        Assert.Contains(Face, err);                                   // 点名是哪几张
+        Assert.Contains("先把它们关掉", err!);
+        Assert.DoesNotContain("全部还原", err!);                        // 不再指挥人去动整包
+        Assert.Equal(before, s.Sha(s.Content(Face)));                 // 盘上一点没动
+        Assert.Equal("1.6.15", face.Version);                         // 账也没被改脏
+    }
+
+    /// <summary>判据必须问盘，不能问账上那个勾。两个方向各一条：
+    /// ① 账上写着"开着"、盘上却被 Steam 验证完整性换回原版 ⇒ 底是干净的，"开→开"就是修复入口
+    ///    （<see cref="ContentOverrideService.SetEnabled"/> 的注释明说不该要求人先关再开），
+    ///    拿那个勾当"还盖着"就会把一次正常修复拦死；
+    /// ② 账上写着"关着"、盘上仍是我们上次贴的那份 ⇒ 底是脏的，必须拦 —— 旧写法看不见这种。
+    /// 变异点：把判据换回 <c>r.Enabled</c>，这两条一条红在"该放行没放行"、一条红在"该拦没拦"。</summary>
+    [Fact]
+    public void Reencode_GateReadsTheDisk_BothDirections()
+    {
+        // ① 勾开着、盘上是原版 ⇒ 放行
+        using (var s = new GameSandbox("1.6.15"))
+        {
+            s.WriteVanilla(Face, 128, 320);
+            var rows = s.Install("packA", s.WritePack("packA", (Face, 128, 320)));
+            Assert.True(rows[0].Enabled);
+            s.WriteVanilla(Face, 128, 320);            // Steam 验证：本体换回原版，账没动
+            s.SetVersion("1.6.16");
+            Assert.Null(ContentOverrideService.SetEnabled(s.Cfg, s.Dir,
+                ContentOverrideService.KeyOf(rows[0].Asset, rows[0].Slot), true));
+            Assert.Equal(rows[0].AppliedSha256, s.Sha(s.Content(Face)));   // 真的重新盖上去了
+        }
+
+        // ② 勾关着、盘上仍是我们那份 ⇒ 拦，且一字节都不许动
+        using (var v = new GameSandbox("1.6.15"))
+        {
+            v.WriteVanilla(Face, 128, 320);
+            var rows = v.Install("packA", v.WritePack("packA", (Face, 128, 320)));
+            var ours = v.Sha(v.Content(Face));
+            rows[0].Enabled = false;                    // 账盘不一致：还原没跑成
+            v.SetVersion("1.6.16");
+            var err = ContentOverrideService.SetEnabled(v.Cfg, v.Dir,
+                ContentOverrideService.KeyOf(rows[0].Asset, rows[0].Slot), true);
+            Assert.NotNull(err);
+            Assert.Contains(Face, err);
+            Assert.Equal(ours, v.Sha(v.Content(Face)));                     // 没把我们那张当原版抄
+            Assert.False(File.Exists(ContentOverrideService.OriginalPath(v.Dir, Face, "1.6.16")));
+        }
+    }
+
+    /// <summary>立绘与行走图必须落在<b>两张卡</b>上：一张卡才配一句"当前：X"。以前两半并成一张卡，
+    /// 标题取【整个形象的第一条】在位记录，立绘和行走图来自两个包时它只报其中一个，用户据此以为
+    /// 另一半也被占了 —— 而底层本来就是逐资产在位、"A 包的立绘 + B 包的行走图"可以并存。
+    /// 变异点：分组键去掉 <c>HalfOf</c> 并回一张卡，这条立刻红在"两张卡"上。</summary>
+    [Fact]
+    public void FaceAndBody_FromTwoPacks_AreTwoCardsEachReportingItself()
+    {
+        using var s = new GameSandbox("1.6.15");
+        s.WriteVanilla(Face, 64, 64);
+        s.WriteVanilla(Body, 64, 64);
+        var faceSlot = s.Install("脸包", s.WritePack("脸包", (Face, 64, 64)))[0].Slot;
+        var bodySlot = s.Install("身子包", s.WritePack("身子包", (Body, 64, 64)))[0].Slot;
+
+        var cards = ContentOverrideTargets.Build(s.Cfg);
+        var face = cards.Single(x => x.Key == "P|立绘|Emily");
+        var body = cards.Single(x => x.Key == "P|行走图|Emily");
+        Assert.Equal(new[] { "立绘", "行走图" }, new[] { face.Category, body.Category });
+        Assert.Equal(new[] { "立绘", "行走图" }, new[] { face.Sub, body.Sub });
+        // 每张卡只认自己那一半，两句话各自为真
+        Assert.Equal("脸包", ContentOverrideTargets.DisplayPack(face.ActiveOf(ContentOverrideTargets.DefaultVariant)!));
+        Assert.Equal("身子包", ContentOverrideTargets.DisplayPack(body.ActiveOf(ContentOverrideTargets.DefaultVariant)!));
+        Assert.Equal(face.Active!.AppliedSha256, s.Sha(s.Content(Face)));
+        Assert.Equal(body.Active!.AppliedSha256, s.Sha(s.Content(Body)));
+
+        // 只关立绘：行走图那半不许跟着掉
+        Assert.Null(ContentOverrideService.SetPackEnabled(s.Cfg, s.Dir, faceSlot, false));
+        Assert.Null(face.ActiveOf(ContentOverrideTargets.DefaultVariant));
+        Assert.NotNull(body.ActiveOf(ContentOverrideTargets.DefaultVariant));
+        // 立绘卡的版本列表里不许混进只画了行走图的那个包
+        Assert.DoesNotContain(face.VersionsOf(ContentOverrideTargets.DefaultVariant),
+            g => g.Key.Equals(bodySlot, StringComparison.OrdinalIgnoreCase));
+
+        // 反向情形也要拆开：一个包同时画了两半，仍然是一张卡一半 —— 拆组按资产判，不按包的大小判
+        Assert.Null(ContentOverrideService.SetPackEnabled(s.Cfg, s.Dir, bodySlot, false));
+        Assert.NotEmpty(s.Install("全包", s.WritePack("全包", (Face, 64, 64), (Body, 64, 64))));
+        var after = ContentOverrideTargets.Build(s.Cfg);
+        Assert.Equal(2, after.Count(x => x.Name == "Emily"));
+        Assert.All(after.Where(x => x.Name == "Emily"),
+            c => Assert.Equal("全包", ContentOverrideTargets.DisplayPack(c.ActiveOf(ContentOverrideTargets.DefaultVariant)!)));
     }
 
     [Fact]

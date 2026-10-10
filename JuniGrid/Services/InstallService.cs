@@ -184,8 +184,9 @@ public sealed class InstallService
             return await InstallSmapiFromNexusEntryAsync();
 
         var taskTitle = await ResolveModTitleAsync(modId, null);
-        var task = _center.Start($"下载并安装 {taskTitle}", "install");
-        task.NexusId = modId;
+        // 带号入场：这个 mod 上一次失败/暂停的那一行就地重开，而不是在任务管理里
+        // 再排一条 —— 同一次下载点两下多出两行是错的。
+        var task = _center.StartOrRestart($"下载并安装 {taskTitle}", "install", modId);
 
         // v1.1.7：整段工作可重入 —— 暂停后继续会重新挂 worker；半截包由 ResumableDownload 续传
         async Task<string?> RunAsync(CancellationToken ct)
@@ -415,8 +416,7 @@ public sealed class InstallService
     private async Task<string?> InstallSmapiFromNexusEntryAsync()
     {
         var cfg = _cfg.Current;
-        var task = _center.Start("下载并安装 SMAPI - Stardew Modding API", "install");
-        task.NexusId = SmapiNexusId;
+        var task = _center.StartOrRestart("下载并安装 SMAPI - Stardew Modding API", "install", SmapiNexusId);
 
         async Task<string?> RunAsync(CancellationToken ct)
         {

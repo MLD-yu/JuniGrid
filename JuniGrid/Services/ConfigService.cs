@@ -1,5 +1,6 @@
 using System.IO;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace JuniGrid.Services;
 
@@ -256,11 +257,48 @@ public sealed class ConfigService
         finally { System.Threading.Volatile.Write(ref _saveRunning, 0); }
     }
 
+    /// <summary>把盘上那份里【这份代码不认识的顶层键】原样搬进要写的新内容。
+    /// <para>为什么必须挡在写盘口上：<c>Save</c> 是"把内存模型整份序列化覆盖文件"，所以机器上只要
+    /// 还有<b>另一个较旧的 JuniGrid</b> 存一次盘，新版本加的键就整块消失。实机 2026-10-08：
+    /// 一个 10-03 时代的安装副本（dll 里根本没有 <c>ContentOverrides</c> 这个属性）跑过一次，
+    /// 223 条内容包账当场清零，而游戏本体里 147 个文件仍被那些包盖着 —— 界面上写的是"暂无内容包"。
+    /// 同一类事故 2026-09-30 也发生过一次（148 条覆盖记录被冲掉）。旧副本不会因为我们发新版就消失
+    /// （它自更新走自己的目录），所以不能指望"以后没有旧版"。</para>
+    /// <para>只搬模型不认识的顶层键；模型认识的那些一律以内存为准 —— 本次修改就是要落盘。
+    /// 旧文件读不懂时不挡保存（<c>Load</c> 那边有 corrupt 备份兜底）。</para></summary>
+    private static string KeepUnknownTopLevel(string json)
+    {
+        try
+        {
+            if (!File.Exists(ConfigPath)) return json;
+            var loose = new JsonDocumentOptions
+            { CommentHandling = JsonCommentHandling.Skip, AllowTrailingCommas = true };
+            using var oldDoc = JsonDocument.Parse(File.ReadAllText(ConfigPath), loose);
+            if (oldDoc.RootElement.ValueKind != JsonValueKind.Object) return json;
+            var node = JsonNode.Parse(json);
+            if (node is not JsonObject obj) return json;
+
+            var known = new HashSet<string>(obj.Select(p => p.Key), StringComparer.OrdinalIgnoreCase);
+            var kept = new List<string>();
+            foreach (var p in oldDoc.RootElement.EnumerateObject())
+            {
+                if (known.Contains(p.Name)) continue;
+                obj[p.Name] = JsonNode.Parse(p.Value.GetRawText());
+                kept.Add(p.Name);
+            }
+            if (kept.Count == 0) return json;
+            AppLog.Warn("Config", $"盘上有 {kept.Count} 个本版本不认识的顶层键，已原样保留：{string.Join(",", kept.Take(6))}");
+            return obj.ToJsonString(JsonOpts);
+        }
+        catch { return json; }
+    }
+
     /// <summary>tmp + 原子替换 + 异步重试（不占锁、不卡 UI 线程）。
     /// v1.1.6：tmp 带随机后缀 —— 固定 ".tmp" 在后台写盘循环与退出 Flush 撞上同一窗口时
     /// 会互撞（一个把 tmp Move 走，另一个 WriteAllText/Move 抛异常）。</summary>
     private static async System.Threading.Tasks.Task<bool> WriteAtomicAsync(string json)
     {
+        json = KeepUnknownTopLevel(json);
         for (var attempt = 1; ; attempt++)
         {
             var tmp = $"{ConfigPath}.{Guid.NewGuid().ToString("N")[..8]}.tmp";
@@ -295,6 +333,7 @@ public sealed class ConfigService
                 catch (InvalidOperationException) { System.Threading.Thread.Sleep(20); }
             }
             if (json is null) { AppLog.Error("Config", "退出 Flush 序列化失败"); return; }
+            json = KeepUnknownTopLevel(json);   // 退出这条写盘口也一样：不许把别的版本写的键抹掉
             for (var attempt = 1; ; attempt++)
             {
                 var tmp = $"{ConfigPath}.{Guid.NewGuid().ToString("N")[..8]}.tmp";
@@ -530,7 +569,8 @@ public sealed class JuniGridConfig
     public int CachedModCount { get; set; }
     public int CachedDisabledModCount { get; set; }
 
-    /// <summary>v0.2.1：统一缓存目录（null = 各类缓存走历史默认位置）。
+    /// <summary>v0.2.1：统一缓存目录（null = 走 StoragePaths.DefaultCacheRoot：安装目录，
+    /// 装在同步盘/不可写位置时退 %LOCALAPPDATA%\JuniGrid\cache）。
     /// 设置后下载/安装临时、SMAPI 安装包、WebView2 数据、Mods 备份都迁到该目录下的子目录。</summary>
     public string? CacheRoot { get; set; }
 

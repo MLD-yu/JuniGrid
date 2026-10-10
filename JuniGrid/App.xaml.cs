@@ -94,6 +94,15 @@ public partial class App : Application
         EnsureNxmHandlerPointsAtSelf(ReadOneClickInstallFlag());
         PendingNxmLink = nxmArg;
 
+        // 崩溃留下的 .tmp 只有 AtomicFile 认得自己的命名格式（判据见 SweepStale）。
+        // 放在单实例分流之后 = 同一时刻最多一个进程在扫；年龄闸门再挡一道"另一个实例正在写"。
+        try
+        {
+            var swept = AtomicFile.SweepStale(new[] { StoragePaths.AppDataDir, ConfigService.ConfigDir });
+            if (swept > 0) AppLog.Warn("Storage", $"[启动清理] 丢掉 {swept} 个残留临时文件");
+        }
+        catch (Exception ex) { AppLog.Warn("Storage", "[启动清理] 失败：" + ex.Message); }
+
         base.OnStartup(e);
     }
 

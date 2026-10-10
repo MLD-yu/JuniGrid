@@ -1,0 +1,41 @@
+Product  : JuniGrid {VERSION} (Windows launcher / mod manager for Stardew Valley)
+File     : {FILE}
+Size     : {SIZE} bytes
+SHA-256  : {SHA}
+Download : https://github.com/MLD-yu/JuniGrid/releases/download/v{VERSION}/{FILE}
+Source   : https://github.com/MLD-yu/JuniGrid
+
+Submitted because Microsoft Defender SmartScreen warns that this file is not
+recognised and may be unsafe. The warning is caused by the absence of a code
+signing certificate, not by anything the file does.
+
+Why it is unsigned: JuniGrid is a free, single-maintainer project distributed
+only through GitHub Releases, and the maintainer does not have the organisation
+identity a code-signing certificate now requires. There is no bundled software,
+no adware, no installer wrapper and no download manager. The source is
+published at the address above.
+
+Three behaviours a reviewer is likely to notice, and what each one is for:
+
+1. nxm: URI handler. The app writes HKCU\Software\Classes\nxm so that the
+   "Mod Manager Download" button on Nexus Mods reaches the app - receiving that
+   link is the product's purpose. If Vortex or NMM was registered there first,
+   its original command line is backed up under HKCU\Software\JuniGrid and
+   written back unchanged when the user turns the feature off. Only HKCU is
+   written; no HKLM and no system file association outside this one scheme.
+
+2. Terminating processes named "JuniGrid". Done during install/upgrade, and
+   when a second copy is launched while the first one is not responding, so
+   that files held open by the previous instance can be replaced. These are
+   the app's own earlier instances.
+
+3. Third-party components carried inside the installer, each run only when it
+   is actually needed:
+     tools\WebView2\MicrosoftEdgeWebView2Setup.exe - only if the Microsoft Edge
+       WebView2 runtime is absent; the app's UI is built on that runtime.
+     tools\XnaRedist\xnafx40_redist.msi - only for game versions that need XNA
+       Framework 4.0; its Microsoft signature is verified before it is run.
+     tools\DepotDownloader\DepotDownloader.exe - only after the user signs in
+       to their own Steam account inside the app to fetch their own game files.
+
+Contact: the maintainer, through the GitHub repository above.

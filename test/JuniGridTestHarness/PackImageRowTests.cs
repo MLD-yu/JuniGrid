@@ -243,7 +243,7 @@ public class PackImageRowTests
         s.WriteVanilla("Portraits/Emily", 128, 320);
         GameSandbox.Write(s.Content("Data/Boots"), DictXnb());     // 本体里就是 DictionaryReader
 
-        var src = Path.Combine(Path.GetTempPath(), "jg-pack-" + Guid.NewGuid().ToString("N")[..8]);
+        var src = TempDirs.Create("pack");
         GameSandbox.Write(Path.Combine(src, "Portraits", "Emily.xnb"), GameSandbox.VanillaXnb(128, 320, 0x77));
         GameSandbox.Write(Path.Combine(src, "Data", "Boots.xnb"), DictXnb(200));
 
@@ -291,11 +291,17 @@ public class PackImageRowTests
 
         var shown = ContentOverrideService.ShownRowPredicate(s.Dir, s.Cfg);
         var targets = ContentOverrideTargets.Build(s.Cfg, shown);
-        var emily = Assert.Single(targets);                       // 文本表不占卡
-        Assert.Equal("P|Emily", emily.Key);
-        // Assets 自己的序是"立绘在前、行走图其次"，这里就按它给的原样钉
-        Assert.Equal(new[] { "Portraits/Emily", "Portraits/Emily_Winter", "Characters/Emily" },
-            emily.Assets.ToArray());
-        Assert.Equal(2, emily.VariantCount);                      // 默认 + 冬季
+        // 文本表不占卡；同一个人的【立绘】和【行走图】各占一张 —— 两半分开交付、分开挑，
+        // 并成一张卡时"当前：X 包"只说中一半（2026-10-10）。
+        Assert.Equal(2, targets.Count);
+        Assert.Equal("P|立绘|Emily", targets[0].Key);              // 立绘排在行走图前面
+        var face = targets.Single(x => x.Key == "P|立绘|Emily");
+        var body = targets.Single(x => x.Key == "P|行走图|Emily");
+        Assert.Equal(new[] { "Portraits/Emily", "Portraits/Emily_Winter" }, face.Assets.ToArray());
+        Assert.Equal(new[] { "Characters/Emily" }, body.Assets.ToArray());
+        Assert.Equal(2, face.VariantCount);                       // 默认 + 冬季
+        Assert.Equal(1, body.VariantCount);
+        Assert.Equal("立绘", face.Category);
+        Assert.Equal("行走图", body.Category);
     }
 }

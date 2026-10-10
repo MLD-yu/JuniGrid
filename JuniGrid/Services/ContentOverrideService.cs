@@ -368,6 +368,76 @@ public static class ContentOverrideService
         }
     }
 
+    // ───────────────────── 账外覆盖：本体被"账上没有的东西"盖着 ─────────────────────
+
+    /// <summary>账外那张图的暂存处。挪开之前必须先把它留一份 —— 这台机器上往往【只有这一份】
+    /// （实测 2026-10-09：6 张兽化立绘在 <c>content-derived</c> 与 <c>asset-packs</c> 里
+    /// 逐字节搜不到），直接写回留底等于把它销毁，而他以后可能还想要。</summary>
+    public static string ForeignRoot(string gamePath) => Path.Combine(StoreRoot(gamePath), "content-foreign");
+
+    /// <summary>按版本分层存，与 <see cref="OriginalPath(string,string,string)"/> 同一个理由：
+    /// 不同本体上的图不能混在一层。</summary>
+    public static string ForeignPath(string gamePath, string asset, string version)
+        => Path.Combine(ForeignRoot(gamePath), Sanitize(version),
+            asset.Replace('/', Path.DirectorySeparatorChar) + ".xnb");
+
+    /// <summary>一张对不上留底的图。<paramref name="Moved"/> = false：本体上此刻是那张对不上的图；
+    /// = true：这张曾被挪开过（本体上是我们记下的那份），那份来路不明的图存在
+    /// <c>content-foreign</c> 里 —— 界面上仍然列出来，但<b>不给任何写盘动作</b>：
+    /// 我们手上最好的证据只是"动手前盘上的样子"，它本身可能就是别人盖上去的。</summary>
+    public sealed record StrayOverride(string Asset, string Version, string CurrentFile,
+        string OriginalFile, string ForeignFile, bool Moved, long OriginalSize,
+        DateTime OriginalCapturedAt);
+
+    /// <summary>点名"有留底、账上却没这条记录、现值又不是我们记下的那份"的资产。
+    ///
+    /// <para>为什么需要它（2026-10-09 实机）：他装过一个兽化内容包，删掉之后 6 张村民立绘
+    /// 仍被盖着 —— 而整页的数据起点是 <c>ContentOverrides</c>，那 6 张一条记录都没有，
+    /// 于是「全部还原」按下去一张都不碰。用户看到的现象就是"还原是坏的"。
+    /// 这一栏只负责让它现形，恢复原版交给 Steam（我们不揽网络那条链路）。</para>
+    ///
+    /// <para>三条判据各挡一种瞎报：① <b>必须有留底</b> —— 没留底＝我们从来没动过这张图，
+    /// 手里没有任何"它该长什么样"的依据，报出来就是猜；② <b>账上有记录的一律不报</b> ——
+    /// 那是既有状态机（<see cref="StateOf"/>）的地盘，重复报会两边打架；
+    /// ③ <b>只看当前版本那一层</b> —— 别的版本的留底连"我们记下了什么"都说不清当前本体。</para></summary>
+    public static List<StrayOverride> Strays(ConfigService cfg, string gamePath)
+    {
+        var list = new List<StrayOverride>();
+        if (string.IsNullOrWhiteSpace(gamePath)) return list;
+        var ver = OriginalVersionSegment(gamePath);
+        if (ver == UnknownVersion) return list;          // 认不出版本 ⇒ 不分层对账，也不猜一层
+        var layer = Path.Combine(OriginalsRoot(gamePath), ver);
+        if (!Directory.Exists(layer)) return list;
+        var tracked = new HashSet<string>(
+            cfg.Current.ContentOverrides.Values.Select(v => v.Asset), StringComparer.OrdinalIgnoreCase);
+        foreach (var orig in Directory.EnumerateFiles(layer, "*.orig.xnb", SearchOption.AllDirectories))
+        {
+            var asset = Path.GetRelativePath(layer, orig)
+                .Replace('\\', '/')[..^".orig.xnb".Length];
+            if (tracked.Contains(asset)) continue;
+            var cur = AssetFullPath(gamePath, asset);
+            var foreign = ForeignPath(gamePath, asset, ver);
+            long origLen = new FileInfo(orig).Length;
+            var captured = File.GetCreationTime(orig);
+            if (File.Exists(cur) && !SameBytes(cur, orig, origLen))
+                list.Add(new StrayOverride(asset, ver, cur, orig, foreign, false, origLen, captured));
+            else if (File.Exists(foreign))
+                list.Add(new StrayOverride(asset, ver, cur, orig, foreign, true, origLen, captured));
+        }
+        return list.OrderBy(x => x.Asset, StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
+    /// <summary>先比长度再算哈希：一屏几百张时长度就能判掉绝大多数，别为省一次比较而多算几百次 SHA。</summary>
+    private static bool SameBytes(string a, string b, long knownLenOfB)
+    {
+        try
+        {
+            var fi = new FileInfo(a);
+            return fi.Length == knownLenOfB && Sha256(a) == Sha256(b);
+        }
+        catch { return false; }
+    }
+
     public static List<ContentOverrideRecord> Records(ConfigService cfg)
         => cfg.Current.ContentOverrides.Values
             .OrderBy(r => r.PackName, StringComparer.OrdinalIgnoreCase)
@@ -439,8 +509,8 @@ public static class ContentOverrideService
         var stale = enabled ? StaleRows(gamePath, mine) : new List<ContentOverrideRecord>();
         string? err = null;
         if (stale.Count > 0)
-            err = RebuildForCurrentVersion(cfg, gamePath, slot,
-                stale.Select(r => r.Asset).ToHashSet(StringComparer.OrdinalIgnoreCase)) ?? err;
+            err = ForVersion(RebuildForCurrentVersion(cfg, gamePath, slot,
+                stale.Select(r => r.Asset).ToHashSet(StringComparer.OrdinalIgnoreCase))) ?? err;
         foreach (var r in mine)
         {
             if (stale.Contains(r)) continue;          // 重编那条路已经把它写完并置为启用了
@@ -462,14 +532,16 @@ public static class ContentOverrideService
     }
 
     /// <summary>把 <paramref name="assets"/> 这些行按<b>当前</b>本体重编并盖上，返回要报给用户的话（null = 全部成功）。
-    /// 原包备份没了 / 当前版本一张都判不上 / 包还盖在盘上，都是拦得下来的诚实失败：
-    /// 绝不退回"直接回放旧字节"，那是把上一个版本编出来的表画进当前本体。</summary>
+    /// 原包备份没了 / 当前版本一张都判不上 / 那几张还盖着我们的图，都是拦得下来的诚实失败：
+    /// 绝不退回"直接回放旧字节"，那是把上一个版本编出来的表画进当前本体。
+    /// <para>这里<b>不加</b>"该包需按当前游戏版本重新编码"那句帽子 —— 这个函数也被【副本丢了】
+    /// 那条路调用（见 <see cref="SetEnabled"/>），那条跟版本一点关系都没有，套上这句就是撒谎。
+    /// 只有真是版本变了的调用方才配说这话。</para></summary>
     private static string? RebuildForCurrentVersion(ConfigService cfg, string gamePath, string slot,
         HashSet<string> assets)
     {
         var rj = Rejudge(cfg, gamePath, slot, true, assets);
-        if (rj.Error is not null)
-            return LocService.Tf("该包需按当前游戏版本重新编码，但{0}", rj.Error);
+        if (rj.Error is not null) return rj.Error;
         var left = cfg.Current.ContentOverrides.Values
             .Count(r => r.Slot.Equals(slot, StringComparison.OrdinalIgnoreCase)
                         && assets.Contains(r.Asset) && !r.Enabled);
@@ -477,6 +549,10 @@ public static class ContentOverrideService
             return LocService.Tf("当前版本有 {0} 个文件无法安装，已保持原版", left);
         return null;
     }
+
+    /// <summary>"按当前版本重编"这句帽子只有【真是版本变了】的调用方才配戴。</summary>
+    private static string? ForVersion(string? err)
+        => err is null ? null : LocService.Tf("该包需按当前游戏版本重新编码，但{0}", err);
 
     // ───────────────────── 安装 ─────────────────────
 
@@ -554,6 +630,25 @@ public static class ContentOverrideService
             return LocService.Tr("写入中断，已全部还原为原版：") + ex.Message;
         }
 
+        // ②.4 从盘上认回来的账，slot 只能用包名（那时没有页号）。他现在重新下载一次
+        //      ⇒ 这次带页号，slot 变成 "N<页号>"。旧账与旧备份目录必须一起让位，否则：
+        //      界面上同一个包出现两张卡（一张开一张关），磁盘上多出一份「包名-2」的备份目录
+        //      （PreserveOriginalPack 见同名目录的主人不是这个 slot，就会往后缀上躲）。
+        var nameSlot = Sanitize(packName);
+        if (!slot.Equals(nameSlot, StringComparison.OrdinalIgnoreCase)
+            && cfg.Current.ContentOverrides.Values.Any(v =>
+                v.Slot.Equals(nameSlot, StringComparison.OrdinalIgnoreCase)
+                && v.PackName.Equals(packName, StringComparison.OrdinalIgnoreCase)))
+        {
+            foreach (var kv in cfg.Current.ContentOverrides
+                         .Where(kv => kv.Value.Slot.Equals(nameSlot, StringComparison.OrdinalIgnoreCase))
+                         .Select(kv => kv.Key).ToList())
+                cfg.Current.ContentOverrides.Remove(kv);
+            DropPackBackup(gamePath, cfg, nameSlot, nameSlot);
+            AppLog.Warn("ContentOverride",
+                $"[重新绑定页号] 「{packName}」的无页号旧账已让位（slot {nameSlot} → {slot}）");
+        }
+
         // ②.5 原包备份：盘上已经对了，再把解包目录原样收进 asset-packs。
         // 放在动账之前 —— 账上的 PackDir 要指着它；备份失败（""）不挡安装。
         var packDir = srcDir is not null && Directory.Exists(srcDir)
@@ -599,6 +694,393 @@ public static class ContentOverrideService
         return null;
     }
 
+    /// <summary>本次进程里已经试过的原包目录（键 = 游戏目录|目录名）。
+    /// 认不回来的包（真漂移）每次都重算一遍没有意义：解析一个 91 张图的包是秒级，
+    /// 而内容包页的 <c>Reload</c> 会被按钮反复调用。</summary>
+    private static readonly HashSet<string> _rebuildTried = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>盘上有没有"账上完全没记着"的原包目录 —— <see cref="RebuildFromDisk"/> 的廉价前置。
+    /// 只做目录名与账本 <c>PackDir</c>/<c>PackName</c> 的集合比较，一个文件都不解析；
+    /// 正常情况（账实一致）这里直接返回 false，页面按原路走。</summary>
+    public static bool NeedsRebuild(ConfigService cfg, string gamePath)
+    {
+        var root = PacksRoot(gamePath);
+        if (!Directory.Exists(root)) return false;
+        var accounted = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var r in cfg.Current.ContentOverrides.Values)
+        {
+            if (r.PackDir.Length > 0) accounted.Add(r.PackDir);
+            if (r.PackName.Length > 0) accounted.Add(r.PackName);
+        }
+        try
+        {
+            foreach (var d in Directory.EnumerateDirectories(root))
+            {
+                var name = Path.GetFileName(d);
+                if (name.StartsWith('.')) continue;
+                if (accounted.Contains(name)) continue;
+                if (_rebuildTried.Contains(gamePath + "|" + name)) continue;
+                return true;
+            }
+        }
+        catch { }
+        return false;
+    }
+
+    /// <summary>下载缓存里【zip 条目清单】→ 页号（zip 名就写着 <c>nxm-&lt;页号&gt;-&lt;文件号&gt;.zip</c>）。
+    /// 同一份清单对应多个不同页号时那个页号也留着（调用方看到"不唯一"就不认）。</summary>
+    private static Dictionary<string, List<int>> CacheZipPages()
+    {
+        var map = new Dictionary<string, List<int>>(StringComparer.Ordinal);
+        try
+        {
+            var dir = StoragePaths.DownloadsDir;
+            if (!Directory.Exists(dir)) return map;
+            foreach (var z in Directory.EnumerateFiles(dir, "*.zip"))
+            {
+                var m = System.Text.RegularExpressions.Regex.Match(
+                    Path.GetFileName(z), @"^(?:nxm|direct|dep)-(\d+)-");
+                if (!m.Success || !int.TryParse(m.Groups[1].Value, out var page) || page <= 0) continue;
+                if (ZipEntrySets(z) is not { } variants) continue;
+                foreach (var sig in variants)
+                {
+                    if (!map.TryGetValue(sig, out var list)) map[sig] = list = new List<int>();
+                    if (!list.Contains(page)) list.Add(page);
+                }
+            }
+        }
+        catch (Exception ex) { AppLog.Warn("ContentOverride", "[页号回填] 扫下载缓存失败：" + ex.Message); }
+        return map;
+    }
+
+    /// <summary>一个压缩包的条目清单签名，两种写法都给：压缩包带公共根目录时，
+    /// 原包备份里那一层可能被剥掉也可能保留（取决于当初解包到哪一层）。
+    /// 读不出清单（坏档、空包、加密 rar）⇒ null，调用方跳过，绝不猜。</summary>
+    private static List<string>? ZipEntrySets(string zipPath)
+    {
+        try
+        {
+            if (EntryNames(zipPath) is not { } entries) return null;
+            var names = entries
+                .Where(p => !p.StartsWith("__MACOSX/", StringComparison.OrdinalIgnoreCase)
+                            && !Path.GetFileName(p).Equals(".DS_Store", StringComparison.OrdinalIgnoreCase))
+                .Select(p => p.TrimStart('/').ToLowerInvariant())
+                .Where(p => p.Length > 0)
+                .Distinct().ToList();
+            if (names.Count == 0) return null;
+            var raw = string.Join("\n", names.OrderBy(s => s, StringComparer.Ordinal));
+            var first = names[0].Split('/')[0];
+            var outp = new List<string> { raw };
+            if (names.All(n => n.Contains('/') && n.Split('/')[0] == first))
+                outp.Add(string.Join("\n", names.Select(n => n[(first.Length + 1)..])
+                    .OrderBy(s => s, StringComparer.Ordinal)));
+            return outp;
+        }
+        catch { return null; }
+    }
+
+    /// <summary>取压缩包条目名清单。<b>按文件头认格式，不信扩展名</b> —— 安装器把所有落盘名一律写成
+    /// <c>.zip</c>（实机 2026-10-08：缓存里 193 个"zip"有 14 个实为 RAR/7z）。
+    /// <para>zip 的条目名按 GBK 解，与 <c>ModService.ExtractToDirectory</c> 同一套：中文作者压的包大量用
+    /// GBK 存条目名且不置 UTF-8 标志位，用默认 UTF-8 读会把「[xnb]三色-Tricolor」读成一串乱码 ⇒
+    /// 与原包目录的清单【看起来】不相等 ⇒ 页号白白认不回来。</para>
+    /// <para>rar/7z 走 SharpCompress，与安装解压用的是同一套。<b>安装能吃的格式，认页号时也必须能吃</b>：
+    /// 否则从 RAR 装的内容包永远接不回详情页 —— 实机同一轮里剩下"找不到"的 4 个包
+    /// （Better Artifact Digspots / Galarian Ponyta / Starry Sky / Yuriyuri's Hairstyles）
+    /// 清单逐条躺在 nxm-774、nxm-4618、nxm-1310、nxm-2393 这四个 RAR 里。</para></summary>
+    private static List<string>? EntryNames(string zipPath)
+    {
+        switch (ModService.DetectArchiveFormat(zipPath))
+        {
+            case "zip":
+            {
+                System.Text.Encoding.RegisterProvider(System.Text.CodePagesEncodingProvider.Instance);
+                using var z = System.IO.Compression.ZipFile.Open(zipPath,
+                    System.IO.Compression.ZipArchiveMode.Read, System.Text.Encoding.GetEncoding(936));
+                return z.Entries
+                    .Where(e => e.Length > 0 || !e.FullName.EndsWith('/'))
+                    .Select(e => e.FullName.Replace('\\', '/')).ToList();
+            }
+            case "rar":
+            {
+                using var a = SharpCompress.Archives.Rar.RarArchive.OpenArchive(zipPath);
+                return a.Entries.Where(e => !e.IsDirectory)
+                    .Select(e => (e.Key ?? "").Replace('\\', '/')).ToList();
+            }
+            case "7z":
+            {
+                using var a = SharpCompress.Archives.SevenZip.SevenZipArchive.OpenArchive(zipPath);
+                return a.Entries.Where(e => !e.IsDirectory)
+                    .Select(e => (e.Key ?? "").Replace('\\', '/')).ToList();
+            }
+            default: return null;   // 裸 xnb / 裸 png / html 错误页 / 坏档：没有"清单"可谈
+        }
+    }
+
+    /// <summary>原包目录的文件清单签名（与 <see cref="ZipEntrySets"/> 同一套规范化）。</summary>
+    private static string PackDirSignature(string packDir)
+        => string.Join("\n", Directory.EnumerateFiles(packDir, "*", SearchOption.AllDirectories)
+            .Select(f => Path.GetRelativePath(packDir, f).Replace('\\', '/').ToLowerInvariant())
+            .Where(p => !p.StartsWith("__macosx/") && Path.GetFileName(p) != ".ds_store")
+            .OrderBy(s => s, StringComparer.Ordinal));
+
+    /// <summary>盘上的页号回填：原包目录的文件清单与缓存里某个 zip <b>全等</b>，且该清单只指向
+    /// <b>一个</b>页号，才认。实测 2026-10-08：12 个从盘上认回来的包里 5 个这样找回了页号。
+    /// <para>为什么判据必须这么窄：松一档（"包里每个文件都能在某个压缩包里找到"）时，
+    /// 只有一个文件的包会同时命中 3 个页号（实测 Yuriyuri's Hairstyles → 20581/1083/…），
+    /// 而写错页号比没页号更糟 —— 卡片上「访问 mod 详情」会把人领到别人的 mod 页，
+    /// 封面与分类也会跟着错到别人身上。</para></summary>
+    private static int? PageIdForPack(Dictionary<string, List<int>> zipPages, string packDir)
+    {
+        try
+        {
+            if (zipPages.TryGetValue(PackDirSignature(packDir), out var pages) && pages.Count == 1)
+                return pages[0];
+        }
+        catch { }
+        return null;
+    }
+
+    /// <summary>给账上<b>没有页号</b>的记录补页号 —— 判据与 <see cref="PageIdForPack"/> 完全同源
+    /// （下载缓存里某个 zip 的条目清单与原包目录<b>全等</b>，且该清单只指向<b>一个</b>页号）。
+    ///
+    /// <para>为什么单独要这一步：从盘上认回来的账只有包名，而详情页、封面、分类全都挂在页号上
+    /// （<c>EnsureMetaAsync</c> 只给带页号的记录补元数据）。用户看到的就是"包和 N 网分离了"：
+    /// 卡片是字母块、12 个包全挤在「未分类」、点「访问 mod 详情」只有一句"并非从 Nexus 安装"。</para>
+    ///
+    /// <para>补上页号的同时把 slot 从"包名"改写成"N&lt;页号&gt;"，与正常安装的记录同一个形状 ——
+    /// 不改的话他以后重新下载这个包，会按新 slot 再写一套账，界面上同一个包两张卡。</para></summary>
+    public static int BindPageIds(ConfigService cfg, string gamePath)
+    {
+        var slots = cfg.Current.ContentOverrides.Values
+            .Where(v => v.NexusModId is null && v.PackDir.Length > 0)
+            .Select(v => v.Slot).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        if (slots.Count == 0) return 0;
+
+        var zipPages = CacheZipPages();
+        if (zipPages.Count == 0) return 0;
+        int bound = 0;
+        foreach (var slot in slots)
+        {
+            var rows = cfg.Current.ContentOverrides.Values
+                .Where(v => v.Slot.Equals(slot, StringComparison.OrdinalIgnoreCase)).ToList();
+            if (rows.Count == 0) continue;
+            var dir = PackOriginalDir(gamePath, rows[0].PackDir);
+            if (!Directory.Exists(dir)) continue;
+            if (PageIdForPack(zipPages, dir) is not int page) continue;
+            RekeySlot(cfg, slot, SlotOf(rows[0].PackName, page), page);
+            bound++;
+        }
+        if (bound > 0)
+        {
+            cfg.Save(cfg.Current);
+            AppLog.Warn("ContentOverride", $"[页号回填] {bound} 个包按下载缓存认回页号，详情页/封面/分类已可回填");
+        }
+        return bound;
+    }
+
+    /// <summary>把一个包的所有记录从旧 slot 搬到新 slot，并顺手清掉封面与分类
+    /// （那两样是按页号去 N 网取的，换页号后必须重取，不能留着旧的）。</summary>
+    private static void RekeySlot(ConfigService cfg, string oldSlot, string newSlot, int page)
+    {
+        if (oldSlot.Equals(newSlot, StringComparison.OrdinalIgnoreCase)) return;
+        var moving = cfg.Current.ContentOverrides
+            .Where(kv => kv.Value.Slot.Equals(oldSlot, StringComparison.OrdinalIgnoreCase)).ToList();
+        foreach (var kv in moving) cfg.Current.ContentOverrides.Remove(kv.Key);
+        foreach (var kv in moving)
+        {
+            kv.Value.Slot = newSlot;
+            kv.Value.NexusModId = page;
+            kv.Value.PackCover = "";
+            kv.Value.CategoryName = "";
+            cfg.Current.ContentOverrides[KeyOf(kv.Value.Asset, newSlot)] = kv.Value;
+        }
+    }
+
+    /// <summary>盘上有、账上没有的包被认回来的结果。</summary>
+    /// <param name="Packs">认回来的包数。</param>
+    /// <param name="Records">写回（或试算出）的资产条数。</param>
+    /// <param name="Applied">判为【正在生效】的条数（现值 == 我们那份）。</param>
+    /// <param name="Drifted">现值既不是我们那份也不是原版 ⇒ 一条都没认的资产数。</param>
+    /// <param name="Already">账上本来就有记录、因此没动的包数。</param>
+    /// <param name="Unresolved">一个目标都没认回来的包，带原因。</param>
+    public sealed record RebuildReport(int Packs, int Records, int Applied, int Drifted, int Already,
+        List<string> Unresolved);
+
+    /// <summary>以 <c>asset-packs\&lt;目录&gt;</c> 为起点，把丢掉的账认回来。
+    ///
+    /// <para>为什么需要它：全仓原来<b>没有一条从盘到账的路</b>。页面、开关、还原、
+    /// <see cref="AuditOrphans"/> 的起点都是 <see cref="JuniGridConfig.ContentOverrides"/>，
+    /// 盘只被用作"这条账的包还活着吗"的证据（<c>AuditOrphans</c> 里那句
+    /// <c>foreach (var d in EnumerateDirectories(PacksRoot))</c> 只往一个集合里塞名字）。
+    /// 账一旦为空，那 13 个原包目录就再也没有第二个人看它们一眼 —— 而游戏本体里
+    /// 147 个文件仍然被它们盖着（2026-10-08 实机：配置被一个模型里没有这个键的旧安装副本
+    /// 整份 <c>Save</c> 覆盖，账清了、盘没动）。</para>
+    ///
+    /// <para><b>三方对得上才认</b>，每条资产单独判，判不动的就跳过（绝不猜）：
+    /// ① 拿 <see cref="Prepare"/> 对原包目录重跑一遍解析，算出它应当替换哪些资产、字节是什么；
+    /// ② 现值 == 我们算出来的那份 ⇒ 生效中；现值 == <c>content-originals</c> 那一层里的原版 ⇒ 关着；
+    /// 现值是<b>同包的另一个配色</b>（用户换过色）或<b>别的包那份副本</b> ⇒ 也算关着，
+    /// 这两种都不是漂移，判成漂移会让整包回不来；
+    /// ③ 副本按【字节】在 <c>content-derived</c> 里找现成的（<see cref="StoreCopy"/> 用的是随机 id，
+    /// 不认字节的活就会把盘上那批变成孤儿）。
+    /// 三张都不是 ⇒ 这条不写，算进 <see cref="RebuildReport.Drifted"/>。</para>
+    ///
+    /// <para>⚠ <b>绝不从 Content 抄原版</b>：包还盖在盘上时抄到的就是【我们自己那张】，
+    /// 之后还原会把我们的图当原版退回去（<see cref="Rejudge"/> 里同一条纪律）。
+    /// 原版只从 <c>content-originals/&lt;版本&gt;/</c> 读，读不到就按"我们新增的文件"处理。</para>
+    ///
+    /// <para><paramref name="dryRun"/> 只算不写（连副本都不另落）—— 先看表再决定，用于实机核对。</para></summary>
+    public static RebuildReport RebuildFromDisk(ConfigService cfg, string gamePath, bool dryRun)
+    {
+        var root = PacksRoot(gamePath);
+        if (!Directory.Exists(root)) return new RebuildReport(0, 0, 0, 0, 0, new());
+
+        // 账上记着的包一律不动：这条路只补"账上完全没有、盘上却躺着原包"的那一批。
+        var accounted = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var r in cfg.Current.ContentOverrides.Values)
+        {
+            if (r.PackDir.Length > 0) accounted.Add(r.PackDir);
+            if (r.PackName.Length > 0) accounted.Add(r.PackName);
+        }
+
+        string[] dirs;
+        try { dirs = Directory.GetDirectories(root); }
+        catch { return new RebuildReport(0, 0, 0, 0, accounted.Count, new()); }
+
+        var stores = StoreIndexByBytes(gamePath);
+        var layers = OriginalLayers(gamePath);
+        var zipPages = CacheZipPages();          // 页号只可能从下载缓存的 zip 名里认回来
+        var pending = new List<(string Key, ContentOverrideRecord Rec)>();
+        var unresolved = new List<string>();
+        int packs = 0, applied = 0, drifted = 0, already = 0;
+
+        foreach (var d in dirs)
+        {
+            var name = Path.GetFileName(d);
+            if (name.StartsWith('.')) continue;                 // .store 这类内部层不是包
+            if (accounted.Contains(name)) { already++; continue; }
+            _rebuildTried.Add(gamePath + "|" + name);           // 本进程只试一次（认不回来也一样）
+
+            PlanResult plan;
+            try { plan = Prepare(gamePath, d); }
+            catch (Exception ex) { unresolved.Add($"{name}：解析失败 {ex.Message}"); continue; }
+            if (plan.Items.Count == 0)
+            {
+                unresolved.Add($"{name}：包内没有一个能与本体图像对应的文件");
+                continue;
+            }
+
+            var page = PageIdForPack(zipPages, d);
+            var slot = SlotOf(name, page);
+            var wrote = 0;
+            foreach (var it in plan.Items)
+            {
+                var live = AssetFullPath(gamePath, it.Asset);
+                var cur = File.Exists(live) ? Sha256(live) : "";
+                var mine = Sha256Of(it.Bytes);
+                var (origHash, origVer) = ReadOriginal(gamePath, it.Asset, layers);
+                var storeId = stores.TryGetValue((it.Asset.ToLowerInvariant(), mine), out var sid) ? sid : "";
+                var inPlace = it;                       // 在位的那一版：默认是它，换过配色就不是
+
+                bool on;
+                if (cur.Length > 0 && cur == mine) on = true;
+                else if (cur.Length > 0 && plan.VariantItems.TryGetValue(it.Asset, out var cands)
+                         && cands.FirstOrDefault(c => Sha256Of(c.Bytes) == cur) is { } hit)
+                {
+                    // 用户在这个包里换过配色：在位的是【同包的另一版】，不是漂移。
+                    // 认它，否则这个包整包被判"对不上"，换过配色的包一个都回不来。
+                    inPlace = hit; mine = cur; on = true;
+                    storeId = stores.TryGetValue((it.Asset.ToLowerInvariant(), cur), out var s2) ? s2 : "";
+                }
+                else if (origHash.Length > 0 && cur == origHash) on = false;
+                else if (origHash.Length == 0 && cur.Length == 0 && storeId.Length > 0) on = false;
+                else if (cur.Length > 0 && stores.ContainsKey((it.Asset.ToLowerInvariant(), cur)))
+                    on = false;                         // 现值是【别的包】那份副本 ⇒ 这一个是关着的
+                else
+                {
+                    drifted++;                          // 三张都不是 ⇒ 不认，也别猜
+                    continue;
+                }
+
+                if (on) applied++;
+                // 试算一个字节都不许写：StoreCopy 会往 content-derived 落新目录
+                if (on && !dryRun && storeId.Length == 0) storeId = StoreCopy(gamePath, inPlace.Bytes, inPlace.Asset);
+                pending.Add((KeyOf(it.Asset, slot), new ContentOverrideRecord
+                {
+                    Asset = it.Asset, Slot = slot, PackName = name, PackTitle = name, PackDir = name,
+                    NexusModId = page,
+                    OriginalSha256 = origHash, AppliedSha256 = mine, StoreId = storeId, Enabled = on,
+                    Encoded = inPlace.Encoded,
+                    Version = origVer.Length > 0 ? origVer : OriginalVersionSegment(gamePath),
+                    SkippedCount = plan.Rejects.Count, SkippedNote = string.Join("\n", plan.Rejects.Take(8)),
+                    ResizedCount = plan.Resized.Count, ResizedNote = string.Join("\n", plan.Resized.Take(8)),
+                    Variants = plan.VariantLabels.TryGetValue(it.Asset, out var vs) ? vs : new(),
+                    VariantLabel = inPlace.Label,
+                    VariantFacts = plan.VariantItems.TryGetValue(it.Asset, out var vi)
+                        ? vi.Select(v => new ContentOverrideVariant(v.Label, v.Note)).ToList() : new(),
+                }));
+                wrote++;
+            }
+            if (wrote > 0) packs++;
+            else unresolved.Add($"{name}：{plan.Items.Count} 个目标一条都对不上（现值既不是我们那份也不是原版）");
+        }
+
+        if (!dryRun && pending.Count > 0)
+        {
+            foreach (var (key, rec) in pending) cfg.Current.ContentOverrides[key] = rec;
+            cfg.Save(cfg.Current);
+        }
+        AppLog.Warn("ContentOverride",
+            $"[账本重建{(dryRun ? "·试算" : "")}] 认回 {packs} 个包 / {pending.Count} 条（生效中 {applied}），"
+            + $"对不上 {drifted} 条，账上已有 {already} 个包未动");
+        return new RebuildReport(packs, pending.Count, applied, drifted, already, unresolved);
+    }
+
+    /// <summary><c>content-originals</c> 下面实际存在的版本层（没有先后，逐个试）。</summary>
+    private static List<string> OriginalLayers(string gamePath)
+    {
+        var list = new List<string>();
+        try
+        {
+            if (Directory.Exists(OriginalsRoot(gamePath)))
+                list.AddRange(Directory.GetDirectories(OriginalsRoot(gamePath)).Select(Path.GetFileName)!);
+        }
+        catch { }
+        return list;
+    }
+
+    /// <summary>按留底读某张资产的原版哈希，以及它在<b>哪一版</b>那一层。都没有 ⇒ ("", "")。</summary>
+    private static (string Hash, string Version) ReadOriginal(string gamePath, string asset, List<string> layers)
+    {
+        foreach (var v in layers)
+        {
+            var p = OriginalPath(gamePath, asset, v);
+            if (File.Exists(p)) return (Sha256(p), v);
+        }
+        return ("", "");
+    }
+
+    /// <summary>盘上现成的派生副本，按【资产 + 字节哈希】索引 —— 重建时拿它认回 <c>StoreId</c>，
+    /// 而不是再写一份新的（<see cref="StoreCopy"/> 用随机 id，另写就等于把盘上那批变成孤儿）。</summary>
+    private static Dictionary<(string Asset, string Hash), string> StoreIndexByBytes(string gamePath)
+    {
+        var map = new Dictionary<(string, string), string>();
+        var root = DerivedRoot(gamePath);
+        if (!Directory.Exists(root)) return map;
+        foreach (var dir in Directory.GetDirectories(root))
+        {
+            var id = Path.GetFileName(dir);
+            foreach (var f in Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories))
+            {
+                var rel = Path.GetRelativePath(dir, f).Replace('\\', '/');
+                if (!rel.EndsWith(".xnb", StringComparison.OrdinalIgnoreCase)) continue;
+                try { map[(rel[..^4].ToLowerInvariant(), Sha256(f))] = id; } catch { }
+            }
+        }
+        return map;
+    }
+
     /// <summary>重判一个已装的包的结果。</summary>
     /// <param name="NewlyInstalled">这次【新装上】的资产数（原先被判不适配，现在能装了）。</param>
     /// <param name="StillRejected">仍然不适配的条数 —— 这些是真不适配，账上照旧留着。</param>
@@ -633,11 +1115,25 @@ public static class ContentOverrideService
             return new RejudgeResult(0, 0, 0, LocService.Tr("该包没有覆盖记录，无法重新检查"));
 
         var version = OriginalVersionSegment(gamePath);
-        // 重编这条路要先抄"当前版本的原版"，而包还盖在盘上时抄到的就是【我们自己那张】——
-        // 之后还原会把我们的图当原版退回去。所以先要求这个包是关着的（或盘上已经不是我们那份）。
-        if (rewriteForCurrentVersion && rows.Any(r => r.Enabled))
-            return new RejudgeResult(0, 0, 0,
-                LocService.Tr("该包当前仍处于应用状态，请先执行「全部还原」，再按当前版本重新编码"));
+        // 重编要先抄"当前版本的原版"当底，所以【这次要重算的那几张】里只要有一张盘上还盖着我们
+        // 上次贴的那份，抄到的就是自己的图 —— 之后还原会把我们的图当原版退回去。
+        // 判据必须逐张看盘，不能问"这个包里有没有别的行开着"：实机 2026-10-09 的包
+        // 「No More Bowlegs」6 张里 Abigail 一张开着、另外 5 张盘上早就是原版，旧写法拿那一张
+        // 把 5 张全锁死，而且它对那 5 张说的理由（"仍处于应用状态"）是假的。
+        // 只在重编这条路算（要哈希文件）；进页那种普通重判不进这里。
+        if (rewriteForCurrentVersion)
+        {
+            var stillOurs = rows
+                .Where(r => onlyAssets is null || onlyAssets.Contains(r.Asset, StringComparer.OrdinalIgnoreCase))
+                .Where(r => DiskState(gamePath, r) == OverrideState.InPlace)
+                .Select(r => r.Asset).ToList();
+            if (stillOurs.Count > 0)
+                return new RejudgeResult(0, 0, 0, stillOurs.Count <= 3
+                    ? LocService.Tf("这几张还盖着我们上次贴进去的图（{0}），先把它们关掉再开。",
+                        string.Join("、", stillOurs))
+                    : LocService.Tf("有 {0} 张图还盖着我们上次贴进去的那份（{1} 等），先把它们关掉再开。",
+                        stillOurs.Count, string.Join("、", stillOurs.Take(3))));
+        }
 
         var any = rows[0];
         var packDir = any.PackDir;
@@ -873,6 +1369,42 @@ public static class ContentOverrideService
         AppLog.Warn("ContentOverride", $"[换配色] {asset} ← {r.VariantLabel}（{(r.Enabled ? "已写入本体" : "包当前关着，下次打开生效")}）");
         return null;
     }
+
+    /// <summary>这个包的这张图，字节实际在哪儿：<b>派生副本 → 原包备份 → 没有</b>。
+    /// <para>为什么必须两处都找：从盘上认回来的账（<see cref="RebuildFromDisk"/>）只给"真在位"的那些
+    /// 编派生副本，判成"关着"的那几条 <c>StoreId</c> 是空的 —— 可它的图一直好好躺在
+    /// <c>asset-packs/&lt;包&gt;/</c> 里。预览只认 <c>StoreId</c> 的话，就会把"盘上明明有"
+    /// 报成"该副本文件已不在磁盘上"（实机 2026-10-09：No More Bowlegs 的 Characters/Abigail 就这样
+    /// 被谎报了一次，而写入那条路 <see cref="ResolvePackBackup"/> 本来就会回退到原包备份）。</para></summary>
+    public static string? PackImageSource(string gamePath, ContentOverrideRecord r)
+    {
+        if (r.StoreId.Length > 0)
+        {
+            var copy = StoreFile(gamePath, r.StoreId, r.Asset);
+            if (File.Exists(copy)) return copy;
+        }
+        var dir = ResolvePackBackup(gamePath, r);
+        if (dir is null) return null;
+        var direct = Path.Combine(dir, r.Asset.Replace('/', Path.DirectorySeparatorChar) + ".xnb");
+        if (File.Exists(direct) && BytesMatch(direct, r.AppliedSha256)) return direct;
+        // 备份是平铺的（包里那张图就躺在根上，"它盖哪张原版图"是 Prepare 按内容认出来的）⇒ 按同名候选找，
+        // 但每一个都要拿账上那份字节验一次：只认文件名的话，一个包里 Portraits/Abigail 与
+        // Characters/Abigail 会互相拿错图 —— 拿错图比不画更糟。
+        //（实机 2026-10-09：No More Bowlegs 的备份就是 6 个平铺文件，直接拼资产路径必然找不到。）
+        var name = Path.GetFileName(r.Asset) + ".xnb";
+        try
+        {
+            foreach (var cand in Directory.EnumerateFiles(dir, name, SearchOption.AllDirectories))
+                if (BytesMatch(cand, r.AppliedSha256)) return cand;
+        }
+        catch { return null; }
+        return null;
+    }
+
+    /// <summary>字节对得上才算这张是它。账上没写期望值的老行（AppliedSha256 空）放行。</summary>
+    private static bool BytesMatch(string file, string wantSha)
+        => wantSha.Length == 0
+           || string.Equals(Sha256(file), wantSha, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>账上那份原包备份的实际目录；没了就按去掉 <c>-2</c> 后缀的名字回退找一次。
     /// 找不到返回 null（<see cref="Rejudge"/> 与 <see cref="SwitchVariant"/> 共用这套说法）。</summary>
@@ -1142,8 +1674,8 @@ public static class ContentOverrideService
             // 单行开关也要认版本：回放旧字节 = 把上一个版本编的表画进当前本体（见 SetPackEnabled）。
             var one = StaleRows(gamePath, new List<ContentOverrideRecord> { r });
             if (one.Count > 0)
-                return RebuildForCurrentVersion(cfg, gamePath, r.Slot,
-                    new HashSet<string>(StringComparer.OrdinalIgnoreCase) { r.Asset });
+                return ForVersion(RebuildForCurrentVersion(cfg, gamePath, r.Slot,
+                    new HashSet<string>(StringComparer.OrdinalIgnoreCase) { r.Asset }));
         }
         try
         {
@@ -1151,7 +1683,11 @@ public static class ContentOverrideService
             {
                 var copy = StoreFile(gamePath, r.StoreId, r.Asset);
                 if (r.StoreId.Length == 0 || !File.Exists(copy))
-                    return LocService.Tr("该包的副本文件已丢失，需重新安装后才能启用");
+                    // 从盘上认回来的账只给"真在位"的那几条编副本（见 RebuildFromDisk），所以"副本没了"
+                    // 不等于"包没了"——原包备份往往好端端躺着。先按当前本体重编一次再放弃，
+                    // 否则用户看到的是"要点启用却被告知必须重装"，而东西就在 asset-packs 里。
+                    return RebuildForCurrentVersion(cfg, gamePath, r.Slot,
+                        new HashSet<string>(StringComparer.OrdinalIgnoreCase) { r.Asset });
                 var dst = AssetFullPath(gamePath, r.Asset);
                 Directory.CreateDirectory(Path.GetDirectoryName(dst)!);
                 File.Copy(copy, dst, overwrite: true);
@@ -1320,9 +1856,11 @@ public static class ContentOverrideService
     /// 界面上报红色「已不在位」等于把一件已经做完了的事说成故障（用户 2026-10-07 指出过这类文案）。</summary>
     public enum OverrideState { Off, InPlace, AlreadyVanilla, Foreign, Gone }
 
-    public static OverrideState StateOf(string gamePath, ContentOverrideRecord r)
+    /// <summary>只看盘：这张图现在是谁的。<b>不问账上的开关</b> —— 需要判"底干不干净"的地方
+    /// 要的就是这个；<see cref="StateOf"/> 在它之上多问一句"账上说开着吗"，那一问会把
+    /// "账说关着、盘上还盖着我们的图"看成 Off。</summary>
+    public static OverrideState DiskState(string gamePath, ContentOverrideRecord r)
     {
-        if (!r.Enabled) return OverrideState.Off;
         var dst = AssetFullPath(gamePath, r.Asset);
         if (!File.Exists(dst)) return OverrideState.Gone;
         var now = Sha256(dst);
@@ -1332,6 +1870,9 @@ public static class ContentOverrideService
         if (File.Exists(orig) && now == Sha256(orig)) return OverrideState.AlreadyVanilla;
         return OverrideState.Foreign;
     }
+
+    public static OverrideState StateOf(string gamePath, ContentOverrideRecord r)
+        => r.Enabled ? DiskState(gamePath, r) : OverrideState.Off;
 
     /// <summary>账上开着、盘上却不是那份字节，而且那份【既不是我们放的也不是原版】（= 别人或手动动过），
     /// 或者文件干脆没了。Steam 验证还原成原版那种不算，见 <see cref="StateOf"/>。</summary>

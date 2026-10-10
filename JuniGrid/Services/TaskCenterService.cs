@@ -275,6 +275,7 @@ public sealed class TaskCenterService
             Title = title,
             Kind = kind ?? "download",
             StartedAt = DateTime.Now,
+            RunFrom = DateTime.Now,
             Status = "running"
         };
         // 插到列表头，让最新创建/下载的任务始终排在最上面（/tasks 页从上到下看）。
@@ -284,7 +285,55 @@ public sealed class TaskCenterService
         return t;
     }
 
-    public void Report(TaskItem t, string line, double? percent = null, double? speedMBps = null)
+    /// <summary>「同一个东西又下载一次」。已经有一条失败/暂停的行就把它原地重开，
+    /// 不再新建一条 —— 任务管理页是干活的地方，不是历史流水账，同一次下载点两下
+    /// 就多出一行是错的。
+    /// <para>认得出的凭据只有 <paramref name="nexusId"/>：没有号的两条行（缓存清理、
+    /// 一键装依赖）没有任何字段能说明它们是同一件事，照旧一次一条。</para></summary>
+    public TaskItem StartOrRestart(string title, string kind, int? nexusId)
+    {
+        if (nexusId is > 0)
+        {
+            lock (_lock)
+            {
+                var old = Items.FirstOrDefault(t => t.Kind == kind && t.NexusId == nexusId
+                    && t.Status is "failed" or "paused");
+                if (old is not null)
+                {
+                    Restart(old, title, nexusId);
+                    return old;
+                }
+            }
+        }
+        var fresh = Start(title, kind);
+        fresh.NexusId = nexusId;
+        return fresh;
+    }
+
+    /// <summary>把一行重开成「正在跑的这一遍」：进度归零、日志清空、换新的 CTS。
+    /// 日志必须清 —— 旧那一遍的六个步骤留着，同一条任务的详情就每重开一次翻一倍。
+    /// 「开始时间」不动：这一行第一次出现是哪会儿，就是哪会儿。</summary>
+    public void Restart(TaskItem t, string? newTitle = null, int? nexusId = null)
+    {
+        t.ResetCts();
+        lock (_lock)
+        {
+            t.Log.Clear();
+            t.LastWasControl = false;
+            _lastProgress[t.Id] = DateTime.Now;
+        }
+        if (newTitle is not null) t.Title = newTitle;
+        if (nexusId is not null) t.NexusId = nexusId;
+        t.Status = "running";
+        t.Percent = 0;
+        t.SpeedMBps = 0;
+        t.LastLine = null;
+        t.RunFrom = DateTime.Now;
+        OnChanged?.Invoke();
+        RequestSave();
+    }
+
+    public void Report(TaskItem t, string line, double? percent = null, double? speedMBps = null, bool control = false)
     {
         // v1.08.2：下载进度行（"正在下载… x MB / y MB"）属于高频重复心跳，
         // 只覆盖日志里上一条同类行，不追加 —— 否则长下载轻松超 200 条上限，
@@ -302,7 +351,9 @@ public sealed class TaskCenterService
                     || (IsDownloadHeartbeat(line) && IsDownloadHeartbeat(last))
                     // 同一步在重试循环里报了很多次（实测一次失败下载刷了 5 行
                     // 「Steam 授权成功，正在完成…」）：剥掉时间戳后同文就只留最新一条
-                    || StripStamp(last) == line))
+                    || StripStamp(last) == line
+                    // 连着点开始/暂停：控制行之间只留最后一条状态，不铺一串
+                    || (control && t.LastWasControl)))
             {
                 t.Log[t.Log.Count - 1] = stamped;
             }
@@ -311,6 +362,7 @@ public sealed class TaskCenterService
                 t.Log.Add(stamped);
                 if (t.Log.Count > 200) t.Log.RemoveAt(0);
             }
+            t.LastWasControl = control;
         }
         if (percent is not null) t.Percent = percent.Value;
         if (speedMBps is not null) { t.SpeedMBps = speedMBps.Value; t.SpeedReported = true; }
@@ -349,6 +401,9 @@ public sealed class TaskCenterService
             {
                 t.Log.Add($"[{DateTime.Now:HH:mm:ss}] {finalMsg}");
                 if (t.Log.Count > 200) t.Log.RemoveAt(0);
+                // 收尾行不是控制行：不关掉这个开关，紧跟着的「继续中…」会把
+                // 刚写进去的失败原因当成上一条控制行覆盖掉。
+                t.LastWasControl = false;
             }
             t.LastLine = finalMsg;
         }
@@ -420,7 +475,7 @@ public sealed class TaskCenterService
         t.Status = "paused";
         t.SpeedMBps = 0;
         try { t.Cts.Cancel(); } catch { }
-        Report(t, LocService.Tr("已暂停"), t.Percent);
+        Report(t, LocService.Tr("已暂停"), t.Percent, control: true);
     }
 
     /// <summary>继续已暂停任务：重置 Cts，由调用方重新挂 worker。</summary>
@@ -429,8 +484,8 @@ public sealed class TaskCenterService
         if (t.Status != "paused") return;
         t.ResetCts();
         t.Status = "running";
-        t.StartedAt = DateTime.Now;   // 「已运行」从这次继续算起，别把停机的那段也计进去
-        Report(t, LocService.Tr("继续中…"), t.Percent);
+        t.RunFrom = DateTime.Now;     // 「已运行」从这次继续算起，别把停机的那段也计进去
+        Report(t, LocService.Tr("继续中…"), t.Percent, control: true);
     }
 
     /// <summary>v1.1.7：统一继续入口。有注册 worker 就重挂；历史版本下载走 VersionDownloadService 时由其自行处理。</summary>
@@ -449,17 +504,15 @@ public sealed class TaskCenterService
     public bool CanRetry(TaskItem t) => t.Status == "failed"
         && (_resumeWork.ContainsKey(t.Id) || (t.NexusId is > 0 && t.Kind == "install"));
 
-    /// <summary>重试失败的任务：与「继续」共用同一条重挂路径，不新造第二条执行逻辑。</summary>
+    /// <summary>重试失败的任务：与「继续」共用同一条重挂路径，不新造第二条执行逻辑。
+    /// 走 <see cref="Restart"/> 而不是只改状态 —— 上一遍的六个步骤必须让位给这一遍，
+    /// 否则同一条任务的详情每点一次重试就长一倍。</summary>
     public bool Retry(TaskItem t)
     {
         if (t.Status != "failed") return false;
         if (!_resumeWork.TryGetValue(t.Id, out var work)) return false;
-        t.ResetCts();
-        t.Status = "running";
-        t.Percent = 0;
-        t.SpeedMBps = 0;
-        t.StartedAt = DateTime.Now;
-        Report(t, LocService.Tr("正在重试…"), 0);
+        Restart(t);
+        Report(t, LocService.Tr("正在重试…"), 0, control: true);
         _ = Task.Run(() => work(t.Cts.Token), CancellationToken.None);
         return true;
     }
@@ -518,7 +571,20 @@ public sealed class TaskItem
     public string? LastLine { get; set; }
     // v1.06.7：必须有 setter —— 只读集合属性反序列化时不被填充，重启恢复的任务会丢光日志
     public List<string> Log { get; set; } = new();
+
+    /// <summary>这一行第一次出现的时刻，界面上的「开始时间」。继续/重试/重开都不动它。</summary>
     public DateTime StartedAt { get; set; }
+
+    /// <summary>本次运行的起点 —— 「已运行」按它算，Start / 继续 / 重开各刷新一次。
+    /// 不落盘：恢复出来的行要么已落终态要么被改成暂停，真要跑起来必然再走一遍上面三条
+    /// 路径之一，届时自然会置上，不需要历史值。</summary>
+    [JsonIgnore]
+    public DateTime RunFrom { get; set; }
+
+    /// <summary>上一条日志是不是「已暂停 / 继续中… / 正在重试…」这类控制行。
+    /// 连着点开始暂停时只留最后一条状态，不把详情刷成一串。</summary>
+    [JsonIgnore]
+    public bool LastWasControl { get; set; }
 
     /// <summary>v1.1.3：任务取消源 —— 「移除/清理」时取消后台下载安装；不落盘。</summary>
     [JsonIgnore]

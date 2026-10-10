@@ -78,7 +78,22 @@
     background: var(--jg-hover);
     border-color: var(--jg-line-heavy);
     box-shadow: inset 3px 0 0 var(--jg-outline);
-}.jg-modrow-icon {
+}/* v1.2.7：捆绑包展开出来的子包行 —— 缩进一层，才读得出这几行属于上面那一包 */
+.jg-modrow-sub { margin-left: 28px; }
+/* Mod 管理页的空态借内容包页那套排版，但不要那圈虚线框（这页本来就是一整列卡片，再套一层框是噪音） */
+.jg-mods-empty { border: none; }
+/* ─── v1.2.8：捆绑包子包面板。折叠稳态归 CSS 管（子包永远在 DOM 里，收起时高度 0），
+   展开动画走 junigridJs.taskDrop —— 与「下载详情」同一支 GSAP 弹簧（height 0→auto + autoAlpha，
+   收尾清内联样式）。条件渲染的话面板一出现就是满高，弹簧没得播，只能"啪"地跳出来。 ─── */
+.jg-bundle-subs {
+    visibility: hidden; opacity: 0; height: 0; overflow: hidden;
+    margin-top: -6px;                       /* 收起时不占 .jg-modrows 的行距 */
+    display: flex; flex-direction: column; gap: 6px;
+}
+.jg-bundle-subs.open { visibility: visible; opacity: 1; height: auto; margin-top: 0; }
+/* 动画期间保持裁剪才有"掀开"的效果；但子包那行的 … 菜单要探出面板，只有菜单开着时放开 */
+.jg-bundle-subs:has(.jg-modmenu.open) { overflow: visible; }
+.jg-modrow-icon {
     width: 44px; height: 44px;
     border-radius: 8px;
     object-fit: cover;
@@ -496,7 +511,7 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
     bottom: 0;
     background: linear-gradient(to top, var(--jg-content), transparent);
 }/* ── v1.1.2：暗色主题下任务时间线「黑」阶段色反白 —— 像素方块加载动画黑块贴暗底看不清 ── */
-html[data-theme="dark"] .jg-tl { --tl-black: #e8eaee; --tl-onblack: #1a1a1a; }/* ─── v1.1.5：分组标题 = 点击全选/取消全选该捆绑包 ───
+html[data-theme="dark"] .jg-tl { --tl-black: #e8eaee; --tl-onblack: #1a1a1a; }/* ─── v1.1.5：捆绑包父行 = 点击全选/取消全选该捆绑包（现在是一行 .jg-modrow，这个类只补两条行为）
    指针光标 + 禁划词：没有这两条，鼠标按下微移就会触发文本选中，
    click 事件被吞掉，用户看到的是文本光标而不是可点击的指针。 */
 .jg-group-head {

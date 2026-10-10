@@ -1,12 +1,16 @@
 using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
+using System.Security.Cryptography;
 using System.Text.Json;
 
 namespace JuniGrid.Services;
 
-/// <summary>一次自更新检查的结果。</summary>
-public sealed record SelfUpdateInfo(string LatestVersion, string DownloadUrl, string SetupUrl, bool HasUpdate);
+/// <summary>一次自更新检查的结果。<see cref="SetupSha256"/> 只有 API 通道能填（GitHub 在
+/// release asset 上直接给 <c>digest</c>）；HTML 回落那条只抠得到 tag，此时为 null，
+/// 完整性就只能退回比长度。<see cref="SetupSize"/> 同理，0 = 不知道。</summary>
+public sealed record SelfUpdateInfo(string LatestVersion, string DownloadUrl, string SetupUrl, bool HasUpdate,
+    string? SetupSha256 = null, long SetupSize = 0);
 
 /// <summary>
 /// 应用自更新的唯一通道（检查 + 下载缓存 + 弹出安装）：
@@ -111,18 +115,91 @@ public sealed class SelfUpdateService
         return _latest;
     }
 
-    /// <summary>安装包是否已完整缓存（下载成功后有 .done 标记）。</summary>
+    /// <summary>安装包是否已完整缓存（下载成功后有 .done 标记，且标记里记的校验值对得上）。</summary>
     public string? CachedInstallerPath(SelfUpdateInfo info)
     {
         var dest = InstallerPath(info.LatestVersion);
-        return File.Exists(dest) && File.Exists(dest + ".done") ? dest : null;
+        if (!File.Exists(dest) || !File.Exists(dest + ".done")) return null;
+
+        // .done 记的是"当初放行这个文件时依据的是什么"。它和这次查到的官方值一致 → 直接信，
+        // 不用每次开机都把 120MB 重算一遍。对不上、或压根没记（老版本写的 .done 只有版本号）
+        // → 补一次本地复验：通过就把校验值补写进 .done（这份旧缓存就此归队，不用重下），
+        // 不通过就删掉重下。
+        var want = Expectation(info);
+        if (want.Length == 0) return dest;   // 这次连官方凭据都没拿到，只能沿用「.done 在」这条弱判据
+        string? marker = null;
+        try { marker = File.ReadAllText(dest + ".done"); } catch { }
+        if (MarkerRecords(marker, want)) return dest;
+        try
+        {
+            VerifyInstaller(dest, info);
+            File.WriteAllText(dest + ".done", info.LatestVersion + " " + want);
+            return dest;
+        }
+        catch (Exception ex)
+        {
+            DropInstaller(dest, ex.Message);
+            return null;
+        }
     }
+
+    /// <summary>.done 里该记的校验值：优先官方 sha256，退而求其次官方 size，都没有就是空串
+    /// （空串 = 这台机器上没有任何凭据能证这个文件，见 <see cref="VerifyInstaller"/>）。</summary>
+    internal static string Expectation(SelfUpdateInfo info) =>
+        info.SetupSha256 is { Length: > 0 } sha ? "sha256=" + sha
+        : info.SetupSize > 0 ? "size=" + info.SetupSize : "";
+
+    /// <summary><c>.done</c> 的格式是「&lt;version&gt; &lt;校验值&gt;」。校验值可能为空
+    /// （老版本只写了版本号，或那次压根没拿到官方凭据）—— 那种缓存是"无凭据放行"留下的，
+    /// 不能只凭文件存在就信。判据就是：记的校验值等不等于这次该用的那个。</summary>
+    internal static bool MarkerRecords(string? markerText, string want)
+    {
+        if (want.Length == 0) return false;   // 没有"该用的那个"，谈不上对得上
+        var line = (markerText ?? "").Trim();
+        var sp = line.IndexOf(' ');
+        return sp > 0 && string.Equals(line[(sp + 1)..].Trim(), want, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>校验落盘的安装包。长度对不上或 sha256 对不上都抛
+    /// <see cref="InstallerIntegrityException"/>；两者都无从判断时不抛，但记一条 WARN，
+    /// 让日志能说清"这次是自更新链路没拿到官方校验值"，而不是"验过了没问题"。</summary>
+    internal static void VerifyInstaller(string path, SelfUpdateInfo info)
+    {
+        var len = new FileInfo(path).Length;
+        if (info.SetupSize > 0 && len != info.SetupSize)
+            throw new InstallerIntegrityException(
+                $"安装包大小不符（本机 {len} 字节，官方 {info.SetupSize} 字节）—— 已删除，需要重新下载");
+        if (info.SetupSha256 is { Length: > 0 } want)
+        {
+            using var fs = File.OpenRead(path);
+            var got = Convert.ToHexString(SHA256.HashData(fs)).ToLowerInvariant();
+            if (!string.Equals(got, want, StringComparison.OrdinalIgnoreCase))
+                throw new InstallerIntegrityException(
+                    $"安装包 SHA-256 不符（本机 {got[..12]}…，官方 {want[..12]}…）—— 已删除，需要重新下载");
+            return;
+        }
+        AppLog.Warn("SelfUpdate", $"安装包未做 SHA-256 校验（本次检查没取到官方 digest，只比了长度 {len} 字节）");
+    }
+
+    private static void DropInstaller(string dest, string why)
+    {
+        AppLog.Warn("SelfUpdate", "安装包不可信，已丢弃：" + why);
+        try { File.Delete(dest); } catch { }
+        try { File.Delete(dest + ".done"); } catch { }
+    }
+
+    /// <summary>校验不通过（大小或哈希对不上官方值）。和"网络断了"分开报：处理动作同样是重试，
+    /// 但用户有权知道这次是包被截断/被换过，而不是一直怀疑自己网差。</summary>
+    public sealed class InstallerIntegrityException(string message) : Exception(message);
 
     public static string InstallerPath(string version)
         => Path.Combine(StoragePaths.SelfUpdateDir, $"JuniGrid-cn-v{version}-setup.exe");
 
     /// <summary>
-    /// 确保安装包已缓存：已完整缓存直接返回路径；否则下载（断点续传）到缓存目录。
+    /// 确保安装包已缓存：已完整缓存直接返回路径；否则下载（断点续传）到缓存目录，
+    /// <b>校验通过才写 .done</b>。v1.2.6 之前是"下载函数一返回就写 .done"，而那条路走的是
+    /// 多镜像 + Range 续传，中途被截断同样算成功 —— 于是一个残缺的 setup.exe 会被标成完整、
+    /// 并在下次点击时直接拉起来。
     /// </summary>
     public async Task<string> EnsureInstallerAsync(SelfUpdateInfo info,
         Action<string, double?>? progress, CancellationToken ct = default)
@@ -144,8 +221,11 @@ public sealed class SelfUpdateService
                 (msg, pct, _) => progress?.Invoke(msg, pct),
                 fallbackUrls: UpdateService.GithubUrls(info.SetupUrl).Skip(1), ct: ct);
 
-            // 下载完整结束才写 .done 标记；取消/中断留下的半截文件靠续传接着写
-            File.WriteAllText(dest + ".done", info.LatestVersion);
+            try { VerifyInstaller(dest, info); }
+            catch { DropInstaller(dest, "校验未通过"); throw; }
+
+            // 校验完整结束才写 .done，且把"依据的是什么"一起写进去（见 CachedInstallerPath）
+            File.WriteAllText(dest + ".done", info.LatestVersion + " " + Expectation(info));
             progress?.Invoke("下载完成", 100);
             return dest;
         }
@@ -216,8 +296,10 @@ public sealed class SelfUpdateService
                     continue;
                 }
                 using var doc = JsonDocument.Parse(await resp.Content.ReadAsStreamAsync());
-                var tag = doc.RootElement.TryGetProperty("tag_name", out var t) ? t.GetString() ?? "" : "";
-                return Build(tag);
+                var root = doc.RootElement;
+                var tag = root.TryGetProperty("tag_name", out var t) ? t.GetString() ?? "" : "";
+                // 只有这条通道能拿到官方校验值（release asset 上的 digest/size）
+                return Build(tag, root);
             }
             catch (Exception ex)
             {
@@ -250,7 +332,9 @@ public sealed class SelfUpdateService
         }
     }
 
-    private static SelfUpdateInfo? Build(string tag)
+    internal static string SetupAssetName(string ver) => $"JuniGrid-cn-v{ver}-setup.exe";
+
+    internal static SelfUpdateInfo? Build(string tag, JsonElement? release = null)
     {
         // tag 允许带 v 前缀（v1.0.2 / 1.0.2 都认）
         var ver = tag.TrimStart('v', 'V');
@@ -258,8 +342,39 @@ public sealed class SelfUpdateService
         if (!Version.TryParse(AppInfo.Version.Trim(), out var current)) return null;
 
         // Release 资产固定命名：JuniGrid-cn-vX.Y.Z-setup.exe
-        var setupUrl = $"{AppInfo.ReleasesUrl}/latest/download/JuniGrid-cn-v{ver}-setup.exe";
+        var setupUrl = $"{AppInfo.ReleasesUrl}/latest/download/{SetupAssetName(ver)}";
         var hasUpdate = latest > current;
-        return new SelfUpdateInfo(ver, $"{AppInfo.ReleasesUrl}/tag/v{ver}", setupUrl, hasUpdate);
+        var (sha, size) = release is { } r ? ReadAssetIntegrity(r, SetupAssetName(ver)) : (null, 0L);
+        return new SelfUpdateInfo(ver, $"{AppInfo.ReleasesUrl}/tag/v{ver}", setupUrl, hasUpdate, sha, size);
+    }
+
+    /// <summary>从 release JSON 的 <c>assets[]</c> 里按文件名取官方校验值。
+    /// <c>digest</c> 形如 <c>"sha256:f2e8…"</c>（GitHub 2024 起提供，早于它的上传可能为 null）；
+    /// <c>size</c> 是精确字节数。取不到的那一项返回 null/0，由 <see cref="VerifyInstaller"/> 降级处理。</summary>
+    internal static (string? Sha256, long Size) ReadAssetIntegrity(JsonElement release, string assetName)
+    {
+        string? sha = null;
+        long size = 0;
+        if (release.ValueKind != JsonValueKind.Object
+            || !release.TryGetProperty("assets", out var assets)
+            || assets.ValueKind != JsonValueKind.Array) return (null, 0);
+        foreach (var a in assets.EnumerateArray())
+        {
+            if (a.ValueKind != JsonValueKind.Object
+                || !a.TryGetProperty("name", out var n)
+                || n.ValueKind != JsonValueKind.String
+                || !string.Equals(n.GetString(), assetName, StringComparison.OrdinalIgnoreCase)) continue;
+            if (a.TryGetProperty("digest", out var d) && d.ValueKind == JsonValueKind.String)
+            {
+                var s = d.GetString() ?? "";
+                var colon = s.IndexOf(':');
+                sha = colon < 0 ? s : s[(colon + 1)..];   // 只认 sha256 那一种，前缀丢掉
+                if (colon >= 0 && !s[..colon].Equals("sha256", StringComparison.OrdinalIgnoreCase)) sha = null;
+            }
+            if (a.TryGetProperty("size", out var z) && z.ValueKind == JsonValueKind.Number && z.TryGetInt64(out var l))
+                size = l;
+            break;
+        }
+        return (sha, size);
     }
 }

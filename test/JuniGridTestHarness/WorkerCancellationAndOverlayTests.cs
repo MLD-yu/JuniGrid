@@ -15,6 +15,15 @@ namespace JuniGridTestHarness;
 // 就是这么暴露给测试的），只有 TaskCenterService 的两个 Timer 字段仍走反射 —— 见下面注释。
 // ══════════════════════════════════════════════════════════════════════════
 
+/// <summary>ProbeOverlay 交回的是「每个宿主一份」的计划（一个包可以盖在好几家上）。
+/// 下面这些用例摆的都是单宿主形状，取那唯一一份 —— 多出第二份就是判据变了，
+/// 让它当场失败，而不是悄悄落在第一份上把断言看绿。</summary>
+internal static class OverlayPlans
+{
+    internal static ModService.OverlayPlan? Only(List<ModService.OverlayPlan>? plans)
+        => plans is null ? null : Assert.Single(plans);
+}
+
 /// <summary>
 /// 等安装锁必须带 CancellationToken。旧写法用的是不带 token 的 WaitAsync()：暂停那一跑永远
 /// 排在门外占着队，于是「前面还有 N 个安装」里有一多半是自己上一跑的僵尸（实机 09:22:07 那 39 秒）。
@@ -199,7 +208,7 @@ public class OverlayHostJudgementTests : IDisposable
             Directory.CreateDirectory(Path.GetDirectoryName(fp)!);
             File.WriteAllText(fp, "x");
         }
-        var plan = _ms.ProbeOverlay(_game, d, out var fail, out var guess);
+        var plan = OverlayPlans.Only(_ms.ProbeOverlay(_game, d, out var fail, out var guess));
         return (fail.ToString(), guess, plan?.Host ?? "");
     }
 
@@ -278,6 +287,21 @@ public class OverlayHostJudgementTests : IDisposable
         foreach (var p in hits)
             Assert.False(p.Value.GetString()?.Contains("translated") == true,
                 "英文值里还有 translated：" + p.Name);
+
+        // 覆盖通道的另外两条提示（2026-10-09 他实机指出）：会失效、会丢副本的是「覆盖包」，
+        // 不是「汉化包」—— 贴图包、兼容包走的也是这条通道，点名汉化会让人以为
+        // 只有汉化包才会失效。这两条的中文键与英文值都不许再出现"汉化/翻译"。
+        var overlay = cat.RootElement.EnumerateObject()
+            .Where(p => p.Name.Contains("更新过一次的话") || p.Name.Contains("文件副本已丢失")).ToList();
+        Assert.Equal(2, overlay.Count);
+        foreach (var p in overlay)
+        {
+            Assert.DoesNotContain("汉化", p.Name);
+            var en = p.Value.GetString() ?? "";
+            Assert.False(en.Contains("translation", StringComparison.OrdinalIgnoreCase)
+                || en.Contains("translated", StringComparison.OrdinalIgnoreCase),
+                "英文值里还在说翻译：" + p.Name);
+        }
     }
 
     [Fact]
@@ -306,18 +330,25 @@ public class OverlayHostJudgementTests : IDisposable
         var fp = Path.Combine(d, packName, "i18n");
         Directory.CreateDirectory(fp);
         File.WriteAllText(Path.Combine(fp, "zh.json"), ZhJson(fields));
-        var plan = _ms.ProbeOverlay(_game, d, out var fail, out var guess);
+        var plan = OverlayPlans.Only(_ms.ProbeOverlay(_game, d, out var fail, out var guess));
         return (fail.ToString(), plan is null ? guess : plan.Host);
     }
 
-    /// <summary>多宿主那句的措辞：不许说「判断不出该盖谁」—— 名字点得出来，
-    /// 真实原因是【该替你盖哪家只有你能决定】（实机 1993：一家下面摆着 10 套变体）。</summary>
+    /// <summary>多宿主那句的措辞，跟着判据一起改过两次：
+    /// ① 不许说「判断不出该盖谁」—— 名字点得出来；
+    /// ② 原来那句「该盖哪家我们替你决定不了」也不许再出现 —— 包内几家目录【全都装着】的时候
+    ///    我们现在一家一份地盖（实机 53406），所以走到这句只剩一种可能：有名字在本机对不上
+    ///    唯一一家已装 mod。说"替你决定"是拿一个不存在的选择题盖住真实原因。</summary>
     [Fact]
-    public void MultiHostSentence_SaysWeWontDecide_NotThatItCannotTell()
+    public void MultiHostSentence_SaysNotEveryDirIsInstalled_NotThatWeWontDecide()
     {
         var zh = Refuse(ModService.OverlayFail.MultiHost, "Deep Woods Obelisk、Tractor Garage");
         Assert.DoesNotContain("判断不出", zh);
-        Assert.Contains("替你决定不了", zh);
+        Assert.DoesNotContain("替你决定不了", zh);
+        Assert.Contains("没能把每一个都对上", zh);
+        Assert.Contains("只盖一半", zh);
+        Assert.Contains("Deep Woods Obelisk", zh);              // 点名靠 hostGuess，不是泛泛一句
+        Assert.Contains("只装你需要的那一个", zh);                 // 出口留着：这包本来就可能是多宿主贴图包
         var asm = typeof(LocService).Assembly;
         var rn = asm.GetManifestResourceNames().FirstOrDefault(n => n.EndsWith("en.json", StringComparison.OrdinalIgnoreCase));
         using var rs = asm.GetManifestResourceStream(rn!)!;
@@ -325,9 +356,10 @@ public class OverlayHostJudgementTests : IDisposable
         var en = cat.RootElement.EnumerateObject()
             .Where(p => p.Name.StartsWith("这个包里放着好几个别的 mod 的目录"))
             .Select(p => p.Value.GetString()).FirstOrDefault();
-        Assert.False(string.IsNullOrEmpty(en), "英文目录里查不到这条新键");
+        Assert.False(string.IsNullOrEmpty(en), "英文目录里查不到这条键（改中文原文必须连键一起改）");
         Assert.DoesNotContain("ambiguous", en!);
-        Assert.Contains("can't decide", en!);
+        Assert.DoesNotContain("can't decide", en!);
+        Assert.Contains("half-active", en!);
     }
 
     [Fact]
@@ -385,7 +417,7 @@ public class OverlayHostJudgementTests : IDisposable
         var fp = Path.Combine(d, "Bundle", "Child", "i18n");
         Directory.CreateDirectory(fp);
         File.WriteAllText(Path.Combine(fp, "zh.json"), "{}");
-        var plan = _ms.ProbeOverlay(_game, d, out var fail, out _);
+        var plan = OverlayPlans.Only(_ms.ProbeOverlay(_game, d, out var fail, out _));
         Assert.Equal(ModService.OverlayFail.None, fail);
         Assert.Equal("Bundle/Child", plan!.Host);
         Assert.Equal(new[] { "i18n/zh.json" }, plan.RelPaths);
@@ -411,6 +443,141 @@ public class OverlayHostJudgementTests : IDisposable
 /// 而它唯一的入口就是那个看不见的徽标 ⇒ 只能靠启动迁移。
 /// 键里带着宿主，所以键、Host、RelPath 三处一起改，AppData 副本也要搬到新形状 ——
 /// 少搬一样，「关掉再打开」就找不到那份留底。</summary>
+/// <summary>一个包里摆着<b>好几个</b>别的 mod 的目录时，逐字比对已装行：每一家都唯一对上就
+/// <b>一家一份计划</b>。实机 53406「To The Moon (中文)」——包内两个目录就是已装捆绑包
+/// Nullnnow.ToTheMoon v1.0.0 的两个子包，旧写法在这一步直接弃权，把一个完整的汉化拒成
+/// "该盖哪家我们替你决定不了"（用户机上那条 19:31 的安装失败就是它，进度停在 95%）。
+/// <para>另一条一起钉住：包顶层名<b>恰好等于</b>壳名时（实机汉化包 10342 → SVE），文件分住两个
+/// 子包也要当场拆开 —— 记在壳上等于记在一个没有行的宿主上，要等下次启动的迁移才搬进子包，
+/// 装完到重启之前那一截徽标、开关、还原全点不到。</para></summary>
+public class MultiHostBundleOverlayTests : IDisposable
+{
+    private readonly string _root = Path.Combine(Path.GetTempPath(), "jg-mho-" + Guid.NewGuid().ToString("N"));
+    private readonly string _game;
+    private readonly ModService _ms = new();
+
+    private const string Shell = "Nullnnow.ToTheMoon v1.0.0";
+    private const string Base = "ToTheMoon", Cp = "ToTheMoon [CP]";
+    // 包自己的标题：作者把 "(Chinese)" 塞进了目录名，与壳名逐字不同 ⇒ 顶层那条判据命中不了
+    private const string PackTop = "Nullnnow.ToTheMoon(Chinese) v1.0.0";
+    private static readonly string[] Real53406 =
+    {
+        PackTop + "/" + Cp + "/i18n/zh.json",
+        PackTop + "/" + Base + "/i18n/zh/zh.json",
+        PackTop + "/" + Base + "/i18n/zh/events.json",
+    };
+
+    public MultiHostBundleOverlayTests()
+    {
+        _game = Path.Combine(_root, "game");
+        ChildWithManifest(Base); ChildWithManifest(Cp);
+    }
+
+    private void ChildWithManifest(string leaf)
+    {
+        var d = Path.Combine(_game, "Mods", Shell, leaf);
+        Directory.CreateDirectory(d);
+        File.WriteAllText(Path.Combine(d, "manifest.json"),
+            @"{ ""Name"": """ + leaf + @""", ""Author"": ""Nullnnow"", ""Version"": ""1.0.0"""
+            + @", ""UniqueID"": ""Nullnnow." + leaf.Replace(" [CP]", "-CP").Replace(" ", "")
+            + @""", ""Description"": ""x"", ""GameVersion"": ""1.6.0"", ""EntryDll"": """" }");
+    }
+
+    public void Dispose() { try { Directory.Delete(_root, true); } catch { } }
+
+    private string Pack(params string[] relPaths)
+    {
+        var d = Path.Combine(_root, "p" + Guid.NewGuid().ToString("N"));
+        foreach (var rp in relPaths)
+        {
+            var fp = Path.Combine(d, rp.Replace('/', Path.DirectorySeparatorChar));
+            Directory.CreateDirectory(Path.GetDirectoryName(fp)!);
+            File.WriteAllText(fp, "pack");
+        }
+        return d;
+    }
+
+    /// <summary>计划 → 「宿主 → (包内根, 落点集合)」。</summary>
+    private static Dictionary<string, (string PackRoot, string Dsts)> ByHost(List<ModService.OverlayPlan>? plans)
+        => (plans ?? new List<ModService.OverlayPlan>()).ToDictionary(
+            p => p.Host,
+            p => (p.PackRoot, string.Join(">", (p.DstPaths ?? p.RelPaths).OrderBy(x => x, StringComparer.Ordinal))),
+            StringComparer.OrdinalIgnoreCase);
+
+    [Fact]
+    public void Real53406_BothChildrenInstalled_OnePlanPerChild()
+    {
+        var byHost = ByHost(_ms.ProbeOverlay(_game, Pack(Real53406), out var fail, out _));
+        Assert.Equal(ModService.OverlayFail.None, fail);
+        Assert.Equal(new[] { Shell + "/" + Base, Shell + "/" + Cp },
+            byHost.Keys.OrderBy(x => x, StringComparer.Ordinal).ToArray());
+        // src = temp/PackRoot/RelPath，dst = 宿主目录/RelPath：两家各归各的，谁也不多盖
+        Assert.Equal((PackTop + "/" + Cp, "i18n/zh.json"), byHost[Shell + "/" + Cp]);
+        Assert.Equal((PackTop + "/" + Base, "i18n/zh/events.json>i18n/zh/zh.json"), byHost[Shell + "/" + Base]);
+    }
+
+    [Fact]
+    public void OneChildMissing_RefusesTheWholePack_AndNamesEveryDir()
+    {
+        // 变异点：把"有一家缺就整包不装"写成"缺的那家跳过"，这条会只盖一半 ——
+        // 半生效正是整条覆盖链最怕的那种静默（游戏里角色对白是中文、CP 那半还是英文）。
+        Directory.Delete(Path.Combine(_game, "Mods", Shell, Cp), recursive: true);
+        var plans = _ms.ProbeOverlay(_game, Pack(Real53406), out var fail, out var guess);
+        Assert.Null(plans);
+        Assert.Equal(ModService.OverlayFail.MultiHost, fail);
+        Assert.Contains(Base, guess); Assert.Contains(Cp, guess);
+    }
+
+    [Fact]
+    public void NearMissSpelling_IsNotTaken_MultiHostNeedsExactNames()
+    {
+        // 多宿主一次要落好几家，猜错的面积比单宿主大 ⇒ 这条路上只认逐字相等，不走拼写键
+        Directory.Move(Path.Combine(_game, "Mods", Shell, Cp), Path.Combine(_game, "Mods", Shell, "ToTheMoon-CP"));
+        var plans = _ms.ProbeOverlay(_game, Pack(Real53406), out var fail, out _);
+        Assert.Null(plans);
+        Assert.Equal(ModService.OverlayFail.MultiHost, fail);
+    }
+
+    [Fact]
+    public void PackMixingModDirsAndAVanillaLayer_Refuses_InsteadOfDroppingFiles()
+    {
+        // 包里的 assets/ 不是 mod 目录（原版素材层名），它不进候选清单 ——
+        // 这时若把两家 mod 目录拆走，assets/ 下那个文件就没人管了：替用户丢文件比不装更糟。
+        var plans = _ms.ProbeOverlay(_game,
+            Pack(Real53406.Append(PackTop + "/assets/foo.png").ToArray()), out var fail, out _);
+        Assert.Null(plans);
+        Assert.Equal(ModService.OverlayFail.MultiHost, fail);
+    }
+
+    [Fact]
+    public void Real10342_PackTopIsTheShellItself_SplitsPerChildAtInstallTime()
+    {
+        // 顶层名 == 壳名 ⇒ 走"顶层就是宿主"那条。文件分住两个子包时旧写法把账记在壳上，
+        // 而壳没有 Mods 行（ScanRaw 只为带 manifest 的子包出行）⇒ 徽标/开关/还原全点不到，
+        // 要等下次启动 RelocateBundleTopOverlays 才搬。当场拆开就不需要等。
+        var byHost = ByHost(_ms.ProbeOverlay(_game,
+            Pack(Shell + "/" + Cp + "/i18n/zh.json", Shell + "/" + Base + "/i18n/zh.json"), out var fail, out _));
+        Assert.Equal(ModService.OverlayFail.None, fail);
+        Assert.Equal(2, byHost.Count);
+        Assert.All(byHost.Keys, h => Assert.Contains("/", h));   // 一份都不许记在壳上
+        Assert.Equal((Shell + "/" + Cp, "i18n/zh.json"), byHost[Shell + "/" + Cp]);
+    }
+
+    [Fact]
+    public void ShellWithOwnManifest_KeepsTopAsTheSingleHost()
+    {
+        // 顶层自己有 manifest ⇒ 它本身就是一行，拆子包那条判据不许顺手把它改形状
+        var top = Path.Combine(_game, "Mods", "OwnedShell");
+        Directory.CreateDirectory(Path.Combine(top, "Sub"));
+        File.WriteAllText(Path.Combine(top, "manifest.json"), @"{ ""Name"": ""OS"", ""UniqueID"": ""a.os"" }");
+        File.WriteAllText(Path.Combine(top, "Sub", "manifest.json"), @"{ ""Name"": ""S"", ""UniqueID"": ""a.s"" }");
+        var plan = OverlayPlans.Only(_ms.ProbeOverlay(_game,
+            Pack("OwnedShell/Sub/i18n/zh.json"), out var fail, out _));
+        Assert.Equal(ModService.OverlayFail.None, fail);
+        Assert.Equal("OwnedShell", plan!.Host);
+    }
+}
+
 public class OverlayBundleHostMigrationTests : IDisposable
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), "jg-ovmig-" + Guid.NewGuid().ToString("N"));
@@ -561,7 +728,7 @@ public class BareTranslationPackHostTests : IDisposable
         var d = Path.Combine(_root, "p" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(d);
         File.WriteAllText(Path.Combine(d, "zh.json"), Json(keys ?? RealKeys));
-        var plan = _ms.ProbeOverlay(_game, d, out var fail, out var guess, reqs);
+        var plan = OverlayPlans.Only(_ms.ProbeOverlay(_game, d, out var fail, out var guess, reqs));
         var dst = (plan?.DstPaths ?? plan?.RelPaths);
         return (fail.ToString(), guess, plan?.Host ?? "", dst is null ? "" : string.Join(">", dst));
     }
@@ -574,7 +741,7 @@ public class BareTranslationPackHostTests : IDisposable
         var fp = Path.Combine(d, packPath.Replace('/', Path.DirectorySeparatorChar));
         Directory.CreateDirectory(Path.GetDirectoryName(fp)!);
         File.WriteAllText(fp, Json(keys ?? RealKeys));
-        var plan = _ms.ProbeOverlay(_game, d, out var fail, out var guess, reqs);
+        var plan = OverlayPlans.Only(_ms.ProbeOverlay(_game, d, out var fail, out var guess, reqs));
         var dst = plan?.DstPaths ?? plan?.RelPaths;
         return (fail.ToString(), guess, plan?.Host ?? "", dst is null ? "" : string.Join(">", dst));
     }
@@ -774,7 +941,7 @@ public class BareTranslationPackHostTests : IDisposable
         Directory.CreateDirectory(d);
         File.WriteAllText(Path.Combine(d, "zh.json"), Json(RealKeys));
         File.WriteAllText(Path.Combine(d, "en.json"), Json(RealKeys));
-        var plan = _ms.ProbeOverlay(_game, d, out var fail, out _, new[] { Req(32032, "Better Game Menu") });
+        var plan = OverlayPlans.Only(_ms.ProbeOverlay(_game, d, out var fail, out _, new[] { Req(32032, "Better Game Menu") }));
         Assert.Equal("NoHostInPack", fail.ToString());
         Assert.Null(plan);
     }

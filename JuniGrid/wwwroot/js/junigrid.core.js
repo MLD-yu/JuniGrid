@@ -272,34 +272,52 @@ window.junigridJs.pixelReveal = function (canvasSel) {
 };
 
 // v0.36.0：AnimatedList 滚动效果（React Bits AnimatedList 的 Blazor 移植）
-// - 行进入视口 50% 时 scale 0.7→1 + opacity 0→1（0.2s），离开视口收回
+// - 行按「露出多少」连续 scale 0.7→1 + opacity 0→1（0.2s），离开视口收回
 // - 滚动容器顶/底渐变遮罩随滚动位置淡入淡出
 window.junigridJs.animatedListInit = function (scrollSel, listSel) {
     const scroller = document.querySelector(scrollSel);
     const list = document.querySelector(listSel);
     if (!scroller || !list) return;
 
-    // ── 行入场动画：IntersectionObserver，amount≈0.5，离开视口收回（triggerOnce:false）──
+    // ── 行入场动画：IntersectionObserver，露一半即全亮，再少就按比例淡出 ──
+    // 这里曾经是「过半才亮、否则 opacity 0」的二值闸门，实测两个后果：压在视口边上的行
+    // 明明露出三成却完全看不见（滚动途中这类样本占压边行的 50%），而且滚动位置抖 2px
+    // 就能让它在 0↔1 之间整幅翻转 —— 滚到底后顶上那行一直闪，闪的就是它。
     if (!list.__alObs) {
+        // 观察范围向外扩 EDGE px：收缩后的行盒一旦完全离开视口，观察器就不再回调，
+        // 那一行会卡在最后一次的比例上（实测在露出约 11% 处留下 0.27 的台阶）。
+        const EDGE = 24;
+        const th = [];
+        for (let i = 0; i <= 20; i++) th.push(i / 20);
         list.__alObs = new IntersectionObserver(entries => {
+            // 先量完再写：写样式会让下一行的 offsetHeight 读退化成强制同步布局
+            const plan = [];
             for (const e of entries) {
-                const el = e.target;
-                if (e.intersectionRatio >= 0.5) {
-                    el.style.opacity = '1';
-                    el.style.transform = 'scale(1)';
-                } else {
-                    el.style.opacity = '0';
-                    el.style.transform = 'scale(0.7)';
+                const el = e.target, R = e.rootBounds, H = el.offsetHeight;
+                let a = 0;
+                if (R && H && e.isIntersecting) {
+                    // 比例不能取 e.intersectionRatio —— 那是我们自己刚写下去的 scale 量出来的，
+                    // 量→改→再量会打转。scale 以中心为原点 ⇒ 变换后的中心 + 未变换的布局高度
+                    // 就是真实行盒，这个比例与动画此刻处于哪一帧无关。
+                    const b = e.boundingClientRect;
+                    const top = b.top + b.height / 2 - H / 2;
+                    const vis = Math.min(top + H, R.bottom - EDGE) - Math.max(top, R.top + EDGE);
+                    a = Math.max(0, Math.min(1, vis / H * 2));
                 }
+                plan.push([el, Math.round(a * 100) / 100]);
             }
-        }, { root: scroller, threshold: [0, 0.5, 1] });
+            for (const [el, a] of plan) {
+                el.style.opacity = a;
+                el.style.transform = 'scale(' + (0.7 + 0.3 * a) + ')';
+            }
+        }, { root: scroller, rootMargin: EDGE + 'px', threshold: th });
     }
     list.querySelectorAll('[data-al]').forEach(el => {
         if (el.__alBound) return;
         el.__alBound = true;
         // v1.2.4：去掉逐行 getBoundingClientRect 预测量 —— 返回列表时几百行全是新 DOM，
         // 每行一次强制同步布局（layout thrash）本身就是可感知的停顿。观察器的初始回调
-        // 自带首帧 intersectionRatio：视口内的行被置为展开（与旧"预测量后立即展开"等价），
+        // 自带首帧的露出比例：视口内的行被置为展开（与旧"预测量后立即展开"等价），
         // 视口外的行被收起（用户看不到它们，状态切换发生在可绘制之前）。
         el.style.transition = 'opacity .2s ease, transform .2s ease';
         el.style.transformOrigin = 'center center';

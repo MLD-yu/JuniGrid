@@ -32,7 +32,7 @@ public class PackVariantTests
     /// <summary>造一个"多配色"包：每个配色一个文件夹，里面一张同资产的 xnb（可选再放一张同名 png）。</summary>
     static string WriteColorPack(params (string Folder, byte Fill)[] colors)
     {
-        var src = Path.Combine(Path.GetTempPath(), "jg-color-" + Guid.NewGuid().ToString("N")[..8]);
+        var src = TempDirs.Create("color");
         foreach (var (folder, fill) in colors)
             GameSandbox.Write(Path.Combine(src, folder, "hairstyles.xnb"), Xnb(16, 16, fill));
         return src;
@@ -162,7 +162,7 @@ public class PackVariantTests
     {
         using var g = new GameSandbox();
         g.WriteVanilla("LooseSprites/Cursors", 16, 16);
-        var src = Path.Combine(Path.GetTempPath(), "jg-sib-" + Guid.NewGuid().ToString("N")[..8]);
+        var src = TempDirs.Create("sib");
         GameSandbox.Write(Path.Combine(src, "Cursors.xnb"), Xnb(16, 16, 0x55));
         File.WriteAllBytes(Path.Combine(src, "cursors.png"), Png(4, 4, 0x66));   // 裁片，尺寸不可能装
 
@@ -182,7 +182,7 @@ public class PackVariantTests
     {
         using var g = new GameSandbox();
         g.WriteVanilla(Hair, 16, 16);                       // 原版 16×16
-        var src = Path.Combine(Path.GetTempPath(), "jg-notes-" + Guid.NewGuid().ToString("N")[..8]);
+        var src = TempDirs.Create("notes");
         GameSandbox.Write(Path.Combine(src, "矮-Short", "hairstyles.xnb"), Xnb(16, 8, 0xA1));
         GameSandbox.Write(Path.Combine(src, "高-Tall", "hairstyles.xnb"), Xnb(16, 64, 0xB2));
 
@@ -205,7 +205,7 @@ public class PackVariantTests
     {
         using var g = new GameSandbox();
         g.WriteVanilla(Hair, 16, 16);
-        var src = Path.Combine(Path.GetTempPath(), "jg-twin-" + Guid.NewGuid().ToString("N")[..8]);
+        var src = TempDirs.Create("twin");
         GameSandbox.Write(Path.Combine(src, "金色-Golden", "hairstyles.xnb"), Xnb(16, 16, 0xA1));
         File.WriteAllBytes(Path.Combine(src, "金色-Golden", "hairstyles.png"), Png(16, 16, 0xA1));
         GameSandbox.Write(Path.Combine(src, "黑色-Black", "hairstyles.xnb"), Xnb(16, 16, 0xB2));
@@ -228,7 +228,7 @@ public class PackVariantTests
     {
         using var g = new GameSandbox();
         g.WriteVanilla("LooseSprites/Cursors", 16, 16);
-        var src = Path.Combine(Path.GetTempPath(), "jg-png-" + Guid.NewGuid().ToString("N")[..8]);
+        var src = TempDirs.Create("png");
         Directory.CreateDirectory(src);
         File.WriteAllBytes(Path.Combine(src, "Cursors.png"), Png(16, 16, 0x77));
 
@@ -324,5 +324,21 @@ public class PackVariantTests
                 var want = "Portraits/" + Path.GetFileNameWithoutExtension(name);
                 Assert.Equal(want, ContentOverrideTargets.RecordForNote(order, name, reason)?.Asset);
             }
+    }
+
+    /// <summary>接线闸：这几个造「源包目录」的 helper 必须走 <see cref="TempDirs"/>。
+    /// 漏在实机上的形态是 %TEMP% 里 3244 个 jg-pack-*（跑一轮漏一批，谁都不负责删），
+    /// 所以钉的不只是「TempDirs 会删」，而是「helper 交出来的每个目录确实在登记表上」。</summary>
+    [Fact]
+    public void EveryPackSourceHelper_RegistersItsTempDir()
+    {
+        using var g = new GameSandbox();
+
+        var color = WriteColorPack(("白色-White", 0xC3));
+        var viaSandbox = g.WritePack("裸包", ("Portraits/Emily", 16, 16));
+
+        Assert.True(TempDirs.IsRegistered(color), "配色包目录没进登记表");
+        Assert.True(TempDirs.IsRegistered(viaSandbox), "GameSandbox.WritePack 目录没进登记表");
+        Assert.True(TempDirs.IsRegistered(g.Dir), "沙盒本身没进登记表（Dispose 删不动时无人接手）");
     }
 }

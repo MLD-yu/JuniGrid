@@ -929,8 +929,9 @@ public sealed partial class ModService
         None,
         /// <summary>包内文件都是光秃秃一层（裸 zh.json），没说宿主是谁。</summary>
         NoHostInPack,
-        /// <summary>包内摆着好几个别的 mod 的目录（跨顶层，或顶层认不出而第二层有好几家）。
-        /// 这不是认不出宿主 —— 名字都点得出来；是【该替你盖哪家】这件事只有用户能决定。</summary>
+        /// <summary>包内摆着好几个别的 mod 的目录（跨顶层，或顶层认不出而第二层有好几家），
+        /// 而<b>不是每一家都唯一对上已装的 mod</b>：有的名字本机没装着，或两个目录对上同一行。
+        /// 名字都点得出来，问题在【只盖一半会让这个包半生效】，所以整包不装。</summary>
         MultiHost,
         /// <summary>认出了宿主名，但用户没装它。</summary>
         HostNotInstalled,
@@ -1018,18 +1019,21 @@ public sealed partial class ModService
     }
 
     /// <summary>
-    /// 判定一个没有 manifest.json 的包要盖到哪个已装 mod 上。<b>只采信包自己的内部路径</b>：
-    /// 所有文件共享同一个第一层目录名，那个名字就是宿主。
+    /// 判定一个没有 manifest.json 的包要盖到哪些已装 mod 上，交回【每个宿主一份】计划。
+    /// <b>只采信包自己的内部路径</b>：所有文件共享同一个第一层目录名，那个名字就是宿主。
     /// 包名像不像某个 mod 只用来给人看，不作为落盘依据 —— 猜错的表现是"装成功了但游戏里
     /// 毫无变化"，用户自己永远查不出来，所以判定不出时返回 null 让调用方放弃安装。
     /// 第一层对不上时再往下探一层：汉化包常把真宿主再套一层
     /// （"zLewdDewValley translation/LewdDew_Valley/…"，宿主其实是捆绑包里的子包）。
     /// 还不行才按<b>拼写</b>认一次（<see cref="FindInstalledHostBySpelling"/>）：包内那层目录
     /// 允许只是把宿主的名字抄得不太一样，判据仍是【已装 mod 自己声明的目录名/显示名】且唯一命中。
-    /// 上面全落空而第二层摆着<b>好几个</b>别的 mod 的目录 ⇒ 报 <see cref="OverlayFail.MultiHost"/>：
-    /// 那是给好几个 mod 用的贴图/兼容包，顶层那个名字是包自己的标题，不是前置，不许拿它说事。
+    /// <para>包里摆着<b>好几个</b>别的 mod 的目录（跨顶层，或在顶层之下并列）不再一律弃权：
+    /// 每个目录名都逐字对上唯一一家已装 mod 时，那是给这几个 mod 一起用的包（实机 53406
+    /// 「To The Moon (中文)」就是捆绑包两个子包的汉化），<b>每家各一份计划</b>；
+    /// 有一个对不上、或两个目录对上同一行 ⇒ 报 <see cref="OverlayFail.MultiHost"/>，
+    /// 因为只盖一半会让这个包半生效。</para>
     /// </summary>
-    internal OverlayPlan? ProbeOverlay(string gamePath, string tempDir, out OverlayFail fail, out string hostGuess,
+    internal List<OverlayPlan>? ProbeOverlay(string gamePath, string tempDir, out OverlayFail fail, out string hostGuess,
         IReadOnlyList<NexusRequirement>? packRequirements = null)
     {
         fail = OverlayFail.None;
@@ -1053,8 +1057,11 @@ public sealed partial class ModService
             // 下面每一层判据都要先看"包内那层目录名"，这里根本没有那层。只剩两条证据可用：
             // 这个包页面登记的前置、以及这份翻译自己的键是谁的键。
             if (SoleTranslationJson(tempDir, judged) is string bareJson)
-                return ProbeTranslationOnlyPack(gamePath, tempDir, bareJson, packRequirements,
+            {
+                var bp = ProbeTranslationOnlyPack(gamePath, tempDir, bareJson, packRequirements,
                     out fail, out hostGuess);
+                return bp is null ? null : new List<OverlayPlan> { bp };
+            }
             fail = OverlayFail.NoHostInPack;
             return null;
         }
@@ -1070,6 +1077,9 @@ public sealed partial class ModService
         var relNested = new List<string>();
         var tops = new List<string>();     // 包内出现过的顶层目录名（>1 = 一个包里含多个 mod 的目录）
         var subs = new List<string>();     // 顶层之下那层的不同目录名（多宿主贴图包：一层一个别的 mod）
+        // 逐目录名收集"它自己名下有哪些文件"，供多宿主包一家一份计划用（见 ProbeOnePlanPerHostDir）
+        var filesByTop = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+        var filesBySub = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
         foreach (var f in files)
         {
             var r = Path.GetRelativePath(tempDir, f).Replace('\\', '/');
@@ -1080,13 +1090,34 @@ public sealed partial class ModService
             if (parts.Length > 2 && !IsVanillaAssetLayoutDir(parts[1])) AddDistinct(subs, parts[1]);
             rel.Add(r[(top.Length + 1)..]);
             if (parts.Length > 2) relNested.Add(string.Join('/', parts[2..]));
+            (filesByTop.TryGetValue(parts[0], out var tf) ? tf : filesByTop[parts[0]] = new List<string>())
+                .Add(string.Join('/', parts[1..]));
+            if (parts.Length > 2)
+                (filesBySub.TryGetValue(parts[1], out var sf) ? sf : filesBySub[parts[1]] = new List<string>())
+                    .Add(string.Join('/', parts[2..]));
         }
         if (top is null || rel.Count == 0) { fail = OverlayFail.NoHostInPack; return null; }
         hostGuess = top;
-        // 跨好几个顶层目录：盖谁都不对，把名字报出来让人自己分开发
-        if (tops.Count > 1) { fail = OverlayFail.MultiHost; hostGuess = JoinHostNames(tops); return null; }
+        // 跨好几个顶层目录：先问"是不是每一家都装着"（实机 53406 那种一个包里摆着捆绑包两个
+        // 子包的汉化）。全对得上就一家一份计划；有一家对不上才报多宿主，把名字报出来让人自己分开发。
+        if (tops.Count > 1)
+        {
+            if (ProbeOnePlanPerHostDir(gamePath, tempDir, tops, filesByTop, "") is List<OverlayPlan> topPlans)
+                return topPlans;
+            fail = OverlayFail.MultiHost; hostGuess = JoinHostNames(tops); return null;
+        }
         if (ResolveHostDir(gamePath, top) is string exactDir)
-            return WithI18nHome(tempDir, RefineToBundleChildRow(top, exactDir, rel) ?? new OverlayPlan(top, rel, top), exactDir);
+        {
+            // 顶层就是【已装的那个壳】：文件分住在几个子包里时，每个子包各记一条账。
+            // 记在壳上等于记在一个没有行的宿主上（徽标、开关、还原全点不到，要等下次启动的
+            // RelocateBundleTopOverlays 才搬进子包），实机汉化包 10342 就是这样隐身过。
+            if (SplitShellPlanByBundleChild(exactDir, top, top, rel) is List<OverlayPlan> shellPlans)
+                return shellPlans;
+            return new List<OverlayPlan>
+            {
+                WithI18nHome(tempDir, new OverlayPlan(top, rel, top), exactDir)
+            };
+        }
         // 顶层名字是【捆绑包里某个子包的目录名】（宿主住在 Mods/壳/子包 这一层）：ResolveHostDir
         // 只找顶层，所以 SVE 这类捆绑包的汉化/贴图包以前一律判"认不出宿主"。
         // 实测 11209 的顶层就是 [CP] Stardew Valley Expanded —— 正是那个子包的目录名。
@@ -1095,7 +1126,7 @@ public sealed partial class ModService
             && ResolveHostDir(gamePath, childHost) is string childDir)
         {
             hostGuess = childHost;
-            return WithI18nHome(tempDir, new OverlayPlan(childHost, rel, top), childDir);
+            return One(WithI18nHome(tempDir, new OverlayPlan(childHost, rel, top), childDir));
         }
         // 第二层【只有一个】名字时它才可能是真宿主（汉化包把真宿主再套一层的写法）；
         // 好几个名字 = 这包本来就是给好几个 mod 用的，第二层是候选宿主清单，不是宿主。
@@ -1104,7 +1135,7 @@ public sealed partial class ModService
             && ResolveHostDir(gamePath, nested) is string nestedDir)
         {
             hostGuess = nested;
-            return WithI18nHome(tempDir, new OverlayPlan(nested, relNested, top + "/" + subs[0]), nestedDir);
+            return One(WithI18nHome(tempDir, new OverlayPlan(nested, relNested, top + "/" + subs[0]), nestedDir));
         }
         // 拼写不同 ≠ 没装：汉化作者常把 N 网页号写进包内目录名。认出来了仍然只往【已存在】的
         // 宿主目录里盖，一个候选都对不上才说「你还没装它」。
@@ -1112,9 +1143,10 @@ public sealed partial class ModService
             && ResolveHostDir(gamePath, bySpelling) is string spelledDir)
         {
             hostGuess = bySpelling;
-            return WithI18nHome(tempDir, new OverlayPlan(bySpelling, rel, top), spelledDir);
+            return One(WithI18nHome(tempDir, new OverlayPlan(bySpelling, rel, top), spelledDir));
         }
-        // 顶层认不出、而第二层摆着好几个别的 mod ⇒ 这是多宿主包，不许拿顶层那个名字当
+        // 走到这里：顶层名字谁也对不上，而第二层摆着好几个别的 mod 的名字。那些名字是【候选宿主
+        // 清单】不是宿主（见下面 ProbeOnePlanPerHostDir 那一步），所以不许拿顶层那个名字当
         // 「你还没装的前置」报出去（实测 mod 1993 的文件 35407：顶层是包自己的标题
         // 「Mod Compatibility Textures」，真宿主是第二层的 Deep Woods Obelisk / Tractor Garage，
         // 而这两个都没装 ⇒ 旧写法会凭空捏一个不存在的「前置」）。
@@ -1133,7 +1165,7 @@ public sealed partial class ModService
             if (cfgHits.Count == 1 && ResolveHostDir(gamePath, cfgHits[0]) is string cfgDir)
             {
                 hostGuess = cfgHits[0];
-                return WithI18nHome(tempDir, new OverlayPlan(cfgHits[0], rel, top), cfgDir);
+                return One(WithI18nHome(tempDir, new OverlayPlan(cfgHits[0], rel, top), cfgDir));
             }
             if (cfgHits.Count > 1)
             {
@@ -1142,7 +1174,16 @@ public sealed partial class ModService
                 return null;
             }
         }
-        if (subs.Count > 1) { fail = OverlayFail.MultiHost; hostGuess = JoinHostNames(subs); return null; }
+        if (subs.Count > 1)
+        {
+            // 第二层那几个名字【每一家都装着】⇒ 这是给这几个 mod 一起用的包，一家一份计划。
+            // 实机 53406「To The Moon (中文)」：包内两个目录就是已装捆绑包 Nullnnow.ToTheMoon
+            // v1.0.0 的两个子包，旧写法在这里直接弃权，把一个完整的汉化拒成"该盖哪家你决定"。
+            // 有一家对不上就整包不装 —— 只盖一半会让这个包半生效，而那正是这条链最怕的静默。
+            if (ProbeOnePlanPerHostDir(gamePath, tempDir, subs, filesBySub, top + "/") is List<OverlayPlan> subPlans)
+                return subPlans;
+            fail = OverlayFail.MultiHost; hostGuess = JoinHostNames(subs); return null;
+        }
         // 包内那层目录名谁也对不上 ⇒ 最后再问一遍这个包页面登记的前置、以及这份翻译自己的键
         // （实测 24232 包内那层就是 "i18n"、49587 那层是翻译自己的标题 —— 两个都不是宿主名）。
         // 只在路径判据全落空时才走到这里，所以"顶层目录名就是宿主"那条既有的路一条都没动。
@@ -1150,7 +1191,7 @@ public sealed partial class ModService
         {
             var tplan = ProbeTranslationOnlyPack(gamePath, tempDir, transJson, packRequirements,
                 out var tfail, out var tguess);
-            if (tplan is not null) { fail = OverlayFail.None; hostGuess = tguess; return tplan; }
+            if (tplan is not null) { fail = OverlayFail.None; hostGuess = tguess; return One(tplan); }
             // 翻译包那条通道报得出【具体是谁】时（页面登记的前置），就用它的判定 ——
             // 实测 24232 包内那层是 "i18n"，旧写法会指着这个素材层名说「你还没装「i18n」」，
             // 而页面说得出真宿主是 #20781。它说不出名字时才轮到下面那道"层名不是 mod 名"的闸。
@@ -1561,21 +1602,85 @@ public sealed partial class ModService
     /// 开关、还原、删除三个入口全点不到 —— 文件其实已经正确落盘、游戏里也确实生效了。</para>
     /// 归不了返回 null（交回原判定）：顶层自己有 manifest、文件散在好几个子包、
     /// 有直属顶层的文件、或那一层子目录根本没有 manifest。</summary>
-    private static OverlayPlan? RefineToBundleChildRow(string top, string topDir, List<string> rel)
+    private static List<OverlayPlan> One(OverlayPlan p) => new() { p };
+
+    /// <summary>包里文件所在的那层是「自己没有 manifest 的捆绑包壳」⇒ 按子包拆开，<b>每个子包一条账</b>
+    /// <c>顶层/子包</c>（Scan 不为壳顶层出行，只为带 manifest 的子包出行）。一个子包时它退化成原来
+    /// 那份 <see cref="SplitShellPlanByBundleChild"/> 在一家时的结果，形状逐字不变。
+    /// <para>不归一的症状（实机汉化包 28252 → Frontier Farm，2026-10-07）：包内路径
+    /// <c>Frontier Farm/[CP] Frontier Farm/i18n/zh.json</c> 的顶层名恰好就是壳目录名，于是宿主记成了顶层；
+    /// 而 Mods 页那两行都是子包，徽标按宿主形状查表 ⇒ 一个都查不到，覆盖包在界面上整个隐身，
+    /// 开关、还原、删除三个入口全点不到 —— 文件其实已经正确落盘、游戏里也确实生效了。</para>
+    /// <para>文件分住几个子包时（实机汉化包 10342 → SVE 的 Code 与 [CP] 两包）原来也记在壳上，
+    /// 要等下次启动 <see cref="RelocateBundleTopOverlays"/> 才搬进子包行 —— 装完到重启之前那一截
+    /// 同样是隐形的。这里当场拆开，就不需要等。</para>
+    /// 拆不了返回 null（交回原判定）：顶层自己有 manifest、有直属顶层的文件、或某一层子目录没有 manifest。</summary>
+    private static List<OverlayPlan>? SplitShellPlanByBundleChild(string topDir, string top, string packRoot,
+        List<string> rel)
     {
         if (File.Exists(Path.Combine(topDir, "manifest.json"))) return null;
-        string? seg = null;
+        var bySeg = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
         foreach (var r in rel)
         {
             var i = r.IndexOf('/');
-            if (i <= 0) return null;
-            if (seg is null) seg = r[..i];
-            else if (!seg.Equals(r[..i], StringComparison.OrdinalIgnoreCase)) return null;
+            if (i <= 0) return null;                       // 有文件直属壳这一层：拆不进任何子包
+            if (!bySeg.TryGetValue(r[..i], out var g)) bySeg[r[..i]] = g = new List<string>();
+            g.Add(r[(i + 1)..]);
         }
-        if (seg is null || !File.Exists(Path.Combine(topDir, seg, "manifest.json"))) return null;
-        var cut = seg.Length + 1;
-        var host = top + "/" + seg;
-        return new OverlayPlan(host, rel.Select(r => r[cut..]).ToList(), host);
+        var plans = new List<OverlayPlan>();
+        foreach (var (seg, files) in bySeg)
+        {
+            if (!File.Exists(Path.Combine(topDir, seg, "manifest.json"))) return null;   // 那一层不是子包
+            plans.Add(new OverlayPlan(top + "/" + seg, files, packRoot + "/" + seg));
+        }
+        return plans.Count > 0 ? plans : null;
+    }
+
+    /// <summary>包内并列摆着<b>好几个</b>别的 mod 的目录名时，逐字比对已装 mod 行：
+    /// <b>每一家都唯一对上</b>才交回"一家一份计划"，否则 null（调用方报 <see cref="OverlayFail.MultiHost"/>）。
+    /// <para>为什么原来一律弃权、现在敢盖：弃权那条写法顺带把【捆绑包的汉化包】也拒了 ——
+    /// 实机 53406「To The Moon (中文)」包内两个目录就是已装捆绑包的两个子包，目录名逐字相同、
+    /// 两个都装着，这里没有任何"该替谁决定"的余地，缺的只是"去盘上看一眼"。</para>
+    /// <para>三道闸，一道都不松：① 只认<b>逐字相等</b>的行末段名（不拼写、不截断 —— 多宿主一次要落
+    /// 好几家，猜错的面积比单宿主大）；② 一家都对不上才算，<b>有一家缺就整包不装</b>（只盖一半会让
+    /// 这个包半生效，正是这条链最怕的静默）；③ 包里出现的目录名必须【全部】在候选清单里 ——
+    /// 混着 assets/ 这类原版素材层名的包拆一半留一半，等于替用户丢了文件。</para></summary>
+    private List<OverlayPlan>? ProbeOnePlanPerHostDir(string gamePath, string tempDir, List<string> dirNames,
+        Dictionary<string, List<string>> filesByDir, string packRootPrefix)
+    {
+        if (dirNames.Count < 2 || dirNames.Count != filesByDir.Count) return null;
+        var plans = new List<OverlayPlan>();
+        foreach (var n in dirNames)
+        {
+            // 名字逐字相等 ⇒ 每家本来就是不同的一行，不需要再防"两个目录对上同一家"
+            if (FindInstalledHostByExactDirName(gamePath, n) is not string host) return null;
+            if (ResolveHostDir(gamePath, host) is not string hostDir) return null;
+            plans.Add(WithI18nHome(tempDir, new OverlayPlan(host, filesByDir[n], packRootPrefix + n), hostDir));
+        }
+        return plans;
+    }
+
+    /// <summary>已装 mod 行里，<b>目录末段名逐字相等</b>的那一家。命中 0 个或多个都不返回。
+    /// 行必须来自 <see cref="ScanRaw"/>（顶层 mod 与捆绑包子包都算），这样落盘的宿主一定是
+    /// Mods 页有一行的宿主 —— 记在壳顶层上的账没有徽标、开关、还原任何入口。</summary>
+    private string? FindInstalledHostByExactDirName(string gamePath, string dirName)
+    {
+        var found = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        string? one = null;
+        try
+        {
+            foreach (var e in ScanRaw(gamePath))
+            {
+                var host = NormalizeOverlayHost(e.Folder);
+                if (host.Length == 0) continue;
+                if (!host.Replace('\\', '/').Split('/')[^1].Equals(dirName, StringComparison.OrdinalIgnoreCase)) continue;
+                // 扫到却又不在磁盘上了 = 目录正在被改名，这份结果不能用
+                if (ResolveHostDir(gamePath, host) is null) continue;
+                if (found.Add(host)) one = host;
+            }
+        }
+        catch { return null; }
+        return found.Count == 1 ? one : null;
     }
 
     /// <summary>包里【声明】要翻译哪些配置项：它自己 i18n/*.json 里 <c>config.&lt;字段&gt;.name</c>
@@ -1776,7 +1881,11 @@ public sealed partial class ModService
             case OverlayFail.AmbiguousConfigHost:
                 return LocService.Tf("这个包要翻译的配置项，好几个已装 mod 都声明了（{0}），认不出该盖谁，已放弃安装。", hostGuess);
             case OverlayFail.MultiHost:
-                return LocService.Tf("这个包里放着好几个别的 mod 的目录（{0}），该盖哪家我们替你决定不了，已放弃安装。请只装你需要的那一个，或手动放进对应 mod。", hostGuess);
+                // 这句的原因随判据一起变了：包内几个目录名【每一家都装着】时我们已经会一家一份地盖，
+                // 所以走到这里只剩一种可能 —— 有名字对不上唯一一家已装 mod。原来那句
+                // 「该盖哪家我们替你决定不了」在这种机器上是谎话（实机 53406 的包内两个目录
+                // 就是已装捆绑包的两个子包，我们只是没去盘上看）。
+                return LocService.Tf("这个包里放着好几个别的 mod 的目录（{0}），本机没能把每一个都对上一个已装的 mod —— 只盖一半会让这个包半生效，已放弃安装。请只装你需要的那一个，或手动放进对应 mod。", hostGuess);
             case OverlayFail.DeclaredHostKeyMismatch:
                 // 与「判断不出宿主」分开说：宿主认出来了、本机也装着，是这份文件的内容跟它对不上。
                 return LocService.Tf("这个包登记的前置是「{0}」，本机也装着它，可这份文件里的条目跟它自己 i18n 里的对不上 —— 它不是这个 mod 的汉化，盖上去也不会生效，已放弃安装。", hostGuess);
@@ -2183,7 +2292,7 @@ public sealed partial class ModService
         => Path.Combine(ConfigService.ConfigDir, "overlays", storeId);
 
     /// <summary>把历史上记成「捆绑包壳顶层」的覆盖账改记到它真正的宿主行 <c>顶层/子包</c>
-    /// （症状与判据见 <see cref="RefineToBundleChildRow"/>，那条判据只在新装时生效，救不了已经落盘的账）。
+    /// （症状与判据见 <see cref="SplitShellPlanByBundleChild"/>；那条判据只在新装时生效，救不了已经落盘的账）。
     /// <para>键里带着宿主，所以键、<see cref="OverlayRecord.Host"/>、
     /// <see cref="OverlayRecord.RelPath"/> 三处一起改，AppData 那份副本也要跟着搬 ——
     /// 搬不动就整条不动：宁可留着这条看不见的账，也不能把「关掉再打开」弄坏。</para>
@@ -2284,7 +2393,7 @@ public sealed partial class ModService
                 var keep = string.IsNullOrEmpty(rec.StoreId)
                     ? null : Path.Combine(OverlayStoreDir(rec.StoreId), local);
                 if (keep is null || !File.Exists(keep))
-                    return LocService.Tr("覆盖包的文件副本已丢失，无法重新开启。请重新安装该汉化包。");
+                    return LocService.Tr("覆盖包的文件副本已丢失，无法重新开启。请重新安装这个覆盖包。");
                 if (File.Exists(dst) && !File.Exists(bak)) File.Copy(dst, bak);
                 Directory.CreateDirectory(Path.GetDirectoryName(dst)!);
                 File.Copy(keep, dst, overwrite: true);
@@ -2442,12 +2551,19 @@ public sealed partial class ModService
                 var declaredOvPlan = ProbeOverlayForDeclaredHost(gamePath, temp!, packRequirements);
                 OverlayFail ofail = OverlayFail.NoHostInPack;
                 string hostGuess = "";
-                var ovPlan = declaredOvPlan
-                             ?? ProbeOverlay(gamePath, temp!, out ofail, out hostGuess, packRequirements);
-                if (ovPlan is not null && cfg is not null)
+                var ovPlans = declaredOvPlan is not null ? One(declaredOvPlan)
+                             : ProbeOverlay(gamePath, temp!, out ofail, out hostGuess, packRequirements);
+                if (ovPlans is not null && cfg is not null)
                 {
-                    var oerr = ApplyOverlay(gamePath, temp!, ovPlan, cfg, nexusModId,
-                        loosePackName, out modName, installNotes);
+                    // 一个包可以盖在好几家上（捆绑包的汉化就是这种形状）：一家一份计划、逐家落盘逐家记账。
+                    // 某一家被占用就停在那里 —— 已经写进去的那些条条在账上，能从对应那行的卡片里撤。
+                    string? oerr = null;
+                    foreach (var p in ovPlans)
+                    {
+                        oerr = ApplyOverlay(gamePath, temp!, p, cfg, nexusModId,
+                            loosePackName, out modName, installNotes);
+                        if (oerr is not null) break;
+                    }
                     TryDelete(temp);
                     return oerr;
                 }
@@ -2494,14 +2610,14 @@ public sealed partial class ModService
                     if (aerr is null) modName = loosePackName;
                     return aerr;
                 }
-                // 覆盖判定在转换之前就跑过了（见上面 ovPlan）：它说不是覆盖包，下面这几条
+                // 覆盖判定在转换之前就跑过了（见上面 ovPlans）：它说不是覆盖包，下面这几条
                 // 转换通道才有权接管；全都没接管，就用它那次的判定解释"为什么放弃"。
                 // 宿主其实认出来了、本机也装着，而包里的文件与那个 mod 自己的文件【一张都不同名】——
                 // 这既不是"判断不出宿主"也不是"你还没装"，说那两句都是撒谎。
                 // 实机 30539：登记前置 #16220，本机 [CP] Childhood Sweetheart Caroline 就是它，
                 // 但包里 21 张叫 Portraits/Aerobics.png，宿主自己 30 张叫 Portraits/Caroline_Aerobics.png
                 // —— 同名 0/21，盖上去一张都不会替换（是给另一个版本的这个 mod 画的）。
-                if (cfg is not null && ovPlan is null
+                if (cfg is not null && ovPlans is null
                     && !Directory.EnumerateFiles(temp!, "*.json", SearchOption.AllDirectories).Any()
                     && FindInstalledRequirementHost(gamePath, packRequirements) is string installedHost)
                 {
@@ -2929,8 +3045,10 @@ public sealed partial class ModService
             .FirstOrDefault();
     }
 
-    /// <summary>压缩包/资源格式按文件头判定：zip / rar / 7z / xnb / png / html / empty / unknown。</summary>
-    private static string DetectArchiveFormat(string path)
+    /// <summary>压缩包/资源格式按文件头判定：zip / rar / 7z / xnb / png / html / empty / unknown。
+    /// <c>internal</c>：下载缓存里"叫什么扩展名"不可信（安装器一律把落盘名写成 .zip，
+    /// 实机 2026-10-08 的 193 个缓存文件里有 14 个其实是 RAR/7z），别处要认格式只能走这同一个文件头判定。</summary>
+    internal static string DetectArchiveFormat(string path)
     {
         var head = new byte[8];
         int read;

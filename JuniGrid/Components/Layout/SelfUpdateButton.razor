@@ -9,6 +9,7 @@
         · 缓存已完整（下载过）  → 气泡「点击安装」+ 满环，点击直接再弹向导
         · 下载中                → 气泡 转圈+「下载中」（按钮圆环同步进度，断点续传）
         · 下载失败              → 气泡「下载失败，点击重试」
+        · 包校验不通过          → 气泡「安装包校验不通过，点击重试」（残缺包已删，点击从 0 重下）
    —— 鼠标移开 → 气泡瞬间消失（无退场动画）；
    —— 点击 → 未下载时开始下载；下载完成自动弹出安装向导并退出本应用（v1.0.14 行为回归）；
    —— 向导被用户直接关掉 → 缓存保留，下次启动/点击直接「点击安装」再弹；
@@ -41,6 +42,10 @@
             {
                 <span>@Loc.T("点击安装")</span>
             }
+            else if (_rejected)
+            {
+                <span>@Loc.T("安装包校验不通过，点击重试")</span>
+            }
             else if (_failed)
             {
                 <span>@Loc.T("下载失败，点击重试")</span>
@@ -58,6 +63,7 @@
     private bool _downloading;          // 正在后台下载
     private bool _ready;                // 安装包已缓存，点击即可弹向导
     private bool _failed;               // 下载失败（点击重试，断点续传）
+    private bool _rejected;             // 下完了但校验不通过（包被截断/被换过，已删除，点击重下）
     private double? _progressPercent;
     private ElementReference _wrap;
     private ElementReference _bubble;
@@ -72,6 +78,7 @@
 
     private string TipText => _downloading ? "下载中"
         : _ready ? "点击安装"
+        : _rejected ? "安装包校验不通过，点击重试"
         : _failed ? "下载失败，点击重试"
         : $"发现新版本v{_selfUpdate?.LatestVersion}，点击下载安装";
 
@@ -124,6 +131,7 @@
         }
         _downloading = true;
         _failed = false;
+        _rejected = false;
         _progressPercent = null;
         await InvokeAsync(StateHasChanged);
         try
@@ -143,10 +151,12 @@
         }
         catch (Exception ex)
         {
-            // 下载失败：气泡提示重试（已下载的部分保留，点击续传）
+            // 两种失败分开报：网络断了 → 半截文件留着，点击续传；包校验不通过 → 那份已经删了，
+            // 点击是从 0 重下。混成一句「下载失败」会让人一直怀疑自己网差。
             _downloading = false;
-            _failed = true;
-            AppLog.Warn("SelfUpdate", $"安装包下载失败：{ex.Message}");
+            _rejected = ex is SelfUpdateService.InstallerIntegrityException;
+            _failed = !_rejected;
+            AppLog.Warn("SelfUpdate", _rejected ? "安装包校验不通过：" + ex.Message : "安装包下载失败：" + ex.Message);
             await InvokeAsync(StateHasChanged);
         }
     }

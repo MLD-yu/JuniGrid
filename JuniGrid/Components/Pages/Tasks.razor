@@ -96,7 +96,7 @@
                             }
                         </div>
                         <div style="margin-top:6px;font-size:12px;display:flex;align-items:center;gap:6px;">
-                            <span style="opacity:.7;">@(RowState(t)) · @t.Percent.ToString("F0")% @(RowExtra(t))</span>
+                            <span style="opacity:.7;">@(RowState(t)) · @t.Percent.ToString("F0")% @(RowExtra(t)) · @StartedAt(t)</span>
                             @if (log.Count > 0)
                             {
                                 @* ─── 数字进度后边的下拉按钮：展开该任务的下载信息 ─── *@
@@ -372,12 +372,11 @@
         // 本次运行里真跑过的 → 原地重挂 worker 重跑
         if (Center.Retry(t)) return;
 
-        // 重启后从磁盘恢复的失败行没有 worker，但行上带着 Nexus 号 → 按它重新发起一条。
-        // 号用完就摘：新任务自己会排到列表顶上，留着会让人再点出第二条。
+        // 重启后从磁盘恢复的失败行没有 worker，但行上带着 Nexus 号 → 按它重发一次。
+        // 号必须留着：InstallModDirectAsync 认这个号认出「就是这一行」并原地重开，
+        // 摘掉它就等于让它新建一条，任务管理里同一次下载又会多出一行。
         if (t.NexusId is int modId)
         {
-            t.NexusId = null;
-            Center.Notify();
             _ = RedispatchAsync(modId);
             return;
         }
@@ -429,7 +428,20 @@
     private string RowExtra(TaskItem t)
     {
         if (t.Status != "running" || VerDl.IsQueued(t)) return "";
-        return t.SpeedReported ? $"· {t.SpeedMBps:F2} M/s" : $"· 已运行 {Elapsed(t.StartedAt)}";
+        return t.SpeedReported ? $"· {t.SpeedMBps:F2} M/s" : $"· 已运行 {Elapsed(t.RunFrom)}";
+    }
+
+    /// <summary>这一行什么时候开始的。任务长存（重启也留着），没有开始时间就没法
+    /// 分辨「昨晚卡住的那条」和「刚才点错的那条」。「已运行」只在跑着的时候有，
+    /// 落定的行什么都不显示，所以这个时间是唯一一直在线的那个。</summary>
+    private string StartedAt(TaskItem t)
+    {
+        var s = t.StartedAt;
+        var now = DateTime.Now;
+        var clock = s.ToString("HH:mm:ss");
+        return Loc.F("开始 {0}", s.Date == now.Date ? clock
+            : s.Year == now.Year ? $"{s.Month:00}-{s.Day:00} {clock}"
+            : $"{s:yyyy-MM-dd} {clock}");
     }
 
     private static string Elapsed(DateTime since)

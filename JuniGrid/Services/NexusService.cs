@@ -1151,6 +1151,10 @@ public sealed class NexusService
     {
         var h = new HttpClient();
         h.DefaultRequestHeaders.UserAgent.ParseAdd($"JuniGrid/{AppInfo.Version}");
+        // AUP 那两个头也带上：它打的是 CDN 不是 api.nexusmods.com，但少一个"这客户端是谁、什么版本"
+        // 的自报家门就多一轮问答（审核方上次就盯着版本头问过）。
+        h.DefaultRequestHeaders.TryAddWithoutValidation("Application-Name", "JuniGrid");
+        h.DefaultRequestHeaders.TryAddWithoutValidation("Application-Version", AppInfo.Version);
         h.Timeout = TimeSpan.FromMinutes(30);
         return h;
     }

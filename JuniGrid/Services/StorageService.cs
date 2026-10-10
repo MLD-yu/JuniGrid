@@ -51,6 +51,14 @@ public sealed class StorageService
         get { lock (_gate) return _sizes.Where(kv => kv.Key != "data" && kv.Value > 0).Sum(kv => kv.Value); }
     }
 
+    /// <summary>列出一个目录下的现存条目；目录不存在或读不动就给空数组 —— 存储页不能因为一个
+    /// 历史位置的权限问题而整页报错。</summary>
+    private static string[] SafeEntries(string dir)
+    {
+        try { return Directory.Exists(dir) ? Directory.GetFileSystemEntries(dir) : Array.Empty<string>(); }
+        catch { return Array.Empty<string>(); }
+    }
+
     /// <summary>分类清单（每次现建：备份清理范围、游戏回收站都依赖当前配置）。</summary>
     public List<StorageCategory> GetCategories()
     {
@@ -129,6 +137,19 @@ public sealed class StorageService
             new[] { verCache }, new[] { verCache }, Cleanable: true, Movable: true,
             Tip: "切换游戏版本时下载的完整游戏包 切回该版本时无需重新下载 清理会删掉全部已缓存版本 而且每个版本包里还躺着那一版的 Mods 抽屉（那是你的 mod 本体，删了要重装）"));
 
+        // v1.2.7：默认缓存落点从 %TEMP%\JuniGrid 改成安装目录后，旧位置可能还剩搬不走的副本。
+        // 必须让它在界面上看得见并可以清 —— 「看不见就删不掉」是 G3 审计钉过的那类无主条目。
+        // 唯一不给清的时候：PendingWebView2MoveFrom 有值 —— 那表示本会话的 WebView2 还住在旧位置，
+        // 删它等于删掉正在用的登录态。
+        var legacyRoots = SafeEntries(StoragePaths.TempRoot);
+        if (legacyRoots.Length > 0 && string.IsNullOrWhiteSpace(_cfg.Current.PendingWebView2MoveFrom))
+        {
+            list.Add(new("legacytemp", "旧缓存位置", "默认位置改到安装目录后剩下的副本", StoragePaths.TempRoot,
+                legacyRoots, legacyRoots, Cleanable: true, Movable: false,
+                Tip: "以前这些缓存默认放在系统的临时文件夹 现在改放到程序所在目录 这里是没能搬过去的旧副本 "
+                    + "应用读的是新位置那一份 清掉这里只是删重复的旧副本 个别文件正被占用时会留在原处 重启后再清"));
+        }
+
         var logFiles = new[]
         {
             Path.Combine(StoragePaths.AppDataDir, "juni-grid.log"),
@@ -154,7 +175,7 @@ public sealed class StorageService
         // v1.6.12：saves-hidden（版本收起的存档抽屉，可达数百 MB）与 userdata-backup 同理。
         var pcovers = new[]
         {
-            // 必须是 InCache（CacheRoot ?? %TEMP%\JuniGrid）—— 与写缩略图的 PackThumbService
+            // 必须是 InCache（CacheRoot ?? DefaultCacheRoot）—— 与写缩略图的 PackThumbService
             // 同一个入口。以前这里写的是 CacheRoot ?? "" 拼接，没设统一缓存目录时拼出裸相对名
             // "portrait-covers"：统计算不到真目录（1.1 MB 缩略图凭空消失）、「打开」跳到空文件夹。
             StoragePaths.InCache("portrait-covers"),
@@ -730,4 +751,88 @@ public sealed class StorageService
 
     private static void CopyTree(string src, string dst)
         => ModService.CopyDirectoryContents(src, dst);
+
+    /// <summary>v1.2.7 一次性搬家：把历史默认位置（<c>%TEMP%\JuniGrid</c>）里的可迁移项
+    /// 挪进当前的默认缓存落点。
+    /// <para>为什么必须存在：默认落点从临时目录改成安装目录，等于改了「配置里那一栏空着」的含义。
+    /// 存量「从没设过缓存目录」的人，东西全都躺在临时目录里；不搬的话新默认一上线，
+    /// 应用就去新位置找一个空壳 —— Nexus 登录态、SMAPI 更新前的 Mods 备份、几百 MB 版本缓存
+    /// 当场"消失"（这正是 <c>InstallMigrate</c> 注释里警告的那个失效形态）。</para>
+    /// <para>只在用户<b>没设过</b>统一缓存目录时动手：设过的人自己的位置一个字节都不碰。
+    /// webview2 搬不动时返回它的旧路径，由调用方记进 <c>PendingWebView2MoveFrom</c>，
+    /// 本会话继续用旧目录 —— 绝不允许"静默切到空的新目录"。
+    /// 新位置已经有同名非空目录时也不搬（两处都有 ⇒ 留给用户在存储页自己清，不替他决定）。</para>
+    /// <param name="cacheRoot">配置里那一栏的原值（非空 = 用户自己指过，直接跳过）。</param>
+    /// <param name="webview2Stuck">返回搬不动的 webview2 旧路径；没有则 null。</param>
+    /// <param name="moved">实际搬走的项数。</param>
+    /// <param name="sourceRoot">来源根，默认历史默认位置（%TEMP%\JuniGrid）；只给夹具注入临时目录。</param>
+    /// <param name="targetRoot">目标根，默认当前缓存落点；只给夹具注入临时目录。</param>
+    internal static void MigrateFromLegacyTempRoot(string? cacheRoot,
+        out string? webview2Stuck, out int moved,
+        string? sourceRoot = null, string? targetRoot = null)
+    {
+        webview2Stuck = null;
+        moved = 0;
+        if (!string.IsNullOrWhiteSpace(cacheRoot)) return;                 // 用户自己指过位置：一个字节都不动
+        var srcRoot = sourceRoot ?? StoragePaths.TempRoot;
+        var dstRoot = targetRoot ?? StoragePaths.DefaultCacheRoot;
+        if (!Directory.Exists(srcRoot)) return;                            // 没住过那个位置
+
+        // 旧位置里有啥就搬啥 —— 不查任何名单。名单是第三份手抄表，应用以后新加一个缓存目录而
+        // 这里没跟上，那一类就会静默留在旧位置（M10 只比对安装器那两张，钉不住这里）。
+        string[] legacyEntries;
+        try { legacyEntries = Directory.GetFileSystemEntries(srcRoot); }
+        catch (Exception ex) { AppLog.Warn("Storage", "[缓存搬家] 旧位置读不出来：" + ex.Message); return; }
+
+        static bool TryMoveFile(string src, string dst)
+        {
+            try { File.Move(src, dst); return true; }
+            catch
+            {
+                try { File.Copy(src, dst, true); File.Delete(src); return true; }
+                catch { try { File.Delete(dst); } catch { } return false; }
+            }
+        }
+
+        foreach (var src in legacyEntries)
+        {
+            var name = Path.GetFileName(src);
+            var dst = Path.Combine(dstRoot, name);
+            var isDir = Directory.Exists(src);
+            try
+            {
+                if (isDir && Directory.Exists(dst))
+                {
+                    if (Directory.EnumerateFileSystemEntries(dst).Any())
+                    {
+                        // 两处都有：用新位置那份（应用现在认的就是它），旧位置留给存储页统计+自行清理。
+                        // 这里不能顺手合并 —— 两边都可能有用户没备份过的东西，替他选哪边活下来不是搬家该做的事。
+                        AppLog.Warn("Storage", $"[缓存搬家] 新旧两处都有 {name}，两边都不动（可在存储页清理旧位置）");
+                        continue;
+                    }
+                    Directory.Delete(dst, recursive: false);               // 空壳：挪开让路，同盘 Move 才不撞
+                }
+                else if (!isDir && File.Exists(dst))
+                {
+                    AppLog.Warn("Storage", $"[缓存搬家] 新旧两处都有散装文件 {name}，两边都不动");
+                    continue;
+                }
+                Directory.CreateDirectory(dstRoot);
+                if (isDir ? TryMoveTree(src, dst) : TryMoveFile(src, dst)) { moved++; continue; }
+                AppLog.Warn("Storage", $"[缓存搬家] {name} 占用中，留在原处下次启动再搬：{src}");
+            }
+            catch (Exception ex)
+            {
+                AppLog.Warn("Storage", $"[缓存搬家] {name} 没搬动：{ex.Message}");
+            }
+            if (isDir && name == "webview2") webview2Stuck = src;          // 只有搬不成才当它卡住
+        }
+
+        try
+        {
+            if (Directory.Exists(srcRoot) && !Directory.EnumerateFileSystemEntries(srcRoot).Any())
+                Directory.Delete(srcRoot);                                 // 只删确实空了的壳
+        }
+        catch { }
+    }
 }

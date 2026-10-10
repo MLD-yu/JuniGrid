@@ -141,6 +141,17 @@ const onDisk = [
 const unref = onDisk.filter(f => !refs.includes(f) && !html.includes(f));
 check(unref.length === 0, '磁盘 css/js 均被 index.html 引用', unref.join(', ') || `${onDisk.length} 个文件全部命中`);
 
+// ---------- 5) 列表滚动入场动画的判据 ----------
+// 回归过的真实缺陷（2026-10-09 实测）：用 e.intersectionRatio >= 0.5 决定 opacity 0/1，
+// 而 intersectionRatio 量的正是我们自己刚写下去的那个 scale —— 压在视口边上的行只要
+// 滚动位置抖 2px 就在「完全可见 / 完全透明」之间整幅翻转（滚到底后顶上那行一直闪）。
+// 判据必须从未变换的布局高度还原行盒，所以这里钉住两件事：不许再读 intersectionRatio，
+// 并且要用 offsetHeight。把回调改回二值闸门，这两条立刻红。
+const al = String(sandbox.junigridJs?.animatedListInit ?? '').replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+check(al.length > 0, 'animatedListInit 已导出');
+check(!/intersectionRatio/.test(al), '入场判据不读 intersectionRatio（被自身 scale 污染）');
+check(/offsetHeight/.test(al), '入场判据用未变换的布局高度还原真实行盒');
+
 // ---------- 汇总 ----------
 const failed = results.filter(r => !r.ok);
 console.log(`\n==== ${results.length - failed.length} PASS / ${failed.length} FAIL ====`);

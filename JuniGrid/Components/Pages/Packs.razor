@@ -283,9 +283,11 @@
             }
         }
     }
-    else
+    else if (!_initialLoading)
     {
-        @* ── 空状态：说清楚这页装什么、去哪装，一句话指路 ── *@
+        @* ── 空状态：说清楚这页装什么、去哪装，一句话指路。
+           必须等账算完才许出现：骨架屏期间 _groups 本来就是空的，
+           不加这道闸门就会在加载途中先甩一句"暂无内容包"（其实十几个包正在路上）。 *@
         <div class="jg-pk-empty">
             <svg class="jg-pk-empty-art" viewBox="0 0 220 120" fill="none" aria-hidden="true">
                 <rect x="14" y="26" width="52" height="52" rx="9" stroke="currentColor" stroke-width="2.5" opacity=".55"/>
@@ -307,6 +309,54 @@
         </div>
     }
 
+    @* ── 与留底不一致：这张图既不是任何账上包的版本，也不是我们动手前记下的那份。
+       上面那条「包已删除，本体覆盖仍在生效」是"有账、包没了"；这一栏是它的镜像——
+       "图还盖着、账已经没了"，所以「全部还原」一张都不碰它（2026-10-09 实机：6 张兽化立绘
+       就这么藏了两天）。判据见 ContentOverrideService.Strays：没有留底就没依据，不报。
+       这一栏【只标注、不写盘】（2026-10-09 他拍的）：我们手上最好的证据只是"动手前盘上的样子"，
+       而那张本身可能就是别人盖上去的（那 6 张就是动漫版）—— 拿它覆盖本体等于把错误再画一遍，
+       而"恢复原版"这件事只有 Steam 那份文件做得到，不该由我们去揽。*@
+    @if (!_initialLoading && _strays.Count > 0)
+    {
+        <section class="jg-home-sec">
+            <div class="jg-home-sec-head">
+                <span class="jg-home-sec-title">@Loc.T("与留底不一致")</span>
+                <span style="font-size:13px;opacity:.6">@Loc.F("{0} 张图盘上的样子不是我们记下的那份", _strays.Count)</span>
+            </div>
+            <div class="jg-pt-grid jg-pk-grid">
+                @foreach (var s in _strays)
+                {
+                    var sLocal = s;
+                    var shown = sLocal.Moved ? sLocal.ForeignFile : sLocal.CurrentFile;
+                    <div class="jg-pt-slot">
+                        <div class="jg-pt-card jg-pk-card" style="cursor:default"
+                             data-tip='@Loc.F("{0} —— {1}", StrayName(sLocal.Asset),
+                                 sLocal.Moved ? Loc.T("这张我们挪开过，那份存在 content-foreign 里")
+                                              : Loc.T("盘上这张不等于我们记下的那份"))'>
+                            <span class="jg-pt-tilt">
+                                <span class="jg-pk-cover">
+                                    @if (System.IO.File.Exists(shown))
+                                    {
+                                        var th = PackThumbService.Get(shown, PackThumbService.KindOf(sLocal.Asset));
+                                        @if (th is not null)
+                                        {
+                                            <img src="@th" alt="" draggable="false" loading="lazy" decoding="async" />
+                                        }
+                                    }
+                                </span>
+                                <span class="jg-pt-name">@StrayName(sLocal.Asset)</span>
+                                <span class="jg-pk-sub @(sLocal.Moved ? "" : "drift")">
+                                    @(sLocal.Moved ? Loc.T("已挪开") : Loc.T("对不上"))
+                                </span>
+                            </span>
+                        </div>
+                    </div>
+                }
+            </div>
+            <div class="jg-pk-empty-note">@Loc.T("要恢复游戏原版：Steam 客户端 → 库 → 星露谷物语 → 属性 → 已安装文件 → 验证游戏文件完整性。这一栏只标注：我们不会拿自己记下的那份去覆盖本体，因为那张也可能是别人盖上去的图。")</div>
+        </section>
+    }
+
     @* ── 对象弹窗：这个对象有哪些版本，逐个应用（原版也在其中）── *@
     @* ── 对象弹窗：一个对象（人物 = 一个角色，含他全部形象）挑一个包盖上。
        手势与立绘页【相反】：单击只管当前形象，长按才统一全部形象 —— 立绘页是"默认全季统一、
@@ -324,7 +374,7 @@
             <div class="jg-modal jg-pk-tmodal" @onclick:stopPropagation>
                 <div class="jg-modal-title">@Loc.T(t.Name)</div>
                 <div class="jg-pk-tmodal-sub">
-                    <span>@t.Sub</span>
+                    <span>@Loc.T(t.Sub)</span>
                     @if (multi)
                     {
                         <span style="opacity:.5;flex:none">·</span>
@@ -404,8 +454,6 @@
                         var active = recs.Any(r => r.Asset.Equals(assets[0], StringComparison.OrdinalIgnoreCase)
                             && r.Enabled) || recs.Any(r => assets.Contains(r.Asset, StringComparer.OrdinalIgnoreCase) && r.Enabled);
                         var mine = recs.Count(r => assets.Contains(r.Asset, StringComparer.OrdinalIgnoreCase));
-                        var hasP = recs.Any(r => r.Asset.StartsWith("Portraits/", StringComparison.OrdinalIgnoreCase));
-                        var hasC = recs.Any(r => r.Asset.StartsWith("Characters/", StringComparison.OrdinalIgnoreCase));
                         var rKey = t.Key + "|" + slot;
                         <button type="button" class="jg-pk-ver @(active ? "active" : "") @(_pressKey == rKey ? "pressing" : "")"
                                 disabled="@_busy"
@@ -437,14 +485,7 @@
                             <span class="jg-pk-ver-meta">
                                 <span class="jg-pk-ver-name">@packTitle</span>
                                 <span class="jg-pk-ver-sub">
-                                    @if (t.IsPerson)
-                                    {
-                                        @(hasP && hasC ? Loc.T("立绘 + 行走图") : hasP ? Loc.T("立绘") : Loc.T("行走图"))
-                                    }
-                                    else
-                                    {
-                                        @Loc.F("覆盖 {0} 个文件", mine)
-                                    }
+                                    @Loc.F("覆盖 {0} 个文件", mine)
                                 </span>
                             </span>
                             @* 这个包没画全该角色的所有形象 ⇒ 长按统一时会有形象盖不上，先说清 *@
@@ -601,9 +642,10 @@
                                         or ContentOverrideService.OverrideState.Gone;
                             var inert = st == ContentOverrideService.OverrideState.AlreadyVanilla;
                             var kind = PackThumbService.KindOf(rec.Asset);
-                            var th = rec.StoreId.Length > 0
-                                ? PackThumbService.Get(ContentOverrideService.StoreFile(GamePath, rec.StoreId, rec.Asset), kind)
-                                : null;
+                            // 副本 → 原包备份两处都找（判据见 PackImageSource）：从盘上认回来的账
+                            // 只有"真在位"的那几条才有副本，只认 StoreId 的话这些行就一片空白。
+                            var recSrc = ContentOverrideService.PackImageSource(GamePath, rec);
+                            var th = recSrc is null ? null : PackThumbService.Get(recSrc, kind);
                             var iKey = "i|" + rec.Slot + "|" + rec.Asset;
                             var sizeNote = ResizedNoteFor(p, rec);
                             @* 这张表在包内有多个配色 ⇒ 行【上方】一排 chips，一个 chip 一个配色，
@@ -762,6 +804,7 @@
     /// <summary>包已经不在了、但它对本体的覆盖还在生效的账（见 <c>AuditOrphans</c>）。
     /// 只点名、不自动写盘 —— 判错一次就会把用户故意留下的画风静默改掉。</summary>
     private List<ContentOverrideService.OrphanOverrideGroup> _orphans = new();
+    private List<ContentOverrideService.StrayOverride> _strays = new();
     private string? _toast;
     private System.Threading.Timer? _toastTimer;
     private string? _menuSlot;              // 三点菜单打开着的包（按包视图，一档只开一个）
@@ -797,6 +840,20 @@
     private void Reload()
     {
         var gp = GamePath;
+        // 账上一条没记、盘上却躺着原包 ⇒ 先把账认回来再列。判据（三方对得上才认、对不上就点名）
+        // 与"绝不从 Content 抄原版"的纪律见 RebuildFromDisk；正常情况 NeedsRebuild 直接 false。
+        if (!string.IsNullOrWhiteSpace(gp))
+        {
+            try
+            {
+                if (ContentOverrideService.NeedsRebuild(Cfg, gp))
+                    ContentOverrideService.RebuildFromDisk(Cfg, gp, dryRun: false);
+                // 认回来的账只有包名；页号只可能从下载缓存的 zip 名里回来。补上它，紧随其后的
+                // EnsureMetaAsync 才拿得到详情页、封面与分类（否则这些包在界面上就是"和 N 网分离"）。
+                ContentOverrideService.BindPageIds(Cfg, gp);
+            }
+            catch (Exception ex) { AppLog.Warn("ContentOverride", "[账本重建] 失败：" + ex.Message); }
+        }
         _all = string.IsNullOrWhiteSpace(gp)
             ? new List<ContentOverrideService.PackGroup>()
             : ContentOverrideService.Groups(gp, Cfg);
@@ -825,6 +882,10 @@
         _orphans = string.IsNullOrWhiteSpace(gp)
             ? new List<ContentOverrideService.OrphanOverrideGroup>()
             : ContentOverrideService.AuditOrphans(gp, Cfg);
+        // 镜像那一侧：图还盖着、账已经没了的，AuditOrphans 看不见（它以账为起点），单独点一次名。
+        _strays = string.IsNullOrWhiteSpace(gp)
+            ? new List<ContentOverrideService.StrayOverride>()
+            : ContentOverrideService.Strays(Cfg, gp);
         _cardSrc.Clear();
         foreach (var t in _targets)
             _cardSrc[t.Key] = ContentOverrideTargets.CardThumbSource(gp, t);
@@ -1062,19 +1123,24 @@
         StateHasChanged();
     }
 
-    /// <summary>mod 详情页：有 N 网页号直接进；手装的包没有页号，学立绘页给一句实话。</summary>
-    private void GoPackDetailPage(ContentOverrideService.PackGroup p)
+    /// <summary>mod 详情页：有页号直接进；没页号（账本被抹过、或手装的包）不再只给一句
+    /// 「无详情页」就完事 —— 那是一条走不通的死路。改成按包名打开 N 网搜索页，
+    /// 并把下一步说清楚：找到那一页后把链接粘回来，页号一写回，详情页、封面、分类一起回来。</summary>
+    private void GoPackDetail(int? page, string packName)
     {
-        if (p.NexusModId is int id) Nav.NavigateTo("/mod/" + id);
-        else Toast(Loc.T("该包并非从 Nexus 安装，无详情页"));
+        if (page is int id) { Nav.NavigateTo("/mod/" + id); return; }
+        UpdateService.OpenUrl("https://www.nexusmods.com/stardewvalley/search/?gsearch="
+            + Uri.EscapeDataString(packName));
+        Toast(LocService.Tf("这个包没有记 N 网页号，已按包名「{0}」打开 N 网搜索页 —— "
+            + "找到那一页后从那里重新安装一次，这个包就接回详情页与封面了", packName));
     }
+
+    /// <summary>mod 详情页：有 N 网页号直接进；没页号就按包名去 N 网搜（见 <see cref="GoPackDetail"/>）。</summary>
+    private void GoPackDetailPage(ContentOverrideService.PackGroup p) => GoPackDetail(p.NexusModId, p.PackName);
 
     /// <summary>对象弹窗里「当前：xxx」→ 当前在位那个包的详情页。</summary>
     private void GoTargetPackDetail(ContentOverrideTargets.TargetGroup t)
-    {
-        if (t.Active?.NexusModId is int id) Nav.NavigateTo("/mod/" + id);
-        else Toast(Loc.T("该包并非从 Nexus 安装，无详情页"));
-    }
+        => GoPackDetail(t.Active?.NexusModId, t.Active?.PackName ?? "");
 
     /// <summary>打开素材包文件夹：优先打开【完整原包】（下载时原样保留、结构不变的 mod 目录），
     /// 老账（没有原包记录）退回逐资产副本目录；都不存在就给一句实话。</summary>
@@ -1334,9 +1400,12 @@
         // 只排显示出来的那些行 —— 一个 1554 份文件的包，语言副本与文本表都不在这一屏里，
         // 照 Items 排队就是一千多个解不开的解码任务。
         if (_open is null) return;
-        var jobs = _open.ImageItems.Where(r => r.StoreId.Length > 0)
-            .Select(r => (ContentOverrideService.StoreFile(GamePath, r.StoreId, r.Asset),
-                PackThumbService.KindOf(r.Asset))).ToList();
+        var jobs = new List<(string, PackThumbService.Kind)>();
+        foreach (var r in _open.ImageItems)
+        {
+            var src = ContentOverrideService.PackImageSource(GamePath, r);
+            if (src is not null && System.IO.File.Exists(src)) jobs.Add((src, PackThumbService.KindOf(r.Asset)));
+        }
         if (jobs.Count > 0) _ = Task.Run(() => PackThumbService.Prewarm(jobs));
     }
 
@@ -1405,6 +1474,10 @@
         _busy = false;
         StateHasChanged();
     }
+
+    /// <summary>账外资产在界面上的名字 = 资产路径最后一段（Abigail），hover 给全路径。
+    /// 与上面卡片"hover 看全名"同一套手势。</summary>
+    private static string StrayName(string asset) => asset.Contains('/') ? asset[(asset.LastIndexOf('/') + 1)..] : asset;
 
     /// <summary>分类名与封面从 N 网各补一次再写回记录，之后离线也认得。
     /// 只有带页号的包补得到；没页号的留在「未分类」，不拿包名去猜一个分类 ——
@@ -1557,7 +1630,7 @@
         }
         var onNow = t.ActiveOf(variant);
         _lbTitle = slot is null ? Loc.T("原版") : ContentOverrideTargets.DisplayPack(recs![0]);
-        _lbSub = t.Name + (t.VariantCount > 1 ? " · " + Loc.T(variant) : "") + " · " + t.Sub
+        _lbSub = t.Name + (t.VariantCount > 1 ? " · " + Loc.T(variant) : "") + " · " + Loc.T(t.Sub)
             + LbFontNote(t.Assets.FirstOrDefault() ?? "");
         _lbNote = null;
         _lbActive = slot is null ? onNow is null
@@ -1586,7 +1659,9 @@
     private void OpenPackItemLightbox(ContentOverrideService.PackGroup p, ContentOverrideRecord r)
     {
         var kind = PackThumbService.KindOf(r.Asset);
-        var src = r.StoreId.Length > 0 ? ContentOverrideService.StoreFile(GamePath, r.StoreId, r.Asset) : null;
+        // 副本与"账上记的那个原包备份"两处都找（判据见 PackImageSource）：只认 StoreId 的话，
+        // 从盘上认回来的那些关着的行会被报成"副本已不在磁盘上"，而图其实就在 asset-packs 里。
+        var src = ContentOverrideService.PackImageSource(GamePath, r);
         _lbTitle = r.Asset[(r.Asset.LastIndexOf('/') + 1)..];
         _lbSub = r.Asset + LbFontNote(r.Asset);
         _lbImages = new List<LbImage>();

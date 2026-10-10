@@ -1,4 +1,4 @@
-@namespace JuniGrid.Components.Pages
+﻿@namespace JuniGrid.Components.Pages
 @page "/mods"
 @inject ConfigService Cfg
 @inject ModService ModSvc
@@ -211,7 +211,7 @@
         </div>
     </div>
 
-    @if (_mods.Count == 0)
+    @if (_rowsLoaded && _mods.Count == 0)
     {
         <div class="jg-card" style="margin-top:12px"> @Loc.T("Mods 文件夹为空或未定位到游戏。请先在「设置」里选择游戏目录。") </div>
     }
@@ -247,15 +247,18 @@
                 }
             </button>
         }
+        </div>
+        @* 状态字必须在 .jg-chips 外面：chips 是 flex-wrap:wrap，6 个 chip 正好占满一行，
+           状态字排在其后就必然被折到第二行，变成一行孤儿字（他截图实测）。工具条本身 nowrap，
+           放外面就贴着 chips 右侧同一行（实测状态字 top 286 / chips 279–310，同一行内）。 *@
         @if (FailedCheckCount > 0)
         {
-            <span style="font-size:12px;color:#c50f1f;opacity:.85;white-space:nowrap">@Loc.F("更新检查超时，请检查网络（{0} 个未完成）", FailedCheckCount)</span>
+            <span style="font-size:12px;color:#c50f1f;opacity:.85;white-space:nowrap;flex-shrink:0">@Loc.F("更新检查超时，请检查网络（{0} 个未完成）", FailedCheckCount)</span>
         }
         else if (_checkingUpdates)
         {
-            <span style="font-size:12px;opacity:.6;white-space:nowrap">@Loc.T("正在检查更新…")</span>
+            <span style="font-size:12px;opacity:.6;white-space:nowrap;flex-shrink:0">@Loc.T("正在检查更新…")</span>
         }
-        </div>
         <div class="jg-search-x @(_searchOpen ? "open" : "")">
             <button class="jg-search-btn" @onclick="ToggleSearch">
                 <img src="assets/search.svg" alt='@Loc.T("搜索")' style="width:18px;height:18px;display:block" />
@@ -308,21 +311,64 @@
     <div class="jg-modrows" style="@(_initialLoading ? "display:none" : "")">
         @foreach (var group in Groups)
         {
-            @if (group.Key != "")
+            var bundle = group.Key != "";
+            var open = !bundle || GroupOpen(group.Key);
+            @if (bundle)
             {
-                // v1.1.5：分组不再折叠，永远全展开。点击分组标题 = 全选/取消全选该捆绑包；
-                // 计数随选择状态显示"（X 个）"或"（X 个/已选 Y 个）"。
+                @* 捆绑包 = 一行父包：封面取包里第一个有封面的子包（同一个 mod 的包），
+                   点箭头才展开子包。点整行仍是全选/取消全选该捆绑包（v1.1.5 的行为，没删）。 *@
                 var selInGroup = group.Items.Count(m => _selected.Contains(m.Folder));
-                <div class="jg-group-head" @onclick="() => ToggleGroupSelection(group.Items)">
-                    <span style="font-weight:600">@group.Key</span>
-                    <span style="opacity:.55;font-size:11.5px">@(selInGroup > 0 ? Loc.F("（{0} 个/已选 {1} 个）", group.Items.Count, selInGroup) : Loc.F("（{0} 个）", group.Items.Count))</span>
-                    @if (group.Missing.Count > 0)
+                var gcover = group.Items.Select(GetCover).FirstOrDefault(c => c is not null);
+                var gOn = group.Items.All(m => !m.Disabled);   // 全选框口径：全开才亮，有一个没开就是关
+                @* 选中标题上那行「（N 个/已选 N 个）」的父行照子行同款样式画：
+                   点父行就是整包全选，画得不一样会让人以为这行不参与选择。 *@
+                <div class="jg-modrow jg-group-head @(selInGroup == group.Items.Count ? "selected" : "")" @key="@("b:" + group.Key)" data-al
+                     @onclick="() => ToggleGroupSelection(group.Items)">
+                    @if (gcover is not null)
                     {
-                        <span style="color:#c50f1f;font-size:11.5px">@Loc.F(" 缺失依赖 {0}", group.Missing.Count)</span>
+                        <img class="jg-modrow-icon" src="@gcover" loading="lazy" alt="" />
                     }
+                    else
+                    {
+                        <div class="jg-modrow-icon jg-modrow-icon-fallback">@group.Key.TrimStart('.')[..1].ToUpperInvariant()</div>
+                    }
+                    <div class="jg-modrow-text">
+                        <div class="jg-modrow-title">
+                            <span class="name">@group.Key</span>
+                            <span class="divider">|</span>
+                            <span class="ver">@(selInGroup > 0 ? Loc.F("（{0} 个/已选 {1} 个）", group.Items.Count, selInGroup) : Loc.F("（{0} 个）", group.Items.Count))</span>
+                            @if (group.Missing.Count > 0)
+                            {
+                                <span class="jg-tag broken">@Loc.F(" 缺失依赖 {0}", group.Missing.Count)</span>
+                            }
+                        </div>
+                    </div>
+                    <div class="jg-modrow-end" @onclick:stopPropagation>
+                        @* 整包开关：口径与「全选」复选框一致 —— 全开才亮，有一个没开就显示关；点下去把整包推成反面。
+                           动手的是顶层一次改名（.Bundle ↔ Bundle），外加把包里每个子包的依赖联动跑一遍
+                           （与子包那颗开关同一套 EnableDependencies / DisableDependents）。
+                           ⚠ 参数是"要不要禁用"，与子包那颗的 !m.Disabled 同一个方向 —— 传反了
+                           就是"已经开着再开一次"，被 ModService 的空操作闸门原地吞掉（实测点两下没反应）。 *@
+                        <button class="jg-modrow-switch jg-squish-host @(gOn ? "on" : "")" role="switch"
+                                aria-checked="@gOn" data-tip="@(gOn ? Loc.T("禁用") : Loc.T("启用"))"
+                                aria-label="@(gOn ? Loc.T("禁用") : Loc.T("启用"))"
+                                @onclick="() => _ = SetBundleDisabled(group, gOn)">
+                            <span class="jg-switch"><span class="jg-switch-knob"></span></span>
+                        </button>
+                        <button class="jg-rowbtn" data-tip="@(open ? Loc.T("收起子包") : Loc.T("展开子包"))"
+                                aria-label="@(open ? Loc.T("收起子包") : Loc.T("展开子包"))"
+                                aria-expanded="@(open ? "true" : "false")"
+                                @onclick="() => ToggleGroupOpen(group.Key)">
+                            <svg class="jg-acc-arrow @(open ? "open" : "")" id="@SubArrowId(group.Key)" width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                        </button>
+                    </div>
                 </div>
             }
 
+            @* 子包永远在 DOM 里，折起时由面板 CSS 藏（height:0）—— 折叠动画要能量到真实高度，
+               条件渲染的话面板一出现就是满高，只能"啪"地跳出来（GSAP 那支弹簧就没得播了）。
+               散装 mod 走的是同一个面板，但它 open 恒为 true，面板对它就是一层无样式的外壳。 *@
+            <div class="jg-bundle-subs @(open ? "open" : "")" id="@(bundle ? SubPanelId(group.Key) : null)">
             @foreach (var m in group.Items)
             {
                     var st = GetState(m.Folder);
@@ -334,7 +380,7 @@
                        旧 key 是 Folder#序号 —— 启禁用就是把 Folder 改名（X ↔ .X），于是每次点开关
                        这一行都被销毁重建：封面重新解码闪一下、正在跑的开关动画被掐断、
                        列表位置一变还会连带重建别的好几行。两种键各加前缀，互不撞（同名 UID/folder 也不会串）。 *@
-                    <div class="jg-modrow @(_selected.Contains(m.Folder) ? "selected" : "")"
+                    <div class="jg-modrow @(bundle ? "jg-modrow-sub" : "") @(_selected.Contains(m.Folder) ? "selected" : "")"
                          @key="@(string.IsNullOrEmpty(m.UniqueID) ? "f:" + m.Folder : "u:" + m.UniqueID)"
                          data-al
                          @onclick="() => ToggleSelect(m.Folder)">
@@ -418,7 +464,7 @@
                                           @onclick="() => OpenUnofficial(m)" @onclick:stopPropagation="true">@unof</span>
                                 }
                                 @* v1.2.5：有覆盖型包（汉化补丁）盖在这个 mod 上。点开看清单、可逐个还原。
-                                   失效要单独标出来 —— 宿主 mod 更新会把覆盖整个端走，不标就等于骗人说汉化还在生效。 *@
+                                   失效要单独标出来 —— 宿主 mod 更新会把覆盖整个端走，不标就等于骗人说覆盖还在生效。 *@
                                 @if (OverlayBadge(m) is { } ovd)
                                 {
                                     <span class="jg-tag @(OverlayStale(m) ? "broken" : "")" data-tip="@OverlayTip(m)"
@@ -538,11 +584,44 @@
                         </div>
                     </div>
                 }
+            </div>
             }
 
-        @if (FilteredMods.Count == 0)
+        @if (_rowsLoaded && FilteredMods.Count == 0)
         {
-            <div class="jg-card" style="margin-top:4px">@Loc.T("没有符合条件的 mod（试试清空搜索 / 切换过滤）。")</div>
+            @* 两种"空"是两件事，分开说：被条件筛空了 ≠ 一个都没装。
+               样式与图二那套空态共用（.jg-pk-empty* 是全局类，不是 packs 页专属）。 *@
+            var bySearch = SearchText.Trim().Length > 0;
+            var byFilter = _filter != "all";
+            <div class="jg-pk-empty jg-mods-empty">
+                @if (bySearch || byFilter)
+                {
+                    <svg class="jg-pk-empty-art" viewBox="0 0 220 120" fill="none" aria-hidden="true">
+                        <rect x="30" y="20" width="96" height="13" rx="6.5" stroke="currentColor" stroke-width="2.5" opacity=".4"/>
+                        <rect x="30" y="46" width="70" height="13" rx="6.5" stroke="currentColor" stroke-width="2.5" opacity=".26"/>
+                        <rect x="30" y="72" width="86" height="13" rx="6.5" stroke="currentColor" stroke-width="2.5" opacity=".16"/>
+                        <circle cx="146" cy="56" r="26" stroke="currentColor" stroke-width="2.5" opacity=".9"/>
+                        <path d="m166 76 18 18" stroke="currentColor" stroke-width="3" stroke-linecap="round" opacity=".9"/>
+                        <path d="M136 56h20" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" opacity=".9"/>
+                    </svg>
+                    <div class="jg-pk-empty-title">@Loc.T("没有符合条件的 mod")</div>
+                    @* 不放按钮：清搜索词就在右上搜索框的 ✕，换档就在上面那排 chips —— 屏上已有的出口不重复给。 *@
+                }
+                else
+                {
+                    <svg class="jg-pk-empty-art" viewBox="0 0 220 120" fill="none" aria-hidden="true">
+                        <path d="M56 34h30l9 11h59a8 8 0 0 1 8 8v33a8 8 0 0 1-8 8H56a8 8 0 0 1-8-8V42a8 8 0 0 1 8-8Z" stroke="currentColor" stroke-width="2.5" opacity=".9"/>
+                        <path d="M48 63h114" stroke="currentColor" stroke-width="2.5" opacity=".35"/>
+                        <path d="M110 74v22M99 85h22" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" opacity=".9"/>
+                        <path d="M176 24l2.6 6 6 2.6-6 2.6-2.6 6-2.6-6-6-2.6 6-2.6Z" fill="currentColor" opacity=".85"/>
+                    </svg>
+                    <div class="jg-pk-empty-title">@Loc.T("还没有装 mod")</div>
+                    <button type="button" class="jg-pill-dark" @onclick='() => Nav.NavigateTo("nexus")'>
+                        <svg class="jg-pt-act-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14"/><path d="m19 12-7 7-7-7"/></svg> @Loc.T("去 Nexus Mods 找 mod")
+                    </button>
+                    <div class="jg-pk-empty-note">@Loc.T("只盖本体图片的素材包在内容包页。")</div>
+                }
+            </div>
         }
     </div>
 </div>
@@ -769,8 +848,9 @@
                             </div>
                         }
                     </div>
-                    @* 只留这一句：宿主 mod 更新把覆盖端走，是唯一会让人"以为汉化还在生效"的坑。 *@
-                    <div style="margin-top:8px;font-size:12px;opacity:.6">@Loc.T("宿主 mod 更新过一次的话汉化会失效，打开一次开关就能重新应用。")</div>
+                    @* 只留这一句：宿主 mod 更新把覆盖端走，是唯一会让人"以为覆盖还在生效"的坑。
+                       说的是覆盖包，不是汉化 —— 这条通道贴图包、兼容包也走。 *@
+                    <div style="margin-top:8px;font-size:12px;opacity:.6">@Loc.T("宿主 mod 更新过一次的话覆盖包会失效，打开一次开关就能重新应用。")</div>
                 </div>
                 @* 这里不放「全部删除」：那颗金色主按钮 + 无确认 = 一眼被当成"保存/确定"，
                    按下去就把宿主 mod 上所有覆盖包（汉化本体）全删了。逐行的「删除」够用。 *@
@@ -783,6 +863,11 @@
 
 @code {
     private IReadOnlyList<ModEntry> _mods = Array.Empty<ModEntry>();
+
+    /// <summary>列表有没有被真正填过一次。首帧在扫描完成前就渲染，那时 _mods 必然是空的，
+    /// 两句"Mods 文件夹为空…""没有符合条件的 mod…"会在每次进页时闪一下 —— 说的是假话。
+    /// 只在 ReindexMods（每一条给 _mods 赋值的路径都走它）里置位。</summary>
+    private bool _rowsLoaded;
     // v1.1.6：folder → 条目索引。批量操作条与选中清理原先用 FirstOrDefault/Any 全表扫
     //（选中数 × mod 数），几百 mod + 多选时每次渲染做几万次字符串比较。
     private Dictionary<string, ModEntry> _modsByFolder = new(StringComparer.OrdinalIgnoreCase);
@@ -2036,8 +2121,7 @@
     /// <summary>vNext：通用进入恢复只跑一次的闸门（骨架屏期不跑，列表显示后的第一次渲染跑）。</summary>
     private bool _entryRestoreRan;
 
-    /// <summary>v1.1.5：点击分组标题 = 全选/取消全选该捆绑包的全部子包（已全选则清空）。
-    /// 分组不再折叠，永远全展开。</summary>
+    /// <summary>v1.1.5：点击分组行 = 全选/取消全选该捆绑包的全部子包（已全选则清空）。</summary>
     private void ToggleGroupSelection(IEnumerable<ModEntry> items)
     {
         var allSelected = items.All(m => _selected.Contains(m.Folder));
@@ -2045,6 +2129,47 @@
             foreach (var m in items) _selected.Remove(m.Folder);
         else
             foreach (var m in items) _selected.Add(m.Folder);
+    }
+
+    /// <summary>捆绑包折叠状态（按 <see cref="NormGroupKey"/> 记，值 = 展不展开）。
+    /// 跨页面进出留住，跟筛选/排序快照同待遇。</summary>
+    private static readonly Dictionary<string, bool> _groupOpen = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>分组身份：剥掉点前缀的顶层目录名。子包那层改名只动末段，但<b>启用</b>一个子包会把带点的
+    /// 祖先一并解开（<c>.SVE/Sub → SVE/Sub</c>，见 ModService.SetDisabled v1.1.7），顶层名当场就变。
+    /// 拿原始顶层名记"我展开过"，拨一下开关这条记录就对不上号 —— 症状是整包自己折回去。</summary>
+    public static string NormGroupKey(string key) => key.TrimStart('.');
+
+    // 面板/箭头的 DOM id：文件夹名里有空格、括号、中文，不能直接当选择器用；
+    // 取进程内稳定的哈希（与 Tasks 页 "jgDrop-"+Guid 同一套约定，taskDrop 要的是选择器）。
+    private static string SubPanelId(string key) => "jgSub-" + SubKeyHash(key);
+    private static string SubArrowId(string key) => "jgArr-" + SubKeyHash(key);
+    private static string SubKeyHash(string key)
+        => ((uint)NormGroupKey(key).GetHashCode(StringComparison.Ordinal)).ToString("x8");
+
+    /// <summary>这一包展不展开。人手动点过的以他为准；没点过时，筛过/搜过的结果一律展开 ——
+    /// 那时列表已经是"你要找的那几条"，把命中的子包折进一行底下等于把人正在找的东西藏起来。</summary>
+    private bool GroupOpen(string key)
+    {
+        var k = NormGroupKey(key);
+        if (_groupOpen.TryGetValue(k, out var v)) return v;
+        return _filter != "all" || !string.IsNullOrWhiteSpace(SearchText);
+    }
+
+    /// <summary>展开/收起动画借下载详情那支（<c>junigridJs.taskDrop</c>：GSAP 弹簧高度 +
+    /// 箭头 back.out 旋转）；动画收尾清内联样式，稳态交给 CSS 的 .open，重渲染不会把面板打回隐藏。
+    /// ⚠ 状态必须等 JS 调用回来之后再落：先落状态的话 Blazor 摘 .open 的那一帧比 GSAP 挂上内联
+    /// 高度早（实测 19ms vs 29ms），CSS 的 height:0 会先把面板拍平，动画就成了 0→0 的空播（实测收起
+    /// 是瞬间跳的）。等 JS 回来时内联高度已经在了，class 再怎么翻都被内联样式压住。</summary>
+    private async Task ToggleGroupOpen(string key)
+    {
+        var want = !GroupOpen(key);
+        try
+        {
+            await JS.InvokeVoidAsync("junigridJs.taskDrop", "#" + SubPanelId(key), "#" + SubArrowId(key), want);
+        }
+        catch { }
+        _groupOpen[NormGroupKey(key)] = want;
     }
 
     /// <summary>缺失的依赖（声明在 Dependencies 里、但不在已装 UniqueID 集合中的项）。
@@ -2318,45 +2443,21 @@
         return NexusUpdateTruth.ShouldShowUpdate(Cfg.Current, m, st.RemoteVersion, st.RemoteFileId);
     }
 
-    /// <summary>按最外层文件夹分组（根目录直接受让的 mod 为 "" 组）。</summary>
+    /// <summary>按最外层文件夹分组（根目录直接受让的 mod 为 "" 组），再排成界面上的行序。</summary>
     private IReadOnlyList<ModGroup> Groups
     {
         get
         {
-            var list = new List<ModGroup>();
             var installed = InstalledUids;
-            foreach (var g in FilteredMods.GroupBy(GroupKeyOf))
-            {
-                // v0.32.0：组内按所选模式排序
-                var items = _sortMode switch
-                {
-                    "time-desc" => g.OrderBy(x => x.LastWrite).ToList(),
-                    "time-asc"  => g.OrderByDescending(x => x.LastWrite).ToList(),
-                    _           => g.OrderBy(x => x.Name, StringComparer.OrdinalIgnoreCase).ToList(),
-                };
-                list.Add(new ModGroup
-                {
-                    Key = g.Key,
-                    Items = items,
-                    Missing = items
-                        .Where(x => x.Dependencies is { Count: > 0 } || x.ContentPackIds is { Count: > 0 })
-                        .SelectMany(x => x.Dependencies.Concat(x.ContentPackIds))
-                        .Where(d => !string.IsNullOrWhiteSpace(d) && !installed.Contains(d))
-                        .Distinct(StringComparer.OrdinalIgnoreCase)
-                        .ToList()
-                });
-            }
-            // v0.32.0：组间顺序也跟随排序模式（根组 "" 永远在最前）
-            return _sortMode switch
-            {
-                "time-desc" => list.OrderBy(x => x.Key == "" ? 0 : 1)
-                                   .ThenByDescending(x => x.Items.Count > 0 ? x.Items.Max(m => m.LastWrite) : DateTime.MinValue)
-                                   .ToList(),
-                "time-asc"  => list.OrderBy(x => x.Key == "" ? 0 : 1)
-                                   .ThenBy(x => x.Items.Count > 0 ? x.Items.Min(m => m.LastWrite) : DateTime.MaxValue)
-                                   .ToList(),
-                _           => list.OrderBy(x => x.Key == "" ? 0 : 1).ThenBy(x => x.Key).ToList(),
-            };
+            var units = OrderRows(FilteredMods, _sortMode);
+            foreach (var u in units)
+                u.Missing = u.Items
+                    .Where(x => x.Dependencies is { Count: > 0 } || x.ContentPackIds is { Count: > 0 })
+                    .SelectMany(x => x.Dependencies.Concat(x.ContentPackIds))
+                    .Where(d => !string.IsNullOrWhiteSpace(d) && !installed.Contains(d))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+            return units;
         }
     }
 
@@ -2367,13 +2468,48 @@
         return idx > 0 ? m.Folder[..idx] : "";
     }
 
-    private sealed class ModGroup
+    /// <summary>界面上的一行：捆绑包 = 一行（Items 是它的子包），根目录散装 mod = 各自一行。
+    /// 散装与捆绑包必须放进<b>同一个</b>序列排序 —— 旧写法先按"是不是捆绑包"分组再排，
+    /// 结果所有捆绑包永远堆在列表末尾，刚下载的包看着像没下完。</summary>
+    public sealed class ModGroup
     {
         public string Key = "";
         public List<ModEntry> Items = new();
 
         /// <summary>该分组内所有缺失依赖（不在已装集合中）的并集，去重。</summary>
         public List<string> Missing { get; set; } = new();
+
+        /// <summary>行序用的名字：捆绑包是顶层目录名，散装 mod 是它自己的名字。</summary>
+        public string SortName => Key.Length > 0 ? Key : Items[0].Name;
+    }
+
+    /// <summary>把扫描结果排成行序：组内按所选模式排，组间也按同一模式排（捆绑包不再沉底）。
+    /// 档位名与界面标签是反着读的：<c>time-asc</c> = 「最新在前」，<c>time-desc</c> = 「最早在前」。</summary>
+    public static List<ModGroup> OrderRows(IReadOnlyList<ModEntry> mods, string sortMode)
+    {
+        var units = new List<ModGroup>();
+        foreach (var g in mods.GroupBy(GroupKeyOf))
+        {
+            var items = sortMode switch
+            {
+                "time-desc" => g.OrderBy(x => x.LastWrite).ToList(),
+                "time-asc"  => g.OrderByDescending(x => x.LastWrite).ToList(),
+                _           => g.OrderBy(x => x.Name, StringComparer.OrdinalIgnoreCase).ToList(),
+            };
+            // 只有一个子包的"捆绑包"不是捆绑包：直接把那个子包端成普通一行 —— 不套父行、不给箭头、
+            // 不加缩进（包壳里就一个 mod，展开/收起这一步是多此一举）。
+            if (g.Key.Length > 0 && items.Count > 1) { units.Add(new ModGroup { Key = g.Key, Items = items }); continue; }
+            // 根目录那一批拆开，才能和捆绑包混进同一次排序
+            foreach (var m in items) units.Add(new ModGroup { Key = "", Items = new List<ModEntry> { m } });
+        }
+        // 捆绑包按它<b>最近</b>的那个子包争位置（最早在前则按它最旧的那个）——
+        // 刚下载的一整包因此就排在刚下载的单包旁边，不再一律沉到列表末尾。
+        return sortMode switch
+        {
+            "time-desc" => units.OrderBy(x => x.Items.Min(m => m.LastWrite)).ToList(),
+            "time-asc"  => units.OrderByDescending(x => x.Items.Max(m => m.LastWrite)).ToList(),
+            _           => units.OrderBy(x => x.SortName, StringComparer.OrdinalIgnoreCase).ToList(),
+        };
     }
 
     private readonly Dictionary<string, ModUpdateState> _states = new();
@@ -2867,6 +3003,7 @@
 
     private void ReindexMods()
     {
+        _rowsLoaded = true;
         _modsByFolder = new Dictionary<string, ModEntry>(_mods.Count, StringComparer.OrdinalIgnoreCase);
         foreach (var m in _mods) _modsByFolder[m.Folder] = m;
         // v1.2.3：已装 UID 集合随重扫一并重建 —— MissingDeps/筛选计数/分组在渲染期被高频
@@ -3369,8 +3506,35 @@
         if (_states.TryGetValue(folder, out var st)) { _states[newFolder] = st; _states.Remove(folder); }
         MigrateDictKey(Cfg.Current.ModCovers, folder, newFolder);
         MigrateDictKey(Cfg.Current.ModCategories, folder, newFolder);
+        // 兼容性预查那七本字典同样按 folder 索引。不跟着搬，拨一下开关就把那行的证据留在旧键上：
+        // 「维护存疑」的徽标与计数当场消失、筛进去一片空（实机 2026-10-09 报）。封面与分类有读取侧
+        // 的剥点兜底（GetCover / GetNexusCategory），预查这七本没有，所以只有它会整条筛空。
+        MigrateFolderKeys(_smapiPrecheck, folder, newFolder);
+        MigrateFolderKeys(_smapiPrecheckUrl, folder, newFolder);
+        MigrateFolderKeys(_smapiPrecheckStatus, folder, newFolder);
+        MigrateFolderKeys(_smapiPrecheckSummary, folder, newFolder);
+        MigrateFolderKeys(_smapiPrecheckAlt, folder, newFolder);
+        MigrateFolderKeys(_smapiPrecheckAltVer, folder, newFolder);
+        MigrateFolderKeys(_smapiPrecheckMainVer, folder, newFolder);
         _coversDirty = true;
         if (persist) Cfg.Save(Cfg.Current);
+    }
+
+    /// <summary>把一次改名同步进一本按 folder 索引的字典：整条键与它<b>下面所有子包键</b>一起搬 ——
+    /// 顶层改名波及整棵，与 <see cref="ApplyRenameInMemory"/> 同一个口径。</summary>
+    public static void MigrateFolderKeys<T>(Dictionary<string, T>? d, string folder, string newFolder)
+    {
+        if (d is null) return;
+        var prefix = folder + '/';
+        foreach (var k in d.Keys.ToList())
+        {
+            var nk = string.Equals(k, folder, StringComparison.OrdinalIgnoreCase) ? newFolder
+                : k.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) ? newFolder + k[folder.Length..]
+                : null;
+            if (nk is null || nk == k) continue;
+            d[nk] = d[k];
+            d.Remove(k);
+        }
     }
 
     /// <summary>改名只落在路径最后一段（v1.1.5 的子包级启禁：Top/Sub ↔ Top/.Sub），
@@ -3416,26 +3580,69 @@
         if (dict.TryGetValue(oldKey, out var v)) { dict[newKey] = v; dict.Remove(oldKey); }
     }
 
-    private async Task BatchSetDisabled(bool disabled)
+    /// <summary>启禁真正动手的对象：把勾选折成<b>顶层</b>目录 —— "Bundle/Child" 与 "Bundle/.Child" 都归
+    /// "Bundle"，所以一个捆绑包从头到尾就是一次改名（SMAPI 跳过任意层级的 . 前缀目录，顶层带点整棵不加载）。
+    /// 父行整包开关与工具条批量共用这一条，两条路不会走出两种磁盘状态。</summary>
+    public static List<string> TopLevelsOf(IEnumerable<string> folders)
+        => folders.Select(f => f.Split('/')[0]).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+
+    /// <summary>这一次启禁要动的目录清单。
+    /// <b>关</b>：只折顶层，一个捆绑包一次改名。
+    /// <b>开</b>：顶层排在最前、再带上勾选里那些子包自己 —— 只解顶层的话，被单独关掉的子包还是关着，
+    /// 而父行开关现在按"全开才亮"显示，那种状态下点一下看着就是没反应。两条约束：
+    /// ① 顺序不能反，解顶层会让带点的旧路径失效；② 子包要按<b>解点后</b>的顶层名传
+    /// （<c>.Muu/.A → Muu/.A</c>）—— ModService 的启用容错只补末段的点，不补祖先。</summary>
+    public static List<string> SwitchTargetsOf(IEnumerable<string> folders, bool disabled)
+        => disabled ? TopLevelsOf(folders)
+            : TopLevelsOf(folders).Concat(folders).Select(NormGroupKey)
+              .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+
+    /// <summary>父行整包开关 = 顶层一次改名（<see cref="BatchSetDisabled"/>）+ 把包里每个子包的依赖图
+    /// 跑一遍。少后半段的话，整包开出来仍挂着「依赖被禁」—— 散装 mod 那颗开关会连带把它依赖的 mod
+    /// 启用，同一个 mod 走两条路不该有两种结果。
+    /// 顺序必须是先改名再联动：改名后条目已就地换名（BatchSetDisabled 里的内存改名 + ReindexMods），
+    /// 所以按 UniqueID 从<b>当前</b>列表重取条目，不握改名前的引用。</summary>
+    private async Task SetBundleDisabled(ModGroup group, bool disable)
+    {
+        var uids = group.Items.Select(m => m.UniqueID)
+            .Where(u => !string.IsNullOrWhiteSpace(u)).ToList();
+        await BatchSetDisabled(disable, group.Items.Select(m => m.Folder).ToList());
+        var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var touched = 0;
+        foreach (var uid in uids)
+        {
+            var m = _mods.FirstOrDefault(x => uid.Equals(x.UniqueID, StringComparison.OrdinalIgnoreCase));
+            if (m is null) continue;
+            if (disable) DisableDependents(uid, visited, x => { touched++; SetDisabledDirect(x, true); });
+            else EnableDependencies(m, visited, x => { touched++; SetDisabledDirect(x, false); });
+        }
+        if (touched == 0) return;
+        ReindexMods();
+        RescanAndRestate();          // 联动改的都是子包级路径，文件监听看不见（与单包开关同一判据）
+        PersistCurrentToActive();
+        Cfg.Save(Cfg.Current);
+    }
+
+    /// <summary>批量启禁。<paramref name="folders"/> = null 用当前勾选的那批；捆绑包父行的开关把它那批
+    /// 子包传进来 —— 走的是同一份 <see cref="SwitchTargetsOf"/>，两条路不会走出两种磁盘状态。</summary>
+    private async Task BatchSetDisabled(bool disabled, IReadOnlyCollection<string>? folders = null)
     {
         // v0.72.7：批量启禁移入后台线程（与 ApplyProfile 同模式）——旧版在 UI 线程
         // 同步跑 N 次 Directory.Move，63 个 mod 直接卡死窗口。watcher OFF/ON 加
         // try/finally，中途异常不会永久关掉文件监听。
-        var topLevels = _selected
-            .Select(f => f.Split('/')[0])
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
+        var src = folders ?? _selected;
+        var targets = SwitchTargetsOf(src, disabled);
         var gamePath = Cfg.Current.GamePath;
-        var selCount = _selected.Count;
+        var selCount = src.Count;
 
         if (_modsWatcher is not null) _modsWatcher.EnableRaisingEvents = false;
-        List<string> failedTops;
+        List<string> failedTargets;
         try
         {
-            failedTops = await Task.Run(() =>
+            failedTargets = await Task.Run(() =>
             {
                 var f = new List<string>();
-                foreach (var top in topLevels)
+                foreach (var top in targets)
                     if (ModSvc.SetDisabled(gamePath, top, disabled) is not null)
                         f.Add(top);
                 return f;
@@ -3445,25 +3652,25 @@
         {
             if (_modsWatcher is not null) _modsWatcher.EnableRaisingEvents = true;
         }
-        var failed = failedTops.Count;
+        var failed = failedTargets.Count;
 
         ShowNotice(failed == 0 ? "ok" : "err",
             failed == 0
                 ? $"已{(disabled ? "禁用" : "启用")} {selCount} 个mod"
                 : $"{failed} 个操作失败");
-        ClearSelection();
+        if (folders is null) ClearSelection();   // 父行开关不该把人另外勾上的东西清掉
 
         // v0.72.9：批量改名后统一迁移封面/分类缓存 —— v0.72.7 把 MigrateFolderCaches
         // 从批量路径里漏掉了，导致改名后 _states/ModCovers/ModCategories 的 key 还是
         // 旧 folder 名，GetCover/GetNexusCategory 查不到 → 封面消失、分类落回"代码 Mod"。
         // v1.1.8：改名没成功的那些不能迁（磁盘还是旧名，内存跟着改就走样了）
         var __t = System.Diagnostics.Stopwatch.GetTimestamp();
-        var failedSet = new HashSet<string>(failedTops, StringComparer.OrdinalIgnoreCase);
-        foreach (var top in topLevels)
+        var failedSet = new HashSet<string>(failedTargets, StringComparer.OrdinalIgnoreCase);
+        foreach (var top in targets)
             if (!failedSet.Contains(top))
                 MigrateFolderCaches(top, DisabledName(top, disabled), persist: false);
         ReindexMods();
-        ModsPerf($"批量{(disabled ? "禁" : "启")} {topLevels.Count} 个顶层",
+        ModsPerf($"批量{(disabled ? "禁" : "启")} {targets.Count} 个目录",
             ("内存改名+缓存迁移", ElapsedMs(__t)));
 
         // v1.1.8：批量启禁期间 watcher 是关着的，不会有文件事件来补这一轮，
@@ -3822,6 +4029,17 @@
     private static readonly Dictionary<string, (string? Ver, string? Url, string? Status, string? Summary, string? MainVer, DateTime At)> SmapiPrecheckCache = new();
     private static readonly TimeSpan SmapiPrecheckTtl = TimeSpan.FromMinutes(10);
 
+    // 分块只为了缩小失败域：一块出岔（非 2xx、或整块回 0 行）只影响那 40 条，其余照常上屏。
+    // 原先这里还挂着「块内二分 + 查无此号 30 分钟记账」，是为"认不出的 key 会毒整批"这个（错的）
+    // 前提造的引信；2026-10-10 逐串实测真凶是非法 installedVersion，发前已洗（SmapiInstalledVersion），
+    // 二分再没触发过，故撤。留下面的「哪块回 0 行」一行日志当绊线。
+    private const int PrecheckChunkSize = 40;
+    // 进页时 KickoffCompatPrecheck 与 CheckUpdates 会各发一轮同样的批量（实测 05:13:57 同一秒
+    // 两行 targets 163 / 161，各 18 发 = 36 发）。窗口只用来吃掉这对重复，做短，
+    // 免得真需要重查时被自己挡住。
+    private static readonly TimeSpan PrecheckDedupeWindow = TimeSpan.FromSeconds(5);
+    private static DateTime _precheckKickUtc = DateTime.MinValue;
+
     private static readonly HttpClient SmapiWebHttp = CreateSmapiWebHttp();
     private static HttpClient CreateSmapiWebHttp()
     {
@@ -3843,6 +4061,34 @@
         var parts = raw.Split('.');
         _smapiApiVersion = parts.Length >= 2 ? string.Join('.', parts.Take(3)) : raw;
         return _smapiApiVersion;
+    }
+
+    /// <summary>把已装版本洗成 smapi.io 收得下的形状（口径见 SmapiBatchPrecheck 里那段实测）。
+    /// 认不出的写法一律返回空串 —— 空串上游当"没装过"处理并照常回条目，而一条非法版本会让整批回 []。
+    /// 单段（"1"）补成 "1.0.0"，作者手写 "1" 很常见（SVE 的 6 个子包、Better Stardew Valley 都是）。</summary>
+    internal static string SmapiInstalledVersion(string? raw)
+    {
+        var s = (raw ?? "").Trim();
+        var m = System.Text.RegularExpressions.Regex.Match(s,
+            @"^(0|[1-9]\d*)(?:\.(0|[1-9]\d*))?(?:\.(0|[1-9]\d*))?(-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*|\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$");
+        if (!m.Success) return "";
+        var minor = m.Groups[2].Success ? m.Groups[2].Value : "0";
+        var patch = m.Groups[3].Success ? m.Groups[3].Value : "0";
+        if (m.Groups[1].Value == "0" && minor == "0" && patch == "0") return "";  // 0.0.0 上游也拒
+        return m.Groups[1].Value + "." + minor + "." + patch + (m.Groups[4].Success ? m.Groups[4].Value : "");
+    }
+
+    /// <summary>把要发的条目按固定大小切块（顺序不变、不丢不重）。分块是为了缩小失败域：一条把整批
+    /// 带哑（见 SmapiBatchPrecheck 的 installedVersion 口径）时，只有同块的跟着掉，其它块照常上屏。</summary>
+    internal static List<List<T>> Chunks<T>(IReadOnlyList<T> items, int size)
+    {
+        var all = new List<List<T>>();
+        // size<=0 = 不分块，整批一块。空列表时下面那行条件本就不成立（0 < 0），
+        // 所以既不会返回"一块空的"，也不需要额外的早退兜底。
+        if (size <= 0) size = items.Count;
+        for (var i = 0; i < items.Count; i += size)
+            all.Add(items.Skip(i).Take(size).ToList());
+        return all;
     }
 
     /// <summary>首屏后台跑一次 smapi.io 兼容性预查，让「维护存疑」的徽标和计数不用等
@@ -3870,6 +4116,9 @@
 
     private async Task SmapiBatchPrecheck(List<ModEntry> targets)
     {
+        // 守卫必须在清空之前：另一轮正在跑的话，这里一清就把人家填好的结果抹掉了。
+        if (DateTime.UtcNow - _precheckKickUtc < PrecheckDedupeWindow) return;
+        _precheckKickUtc = DateTime.UtcNow;
         _smapiPrecheck = null;
         _smapiPrecheckUrl = null;
         _smapiPrecheckStatus = null;
@@ -3920,38 +4169,61 @@
         }
 
         // 同 UniqueID/ID 装了多份（本体+旧副本）时同 id 只发一次，结果共享回填
-        var payload = System.Text.Json.JsonSerializer.Serialize(new
-        {
-            apiVersion,
-            // 不带这个标志，smapi.io 只回 suggestedUpdate，不给 metadata.compatibilityStatus
-            includeExtendedMetadata = true,
-            mods = needFetch.Select(m => new
-            {
-                id = keyOf(m),
-                // 转换包不带原包 updateKey —— 否则 smapi.io 会把原 N 网版本
-                // 挂到合成 UID 上，装成 1.0.0 永远显示可更新
-                updateKeys = m.IsConvertedPack
-                    ? Array.Empty<string>()
-                    : (m.NexusModId is int nid ? new[] { $"nexus:{nid}" } : Array.Empty<string>())
-                      .Concat(m.GitHubRepo is string gh ? new[] { $"github:{gh}" } : Array.Empty<string>()).ToArray(),
-                installedVersion = m.Version,
-            }),
-        });
+        // 转换包不带原包 updateKey —— 否则 smapi.io 会把原 N 网版本挂到合成 UID 上，装成 1.0.0 永远显示可更新
+        static string[] KeysOf(ModEntry m) => m.IsConvertedPack ? Array.Empty<string>()
+            : (m.NexusModId is int nid ? new[] { $"nexus:{nid}" } : Array.Empty<string>())
+              .Concat(m.GitHubRepo is string gh ? new[] { $"github:{gh}" } : Array.Empty<string>()).ToArray();
+        // ⚠ 会【整批】回 [] 的不是"认不出的 key"，是**一条非法 installedVersion**。逐串实测（2026-10-10，
+        //   每次一发只改一个变量，键都用真实存在的 nexus:541）：
+        //     收："1.0" "1.0.0" "0.1" "0.0.1" "1.0.0-beta" "1.0.0+build" "" " "
+        //     拒："1" "10" "1." "1.0-" "v1.0" "01.02" "1.0.0.5" "0.0.0" "abc"
+        //     正常 1 条 + 版本 "1" 的 1 条 混发 → 整批 0 条（只发正常那条 → 1 条）
+        //   而"认不出的 key"与"空 updateKeys"都不带毒：nexus:999999999 混发 → 2 条都回；
+        //   updateKeys:[] 混发 → 4 条都回。所以原先记在这里的两条"键中毒"结论是错的，已撤回
+        //   （当时把 Eddie/SVE 子包的 Version:"1" 当成了查无此号）。
+        // 修法在下面 SmapiInstalledVersion：把版本串洗成上游认的形状，洗不出就报空（空是合法的）。
+        // 分块留着只为缩小失败域；真再出现整块回 0 行，日志会点出第几块、多少条，不必二分追人。
+        var sendable = needFetch.Where(m => KeysOf(m).Length > 0).ToList();
 
-        try
+        var versionById = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        var urlById = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        var statusById = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        var summaryById = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        var mainVerById = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        int noSuggestion = 0, posts = 0, emptyRows = 0;
+        var emptyAt = new List<int>();               // 哪几块 2xx 却回 0 行（1 起，给日志用）
+        bool transportFailed = false;
+
+        // 一发一块：成功就把这一块的结果并进上面五本字典，返回并进了几条；非 2xx 返回 -1（整轮作废）。
+        async Task<int> PostAndMerge(List<ModEntry> list)
         {
+            posts++;
+            var payload = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                apiVersion,
+                // 不带这个标志，smapi.io 只回 suggestedUpdate，不给 metadata.compatibilityStatus
+                includeExtendedMetadata = true,
+                mods = list.Select(m => new
+                {
+                    id = keyOf(m),
+                    updateKeys = KeysOf(m),
+                    installedVersion = SmapiInstalledVersion(m.Version),
+                }),
+            });
             using var resp = await SmapiWebHttp.PostAsync(
                 "https://smapi.io/api/v4.0.0/mods",
                 new StringContent(payload, System.Text.Encoding.UTF8, "application/json"));
-            if (!resp.IsSuccessStatusCode) return;
+            if (!resp.IsSuccessStatusCode)
+            {
+                // 原先这里裸 return：整次预查静默消失，界面上「维护存疑」就是 0，
+                // 日志里既没有失败也没有"没给建议"的告警 —— 看着像功能没生效，实际是这一发没成。
+                AppLog.Warn("Mods", $"[国内快道] smapi.io 预查未成功（HTTP {(int)resp.StatusCode}，这一块 {list.Count} 条），"
+                    + $"本轮 {targets.Count} 个 mod 的兼容性判定与徽标都不会出现");
+                transportFailed = true;
+                return -1;
+            }
             using var doc = System.Text.Json.JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
-
-            var versionById = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
-            var urlById = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
-            var statusById = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
-            var summaryById = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
-            var mainVerById = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
-            int noSuggestion = 0;
+            int merged = 0;
             foreach (var item in doc.RootElement.EnumerateArray())
             {
                 var id = item.TryGetProperty("id", out var i) ? i.GetString() : null;
@@ -3994,11 +4266,38 @@
                     statusById[id] = string.IsNullOrWhiteSpace(status) ? null : status;
                     summaryById[id] = string.IsNullOrWhiteSpace(summary) ? null : summary;
                     mainVerById[id] = string.IsNullOrWhiteSpace(mainVer) ? null : mainVer;
+                    merged++;
                 }
             }
+            return merged;
+        }
+
+        try
+        {
+            var chunks = Chunks(sendable, PrecheckChunkSize);
+            for (var ci = 0; ci < chunks.Count; ci++)
+            {
+                var got = await PostAndMerge(chunks[ci]);
+                if (got < 0) break;                          // 非 2xx：整轮作废
+                if (got == 0) { emptyAt.Add(ci + 1); emptyRows += chunks[ci].Count; }
+                // 2xx 却回 0 行 = 上游口径变了（我们这边已把版本洗成它收得下的形状）。
+                // 不再二分追人：失败域已经缩到这一块，日志点名第几块、多少条，够查案了。
+                if (transportFailed) break;
+            }
+            if (transportFailed) return;   // 与旧行为一致：这一轮预查作废，版本判定退回 Nexus/GitHub 精查
+
+            // 每一轮预查的账：谁在哪个环节掉的。没有这一行时，「维护存疑」整列空是查不出原因的
+            // —— 非 2xx 会记、异常会记，而"发出去了、上游回了、但一条判定都没落下来"什么都不记。
+            AppLog.Info("Mods", $"[国内快道] 预查一轮：targets {targets.Count} ‖ 需发 {needFetch.Count}"
+                + $"（带 UpdateKeys 的 {sendable.Count}）‖ 分 {chunks.Count} 块发 {posts} 次"
+                + $" ‖ 上游回 {versionById.Count} 条"
+                + $" ‖ 判为存疑 {statusById.Values.Count(v => IsBadCompatStatus(v))} 条"
+                + (emptyAt.Count > 0
+                    ? $" ‖  第 {string.Join("、", emptyAt)} 块 2xx 却回 0 行（共 {emptyRows} 条）→ 这些退回精查"
+                    : ""));
             if (noSuggestion > 0)
-                AppLog.Warn("Mods", $"[国内快道] smapi.io 对 {noSuggestion}/{needFetch.Count} 个 mod 没给版本建议"
-                    + "（通常是 manifest 里没有 UpdateKeys，只有走启动器安装的才有）");
+                AppLog.Warn("Mods", $"[国内快道] smapi.io 对 {noSuggestion}/{sendable.Count} 个 mod 没给版本建议"
+                    + "（发出去的都是带 UpdateKeys 的；没 keys 的那些根本不进这一批）");
 
             foreach (var m in targets)
             {

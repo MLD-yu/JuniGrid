@@ -57,8 +57,8 @@ public class ContentOverrideTargetsTests
         => Assert.Equal(expected, ContentOverrideTargets.PersonRoot(leaf));
 
     [Theory]
-    [InlineData("Portraits/Abigail", "人物")]
-    [InlineData("Characters/Abigail", "人物")]
+    [InlineData("Portraits/Abigail", "立绘")]                 // 立绘与行走图是两类对象，分开成两张卡
+    [InlineData("Characters/Abigail", "行走图")]
     [InlineData("Animals/Horse", "动物")]
     [InlineData("Buildings/houses", "建筑")]
     [InlineData("TerrainFeatures/tree1", "树木植被")]
@@ -72,15 +72,16 @@ public class ContentOverrideTargetsTests
         => Assert.Equal(expected, ContentOverrideTargets.CategoryOf(asset));
 
     [Theory]
-    [InlineData("人物", 0)]
-    [InlineData("动物", 1)]
-    [InlineData("建筑", 2)]
-    [InlineData("树木植被", 3)]
-    [InlineData("界面杂图", 4)]
-    [InlineData("地图图块", 5)]
-    [InlineData("地图贴图", 6)]
-    [InlineData("字体", 7)]
-    [InlineData("其他", 8)]
+    [InlineData("立绘", 0)]
+    [InlineData("行走图", 1)]
+    [InlineData("动物", 2)]
+    [InlineData("建筑", 3)]
+    [InlineData("树木植被", 4)]
+    [InlineData("界面杂图", 5)]
+    [InlineData("地图图块", 6)]
+    [InlineData("地图贴图", 7)]
+    [InlineData("字体", 8)]
+    [InlineData("其他", 9)]
     public void CategoryOrder_IsStable(string category, int expected)
         => Assert.Equal(expected, ContentOverrideTargets.CategoryOrder(category));
 
