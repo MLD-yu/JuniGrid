@@ -455,6 +455,8 @@
                             && r.Enabled) || recs.Any(r => assets.Contains(r.Asset, StringComparer.OrdinalIgnoreCase) && r.Enabled);
                         var mine = recs.Count(r => assets.Contains(r.Asset, StringComparer.OrdinalIgnoreCase));
                         var rKey = t.Key + "|" + slot;
+                        var vars = ColorChips(recs);
+                        <div class="jg-pk-verwrap @(vars.Count > 0 ? "has-dd" : "")">
                         <button type="button" class="jg-pk-ver @(active ? "active" : "") @(_pressKey == rKey ? "pressing" : "")"
                                 disabled="@_busy"
                                 data-tip="@packTitle"
@@ -496,22 +498,42 @@
                                     ContentOverrideTargets.VariantOf(r.Asset)).Distinct(StringComparer.OrdinalIgnoreCase).Count())</span>
                             }
                         </button>
-                        @* 同一个包里这张目标还有别的配色（实测 Yomi 发型包：4 个配色撞同一张
-                           Characters/Farmer/hairstyles）：点一下就换。一张表同时只有一份在位，
-                           所以这是"换"不是"加"，也不再多记一条账。 *@
-                        @if (ColorChips(recs) is { Count: > 0 } chips)
+                        @* 同一张目标在同一个包里有多个候选（实测 Yomi 发型包：4 个配色撞同一张
+                           Characters/Farmer/hairstyles）⇒ 收进行尾一个下拉框，点它换那一版。
+                           一张表同时只有一份在位，所以这是"换"不是"加"，也不再多记一条账。
+                           行本身是 <button>，不能再嵌按钮 ⇒ 下拉做在行外、绝对定位盖在行尾。 *@
+                        @if (vars.Count > 0)
                         {
-                            <div class="jg-chips jg-pk-color-chips" role="group" aria-label='@Loc.T("配色")'>
-                                @foreach (var c in chips)
-                                {
-                                    <button type="button" class="jg-chip @(c.Active ? "active" : "")"
-                                            disabled="@_busy" data-tip="@Loc.F("换成「{0}」", c.Label)"
-                                            @onclick="() => PickColor(t.Name, slot, c.Asset, c.Label)">@c.Label</button>
-                                }
+                            <div class="jg-sort-dd jg-pk-vardd @(_varDd == rKey ? "open" : "")">
+                                <button type="button" class="jg-sort-trigger jg-pk-vardd-btn" disabled="@_busy"
+                                        data-tip="@Loc.T("换成另一版")"
+                                        @onclick="() => ToggleVarDd(rKey)">
+                                    <span class="jg-pk-vardd-t">@(CurVar(vars) ?? Loc.T("选择版本"))</span>
+                                    <svg class="jg-sort-arrow" width="12" height="12" viewBox="0 0 12 12" fill="none">
+                                        <path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                                    </svg>
+                                </button>
+                                @* 两层：本页根节点带 .jg-nexus-scope，那里的 .jg-sort-menu 被剥成
+                                   透明外壳（弹性动画只作用在 .jg-sort-menu-in 视觉层），
+                                   不套这一层就是个没有底的菜单。 *@
+                                <div class="jg-sort-menu">
+                                    <div class="jg-sort-menu-in">
+                                        @foreach (var v in vars)
+                                        {
+                                            var vv = v;
+                                            <button type="button" class="jg-sort-item @(vv.Active ? "active" : "")"
+                                                    @onclick="() => PickFromVarDd(t, slot, vv)">@vv.Label</button>
+                                        }
+                                    </div>
+                                </div>
                             </div>
                         }
+                        </div>
                     }
                 </div>
+                @* 版本下拉的遮罩：点弹窗里别处就收。常驻 DOM + class 随状态走（同 Mods 那条教训：
+                   @if 渲染比翻转慢一拍，会漏掉那一次"点外部关闭"） *@
+                <div class="jg-dd-overlay @(_varDd is not null ? "open" : "")" @onclick="CloseVarDd"></div>
                 <div class="jg-modal-actions">
                     <button type="button" class="jg-pill-ghost" @onclick="CloseTarget">@Loc.T("关闭")</button>
                 </div>
@@ -955,6 +977,13 @@
             // ESC 关弹窗：文档级挂钩（幂等，重复调用会先摘旧 handler）
             try { await JS.InvokeVoidAsync("junigridJs.packsEsc", _dotNetRef); } catch { }
         }
+        // 版本下拉：翻不翻转要量菜单打开后的最终矩形，而 StateHasChanged 只是排队渲染
+        // ⇒ 挂到这一帧之后（同 Mods 的 fitModMenu 那条教训）
+        if (_varDdFit)
+        {
+            _varDdFit = false;
+            try { await JS.InvokeVoidAsync("junigridJs.fitPkVar"); } catch { }
+        }
         // 大图弹层开着就确保缩放手势已绑上（幂等：JS 侧 __pkz 防重复绑定）
         if (_lbImages is not null)
         {
@@ -1101,7 +1130,7 @@
     }
     private void SetTCat(string c) { _tcat = c; }
     private void CloseDetail() { _open = null; }
-    private void CloseTarget() { _openTarget = null; }
+    private void CloseTarget() { _openTarget = null; _varDd = null; }
 
     // ───────────────────── 按包卡片：三点菜单 ─────────────────────
 
@@ -1300,6 +1329,37 @@
         return list;
     }
 
+    /// <summary>下拉框上写的那一版 = 此刻在位的那版。一份都不在位时返回 null：
+    /// 那是账上还留着旧候选、而包里已经没有这一版的情形（PNG 不再算候选之后就是这样），
+    /// 硬选第一版等于替游戏说"现在贴的是它"。</summary>
+    private static string? CurVar(List<(string Asset, string Label, bool Active)> vars)
+        => vars.FirstOrDefault(v => v.Active).Label is { Length: > 0 } on ? on : null;
+
+    /// <summary>对象弹窗里"这一包的这张目标还有几版"的行尾下拉：开着的那一行键。</summary>
+    private string? _varDd;
+    private bool _varDdFit;
+
+    private void ToggleVarDd(string key)
+    {
+        _varDd = _varDd == key ? null : key;
+        _varDdFit = _varDd is not null;
+        StateHasChanged();
+    }
+
+    private void CloseVarDd()
+    {
+        if (_varDd is null) return;
+        _varDd = null;
+        StateHasChanged();
+    }
+
+    private async Task PickFromVarDd(ContentOverrideTargets.TargetGroup t, string slot,
+        (string Asset, string Label, bool Active) v)
+    {
+        _varDd = null;
+        await PickColor(t.Name, slot, v.Asset, v.Label);
+    }
+
     /// <summary>换配色：拿原包备份里那一版，按<b>当前</b>本体重编一份盖上去（一张表只有一份在位，
     /// 所以是换不是加）。账上那条记录不新增，只换 <c>VariantLabel</c> 与副本。</summary>
     private async Task PickColor(string what, string slot, string asset, string label)
@@ -1311,10 +1371,14 @@
         await Task.Run(() => err = ContentOverrideService.SwitchVariant(Cfg, gp, asset, slot, label));
         if (err is not null) Toast(err);
         else Toast(Loc.F("已把「{0}」换成配色「{1}」", what, label));
+        // 重扫之后把弹窗指回【原来开着的那一个】，不然换完配色弹窗会跳没。
+        // 只跟着"当时开的是哪个"走：无条件写 _open 会让对象弹窗里选完配色顺手把包详情页
+        // 也弹出来（2026-10-10 实测：从对象卡的版本下拉选完颜色，包页面跟着开了）。
+        var openSlot = _open?.Slot;
+        var openTargetKey = _openTarget?.Key;
         Reload();
-        // 重扫之后把弹窗指回"同一个包 / 同一个对象"，不然换完配色弹窗会跳没
-        _open = _groups.FirstOrDefault(x => x.Slot == slot);
-        _openTarget = _targets.FirstOrDefault(x => x.Key == _openTarget?.Key);
+        _open = openSlot is null ? null : _groups.FirstOrDefault(x => x.Slot == openSlot);
+        _openTarget = openTargetKey is null ? null : _targets.FirstOrDefault(x => x.Key == openTargetKey);
         _busy = false;
         StateHasChanged();
     }

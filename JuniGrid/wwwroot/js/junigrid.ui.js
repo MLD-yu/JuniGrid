@@ -34,6 +34,18 @@
         if (r.bottom > window.innerHeight - 8) dd.classList.add('up');
     };
 
+    window.junigridJs.fitPkVar = function () {
+        // 素材包对象弹窗里的版本下拉：往下放会掉出弹窗 ⇒ 按实测矩形翻到上方。
+        // 量的是最近的 .jg-modal 而不是窗口 —— 裁掉菜单的是弹窗自己。
+        var dd = document.querySelector('.jg-pk-vardd.open');
+        if (!dd) return;
+        dd.classList.remove('up');
+        var menu = dd.querySelector('.jg-sort-menu');
+        if (!menu) return;
+        var host = menu.closest('.jg-modal') || document.documentElement;
+        if (menu.getBoundingClientRect().bottom > host.getBoundingClientRect().bottom - 8) dd.classList.add('up');
+    };
+
     window.junigridJs.toast = function (msg, kind) {
         try {
             if (current) {

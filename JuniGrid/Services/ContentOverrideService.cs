@@ -23,9 +23,9 @@ namespace JuniGrid.Services;
 ///   · 高度不等 ⇒ 可以照装。XNB 自描述，游戏按固定行距从顶上往下切格，源表矮了只是下面几格
 ///     取不到东西（那个表情画不出），高了只是多出的几格没人去索引。没有一个源像素换过行。
 ///   · 宽度不等 ⇒ 必须拦。一行里的列数变了，第 N 格直接落到别人的像素上 —— 那是画错人，不是少帧。
-///   · PNG 与本体不等 ⇒ 按格位 1:1 搬进目标像素块、缺的下面几行留全透明，【不缩放】。
-///     整表拉伸会把源图的行边界挪到不是行距整数倍的地方（128×128 → 128×320 时源行边界落在
-///     目标 y=160），那一格就成了上下两个表情的纵向缝合件。见 <see cref="XnbCodec.TryBuildFromPngAligned"/>。
+///   · 包里只交 PNG 的那一张 ⇒ 不收。这条路是往本体 Content 里换 .xnb，作者只给 PNG 就是
+///     交给 CP 加载的形状（2026-10-10 定，见 <c>Plan</c> 的 png 分支：以前在这儿重编，
+///     实测把效果图文件夹当成了立绘的"版本"）。
 /// 旁证与它的边界：CP 的 EditImage(PatchMode=Replace) 从不比对源与目标的尺寸，用户 Mods 里
 /// [CP] Portrait Anime Mods OhoDavi 的 assets/Elliott_Beach.png 是 128×128 而本体那张是 128×320。
 /// 但这只证明【CP 不拦】，不证明【游戏画对】—— 那 3 个缺失表情在游戏里究竟长什么样，仍未开机验证。
@@ -1287,12 +1287,26 @@ public static class ContentOverrideService
             // 上面按原名回退找到了实际目录 ⇒ 把纠正后的名字写回账。
             // 不写回的话下次重判还会撞同一个错（账指着一个不存在的目录）。
             if (!r.PackDir.Equals(packDir, StringComparison.OrdinalIgnoreCase)) { r.PackDir = packDir; dirChanged = true; }
+            // 版本清单也照这次的解析结果刷新：它是【安装当时】的快照，判据一变（比如 2026-10-10
+            // 起 PNG 不再算候选）账上就会继续列着包里已经没有的那几版 —— 界面上那些"角色预览 / xnb"
+            // 配色 chip 就是这么留下的，点它还会去找一个不存在的候选。
+            var newVariants = plan.VariantLabels.TryGetValue(r.Asset, out var vl)
+                ? vl : new List<string>();
+            var newFacts = plan.VariantItems.TryGetValue(r.Asset, out var vi)
+                ? vi.Select(v => new ContentOverrideVariant(v.Label, v.Note)).ToList()
+                : new List<ContentOverrideVariant>();
             if (r.SkippedNote == newSkip && r.ResizedNote == newResized
-                && r.SkippedCount == plan.Rejects.Count && r.ResizedCount == plan.Resized.Count) continue;
+                && r.SkippedCount == plan.Rejects.Count && r.ResizedCount == plan.Resized.Count
+                && r.Variants.SequenceEqual(newVariants)) continue;
             r.SkippedCount = plan.Rejects.Count;
             r.SkippedNote = newSkip;
             r.ResizedCount = plan.Resized.Count;
             r.ResizedNote = newResized;
+            r.Variants = newVariants;
+            r.VariantFacts = newFacts;
+            // VariantLabel 故意不动：它记的是"现在贴着的那一份"是哪一版。
+            // 那份候选可能已经不在清单里（效果图就是这种）—— 这时候一颗 chip 都不高亮才是实话，
+            // 而玩家点清单里剩下的那一版，正好把它换成还在的。
         }
 
         cfg.Save(cfg.Current);
@@ -1578,51 +1592,23 @@ public static class ContentOverrideService
             }
             else
             {
-                // PNG → XNB 必须重编内容区，这时目标解不出纹理就没有可抄的骨架。
-                // 字体资产走不到这条路上来（包里字体是 .xnb），所以这里解不出就是真配不上。
-                var r = XnbCodec.TryBuildFromPng(targetPath, f, out var built);
-                if (r != XnbCodec.Fail.SizeMismatch && built is not null)
-                {
-                    res.Items.Add(new PlanItem(asset, built, true, rel));
-                    continue;
-                }
-                if (r == XnbCodec.Fail.SourceUnreadable || r == XnbCodec.Fail.TargetUnreadable)
-                {
-                    res.AddReject(rel, asset, name + "：" + LocService.Tr("编不成游戏认得的图像格式"));
-                    continue;
-                }
-                // 尺寸不同 ⇒ 【按格位 1:1 搬】，不是缩放。整表拉伸会把源图的行边界挪到不是行距
-                // 整数倍的位置（128×128 → 128×320 时源行边界落在目标 y=160），那一格就成了上下
-                // 两个表情的纵向缝合件 —— 比"这个角色没换"糟得多。1:1 不动任何一个源像素的 y 坐标，
-                // 本体多出来的下面几行留全透明，那个表情画不出东西，这是实话。
-                // 宽度不等 ⇒ 列数变了，1:1 也无从对齐 ⇒ 落到下面的整单拒绝。
-                var van = XnbDecoder.TryLocate(targetPath);
-                if (XnbCodec.TryBuildFromPngAligned(targetPath, f, out var padded, out var copiedH, out var blankH))
-                {
-                    var s = PixelKit.DecodePng(f);
-                    // 源比本体高（发型表那种：作者画了 90 行，原版只有 21 行）时，"下方 0 行为空"
-                    // 这句等于什么都没说 —— 实话是【源表多出来的那几十行本游戏读不到】。
-                    res.Resized.Add(s is not null && van is not null && s.Height > van.Height
-                        ? LocService.Tf("{0}：此文件 {1}×{2}，游戏 {3} 为 {4}×{5} —— 上方 {6} 行按原样写入，源表多出的 {7} 行本游戏用不上",
-                            name, s.Width, s.Height, asset, van.Width, van.Height, copiedH, s.Height - copiedH)
-                        : LocService.Tf("{0}：此文件 {1}×{2}，游戏 {3} 为 {4}×{5} —— 上方 {6} 行按原样写入，下方 {7} 行为空",
-                            name, s?.Width ?? 0, s?.Height ?? 0, asset, van?.Width ?? 0, van?.Height ?? 0,
-                            copiedH, blankH));
-                    res.FileNotes[rel] = res.Resized[^1];
-                    res.Items.Add(new PlanItem(asset, padded!, true, rel));
-                    continue;
-                }
-                res.AddReject(rel, asset, SizeText(name, f, targetPath, asset));
+                // PNG 不当候选：往本体 Content 里贴图这条路只收游戏认得的 .xnb。
+                // 作者只交 PNG 的那一张不是"失败的图"，是【没打算走这条路】—— 实测 Villagers
+                // Anime Portrait（N97）：`xnb/` 里 46 张 xnb 才是给本体的，`Character Previews/`
+                // 里 45 张 png 是给人看的效果图，而旧写法按【文件夹名排序】取第一版，
+                // "Character Previews" 排在 "xnb" 前面 ⇒ 账上 20 条是从效果图重编出来的，
+                // 其中 Portraits/Alex 当时就在位 —— 游戏里盖着的确实是效果图（用户 2026-10-10 抓到）。
+                // 整包一张 xnb 都没有的那种更早就进不了这条路（ModService.OverrideChannelTakes 的
+                // anyXnb 硬前提），这儿只管混装包里那些只有 PNG 的张。
+                res.AddReject(rel, asset, LocService.Tf("{0}：只有 PNG，内容包只收 XNB", name));
             }
         }
         // 一个包里多张图撞到同一个资产：以前【整组都不装】（"作者没写清的事我们不能替他编"）。
         // 实测这条把一类正常的包全挡死了 —— Yomi's Golden Princess Hairstyle 就是
         // 同一张 Characters/Farmer/hairstyles 的 4 个配色（三色/可染白/金/黑），各带 png+xnb，
         // 8 个文件一起被拒，玩家一个都用不上。现在按【包内所在文件夹】分版本：
-        // 同一文件夹里的 png 与 xnb 是同一份画的两种编码 ⇒ 合成一版，取【作者的 xnb】：
-        // XNB 走整份替换，作者画多少行就写多少行；PNG 走"按本体重编"，会被裁到原版高度 ——
-        // 实测 Yomi 发型包那份 128×992 的 PNG 被裁成 128×672，直接少掉一截发型表（用户抓到）。
-        //（只有 xnb 缺席时才用 png；换版本重编也仍能吃 png，见 SwitchVariant/Rejudge。）
+        // 候选只有 .xnb（PNG 在上面那步就不收了），所以"同一文件夹里 png 与 xnb 是同一份画的
+        // 两种编码"这件事已经不会发生 —— 分版本只看【装了哪几个文件夹的 xnb】。
         // 不同文件夹才是不同版本，默认取按名排序的第一版，其余记进 VariantLabels，
         // 让玩家在对象卡的版本行里换（SwitchVariant）。
         var byTarget = res.Items.GroupBy(i => i.Asset, StringComparer.OrdinalIgnoreCase).ToList();
@@ -1632,8 +1618,7 @@ public static class ContentOverrideService
             if (g.Count() == 1) { res.Items.Add(g.First()); continue; }
             var versions = g.GroupBy(i => VariantFolderOf(i.Source), StringComparer.OrdinalIgnoreCase)
                 .OrderBy(x => x.Key, StringComparer.Ordinal)
-                .Select(x => x.OrderByDescending(y => y.Source.EndsWith(".xnb", StringComparison.OrdinalIgnoreCase))
-                              .ThenBy(y => y.Source, StringComparer.Ordinal).First())
+                .Select(x => x.OrderBy(y => y.Source, StringComparer.Ordinal).First())
                 .ToList();
             if (versions.Count == 1) { res.Items.Add(versions[0]); continue; }
             var labeled = versions.Select(v => v with
@@ -2265,7 +2250,7 @@ public static class ContentOverrideService
         sawVanillaName = true;      // 名字对得上原版图，尺寸或歧义的问题在下面报
         var isPng = Path.GetExtension(file).Equals(".png", StringComparison.OrdinalIgnoreCase);
         if (cands.Count == 1 && isPng)
-            return cands[0].asset;  // 只有一个候选时尺寸闸门在 TryBuildFromPng 里把关
+            return cands[0].asset;      // PNG 装不上，但认得出是哪张 ⇒ 拒绝文案与"同版另一编码"去重都要用它
 
         // 目标是字体（解不出纹理，但类型表里有 SpriteFontReader）⇒ 没有面积可比，
         // 可【名字对得上】本身就是最强的一条证据：字体表是自描述容器（内部记着自己的
@@ -2373,14 +2358,6 @@ public static class ContentOverrideService
         int mineW, int mineH, int theirsW, int theirsH, string asset)
         => mineW == 64 && mineH == 64 && theirsW == 128 && theirsH == 64
            && asset.StartsWith("Portraits/", StringComparison.OrdinalIgnoreCase);
-
-    private static string SizeText(string name, string png, string targetXnb, string asset)
-    {
-        var t = PixelKit.DecodePng(png);
-        var v = XnbDecoder.TryLocate(targetXnb);
-        return LocService.Tf("{0}：此文件 {1}×{2}，游戏 {3} 为 {4}×{5} —— 缩放后仍无法编码，无法识别",
-            name, t?.Width ?? 0, t?.Height ?? 0, asset, v?.Width ?? 0, v?.Height ?? 0);
-    }
 
     private static string StoreCopy(string gamePath, byte[] bytes, string asset)
     {

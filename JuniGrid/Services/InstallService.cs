@@ -281,8 +281,10 @@ public sealed class InstallService
                 // v0.69.0：记录「最后下载日期」（详情页标题下 + 文件页签绿色✓ 用）
                 cfg.ModLastDownload[modId.ToString()] = DateTime.Now.ToString("yyyy-MM-dd");
                 cfg.ModFileLastDownload[file.FileId.ToString()] = DateTime.Now.ToString("yyyy-MM-dd");
-                // 记 N 网 MAIN 安装快照 + 回写 manifest.Version —— 装完即粘住，避免
-                // 「N 网文件 1 / 包内 Version 0.0.1」导致永远显示可更新
+                // 记 N 网 MAIN 安装快照（只记账，不动作者的 manifest —— 见 RecordInstall 的说明：
+                // 那个字段的读者是 SMAPI，抄进单段号会让整个 mod 不加载）。
+                // 「N 网文件 1 / 包内 Version 0.0.1」那种永远显示可更新，由 ShouldShowUpdate
+                // 的「单段 vs 多段 = 不同编号体系」那道闸处理，认领则靠 fileId，都不需要改安装物。
                 if (!string.IsNullOrWhiteSpace(modName) || modId > 0)
                 {
                     var folderGuess = modName ?? "";
@@ -292,11 +294,11 @@ public sealed class InstallService
                     if (entry is not null)
                     {
                         entry.NexusModId ??= modId;
-                        NexusUpdateTruth.RecordInstall(cfg, entry, modId, file.FileId, file.Version ?? "", cfg.GamePath ?? "");
+                        NexusUpdateTruth.RecordInstall(cfg, entry, modId, file.FileId, file.Version ?? "");
                     }
                     else
                     {
-                        NexusUpdateTruth.RecordInstallByModId(cfg, cfg.GamePath ?? "", folderGuess.Length > 0 ? folderGuess : modId.ToString(),
+                        NexusUpdateTruth.RecordInstallByModId(cfg, folderGuess.Length > 0 ? folderGuess : modId.ToString(),
                             modId, file.FileId, file.Version ?? "");
                     }
                 }
@@ -613,10 +615,10 @@ public sealed class InstallService
                         if (entry is not null)
                         {
                             entry.NexusModId ??= modId;
-                            NexusUpdateTruth.RecordInstall(cfg, entry, modId, fileId, nxmVer, cfg.GamePath ?? "");
+                            NexusUpdateTruth.RecordInstall(cfg, entry, modId, fileId, nxmVer);
                         }
                         else
-                            NexusUpdateTruth.RecordInstallByModId(cfg, cfg.GamePath ?? "",
+                            NexusUpdateTruth.RecordInstallByModId(cfg,
                                 guess.Length > 0 ? guess : modId.ToString(), modId, fileId, nxmVer);
                         _cfg.Save(cfg);
                     }

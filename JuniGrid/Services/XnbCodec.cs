@@ -3,87 +3,20 @@ using System.IO;
 namespace JuniGrid.Services;
 
 /// <summary>
-/// XNB 编码：把一张图塞进【目标原版资产自己的】内容区，只换像素块、其余字节原样保留，
-/// 再套未压缩头（10 字节：XNB + 'w' + 版本 5 + flags 0x01 + int32 总长）。
+/// 未压缩 XNB 的头与体检：往本体 Content 里换的那份字节【就是作者交的那张 .xnb】，
+/// 我们只套头（10 字节：XNB + 'w' + 版本 5 + flags 0x01 + int32 总长）和验货，不重编像素。
 ///
-/// 为什么不硬编码那 167 字节前缀：Texture2DReader 的名字是带程序集版本的
-/// （"…, Microsoft.Xna.Framework.Graphics, Version=4.0.0.0, Culture=neutral, PublicKeyToken=842cf8be1de50553"），
-/// 换 MonoGame 版本就会变，从原版文件里抄最不会错。
 /// 为什么可以不实现 LZX：官方 Content 里本来就有未压缩件（实测 Content/Characters/Grandpa.xnb
 /// 与 Farmer/skinColors.xnb，flags=0x01、10 字节头），游戏照常加载。
 ///
-/// 尺寸必须与目标资产逐像素相等：XNB 替换是整张换表，游戏按固定行距切格，
-/// 拉伸或错格会画成"大红脸"，所以这里一律拒绝，由调用方按「不适配本游戏」点名。
+/// 2026-10-10 起这里不再有"把 PNG 编成 XNB"的那两个入口 —— 内容包只收 .xnb：
+/// 实测 Villagers Anime Portrait（N97）的 <c>Character Previews/</c> 是 45 张效果图（一张 xnb 都没有），
+/// 而 <c>xnb/</c> 里 46 张才是给本体的；旧写法按文件夹名排序取第一版，于是把效果图重编进了本体。
 /// </summary>
 public static class XnbCodec
 {
     /// <summary>未压缩 XNB 的头长（magic3 + platform1 + version1 + flags1 + fileSize4）。</summary>
     public const int RawHeaderSize = 10;
-
-    public enum Fail
-    {
-        None,
-        /// <summary>目标原版资产解不出纹理（不是 Texture2D、LZX 失败、文件损坏）。</summary>
-        TargetUnreadable,
-        /// <summary>图读不出来（不是有效 PNG，或宽高越界）。</summary>
-        SourceUnreadable,
-        /// <summary>图与目标资产尺寸不同 —— 唯一能靠"拉伸"糊过去的场合，正是画出错脸的那一种。</summary>
-        SizeMismatch,
-    }
-
-    /// <summary>用 pngPath 的内容重建 targetXnbPath 这个资产，返回可直接写进 Content 的未压缩 XNB 字节。</summary>
-    public static Fail TryBuildFromPng(string targetXnbPath, string pngPath, out byte[]? xnb)
-    {
-        xnb = null;
-        var lay = XnbDecoder.TryLocate(targetXnbPath);
-        if (lay is null) return Fail.TargetUnreadable;
-        var src = PixelKit.DecodePng(pngPath);
-        if (src is null) return Fail.SourceUnreadable;
-        if (src.Width != lay.Width || src.Height != lay.Height) return Fail.SizeMismatch;
-        if (!TryReplacePixels(lay, src.PixelsRgba, out xnb)) return Fail.TargetUnreadable;
-        return Fail.None;
-    }
-
-    /// <summary>
-    /// 源图与本体【等宽】时，按格位 1:1 搬进目标的像素块：源图占上面 <paramref name="copiedHeight"/> 行，
-    /// 本体多出来的下面 <paramref name="blankHeight"/> 行留全透明；源图比本体高的那部分裁掉。
-    ///
-    /// 为什么坚决不缩放：游戏是按固定行距从这张表里切格的（立绘 64 一行、走路表 32 一行）。
-    /// 整表拉伸会把源图的行边界挪到不是行距整数倍的位置 —— 实测 128×128 → 128×320 时源行边界
-    /// 落在目标 y=160，于是目标第 3 格同时采到源的第 1、2 行，表情被纵向缝成一张谁也不是的脸。
-    /// 1:1 搬不动任何一个源像素的 y 坐标 ⇒ 格位必然不变。代价只是本体多出来的那几格是空的
-    /// （游戏在那儿画不出东西），这是"少了几帧"的实话，不是串格。
-    ///
-    /// 宽度必须相等：宽度一变就是一行里的列数变了，同几格互相挤，1:1 也无从对齐 ⇒ 返回 false，
-    /// 由调用方走整单拒绝。
-    /// </summary>
-    public static bool TryBuildFromPngAligned(string targetXnbPath, string pngPath, out byte[]? xnb,
-        out int copiedHeight, out int blankHeight)
-    {
-        xnb = null; copiedHeight = 0; blankHeight = 0;
-        var lay = XnbDecoder.TryLocate(targetXnbPath);
-        if (lay is null) return false;
-        var src = PixelKit.DecodePng(pngPath);
-        if (src is null) return false;
-        if (src.Width != lay.Width) return false;
-        copiedHeight = Math.Min(src.Height, lay.Height);
-        blankHeight = lay.Height - copiedHeight;
-        // 全 0 = RGBA(0,0,0,0) = 全透明：本体多出来的那几格宁可空着，也不拿别的东西去填
-        var rgba = new byte[lay.PixelLen];
-        Buffer.BlockCopy(src.PixelsRgba, 0, rgba, 0, copiedHeight * lay.Width * 4);
-        return TryReplacePixels(lay, rgba, out xnb);
-    }
-
-    /// <summary>把已解码的 RGBA 像素写进内容区（长度必须与像素块逐字节相等），再套未压缩头。</summary>
-    public static bool TryReplacePixels(XnbTextureLayout layout, byte[] rgba, out byte[]? xnb)
-    {
-        xnb = null;
-        if (rgba.Length != layout.PixelLen) return false;
-        var body = (byte[])layout.Body.Clone();
-        Array.Copy(rgba, 0, body, layout.PixelPos, layout.PixelLen);
-        xnb = WrapRaw(body);
-        return true;
-    }
 
     /// <summary>给内容区（不含任何头）套上 10 字节未压缩头。</summary>
     public static byte[] WrapRaw(byte[] body)

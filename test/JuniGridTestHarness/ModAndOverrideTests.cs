@@ -59,6 +59,9 @@ public class ContentOverrideTargetsTests
     [Theory]
     [InlineData("Portraits/Abigail", "立绘")]                 // 立绘与行走图是两类对象，分开成两张卡
     [InlineData("Characters/Abigail", "行走图")]
+    [InlineData("Characters/Farmer/hairstyles", "玩家形象")]   // Characters/ 底下不只有走路表
+    [InlineData("Characters/Monsters/Bat", "怪物")]
+    [InlineData("Characters/Dialogue/Abigail", "其他")]       // 认不得的子目录不戴"行走图"的帽子
     [InlineData("Animals/Horse", "动物")]
     [InlineData("Buildings/houses", "建筑")]
     [InlineData("TerrainFeatures/tree1", "树木植被")]
@@ -74,14 +77,16 @@ public class ContentOverrideTargetsTests
     [Theory]
     [InlineData("立绘", 0)]
     [InlineData("行走图", 1)]
-    [InlineData("动物", 2)]
-    [InlineData("建筑", 3)]
-    [InlineData("树木植被", 4)]
-    [InlineData("界面杂图", 5)]
-    [InlineData("地图图块", 6)]
-    [InlineData("地图贴图", 7)]
-    [InlineData("字体", 8)]
-    [InlineData("其他", 9)]
+    [InlineData("玩家形象", 2)]
+    [InlineData("怪物", 3)]
+    [InlineData("动物", 4)]
+    [InlineData("建筑", 5)]
+    [InlineData("树木植被", 6)]
+    [InlineData("界面杂图", 7)]
+    [InlineData("地图图块", 8)]
+    [InlineData("地图贴图", 9)]
+    [InlineData("字体", 10)]
+    [InlineData("其他", 11)]
     public void CategoryOrder_IsStable(string category, int expected)
         => Assert.Equal(expected, ContentOverrideTargets.CategoryOrder(category));
 
@@ -97,6 +102,8 @@ public class ContentOverrideTargetsTests
     [InlineData("Portraits/Abigail", true)]
     [InlineData("portraits/abigail", true)]                    // 大小写不敏感
     [InlineData("Characters/Dog", true)]
+    [InlineData("Characters/Farmer/hairstyles", false)]        // 玩家的发型表不是"某个人的行走图"
+    [InlineData("Characters/Monsters/Bat", false)]
     [InlineData("Animals/Dog", false)]
     [InlineData("LooseSprites/Cursors", false)]
     public void IsPerson_BothPrefixes(string asset, bool expected)

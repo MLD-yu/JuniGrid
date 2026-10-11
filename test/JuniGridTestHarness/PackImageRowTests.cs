@@ -304,4 +304,28 @@ public class PackImageRowTests
         Assert.Equal("立绘", face.Category);
         Assert.Equal("行走图", body.Category);
     }
+
+    /// <summary><c>Content\Characters</c> 底下不只有 NPC 走路表：实测顶层 125 张是走路表，
+    /// <c>Farmer/</c> 17 张是玩家自己（发型/皮肤/配饰），<c>Monsters/</c> 73 张是怪物。
+    /// 分类只看第一段目录 ⇒ 发型卡被塞进"行走图"，而且 <c>IsPerson</c> 也认它当"某个人的行走图"，
+    /// 副标题跟着写"行走图"（2026-10-10 用户在界面上抓到）。
+    /// 变异点：CategoryOf 退回只看第一段 / IsPerson 退回只看前缀 ⇒ 这条红在分类与键上。</summary>
+    [Fact]
+    public void FarmerAndMonsterSheets_AreNotWalkSprites()
+    {
+        using var s = new GameSandbox("1.6.15");
+        const string slot = "N20581";
+        Cover(s, slot, "Characters/Farmer/hairstyles", Tex());
+        Cover(s, slot, "Characters/Monsters/Bat", Tex());
+        Cover(s, slot, "Characters/Abigail", Tex());
+
+        var targets = ContentOverrideTargets.Build(s.Cfg,
+            ContentOverrideService.ShownRowPredicate(s.Dir, s.Cfg));
+        var hair = targets.Single(t => t.Assets.Contains("Characters/Farmer/hairstyles"));
+        Assert.Equal("玩家形象", hair.Category);
+        Assert.Equal("A|Characters/Farmer/hairstyles", hair.Key);   // 不是"某个人的一半"
+        Assert.Equal("Characters/Farmer/hairstyles", hair.Sub);     // 副标题给真路径，不写"行走图"
+        Assert.Equal("怪物", targets.Single(t => t.Assets.Contains("Characters/Monsters/Bat")).Category);
+        Assert.Equal("行走图", targets.Single(t => t.Assets.Contains("Characters/Abigail")).Category);
+    }
 }

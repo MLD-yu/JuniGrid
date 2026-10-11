@@ -202,6 +202,26 @@
     overflow: auto;
     padding-right: 2px;
 }
+/* ── 对象弹窗：行尾的"这一包这张还有几版"下拉 ─────────────────────────────
+   以前在行下面铺一整排胶囊（一行变两行，长列表被撑高），现在收进行右端一个下拉框。
+   行本身是 <button>，不能再嵌按钮 ⇒ 下拉挂在行的外层容器上、绝对定位盖在行尾，
+   并给行右端留出落点宽度。菜单复用 .jg-sort-menu 那套（含 .up 翻转）。 */
+.jg-pk-verwrap { position: relative; flex: none; }
+/* <button> 是 shrink-to-fit 的：以前它是 .jg-pk-verlist 的 flex 项，靠 align-items:stretch
+   拉满宽度；现在外面套了一层 wrap，它就不再填满容器 —— 实测行宽 450 而容器只有 374，
+   多出来那 76px 就是列表底部那条横向滚动条，包名也因此从下拉按钮底下穿过去。 */
+.jg-pk-verwrap .jg-pk-ver { width: 100%; }
+.jg-pk-verwrap.has-dd .jg-pk-ver { padding-right: 152px; }
+.jg-sort-dd.jg-pk-vardd { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); }
+.jg-pk-vardd .jg-sort-trigger { padding: 5px 10px; font-size: 12px; max-width: 132px; }
+.jg-pk-vardd-t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.jg-pk-vardd .jg-sort-menu { left: auto; right: 0; min-width: 168px; }
+.jg-pk-vardd.open.up .jg-sort-menu { transform-origin: bottom right; }
+/* 列表自带 max-height + overflow:auto ⇒ 打开下拉那一行时放开，不然菜单被裁掉半截 */
+.jg-pk-verlist:has(.jg-pk-vardd.open) { overflow: visible; }
+/* 弹窗内的遮罩必须压在菜单之下：全局 .jg-dd-overlay 是 9000，会盖住菜单，
+   结果"看得见、点不中，一点选项就关闭"（.jg-ver-modal 那条实测同因）。 */
+.jg-pk-tmodal .jg-dd-overlay { z-index: 15; }
 .jg-pk-ver {
     position: relative;
     display: flex;

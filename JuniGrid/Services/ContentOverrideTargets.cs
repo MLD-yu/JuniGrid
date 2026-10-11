@@ -87,10 +87,17 @@ public static class ContentOverrideTargets
     public static string DisplayPack(ContentOverrideRecord r)
         => string.IsNullOrWhiteSpace(r.PackTitle) ? r.PackName : r.PackTitle;
 
-    /// <summary>这个资产是不是人物的一半（立绘或行走图）—— 同一个人的同一半按本名并成一张卡。</summary>
+    /// <summary>这个资产是不是人物的一半（立绘或行走图）—— 同一个人的同一半按本名并成一张卡。
+    /// <para>只认【单段路径】：实测 <c>Content\Characters</c> 顶层 125 张是 NPC 走路表，
+    /// 而底下的 <c>Farmer/</c>（17 张，玩家自己）、<c>Monsters/</c>（73 张，怪物）
+    /// <c>Dialogue/</c>、<c>schedules/</c>（文字表）都不是 —— 只看前缀会把
+    /// <c>Characters/Farmer/hairstyles</c> 当成"某个人的行走图"（2026-10-10 那张发型卡）。</para></summary>
     public static bool IsPerson(string asset)
-        => asset.StartsWith("Portraits/", StringComparison.OrdinalIgnoreCase)
-        || asset.StartsWith("Characters/", StringComparison.OrdinalIgnoreCase);
+    {
+        var parts = asset.Split('/');
+        return parts.Length == 2 && (parts[0].Equals("Portraits", StringComparison.OrdinalIgnoreCase)
+            || parts[0].Equals("Characters", StringComparison.OrdinalIgnoreCase));
+    }
 
     private static string Leaf(string asset)
         => asset[(asset.LastIndexOf('/') + 1)..];
@@ -138,11 +145,25 @@ public static class ContentOverrideTargets
     /// <summary>对象分类（界面 chips 与分区标题用）。返回稳定的中文键，页面再过 Loc.T。
     /// <para>立绘与行走图是<b>两类东西</b>：一个是脸、一个是走路的身子，包的作者分开交、
     /// 玩家也分开挑（2026-10-10 定）。以前两者都算"人物"，一张卡里混着两半，
-    /// 于是"A 包的立绘 + B 包的行走图"在界面上看起来像不可能。</para></summary>
+    /// 于是"A 包的立绘 + B 包的行走图"在界面上看起来像不可能。</para>
+    /// <para><c>Characters/</c> 底下不只有走路表：实测顶层 125 张是 NPC 的，
+    /// <c>Farmer/</c> 是玩家自己（发型、皮肤、配饰 17 张）、<c>Monsters/</c> 是怪物（73 张）。
+    /// 只看第一段目录会把发型卡摆进"行走图"里（2026-10-10 用户抓到），所以这里要看第二段。</para></summary>
     public static string CategoryOf(string asset)
     {
-        var top = asset.Split('/')[0];
-        return top.ToLowerInvariant() switch
+        var parts = asset.Split('/');
+        var top = parts[0].ToLowerInvariant();
+        // Characters/ 的子目录不是 NPC 走路表：认得的给名字，认不得的算"其他"，
+        // 宁可躺进"其他"也不给它戴一顶"行走图"的帽子。段数 >2 才说明它在子目录里
+        //（"Characters/Abigail" 是 2 段 = 顶层那张走路表，"Characters/Farmer/hairstyles" 是 3 段）。
+        if (top == "characters" && parts.Length > 2)
+            return parts[1].ToLowerInvariant() switch
+            {
+                "farmer" => "玩家形象",
+                "monsters" => "怪物",
+                _ => "其他",
+            };
+        return top switch
         {
             "portraits" => "立绘",
             "characters" => "行走图",
@@ -160,19 +181,21 @@ public static class ContentOverrideTargets
         };
     }
 
-    /// <summary>分类在界面上的次序（立绘、行走图最前）。</summary>
+    /// <summary>分类在界面上的次序（立绘、行走图、玩家形象最前）。</summary>
     public static int CategoryOrder(string category) => category switch
     {
         "立绘" => 0,
         "行走图" => 1,
-        "动物" => 2,
-        "建筑" => 3,
-        "树木植被" => 4,
-        "界面杂图" => 5,
-        "地图图块" => 6,
-        "地图贴图" => 7,
-        "字体" => 8,
-        _ => 9,
+        "玩家形象" => 2,
+        "怪物" => 3,
+        "动物" => 4,
+        "建筑" => 5,
+        "树木植被" => 6,
+        "界面杂图" => 7,
+        "地图图块" => 8,
+        "地图贴图" => 9,
+        "字体" => 10,
+        _ => 11,
     };
 
     /// <summary>常见资产的叫法；没收录的用文件名原样（NPC id、Cursors_2 这类人不看也知道是啥）。</summary>

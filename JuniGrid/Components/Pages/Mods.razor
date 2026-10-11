@@ -4552,7 +4552,7 @@
                 {
                     // 启动器曾下过这一 fileId → 自动校准版本，不再误报「可更新」
                     var healed = NexusUpdateTruth.TryHealFromPriorDownload(
-                        Cfg.Current, m, file?.FileId ?? 0, remoteVer, Cfg.Current.GamePath ?? "");
+                        Cfg.Current, m, file?.FileId ?? 0, remoteVer);
                     if (healed) Cfg.Save(Cfg.Current);
                     st.RemoteVersion = remoteVer;
                     st.RemoteFileId = file?.FileId;
@@ -4723,7 +4723,7 @@
                 if (remoteVer is not null)
                 {
                     var healed = NexusUpdateTruth.TryHealFromPriorDownload(
-                        Cfg.Current, m, file?.FileId ?? 0, remoteVer, Cfg.Current.GamePath ?? "");
+                        Cfg.Current, m, file?.FileId ?? 0, remoteVer);
                     if (healed) Cfg.Save(Cfg.Current);
                     st.RemoteVersion = remoteVer;
                     st.RemoteFileId = file?.FileId;
@@ -4774,7 +4774,7 @@
                             Cfg.Current.ModFileLastDownload[file.FileId.ToString()] = DateTime.Now.ToString("yyyy-MM-dd");
                             // 版本号优先用装出来的 manifest（zip 内 Version），N 网 file.Version 常为空
                             var ver = !string.IsNullOrWhiteSpace(newVer) ? newVer! : remoteVer;
-                            NexusUpdateTruth.RecordInstall(Cfg.Current, m, m.NexusModId ?? 0, file.FileId, ver, Cfg.Current.GamePath ?? "");
+                            NexusUpdateTruth.RecordInstall(Cfg.Current, m, m.NexusModId ?? 0, file.FileId, ver);
                             if (!string.IsNullOrWhiteSpace(ver)) m.Version = ver!;
                             st.RemoteVersion = remoteVer;
                             st.RemoteFileId = file.FileId;

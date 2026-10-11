@@ -134,6 +134,33 @@ public class PackVariantTests
         Assert.Equal("黑色-Black", OnlyRow(g).VariantLabel);
     }
 
+    /// <summary>账上的版本清单是【安装当时】的快照：判据一变（2026-10-10 起 PNG 不再算候选），
+    /// 不跟着刷新就会一直挂着"角色预览 / xnb"这种包里已经没有的 chip —— 点它还要去找一个
+    /// 不存在的候选。重判（进页面那一步）必须把它按这次的解析结果刷掉，
+    /// 但"现在贴着的是哪一版"（VariantLabel）不许被偷偷改写。</summary>
+    [Fact]
+    public void Rejudge_DropsVariantEntriesThePackNoLongerOffers()
+    {
+        using var g = new GameSandbox();
+        g.WriteVanilla("Portraits/Alex", 16, 16);
+        var src = TempDirs.Create("stale");
+        GameSandbox.Write(Path.Combine(src, "xnb", "Alex.xnb"), Xnb(16, 16, 0x55));
+        GameSandbox.Write(Path.Combine(src, "Character Previews", "Alex.png"), Png(16, 16, 0x66));
+        Assert.Null(ContentOverrideService.Commit(g.Dir, ContentOverrideService.Prepare(g.Dir, src),
+            "旧账包", null, g.Cfg, out _, src));
+        var r = OnlyRow(g);
+        Assert.Empty(r.Variants);                                   // 新判据下这包只有一版
+        // 冒充旧版本留下的账：清单里多出一版"效果图"，而且当前贴着的就是它
+        r.Variants = new List<string> { "Character Previews", "xnb" };
+        r.VariantLabel = "Character Previews";
+        r.VariantFacts = r.Variants.Select(v => new ContentOverrideVariant(v, "")).ToList();
+        g.Cfg.Save(g.Cfg.Current);
+
+        Assert.Null(ContentOverrideService.Rejudge(g.Cfg, g.Dir, r.Slot).Error);
+        Assert.Empty(OnlyRow(g).Variants);                          // 那颗 chip 不再出现
+        Assert.Equal("Character Previews", OnlyRow(g).VariantLabel);   // 但实话留着：贴的是那份
+    }
+
     [Fact]
     public void SingleFileVersion_PicksNoColorList()
     {
@@ -173,6 +200,33 @@ public class PackVariantTests
         Assert.Equal(0, OnlyRow(g).SkippedCount);
         Assert.Equal("", OnlyRow(g).SkippedNote);
         Assert.Equal(Hex(Xnb(16, 16, 0x55)), Hex(File.ReadAllBytes(g.Content("LooseSprites/Cursors"))));
+    }
+
+    /// <summary>内容包只收 XNB（2026-10-10 定）：混装包里那些【只有 PNG】的张不再被重编进本体。
+    /// 实测 Villagers Anime Portrait（N97）：作者给本体的是 <c>xnb/</c> 里 46 张 xnb，
+    /// <c>Character Previews/</c> 里 45 张 png 是给人看的效果图 —— 旧写法按【文件夹名排序】取第一版，
+    /// "Character Previews" 排在 "xnb" 前面，于是账上 20 条是效果图重编出来的，
+    /// 其中 Portraits/Alex 当时【就在位】，游戏里盖着的就是效果图（用户抓到）。
+    /// 变异点：把 png 分支换回"重编后收下"，这条立刻红在"只装了 1 张"。</summary>
+    [Fact]
+    public void PngOnlyAssetInAMixedPack_IsNotReencodedIntoTheBody()
+    {
+        using var g = new GameSandbox();
+        g.WriteVanilla("Portraits/Abigail", 16, 16);
+        g.WriteVanilla("Portraits/Maru", 16, 16);
+        var maruVanilla = g.Sha(g.Content("Portraits/Maru"));
+        var src = TempDirs.Create("pngonly");
+        GameSandbox.Write(Path.Combine(src, "xnb", "Abigail.xnb"), Xnb(16, 16, 0x55));
+        GameSandbox.Write(Path.Combine(src, "Character Previews", "Maru.png"), Png(16, 16, 0x66));
+
+        var plan = ContentOverrideService.Prepare(g.Dir, src);
+        Assert.Equal(new[] { "Portraits/Abigail" }, plan.Items.Select(i => i.Asset));
+        Assert.False(plan.Items[0].Encoded);                       // 收下的是作者那张 xnb，不是重编件
+        Assert.Contains(plan.Rejects, r => r.Contains("Maru.png") && r.Contains("只收 XNB"));
+
+        Assert.Null(ContentOverrideService.Commit(g.Dir, plan, "混装包", null, g.Cfg, out _, src));
+        Assert.Equal(Hex(Xnb(16, 16, 0x55)), Hex(File.ReadAllBytes(g.Content("Portraits/Abigail"))));
+        Assert.Equal(maruVanilla, g.Sha(g.Content("Portraits/Maru")));    // 只有 PNG 的那张：本体一字节没动
     }
 
     /// <summary>每个配色要带上【自己那句】尺寸说明。界面按配色分行时，
@@ -222,18 +276,20 @@ public class PackVariantTests
 
     /// <summary>2026-10-07 定：一张 XNB 都没有的纯 PNG 包【不走本体覆盖通道】——
     /// 作者只交 PNG 就是交给 CP 加载的形状，我们烤进本体等于替他改发布方式。
-    /// 拦的是"要不要接管"这道闸，不是拆掉 PNG 编码能力（混包里某个资产只有 PNG 时还得用它）。</summary>
+    /// 2026-10-10 收紧到逐张：混包里"某个资产只有 PNG"也不再收，所以 Prepare 对纯 PNG 包
+    /// 直接就是零候选（那台机器上实测：效果图文件夹被当成版本装进过本体）。</summary>
     [Fact]
     public void PngOnlyPack_IsNotTakenByTheOverrideChannel()
     {
         using var g = new GameSandbox();
         g.WriteVanilla("LooseSprites/Cursors", 16, 16);
         var src = TempDirs.Create("png");
-        Directory.CreateDirectory(src);
-        File.WriteAllBytes(Path.Combine(src, "Cursors.png"), Png(16, 16, 0x77));
+        GameSandbox.Write(Path.Combine(src, "Cursors.png"), Png(16, 16, 0x77));
 
         var plan = ContentOverrideService.Prepare(g.Dir, src);
-        Assert.Single(plan.Items);                       // 机制上编得出来 —— 拒它是产品决定，不是做不到
+        Assert.Empty(plan.Items);                          // 连"机制上编得出来"都不给了
+        Assert.Contains(plan.Rejects, r => r.Contains("Cursors.png") && r.Contains("只收 XNB"));
+        Assert.Equal(1, plan.TargetsSeen);                 // 认得出那是本体那张图，只是这条路不收
         Assert.False(ModService.OverrideChannelTakes(plan, false, true, hasSmapi: true));
         Assert.False(ModService.OverrideChannelTakes(plan, false, true, hasSmapi: false));   // 没 SMAPI 也不绕
         Assert.True(ModService.OverrideChannelTakes(plan, true, false, hasSmapi: true));     // 有 XNB 照旧接管

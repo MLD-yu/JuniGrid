@@ -3624,13 +3624,19 @@ public static class NexusUpdateTruth
         return null;
     }
 
-    /// <summary>安装成功后：记住 N 网 fileId/文件版本；若与 manifest 不一致则回写 Version。
+    /// <summary>安装成功后：把 N 网 fileId/文件版本记进<b>我们自己的账</b>（<see cref="JuniGridConfig.ModNexusInstalls"/>）。
+    /// <para>绝不回写作者的 <c>manifest.json</c>：那个字段的读者是 SMAPI，它只认「至少两段数字」，
+    /// 而 N 网文件版本栏是作者手填的自由文本（实测 Simple Hoard Chest 填 <c>1</c>、包内 manifest 是
+    /// <c>1.24</c>）。把前者抄进后者会让 SMAPI 解析失败而<b>整个 mod 不加载</b>（实机 2026-10-11：
+    /// 信件没来，SMAPI-latest.txt 把它列进 "could not be added"）。
+    /// 「显示装到的那一版」走 <see cref="EffectiveLocalVersion"/>，「是否已装这一版」走 fileId，
+    /// 两边都不需要动安装物，见 <see cref="ShouldShowUpdate"/>。</para>
     /// <paramref name="downloadedModId"/> 必须是<b>真下载的那一页</b>：非官方续作的 manifest 里
     /// UpdateKeys 仍写着原版页（实测 2026-10-01 从续作页 20702 装的 Friends Forever，
     /// manifest 里写的是 Nexus:1738），拿 <c>m.NexusModId</c> 存就是把来源身份丢掉 ——
     /// 而「替代版是不是你手上这一版」正是靠这条记录来证明的。</summary>
     public static void RecordInstall(JuniGridConfig cfg, ModEntry m, int downloadedModId,
-        long fileId, string remoteVersion, string gamePath)
+        long fileId, string remoteVersion)
     {
         if (string.IsNullOrWhiteSpace(remoteVersion) && fileId == 0) return;
         var rec = new NexusInstallRecord
@@ -3644,14 +3650,12 @@ public static class NexusUpdateTruth
         cfg.ModNexusInstalls[key] = rec;
         if (!string.IsNullOrEmpty(m.Folder) && !string.Equals(m.Folder, key, StringComparison.OrdinalIgnoreCase))
             cfg.ModNexusInstalls[m.Folder] = rec;
-        if (!string.IsNullOrWhiteSpace(remoteVersion))
-            TrySetManifestVersion(Path.Combine(gamePath, "Mods", m.Folder), remoteVersion);
     }
 
     /// <summary>装完后从扫描结果里认出「刚装的那一条」。文件夹名对不上时，再按 manifest 的显示名
     /// 和路径末段各认一次 —— 传进来的猜测名是 manifest 里的 <c>Name</c>，改名安装与捆绑包子包的场合
     /// 它就不等于文件夹名；认不出来的后果是以一个永远查不中的键写进 ModNexusInstalls（记录等于白写，
-    /// manifest 版本回写也落空）。三条判据按可信度排：N 网 id &gt; 文件夹全名 &gt; 显示名 / 末段。</summary>
+    /// 下次快道仍然认不出「这一版已装」）。三条判据按可信度排：N 网 id &gt; 文件夹全名 &gt; 显示名 / 末段。</summary>
     public static ModEntry? FindInstalledEntry(IEnumerable<ModEntry> scanned, int nexusModId, string? nameGuess)
     {
         foreach (var x in scanned)
@@ -3673,7 +3677,7 @@ public static class NexusUpdateTruth
     private static string LeafOf(string folder) =>
         folder.Replace('\\', '/').TrimEnd('/').Split('/')[^1];
 
-    public static void RecordInstallByModId(JuniGridConfig cfg, string gamePath, string folderOrUid,
+    public static void RecordInstallByModId(JuniGridConfig cfg, string folderOrUid,
         int nexusModId, long fileId, string remoteVersion)
     {
         var rec = new NexusInstallRecord
@@ -3684,38 +3688,6 @@ public static class NexusUpdateTruth
             InstalledAtUtc = DateTime.UtcNow,
         };
         cfg.ModNexusInstalls[folderOrUid] = rec;
-        if (!string.IsNullOrWhiteSpace(remoteVersion))
-            TrySetManifestVersion(Path.Combine(gamePath, "Mods", folderOrUid), remoteVersion);
-    }
-
-    /// <summary>只改 manifest 里的 Version 字段（保留 // 注释与其它键），避免作者包被整文件重写。</summary>
-    public static bool TrySetManifestVersion(string modDir, string newVersion)
-    {
-        try
-        {
-            if (string.IsNullOrWhiteSpace(newVersion)) return false;
-            var path = Path.Combine(modDir, "manifest.json");
-            if (!File.Exists(path)) return false;
-            var text = File.ReadAllText(path);
-            var pattern = new System.Text.RegularExpressions.Regex(
-                "(\"Version\"\\s*:\\s*\")([^\"]+)(\")",
-                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-            var m = pattern.Match(text);
-            if (!m.Success) return false;
-            var old = m.Groups[2].Value;
-            if (string.Equals(old, newVersion, StringComparison.OrdinalIgnoreCase)) return false;
-            var replaced = pattern.Replace(text, "${1}" + newVersion + "${3}", 1);
-            var tmp = path + ".junigrid.tmp";
-            File.WriteAllText(tmp, replaced);
-            File.Move(tmp, path, true);
-            AppLog.Warn("Mods", $"[更新] manifest.Version {old} → {newVersion}（{modDir}）");
-            return true;
-        }
-        catch (Exception ex)
-        {
-            AppLog.Warn("Mods", "回写 manifest Version 失败: " + ex.Message);
-            return false;
-        }
     }
 
     /// <summary>
@@ -3774,12 +3746,14 @@ public static class NexusUpdateTruth
     }
 
     /// <summary>
-    /// 用「启动器曾下载过该 fileId」自动校准：补写安装快照 + 回写 manifest.Version，
-    /// 让列表立刻与 N 网一致，无需用户再点一次更新（作者忘改 manifest 时的死循环）。
+    /// 用「启动器曾下载过该 fileId」自动校准：缺快照时补写安装快照，让列表立刻与 N 网一致，
+    /// 无需用户再点一次更新（作者忘改 manifest 时的死循环）。
+    /// <para>只补账、<b>不改作者的 manifest，也不把 N 网版本盖到 <c>m.Version</c> 上</b>：包内自述优先，
+    /// 显示该显示哪一版由 <see cref="EffectiveLocalVersion"/> 判，「这一版已装」由 fileId 认。</para>
     /// 返回 true = 已是该文件/已校准成功。
     /// </summary>
     public static bool TryHealFromPriorDownload(JuniGridConfig cfg, ModEntry m,
-        long fileId, string? remoteVersion, string gamePath)
+        long fileId, string? remoteVersion)
     {
         if (m.IsConvertedPack) return false;
         if (AlreadyHasRemoteFile(cfg, m, remoteVersion, fileId))
@@ -3789,11 +3763,7 @@ public static class NexusUpdateTruth
             var rec = GetInstallRecord(cfg, m);
             if (fileId != 0 && !string.IsNullOrWhiteSpace(remoteVersion)
                 && (rec is null || string.IsNullOrWhiteSpace(rec.RemoteVersion)))
-            {
-                RecordInstall(cfg, m, m.NexusModId ?? 0, fileId, remoteVersion!, gamePath);
-                if (!string.Equals(m.Version, remoteVersion, StringComparison.OrdinalIgnoreCase))
-                    m.Version = remoteVersion!;
-            }
+                RecordInstall(cfg, m, m.NexusModId ?? 0, fileId, remoteVersion!);
             return true;
         }
         return false;
