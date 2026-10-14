@@ -12,17 +12,23 @@ namespace JuniGridTestHarness;
 /// 为什么不在测试里发真网络请求：用例要确定、要能离线跑。
 /// 所以取中间：真实数据落盘 + 真实 C# 代码跑。
 /// </summary>
-public class DependencyResolutionFixtureTests
+/// <summary>N 网搜索返回夹具的读取器（两套夹具文件共用一个口径）。
+/// <para><b>挑选那一步必须调生产判据</b> <see cref="InstallService.SearchHitIdentifies"/>，
+/// 不许在这儿抄一份判据 —— 抄一份就等于测试和线上各跑各的：线上把闸收紧了，这里照样绿，
+/// 夹具回归就成了摆设（2026-10-13 之前这里正是自己抄了一遍"只看作者段"）。</para></summary>
+internal static class NexusSearchFixture
 {
-    private static readonly string FixturePath =
-        Path.Combine(AppContext.BaseDirectory, "fixtures", "nexus-search-20261007.json");
+    public static string Path_(string file)
+        => System.IO.Path.Combine(AppContext.BaseDirectory, "fixtures", file);
 
     /// <summary>按 <c>SearchDependencyCandidatesAsync</c> 的收集策略拼候选池：
     /// 逐词取 8 条、按 modId 去重、池满 12 条即停（夹具里每个词存的就是服务端那次返回的 8 条）。</summary>
-    private static List<NexusModListEntry> BuildPool(string uid, JsonDocument fixture)
+    public static List<NexusModListEntry> Pool(string file, string uid)
     {
+        var path = Path_(file);
         var pool = new List<NexusModListEntry>();
         var seen = new HashSet<int>();
+        using var fixture = JsonDocument.Parse(File.ReadAllText(path));
         foreach (var term in InstallService.UidSearchTerms(uid))
         {
             if (!fixture.RootElement.TryGetProperty(term, out var block) ||
@@ -39,12 +45,18 @@ public class DependencyResolutionFixtureTests
         return pool;
     }
 
-    private static NexusModListEntry? Resolve(string uid, out List<NexusModListEntry> pool)
-    {
-        using var fixture = JsonDocument.Parse(File.ReadAllText(FixturePath));
-        pool = InstallService.RankByAuthor(uid, BuildPool(uid, fixture));
-        return pool.FirstOrDefault(h => InstallService.AuthorAffinity(uid, h.Uploader) > 0);
-    }
+    /// <summary>生产判据下的赢家（null = 认不出，UI 退回"未找到对应 mod"）。</summary>
+    public static NexusModListEntry? Pick(string file, string uid)
+        => InstallService.RankByAuthor(uid, Pool(file, uid))
+           .FirstOrDefault(h => h.Id > 0 && InstallService.SearchHitIdentifies(uid, h.Name, h.Uploader));
+}
+
+public class DependencyResolutionFixtureTests
+{
+    private const string File20261007 = "nexus-search-20261007.json";
+    private static readonly string FixturePath = NexusSearchFixture.Path_(File20261007);
+
+    private static NexusModListEntry? Resolve(string uid) => NexusSearchFixture.Pick(File20261007, uid);
 
     [Fact]
     public void Fixture_IsPresent()
@@ -63,11 +75,11 @@ public class DependencyResolutionFixtureTests
     [InlineData("Sharogg.Tilesheets", 27117, "Sharogg's Tilesheets")]
     public void RealServerData_ResolvesToTheRightMod(string uid, int modId, string namePrefix)
     {
-        var winner = Resolve(uid, out var pool);
+        var winner = Resolve(uid);
         Assert.NotNull(winner);                                   // 旧代码这两条都会是 null →「未找到」
         Assert.Equal(modId, winner!.Id);
         Assert.StartsWith(namePrefix, winner.Name);
-        Assert.True(InstallService.AuthorAffinity(uid, winner.Uploader) > 0);
+        Assert.True(InstallService.SearchHitIdentifies(uid, winner.Name, winner.Uploader));
     }
 
     [Fact]
@@ -75,8 +87,8 @@ public class DependencyResolutionFixtureTests
     {
         // 搜 "DLX" 会搜到一条无关的 #44017「KcatClo dlx」—— 作者段兜底带来的噪音，
         // 亲和度闸必须拦住它，否则会把用户领到别人的 mod 页。
-        var winner = Resolve("DLX.PIF", out var pool);
-        Assert.Contains(pool, h => h.Id == 44017);                // 噪音确实进了池
+        var winner = Resolve("DLX.PIF");
+        Assert.Contains(NexusSearchFixture.Pool(File20261007, "DLX.PIF"), h => h.Id == 44017);
         Assert.NotEqual(44017, winner!.Id);                       // 但没赢
     }
 
@@ -94,7 +106,57 @@ public class DependencyResolutionFixtureTests
 
         var ranked = InstallService.RankByAuthor("Sharogg.Tilesheets", oldOnly);
         Assert.DoesNotContain(ranked, h => h.Id == 27117);         // 本体压根不在旧候选池里
-        Assert.Null(ranked.FirstOrDefault(h => InstallService.AuthorAffinity("Sharogg.Tilesheets", h.Uploader) > 0));
+        Assert.Null(ranked.FirstOrDefault(h =>
+            InstallService.SearchHitIdentifies("Sharogg.Tilesheets", h.Name, h.Uploader)));
+    }
+}
+
+/// <summary>
+/// v1.2.8：作者段兜底词灌进来的"同作者别的 mod"必须被名字闸拦下。
+/// <para>实机 2026-10-13：[Parchment] Fishing Logbook 缺前置 <c>PeacefulEnd.Parchment.Core</c>，
+/// Mods 页的红字印成「缺少依赖：Fashion Sense」，而 Fashion Sense 就装在上一行、还开着 ——
+/// 名字和链接都指错了。三个名字段搜索词在 N 网全是 0 命中，兜底词 "PeacefulEnd" 返回 44 个
+/// mod 按下载数排，第一是 Fashion Sense（410 万），作者亲和度满分（上传者恰是作者段），
+/// 旧判据只看作者闸于是照收，还把错答案写进了配置（<c>dependencyDisplays</c>）。</para>
+/// <para>夹具是 2026-10-13 从 N 网 GraphQL 抓的真实返回，逐字复刻线上那条查询
+/// （gameId 1303 + name/author/uploader 三路 WILDCARD + downloads DESC + count 8）。</para>
+/// </summary>
+public class SameAuthorNoiseFixtureTests
+{
+    private const string F = "nexus-search-20261013.json";
+    private const string MissingUid = "PeacefulEnd.Parchment.Core";
+    private const string FashionSenseUid = "PeacefulEnd.FashionSense";
+
+    [Fact]
+    public void Fixture_IsPresent()
+        => Assert.True(File.Exists(NexusSearchFixture.Path_(F)), "缺少夹具文件：" + F);
+
+    [Fact]
+    public void AuthorFallbackPool_IsEntirelySameAuthorNoise()
+    {
+        // 正向对照：这一池噪声**过得了作者闸** —— 证明作者闸对它自己制造的噪声完全失明，
+        // 也证明下面那条"认不出"不是因为池子空。
+        var pool = NexusSearchFixture.Pool(F, MissingUid);
+        Assert.NotEmpty(pool);
+        Assert.All(pool, h => Assert.True(InstallService.AuthorAffinity(MissingUid, h.Uploader) > 0,
+            "兜底词 " + MissingUid + " 的候选本该全是同作者的 mod"));
+        Assert.All(pool, h => Assert.Equal(0, InstallService.NameMatchScore(MissingUid, h.Name)));
+        Assert.Equal(9969, pool[0].Id);          // 旧判据（只看作者）取到的第一就是 Fashion Sense
+    }
+
+    [Fact]
+    public void MissingDependency_NoLongerPointsAtSomeOtherModOfTheSameAuthor()
+        => Assert.Null(NexusSearchFixture.Pick(F, MissingUid));   // 宁可"未找到"，不给错页
+
+    [Fact]
+    public void SamePool_TheUidThatDoesMatch_StillResolves()
+    {
+        // 双向用例的另一半：同一份真实数据里，Fashion Sense 自己仍然是认得出的。
+        // 谁把判据改成"作者段兜底一律作废"或"搜索通道一律返回 null"，这条会红。
+        var w = NexusSearchFixture.Pick(F, FashionSenseUid);
+        Assert.NotNull(w);
+        Assert.Equal(9969, w!.Id);
+        Assert.Equal("Fashion Sense", w.Name);
     }
 }
 

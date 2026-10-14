@@ -124,7 +124,10 @@ public class AuthorAffinityTests
     [InlineData("DLX.PIF", "DeLiXx", 1)]       // 改名前：缩写全等
     [InlineData("Sharogg.Tilesheets", "Sharogg", 3)]   // 作者段与上传者完全相同
     [InlineData("Wildflourmods.Cozy", "Wildflourmods", 3)]
-    [InlineData("Wildflour.Cozy", "Wildflourmods", 2)] // 一方包含另一方
+    [InlineData("Wildflour.Cozy", "Wildflourmods", 2)] // 一方是另一方的前缀
+    // 随机串里恰好含有 3 个字母不作数：实测缓存里 BFV.CombinedCrops 被认成
+    // 「Stardew Valley Expanded … Russian」，上传者 jhmngbfvdcsaxdcfvgbh 中段含 "bfv" 就过了旧规则
+    [InlineData("BFV.CombinedCrops", "jhmngbfvdcsaxdcfvgbh", 0)]
     // Miku 陷阱：搜 "Miku" 按下载第一是 lucasedu11 的皮肤包，绝不能认成 ChaseXavier 的
     [InlineData("ChaseXavier.Miku", "lucasedu11", 0)]
     [InlineData("ChaseXavier.Miku", "ChaseXavier", 3)]
@@ -176,6 +179,52 @@ public class AuthorAffinityTests
     [InlineData("ChaseXavier.Miku", "CP_Miku NPC", 1)]
     [InlineData("a.UI", "UI Info Suite 2", 0)]      // 名字段 <3 字符不作数，防泛词点亮全排
     [InlineData("SomeMod", "Anything", 0)]          // UID 没有作者段
+    // 多段 UID：整串 "parchmentcore" 在真实页面名里不存在，所以按点号拆段认（实机 2026-10-13）
+    [InlineData("PeacefulEnd.Parchment.Core", "Parchment", 1)]
+    [InlineData("PeacefulEnd.Parchment.Core", "Fashion Sense", 0)]      // 同作者的别的 mod
+    [InlineData("PeacefulEnd.Parchment.Core", "Scoreboard", 0)]         // "core" 不许从单词中间抠出来
     public void NameMatchScore_Levels(string uid, string name, int expected)
         => Assert.Equal(expected, InstallService.NameMatchScore(uid, name));
+
+    /// <summary>搜索通道的放行判据矩阵：两道闸各自都有"只有它能拦住"的那一行，
+    /// 拆掉任意一道都会红一条用例（这就是变异检查的靶子）。</summary>
+    [Theory]
+    // 只有名字闸拦得住：同作者、不同 mod（实机 2026-10-13 那条红字的成因）
+    [InlineData("PeacefulEnd.Parchment.Core", "Fashion Sense", "PeacefulEnd", false)]
+    // 只有作者闸拦得住：名字对得上、作者是别人（Miku 陷阱，2026-09-26）
+    [InlineData("ChaseXavier.Miku", "Miku skin for Abigail", "lucasedu11", false)]
+    // 两道都拦不住的那种随机串
+    [InlineData("BFV.CombinedCrops", "Stardew Valley Expanded 1.15.11 Russian", "jhmngbfvdcsaxdcfvgbh", false)]
+    // 代价：这条页面号其实是对的，但没有任何证据能证明它对 —— 认不出就不指路
+    [InlineData("Nom0ri.RomRas", "Romanceable Rasmodia - Female Wizard", "Nom0ri", false)]
+    // 两边都对上 → 放行
+    [InlineData("PeacefulEnd.FashionSense", "Fashion Sense", "PeacefulEnd", true)]
+    // 多段 UID 的真前置：页面名对上点号首段（第四道来源就是靠这条认出的）
+    [InlineData("PeacefulEnd.Parchment.Core", "Parchment", "PeacefulEnd", true)]
+    [InlineData("DLX.PIF", "PIF - Personal Rooms", "DeLiXxN", true)]
+    [InlineData("Sharogg.Tilesheets", "Sharogg's Tilesheets (indoor and outdoor structures)", "Sharogg", true)]
+    public void SearchHitIdentifies_Levels(string uid, string name, string uploader, bool expected)
+        => Assert.Equal(expected, InstallService.SearchHitIdentifies(uid, name, uploader));
+}
+
+/// <summary>配置持久缓存的可信闸：判据收紧之前存下的错答案，靠读取处重跑这道闸来自愈。
+/// 下面四条 (name/modId/uploader/source) 是从真机
+/// <c>%AppData%\JuniGrid\junigrid.config.json → dependencyDisplays</c> 里逐字抄的。</summary>
+public class DependencyDisplayTrustTests
+{
+    private static DependencyDisplayEntry Entry(string name, int modId, string uploader, string source)
+        => new() { Name = name, ModId = modId, Uploader = uploader, Source = source };
+
+    [Theory]
+    // 真机那条错答案：同作者的另一个 mod，重解析后仍认不出 → 必须判不可信（进而被 DropStaleDisplay 删掉）
+    [InlineData("PeacefulEnd.Parchment.Core", "Fashion Sense", 9969, "PeacefulEnd", "", false)]
+    // 同一条数据换成它自己的 UID：对得上，不许连坐
+    [InlineData("PeacefulEnd.FashionSense", "Fashion Sense", 9969, "PeacefulEnd", "", true)]
+    // 父包 Requirements 表给的：作者自己登记的映射，没有上传者可比，靠来源字段放行
+    [InlineData("Wildflour.AtelierGoods", "Wildflour's Atelier Goods", 0, "", "requirements", true)]
+    // 老配置没 uploader 字段＝空串＝不可信（v1.2.4 之前存的那批）
+    [InlineData("DLX.PIF", "PIF - Personal Rooms", 20537, "", "", false)]
+    public void SavedDisplay_Levels(string uid, string name, int modId, string uploader, string source, bool expected)
+        => Assert.Equal(expected, InstallService.SavedDisplayStillTrustworthy(
+               uid, Entry(name, modId, uploader, source)));
 }

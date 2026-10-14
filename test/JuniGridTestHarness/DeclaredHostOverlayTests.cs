@@ -198,4 +198,27 @@ public class DeclaredHostOverlayTests : IDisposable
         // 只报页面自己那一行（名字 + 页面号），不报我们从本机目录里挑的那一个。
         Assert.Contains("#5255", msg);
     }
+
+    [Fact]
+    public void SecondDeclaredRowIsAnotherPrerequisite_NotAnIdentityTie()
+    {
+        // 与上一条成对：登记两条前置、本机<b>都装着</b>（宿主 #5255 + GMCM #5098）——
+        // 这是"这个包的前置不止一个"，不是"身份分不出"。把它当并列一律弃权，等于
+        // 包只要顺手登记了 GMCM / Content Patcher 就再也认不出宿主
+        // （实机 2026-10-13 我改出的回归，拿账本里 39 个已装覆盖包做 A/B 对表抓出来的）。
+        var gmcm = Path.Combine(_game, "Mods", "GenericModConfigMenu");
+        Directory.CreateDirectory(gmcm);
+        File.WriteAllText(Path.Combine(gmcm, "manifest.json"),
+            @"{ ""Name"": ""Generic Mod Config Menu"", ""Author"": ""spacechase0"", ""Version"": ""1.6.1"",
+               ""UniqueID"": ""spacechase0.GenericModConfigMenu"", ""Description"": ""x"",
+               ""EntryDll"": ""GenericModConfigMenu.dll"", ""UpdateKeys"": [ ""Nexus:5098"" ] }");
+        var d = PackDir("Maps/fall_beach.png", "Maps/spring_beach.png",
+                        "Maps/DesertTiles.png", "LooseSprites/Cursors.png");
+        var plan = _ms.ProbeOverlayForDeclaredHost(_game, d, new[]
+        {
+            Req(5255, "DaisyNiko's Earthy Recolour"), Req(5098, "Generic Mod Config Menu (GMCM)"),
+        });
+        Assert.NotNull(plan);                       // 多一条前置不许让这一档弃权
+        Assert.Equal(HostFolder, plan!.Host);       // 而接得住这些素材的只有宿主那一家
+    }
 }

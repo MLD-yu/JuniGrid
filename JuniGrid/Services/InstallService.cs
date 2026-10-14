@@ -722,6 +722,9 @@ public sealed class InstallService
         // 依赖 UID → 声明它的父包 Nexus 页面号（跨轮累积：传递依赖在第二轮才露头时，
         // 第一轮记下的父包仍然用得上）。
         var parentsByDep = new Dictionary<string, List<int>>(StringComparer.OrdinalIgnoreCase);
+        // 同一个依赖被几个父包各自要求到哪一版（依赖方 manifest 的 MinimumVersion 原样）。
+        // 「这一版在不在某一页」只能靠它判 —— 官网要求表可能整页不存在（见 FindVersionProviderAsync）。
+        var needsByDep = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
         var premiumBlocked = false;
         string? zipPath = null;
         try
@@ -762,6 +765,16 @@ public sealed class InstallService
                                      && VersionUtil.IsOlderThan(haveDep.Version, minVer)))
                                 continue;
                             if (firstRound && allowedFirstRound is not null && !allowedFirstRound.Contains(dep)) continue;
+                            // 记下父包要求的那一版（逐字留着，不折成 ≥ 门槛）—— 后面靠它认
+                            // 「哪一页的文件表里真有这一版」。
+                            if (m.DependencyMinVersions.TryGetValue(dep, out var needVer)
+                                && !string.IsNullOrWhiteSpace(needVer))
+                            {
+                                if (!needsByDep.TryGetValue(dep, out var nl))
+                                    needsByDep[dep] = nl = new List<string>();
+                                if (!nl.Contains(needVer.Trim(), StringComparer.OrdinalIgnoreCase))
+                                    nl.Add(needVer.Trim());
+                            }
                             // 记下"这个依赖是谁的前置"：官网的 Requirements 表挂在父包身上，
                             // 拿父包页面号去问它，比按 UID 拆词全站搜索准得多。
                             if (m.NexusModId is > 0)
@@ -812,8 +825,43 @@ public sealed class InstallService
                     // GraphQL 请求。premiumBlocked 快速通道只需要一个候选 id 生成手动链接。
                     List<NexusModListEntry> cands;
                     parentsByDep.TryGetValue(dep, out var parents);
+
+                    // ── 版本证据闸（实机 2026-10-12）──
+                    // 本机装着这个依赖、却仍低于某个父包的要求时，「它自己来自哪一页」不再是答案：
+                    // 那一页可能根本给不出要求的版本（完美手册要 0.6.4-unofficial-mushymato.0，
+                    // focustense 的 28870 整页最高 0.6.1 —— 而我们一遍遍把用户领回那一页，红字永远消不掉）。
+                    // 只有「文件版本表里逐字含有要求串」的那一页才算数；一页都没有 ⇒ 不给任何页面号。
+                    int? provider = null;
+                    string providerName = "";
+                    var needs = needsByDep.TryGetValue(dep, out var needList) ? needList : new List<string>();
+                    if (installedMap.TryGetValue(dep, out var installedDep) && needs.Count > 0)
+                    {
+                        var hit = await FindDependencyProviderAsync(
+                            cfg, dep, needs, installedDep.NexusId, parents);
+                        if (hit is (int hid, string hname)) { provider = hid; providerName = hname; }
+                    }
+                    if (provider is null && needs.Count > 0 && installedMap.ContainsKey(dep))
+                    {
+                        var needLabel = string.Join("、", needs);
+                        Step(LocService.Tf("✗ {0}：N 网候选页都没有 {1} 这一版", dep, needLabel));
+                        outcomes.Add(new DependencyRunItem(dep, "manual", dep, null,
+                            LocService.Tf("要求 {0}，本机 {1}；候选页的文件版本表里没有逐字等于该要求的版本"
+                                + " —— 这一版可能只在 GitHub 等站外发布，不再指向任何 N 网页面",
+                                needLabel, installedDep.Version)));
+                        continue;
+                    }
+
                     if (premiumBlocked)
                     {
+                        if (provider is int provId)
+                        {
+                            Step(LocService.Tf("⏭ {0}：免费账户不能 API 直下，已打开有 {1} 那一版的页面",
+                                dep, string.Join("、", needs)));
+                            outcomes.Add(new DependencyRunItem(dep, "manual", providerName, provId,
+                                "已在浏览器打开这一版真正所在的页面 —— 点「Mod Manager Download」，启动器会自动接管下载"));
+                            toOpen.Add($"https://www.nexusmods.com/stardewvalley/mods/{provId}");
+                            continue;
+                        }
                         var face = await FirstCandidateAsync(cfg, dep, preResolved, parents);
                         if (face is null)
                         {
@@ -832,6 +880,11 @@ public sealed class InstallService
 
                     cands = await KnownCandidatesAsync(cfg, dep, preResolved,
                         installedMap.TryGetValue(dep, out var ownDep) ? ownDep.NexusId : null, parents);
+                    // 有版本证据的那一页排最前；本机那份来自的页只当兜底。
+                    if (provider is int firstId)
+                        cands = cands.Where(c => c.Id != firstId)
+                            .Prepend(new NexusModListEntry(firstId, providerName, "", "", 0, ""))
+                            .ToList();
                     var searched = false;
                     string? lastErr = null;
                     var ok = false;
@@ -987,7 +1040,8 @@ public sealed class InstallService
     }
 
     /// <summary>确认弹窗的展示信息：UID → (mod 名, Nexus modId, 封面)。
-    /// 免 key GraphQL 的命中要过 <see cref="AuthorAffinity"/> 这道闸才敢拿出来当"这个依赖是谁"
+    /// 免 key GraphQL 的命中要过 <see cref="SearchHitIdentifies"/>（作者段＋名字段双闸）
+    /// 才敢拿出来当"这个依赖是谁"
     /// —— 实际安装仍以下载后的 UniqueID 校验为准，但展示错了会把人直接带去别人的 mod 页。</summary>
     public sealed record DependencyDisplayInfo(string Uid, string? Name, int? ModId, string? CoverUrl);
 
@@ -1001,7 +1055,7 @@ public sealed class InstallService
     }
 
     /// <summary>某条搜索结果与这个 UID 的"作者亲和度"：
-    /// 3=作者段与上传者完全相同 · 2=一方包含另一方（Wildflour ↔ Wildflourmods）·
+    /// 3=作者段与上传者完全相同 · 2=一方是另一方的前缀（Wildflour ↔ Wildflourmods）·
     /// 1=作者段是上传者的首字母缩写（CF ↔ CyanFire）· 0=对不上。
     /// 为什么必须看作者：搜 "Miku" 按下载数排第一是 lucasedu11 的「Miku skin for Abigail」(4291)，
     /// 而 ChaseXavier.Miku 真正对应的是排第三的「CP_Miku NPC」(4373)。旧写法直接取第一个命中，
@@ -1013,7 +1067,12 @@ public sealed class InstallService
         var u = new string((uploader ?? "").Where(char.IsLetterOrDigit).ToArray()).ToLowerInvariant();
         if (u.Length == 0) return 0;
         if (u == a) return 3;
-        if (u.Contains(a) || a.Contains(u)) return 2;
+        // 只认<b>前缀</b>包含，不认任意位置包含。实测 2026-10-13 缓存里躺着一条
+        // BFV.CombinedCrops →「Stardew Valley Expanded 1.15.11 Russian」，上传者是随机串
+        // "jhmngbfvdcsaxdcfvgbh"，恰好在中间含有 "bfv" 就拿到了亲和度 2（搜 "BFV" 走的是
+        // uploader WILDCARD，正是它把这一页灌进候选池的）。"Wildflour" ↔ "Wildflourmods"
+        // 这种加尾缀的仍是前缀，那一档判定不受影响。
+        if (u.StartsWith(a, StringComparison.Ordinal) || a.StartsWith(u, StringComparison.Ordinal)) return 2;
         // 首字母缩写：上传者的驼峰词首字母串（CyanFire → "cf"）
         var initials = new string((uploader ?? "").Where(char.IsUpper).ToArray()).ToLowerInvariant();
         if (initials.Length >= 2 && initials == a) return 1;
@@ -1030,16 +1089,52 @@ public sealed class InstallService
     /// 下载最高那个未必是依赖本体（Sharogg's Panoramas 79k / Tilesheets 109k，换个 mod 就颠倒）。
     /// 名字段（"Sharogg.Tilesheets" → "Tilesheets"）能在这排里指出哪个名字对得上，
     /// 用它当同亲和度内的第二排序键，比下载数靠谱。<b>名字段短于 3 字符不作数</b>，
-    /// 否则 "UI"/"Mod" 这种泛词会把一排候选全点亮、等于没排。</summary>
+    /// 否则 "UI"/"Mod" 这种泛词会把一排候选全点亮、等于没排。
+    /// <para>多段 UID（<c>PeacefulEnd.Parchment.Core</c>）额外按点号拆开逐段认：整串
+    /// "parchmentcore" 在真实页面名里根本不存在（那一页作者就叫它「Parchment」），只按整串比
+    /// 等于这类 UID 永远过不了名字闸（实测 2026-10-13）。拆段认要求<b>整词相等</b> ——
+    /// "Core" 不许从 "Scoreboard" 里抠出来当命中。</para></summary>
     internal static int NameMatchScore(string uid, string? name)
     {
         if (string.IsNullOrWhiteSpace(name)) return 0;
         var dot = uid.IndexOf('.');
         if (dot <= 0 || dot >= uid.Length - 1) return 0;
-        var normUid = new string(uid[(dot + 1)..].Where(char.IsLetterOrDigit).ToArray()).ToLowerInvariant();
-        if (normUid.Length < 3) return 0;
+        var tail = uid[(dot + 1)..];
         var normName = new string(name.Where(char.IsLetterOrDigit).ToArray()).ToLowerInvariant();
-        return normName.Contains(normUid, StringComparison.Ordinal) ? 1 : 0;
+        var blob = Alnum(tail);
+        if (blob.Length >= 3 && normName.Contains(blob, StringComparison.Ordinal)) return 1;
+        var tokens = NameTokens(name);
+        foreach (var seg in tail.Split('.', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var s = Alnum(seg);
+            if (s.Length >= 3 && tokens.Contains(s, StringComparer.Ordinal)) return 1;
+        }
+        return 0;
+    }
+
+    /// <summary>从父包说明里作者亲笔写下的 N 网链接中，挑出<b>唯一</b>一个对得上这个依赖的页面。
+    /// <para>为什么需要这一道：N 网还有第二种"前置"—— <b>按文件</b>登记的 requirements（网页
+    /// Requirements 页那个「Fishing Log requires (1) → Parchment 1.14.0」卡片）。实测它不在任何
+    /// 我们能读到的接口里：GraphQL 的 <c>ModRequirements</c> 只有页面级三个字段，文件侧只留了个
+    /// <c>requirementsAlert</c> 整数；v1 的 <c>requirements.json</c> 路由已经没了（带着我们自己的
+    /// OAuth bearer 打过去是 404，和瞎写一个 bogus 路径返回一模一样，而同一 token 打 files.json 是
+    /// 200 —— 不是鉴权问题）；网页直连 403。所以作者关掉了页面级 Requirements
+    /// （<c>legacyModRequirementsEnabled=false</c>，50188 与 49525 都是）之后，他亲笔写在说明里的
+    /// 那条链接就是仅剩的权威源。</para>
+    /// <para>判据不新造：候选页面名与上传者照走 <see cref="SearchHitIdentifies"/>（作者段＋名字段
+    /// 双闸），与搜索通道同一把尺。<b>并列一律不认</b> —— 说明里两个链接都过闸时分不出作者指的是
+    /// 哪个，与 <see cref="MatchRequirement"/> 的并列处置一致。</para></summary>
+    internal static int? PickDescriptionLink(string uid,
+        IReadOnlyList<(int Id, string Name, string Uploader)> candidates)
+    {
+        int? hit = null;
+        foreach (var c in candidates)
+        {
+            if (c.Id <= 0 || !SearchHitIdentifies(uid, c.Name, c.Uploader)) continue;
+            if (hit is not null) return null;      // 并列：认不出是谁就不指路
+            hit = c.Id;
+        }
+        return hit;
     }
 
     /// <summary>按作者亲和度从高到低排候选：同亲和度里再看名字段对不对得上，
@@ -1048,6 +1143,32 @@ public sealed class InstallService
         => hits.OrderByDescending(h => AuthorAffinity(uid, h.Uploader))
                .ThenByDescending(h => NameMatchScore(uid, h.Name))
                .ToList();
+
+    /// <summary>搜索通道放行一个候选、把它当成"这个依赖就是它"的<b>唯一</b>通行证：
+    /// 作者段和名字段<b>都</b>要对得上。
+    /// <para>为什么作者闸单独不够：<see cref="UidSearchTerms"/> 的最后一发兜底词就是作者段
+    /// （2026-10-07 为 Sharogg.Tilesheets 加的），它天生把"这个作者名下的全部 mod"灌进候选池，
+    /// 而池里每一行的上传者都恰等于作者段 —— 亲和度清一色 3 分。这道闸对<b>它自己制造的噪声</b>
+    /// 完全失明，于是排序退回下载数、取第一。实机 2026-10-13：Fishing Logbook 缺前置
+    /// <c>PeacefulEnd.Parchment.Core</c>（它的三个名字段搜索词在 N 网全是 0 命中），兜底词
+    /// "PeacefulEnd" 返回 44 个 mod，下载第一是 Fashion Sense（410 万），红字于是印成
+    /// 「缺少依赖：Fashion Sense」—— 而 Fashion Sense 就装在上一行、还开着。</para>
+    /// <para>代价（说清楚，不含糊）：名字段与页面名对不上的<b>真</b>依赖也会被拒，退回
+    /// "未找到对应 mod" + 裸 UID、不给链接（例：Nom0ri.RomRas →「Romanceable Rasmodia -
+    /// Female Wizard」，页面号其实是对的）。这是有意的取舍 —— 认不出就不指路。</para></summary>
+    internal static bool SearchHitIdentifies(string uid, string? name, string? uploader)
+        => AuthorAffinity(uid, uploader) > 0 && NameMatchScore(uid, name) > 0;
+
+    /// <summary>配置里存着的一条依赖展示信息，今天还配不配再拿出去用。
+    /// <para>判据必须在<b>读取处</b>重跑一遍，光有写入处的闸不够：判据收紧之前存下的错答案
+    /// 躺在每个真用户的 junigrid.config.json 里（实测 2026-10-13：
+    /// <c>PeacefulEnd.Parchment.Core → "Fashion Sense" / 9969</c>），只改写入处的话，
+    /// 老用户重启一百次仍是那一格。</para>
+    /// <para>认不过的那条由调用方标成 stale 重新解析；重解析仍认不出就
+    /// <see cref="DropStaleDisplay"/> 把它从配置里删掉 —— 自愈，不要求用户手动清配置。</para></summary>
+    internal static bool SavedDisplayStillTrustworthy(string uid, DependencyDisplayEntry saved)
+        => saved.Source.Equals(DependencySourceRequirements, StringComparison.OrdinalIgnoreCase)
+           || SearchHitIdentifies(uid, saved.Name, saved.Uploader);
 
     // ------------------------------------------------------------------
     // v1.5.2：权威来源 —— 父包在官网登记的 Requirements 表
@@ -1167,15 +1288,102 @@ public sealed class InstallService
     }
 
 
+    /// <summary>「这一页给不给得出要求的版本」—— 依赖目标的唯一通行证。
+    /// <para>判据是<b>逐字相等</b>，不是 ≥：作者 manifest 里的 <c>MinimumVersion</c> 是他从某一页
+    /// 的"文件版本"栏抄下来的原话（N 网那栏是作者手填的自由文本，<c>0.6.4-unofficial-mushymato.0</c>
+    /// 这种串不会撞车）。用 ≥ 会把任何把文件版本填成 <c>1.0.0</c> 的页放进来 —— 那是猜，不是判。</para></summary>
+    internal static bool PageProvidesVersion(
+        IReadOnlyList<(string Version, string Category)> rows, string? requiredVersion)
+    {
+        var need = (requiredVersion ?? "").Trim();
+        return need.Length > 0 && rows.Any(r => VersionUtil.Same(r.Version, need));
+    }
+
+    /// <summary>任一要求串逐字命中即算这一页能供货（同一个依赖常被几个父包各自要求不同版本，
+    /// 实机：完美手册要 <c>0.6.4-unofficial-mushymato.0</c>、牲畜集市要 <c>0.6.3-unofficial-mushymato.1</c>，
+    /// 两串都在 43861 的文件表里）。</summary>
+    internal static bool PageProvidesAnyVersion(
+        IReadOnlyList<(string Version, string Category)> rows, IReadOnlyList<string> requiredVersions)
+        => requiredVersions.Any(need => PageProvidesVersion(rows, need));
+
+    /// <summary>为「装了仍不满足」的依赖找出真正有那一版的那一页。
+    /// 逐个候选查文件版本表，<see cref="PageProvidesAnyVersion"/> 命中即返回；
+    /// 一个都不命中返回 <c>null</c> —— 调用方必须就此罢手（说"找不到来源"），
+    /// <b>不许</b>退回"就用本机这份来自的那一页"：那条退路正是实机 2026-10-12 那个 bug
+    /// （完美手册要 <c>0.6.4-unofficial-mushymato.0</c>，我们反复把用户指回 focustense 的
+    /// 28870，而那页最高只有 <c>0.6.1</c>）。
+    /// <para>查询失败（返回 null）与"查到了但没有"分开处理：前者跳过不定罪，后者才算排除。</para></summary>
+    public async Task<int?> FindVersionProviderAsync(string uid, IReadOnlyList<string> requiredVersions,
+        IEnumerable<int> candidateModIds)
+    {
+        var needs = (requiredVersions ?? Array.Empty<string>())
+            .Select(x => (x ?? "").Trim()).Where(x => x.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (needs.Count == 0) return null;
+        var label = string.Join("、", needs);
+        var checked_ = new List<string>();
+        foreach (var id in candidateModIds.Where(x => x > 0).Distinct())
+        {
+            var rows = await _nexus.GetModFileVersionsAsync(id);
+            if (rows is null) { checked_.Add(id + "=查询失败"); continue; }
+            if (PageProvidesAnyVersion(rows, needs))
+            {
+                AppLog.Info("Install", $"[依赖溯源] {uid} 要求 {label} → 命中页面 {id}"
+                    + $"（此前查过：{(checked_.Count > 0 ? string.Join(" ", checked_) : "无")}）");
+                return id;
+            }
+            checked_.Add(id + "=" + (rows.Count > 0
+                ? "最高 " + rows.Select(r => r.Version)
+                    .Aggregate((a, b) => VersionUtil.IsNewer(b, a) ? b : a)
+                : "无文件"));
+        }
+        AppLog.Warn("Install", $"[依赖溯源] {uid} 要求 {label}：{checked_.Count} 个候选页都没有这一版，"
+            + $"不再指向任何页面（查过的页：{string.Join(" ", checked_)}）"
+            + " —— 该版本可能只在 GitHub 等站外发布");
+        return null;
+    }
+
+    /// <summary>「这个依赖要的那一版到底在哪一页」—— 唯一的入口，两条调用方（Mods 页的溯源、
+    /// 一键安装依赖）都必须走它，避免一处记得查搜索、另一处忘了。
+    /// <para>候选池 = 本机那份来自的页 + 父包要求表里登记的页 + 两个持久缓存 + <b>按依赖名的全站搜索</b>。
+    /// 最后一项是唯一的来路：fork 复用上游 UniqueID 时（实机 2026-10-12 mushymato 的
+    /// 「StardewUI Continued」43861 沿用 <c>focustense.StardewUI</c>），前三项全都只指向原作者那一页，
+    /// 而那一页整页最高 0.6.1、给不出要求的 0.6.4-unofficial-mushymato.0。</para>
+    /// <para>返回 null = 没有任何一页<em>逐字</em>含有要求的版本串。调用方必须就此罢手 ——
+    /// 不给页面号、不指回本机那份来自的页。</para></summary>
+    public async Task<(int Id, string Name)?> FindDependencyProviderAsync(
+        JuniGridConfig cfg, string uid, IReadOnlyList<string> requiredVersions,
+        int? installedNexusId, IReadOnlyList<int>? parentModIds)
+    {
+        var needs = (requiredVersions ?? Array.Empty<string>())
+            .Select(x => (x ?? "").Trim()).Where(x => x.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (needs.Count == 0) return null;
+
+        var pool = new List<int>();
+        if (installedNexusId is int ins && ins > 0) pool.Add(ins);
+        if (parentModIds is not null) pool.AddRange(parentModIds);
+        if (cfg.DependencyDisplays.TryGetValue(uid, out var dd) && dd.ModId > 0) pool.Add(dd.ModId);
+        if (cfg.DependencyNexusIds.TryGetValue(uid, out var kn) && kn > 0) pool.Add(kn);
+        foreach (var c in await SearchDependencyCandidatesAsync(uid))
+            if (c.Id > 0) pool.Add(c.Id);
+
+        var found = await FindVersionProviderAsync(uid, needs, pool);
+        if (found is not int id) return null;
+        var name = (await _nexus.GetModAsync(id))?.Name;
+        return (id, string.IsNullOrWhiteSpace(name) ? $"Mod #{id}" : name!.Trim());
+    }
+
     /// <summary>v1.2.3：展示信息进程内缓存 —— 同会话反复打开弹窗不再重搜（mod 名/封面基本不变）。</summary>
     private static readonly ConcurrentDictionary<string, DependencyDisplayInfo> DisplayCache =
         new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>解析单个依赖 UID 的展示信息：进程内缓存 → 配置持久缓存 → <b>父包官网登记的
-    /// Requirements 表</b> → 免 key 全站搜索。
-    /// Requirements 那条是作者自己填的权威映射，认出来就直接给页面号；只有父包没登记、
-    /// 或在它的表里认不出唯一一行时，才降级到搜索 —— 而搜索的命中必须过
-    /// <see cref="AuthorAffinity"/> 这道闸才敢拿出来当"这个依赖是谁"。
+    /// Requirements 表</b> → <b>父包说明里作者亲笔的 N 网链接</b> → 免 key 全站搜索。
+    /// Requirements 那条是作者自己填的权威映射，认出来就直接给页面号；作者把这一栏关了
+    /// （<c>legacyModRequirementsEnabled=false</c>）时还剩说明里那条链接是作者亲笔的；
+    /// 两者都给不出唯一一行时，才降级到搜索 —— 而搜索的命中必须过
+    /// <see cref="SearchHitIdentifies"/>（作者段＋名字段双闸）才敢拿出来当"这个依赖是谁"。
     /// 认不出就返回 null（弹窗退回显示裸 UID，不再给出可点的错误页面），并顺手把
     /// 老版本按"下载数第一"存下来的错答案从配置里清掉（自愈，不靠用户手动删配置）。</summary>
     public async Task<DependencyDisplayInfo?> ResolveDependencyDisplayAsync(
@@ -1187,9 +1395,8 @@ public sealed class InstallService
         var staleSaved = false;
         if (cfg.DependencyDisplays.TryGetValue(uid, out var saved))
         {
-            // Source=="requirements" 是父包表里认出来的，没有上传者可比，靠来源字段过可信闸
-            if (saved.Source.Equals(DependencySourceRequirements, StringComparison.OrdinalIgnoreCase)
-                || AuthorAffinity(uid, saved.Uploader) > 0)
+            // 可信闸在读取处重跑一遍（判据收紧前存下的错答案就躺在用户配置里）
+            if (SavedDisplayStillTrustworthy(uid, saved))
             {
                 var fromSaved = new DependencyDisplayInfo(uid,
                     saved.Name.Length > 0 ? saved.Name : null,
@@ -1211,9 +1418,17 @@ public sealed class InstallService
                 SaveDisplay(cfg, uid, byReq, DependencySourceRequirements, "");
                 return byReq;
             }
-            // ② 降级：全站搜索（按下载数排，所以要过作者闸）
+            // ② 父包说明里作者亲笔的 N 网链接（页面级 Requirements 被作者关掉时仅剩的权威源）
+            if (await MatchDescriptionLinkAsync(uid, parentModIds) is { } viaDesc)
+            {
+                DisplayCache[uid] = viaDesc.Info;
+                SaveDisplay(cfg, uid, viaDesc.Info, DependencySourceDescription, viaDesc.Uploader);
+                return viaDesc.Info;
+            }
+            // ③ 降级：全站搜索。放行判据是作者段＋名字段双闸（见 SearchHitIdentifies）——
+            // 只过作者闸等于让兜底搜索词自己给自己投票。
             var ranked = RankByAuthor(uid, await SearchDependencyCandidatesAsync(uid));
-            var top = ranked.FirstOrDefault(h => h.Id > 0 && AuthorAffinity(uid, h.Uploader) > 0);
+            var top = ranked.FirstOrDefault(h => h.Id > 0 && SearchHitIdentifies(uid, h.Name, h.Uploader));
             if (top is null)
             {
                 if (staleSaved) DropStaleDisplay(cfg, uid);
@@ -1234,6 +1449,45 @@ public sealed class InstallService
     }
 
     private const string DependencySourceRequirements = "requirements";
+    private const string DependencySourceDescription = "description";
+
+    /// <summary>取父包说明里的 N 网链接，逐条查那一页自己的名字与上传者，交给
+    /// <see cref="PickDescriptionLink"/> 定唯一赢家；null = 这条链给不出答案，调用方继续降级。
+    /// <para>链接数封顶 12 条（与搜索候选池同一个上限）：说明里贴几十个链接的页面很常见，
+    /// 不封顶就等于为一次展示发几十个请求。</para>
+    /// <para>存进配置时带上真上传者，所以读取处的 <see cref="SavedDisplayStillTrustworthy"/>
+    /// 会照旧重跑双闸 —— 这一道不享受 requirements 那种"按来源免检"。</para></summary>
+    private async Task<(DependencyDisplayInfo Info, string Uploader)?> MatchDescriptionLinkAsync(
+        string uid, IReadOnlyList<int>? parentModIds)
+    {
+        if (parentModIds is null) return null;
+        foreach (var pid in parentModIds.Distinct())
+        {
+            if (pid <= 0) continue;
+            var parent = await _nexus.GetModPageEvidenceAsync(pid);
+            if (parent is null) continue;
+            var links = NexusService.DescriptionModLinks(parent.DescriptionBbCode)
+                .Where(id => id != pid).Take(12).ToList();
+            if (links.Count == 0) continue;
+            var evById = new Dictionary<int, NexusService.ModPageEvidence>();
+            var cands = new List<(int Id, string Name, string Uploader)>();
+            foreach (var id in links)
+            {
+                var ev = await _nexus.GetModPageEvidenceAsync(id);
+                if (ev is null) continue;              // 查询失败：既不定罪，也不算命中
+                evById[id] = ev;
+                cands.Add((id, ev.Name, ev.UploadedBy));
+            }
+            if (PickDescriptionLink(uid, cands) is not int picked) continue;
+            var win = evById[picked];
+            // 留一行可定位的日志：这一道靠作者亲笔的链接，出问题时得能看出是哪一页、哪条链接
+            AppLog.Info("Install", $"[依赖解析] {uid} ← 父包 {pid} 说明里的链接 → 页面 {picked}「{win.Name}」"
+                + $"（上传者 {win.UploadedBy}）");
+            return (new DependencyDisplayInfo(uid, win.Name, picked,
+                string.IsNullOrWhiteSpace(win.PictureUrl) ? null : win.PictureUrl), win.UploadedBy);
+        }
+        return null;
+    }
 
     /// <summary>把一次解析结果写进持久缓存。写失败不影响本次展示。</summary>
     private void SaveDisplay(JuniGridConfig cfg, string uid, DependencyDisplayInfo info,
@@ -1333,8 +1587,10 @@ public sealed class InstallService
 
     /// <summary>premiumBlocked 快速通道专用：只找一个候选 id 生成手动链接
     /// （本机已装 → 父包登记的 Requirements → 已知缓存 → 搜索）。
-    /// 搜索结果一个都对不上作者段时宁可返回 null（转"未找到"开搜索页人工确认），
-    /// 也不能把人领到下载数最高的那个同名 mod 页面上。</summary>
+    /// 搜索来的结果过 <see cref="SearchHitIdentifies"/>（作者段＋名字段双闸）；
+    /// 一个都不过时宁可返回 null（转"未找到"开搜索页人工确认），
+    /// 也不能把人领到同作者另一个 mod 的页面上 —— 那条链接是"人工确认"的入口，
+    /// 喂给它一个错页等于让人确认一个错答案。</summary>
     private async Task<NexusModListEntry?> FirstCandidateAsync(
         JuniGridConfig cfg, string uid, IReadOnlyDictionary<string, int>? preResolved,
         IReadOnlyList<int>? parentModIds = null)
@@ -1342,7 +1598,7 @@ public sealed class InstallService
         var known = await KnownCandidatesAsync(cfg, uid, preResolved, parentModIds: parentModIds);
         if (known.Count > 0) return known[0];
         var hits = await SearchDependencyCandidatesAsync(uid);
-        return hits.FirstOrDefault(h => AuthorAffinity(uid, h.Uploader) > 0);
+        return hits.FirstOrDefault(h => SearchHitIdentifies(uid, h.Name, h.Uploader));
     }
 
     /// <summary>unresolved 收尾：结果项 + Nexus 站内搜索页链接（转人工确认，结束时统一开浏览器）。</summary>
@@ -1359,8 +1615,10 @@ public sealed class InstallService
     /// （"Pathoschild.ContentPatcher" → "Content Patcher" → "ContentPatcher" → 全 UID）。
     /// 末尾补一发作者段兜底：小众作者的名字段是通用词时（Sharogg.Tilesheets → 搜
     /// "Tilesheets"），按下载量排前 8 全是 DaisyNiko/Lumisteria 那种大热门，本体根本进不了
-    /// 候选池；而搜 "Sharogg" 第一名就是它（实测 2026-10-07）。多出来的噪音候选无害 ——
-    /// 展示有 <see cref="AuthorAffinity"/> 闸，安装有下载后的 manifest UniqueID 校验。
+    /// 候选池；而搜 "Sharogg" 第一名就是它（实测 2026-10-07）。多出来的噪音候选由两道下游闸
+    /// 消化：安装有下载后的 manifest UniqueID 校验；展示有 <see cref="SearchHitIdentifies"/>
+    /// —— 注意后者<b>必须</b>带名字段那一半：作者段兜底词灌进来的整池候选，作者亲和度全是满分，
+    /// 只过作者闸等于让这一发兜底词自己给自己投票（实机 2026-10-13，见该方法的注释）。
     /// internal 只为测试舱能拿它拼出与线上同序的搜索词（夹具回归用）。</summary>
     internal static IEnumerable<string> UidSearchTerms(string uid)
     {

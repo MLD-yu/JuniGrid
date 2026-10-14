@@ -787,9 +787,18 @@
         if (changed) await ExecuteSearchAsync(withExact: false);
     }
 
-    private string KindLabel =>
-        Loc.T(_browseTabs.FirstOrDefault(t => t.Key == _browseKind).Label)
-        ?? Loc.T(_browseKind == "trending" ? "热门趋势" : "最新");
+    /// <summary>下拉触发器上显示的那一项叫什么。
+    /// <para>⚠ 查不到时<b>不许把 null 交给 <c>Loc.T</c></b>：英文模式下它拿 null 去查目录 ⇒
+    /// <c>ArgumentNullException (Parameter 'key')</c>，整个 Nexus 页每渲染一次抛一次；中文模式下
+    /// <c>T</c> 第一行就原样返回 null，同一个洞只表现为标签空白，所以一直没人发现。
+    /// 实机 2026-10-12：首页 Trending 板块的「查看全部」把 <c>_browseKind</c> 设成
+    /// <c>"trending"</c>，而这个 key 早在 v1.04.0 就从下拉表里换成了 <c>"downloads"</c> ——
+    /// 兜底那句本来就为它写着，只是被放在了会抛的那个调用里面，永远轮不到。</para></summary>
+    internal static string KindLabelFor((string Key, string Label)[] tabs, string kind) =>
+        tabs.FirstOrDefault(t => t.Key == kind).Label
+        ?? (kind == "trending" ? "热门趋势" : "最新");
+
+    private string KindLabel => KindLabelFor(_browseTabs, _browseKind);
 
     private async Task ToggleDdCore(bool current, Action<bool> set, string ddId)
     {

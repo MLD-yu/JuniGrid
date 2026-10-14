@@ -458,6 +458,52 @@ public sealed class NexusService
                     ? cid.GetInt32() : (int?)null);
         });
 
+    /// <summary>依赖解析要的那三样<b>原始</b>证据：页面名、上传者账号名、未转换的 BBCode 说明。
+    /// <para>不复用 <see cref="GetModDetailAsync"/> 的 <c>DescriptionHtml</c> —— 那是
+    /// <see cref="SanitizeHtml"/> 为<b>显示</b>转出来的 HTML，BBCode 的 <c>[url=…]</c> 已被改写；
+    /// 判据读一份显示变换的产物，等于让改样式的人有权改判据。也不取 <c>author</c>（作者手填的自由文本，
+    /// 可能是「A &amp; B」），取 <c>uploaded_by</c> —— 与搜索通道里 <c>uploader { name }
+    /// 是同一个字段，两道闸吃的方言才是一致的。</para></summary>
+    public sealed record ModPageEvidence(string Name, string UploadedBy, string DescriptionBbCode, string PictureUrl);
+
+    public async Task<ModPageEvidence?> GetModPageEvidenceAsync(int modId)
+        => await CachedAsync<ModPageEvidence>(Key("evidence|" + modId), async () =>
+        {
+            using var res = await SendApiAsync(Http, $"{Base}/mods/{modId}.json");
+            if (!res.IsSuccessStatusCode) return null;
+            using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+            var root = doc.RootElement;
+            return new ModPageEvidence(
+                GetStr(root, "name"), GetStr(root, "uploaded_by"),
+                GetStr(root, "description"), GetStr(root, "picture_url"));
+        });
+
+    /// <summary>父包说明里作者亲笔写下的 N 网 mod 链接（按出现顺序、去重）。
+    /// 只认 <c>nexusmods.com/&lt;本游戏域&gt;/mods/&lt;数字&gt;</c>，所以 GitHub、官网文档、
+    /// 别的游戏的页面一律不算 —— 实测 50188 的说明里两条链接，只有
+    /// <c>[url=https://www.nexusmods.com/stardewvalley/mods/49525]Parchment [/url]</c> 这条算。
+    /// internal 只为测试舱能拿真 BBCode 喂它。</summary>
+    internal static List<int> DescriptionModLinks(string? bbcode, string gameDomain = "stardewvalley")
+    {
+        var ids = new List<int>();
+        if (string.IsNullOrWhiteSpace(bbcode)) return ids;
+        var seen = new HashSet<int>();
+        // 两种写法各自成式：[url=目标]文字[/url] 的 URL 在**尖括号里**，[url]目标[/url] 的在标签**外面**。
+        // 合成一条通配会把前者的捕获落到锚文本上（"Parchment"），于是整条链静默失效 —— 用例里
+        // 那条真机 50188 的正向对照就是拦这个的。
+        const string Pat = @"\[url\s*=\s*(?<attr>[^\]]+)\]|\[url\]\s*(?<bare>[^\s\]<]+)";
+        foreach (Match m in Regex.Matches(bbcode, Pat, RegexOptions.IgnoreCase))
+        {
+            var url = (m.Groups["attr"].Success ? m.Groups["attr"].Value : m.Groups["bare"].Value)
+                .Trim().Trim('"', '\'', '<');
+            var dm = Regex.Match(url, @"nexusmods\.com/" + Regex.Escape(gameDomain) + @"/mods/(\d+)",
+                RegexOptions.IgnoreCase);
+            if (dm.Success && int.TryParse(dm.Groups[1].Value, out var id) && id > 0 && seen.Add(id))
+                ids.Add(id);
+        }
+        return ids;
+    }
+
     /// <summary>Full mod detail for the in-app detail page (incl. HTML description + cover).</summary>
     public async Task<NexusModDetail?> GetModDetailAsync(int modId)
     {
@@ -918,6 +964,43 @@ public sealed class NexusService
                 GetStr(n, "modName"), GetStr(n, "notes"), GetStr(n, "url"),
                 int.TryParse(GetStr(n, "modId"), out var rid) ? rid : 0,
                 n.TryGetProperty("externalRequirement", out var ex) && ex.ValueKind == JsonValueKind.True));
+        return list;
+    }
+
+    /// <summary>某一页的<b>文件版本表</b>（免 key GraphQL）。回答的是"这一版到底在不在这一页"——
+    /// 这是唯一机器可读的依据：官网要求表是作者手填的、可以整页不存在（实机 2026-10-12：
+    /// 完美手册 45150 的 <c>legacyModRequirementsEnabled=false</c>，那张表永远不会有内容，
+    /// 而它正文里那句 "Download and install StardewUI Continued." 连链接都没有），
+    /// 但作者 manifest 里那个 <c>MinimumVersion</c> 串，是他从某一页的"文件版本"栏抄下来的。</summary>
+    /// <param name="includeOld">默认带上 OLD_VERSION / ARCHIVED。认"这一版在不在这一页"时它们同样算数
+    /// —— 要求的那一版常常正是被顶下去的那一条（实测 43861：<c>0.6.4-unofficial-mushymato.0</c> 在
+    /// OLD_VERSION，MAIN 已经是 <c>.1</c>）。只要"当前可下载的那一版"时传 false。</param>
+    public async Task<List<(string Version, string Category)>?> GetModFileVersionsAsync(
+        int modId, string gameDomain = "stardewvalley", bool includeOld = true)
+    {
+        if (modId <= 0) return null;
+        if (await EnsureGameIdAsync(gameDomain) is not { } gameId) return null;
+        var d = await GraphQlAsync("{ modFiles(modId:" + modId + ", gameId:\"" + gameId
+            + "\") { uid version category } }");
+        if (d is null) return null;
+        // modFiles 直接返回 ModFile[]，没有 nodes 包装（实测 2026-10-12）
+        if (!d.Value.TryGetProperty("modFiles", out var mf) || mf.ValueKind != JsonValueKind.Array)
+            return null;
+        var rows = ParseFileRows(mf);
+        return includeOld ? rows
+            : rows.Where(r => r.Category.Equals("MAIN", StringComparison.OrdinalIgnoreCase)).ToList();
+    }
+
+    /// <summary>文件表数组 → (版本串, 分类)。版本栏空的行丢掉（作者没填，拿它比版本只会误判）。</summary>
+    internal static List<(string Version, string Category)> ParseFileRows(JsonElement arr)
+    {
+        var list = new List<(string Version, string Category)>();
+        foreach (var n in arr.EnumerateArray())
+        {
+            var v = GetStr(n, "version").Trim();
+            if (v.Length == 0) continue;
+            list.Add((v, GetStr(n, "category")));
+        }
         return list;
     }
 

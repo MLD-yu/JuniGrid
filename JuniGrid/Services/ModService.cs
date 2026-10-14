@@ -829,7 +829,7 @@ public sealed partial class ModService
                 if (Directory.Exists(pick) && File.Exists(pickManifest))
                 {
                     modRoot = pick;
-                    manifest = pickManifest;   // 版本号也要读这一层的，否则回写的是别的子包的
+                    manifest = pickManifest;   // 版本号也要读这一层的，否则报的是别的子包的
                 }
             }
 
@@ -1260,20 +1260,87 @@ public sealed partial class ModService
     /// 唯一的宿主用（<see cref="ProbeOverlayForDeclaredHost"/> 直接往那个目录写字、
     /// InstallNew 那句"本机也装着它"直接报名字），给错了就是盖错 mod / 指错 mod。
     /// 实测 2026-10-08 的 31795：前置写着 SVE，本机 SVE 撞出两个同名子包，界面报的是
-    /// 排在后面的那个 <c>[FTM]</c> 兄弟目录。</para></summary>
-    private (int Count, string? One) MatchDeclaredHosts(string gamePath, IReadOnlyList<NexusRequirement>? reqs)
+    /// 排在后面的那个 <c>[FTM]</c> 兄弟目录。</para>
+    /// <para>internal 只为测试舱能拿真机那三处互不相等的名字＋页面号喂它（2026-10-13 的 50261）。</para></summary>
+    internal (int Count, string? One) MatchDeclaredHosts(string gamePath, IReadOnlyList<NexusRequirement>? reqs)
     {
-        string? one = null;
-        var hits = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var hosts = new List<string>();
+        foreach (var (_, host) in DeclaredHostMatches(gamePath, reqs))
+            if (!hosts.Contains(host, StringComparer.OrdinalIgnoreCase)) hosts.Add(host);
+        return (hosts.Count, hosts.Count == 1 ? hosts[0] : null);
+    }
+
+    /// <summary>登记的前置与本机已装 mod 的每一条对应关系（<c>Row</c> = 这是第几行前置，按
+    /// <see cref="HostCandidateRows"/> 过滤后的顺序）。
+    /// <para>为什么要带上"来自哪一行"：有两种完全不同的"多个候选"。</para>
+    /// <list type="bullet">
+    /// <item><b>同一行撞出两家</b> —— 两个已装 mod 的 manifest 都自述同一个页面号
+    /// （实机 31795：SVE 捆绑包里 <c>[CP] Stardew Valley Expanded</c> 与
+    /// <c>Stardew Valley Expanded Code</c> 都写 Nexus:3753）。这是<b>身份本身</b>分不出，
+    /// 调用方必须弃权，一张都不许写。</item>
+    /// <item><b>不同行各对上一家</b> —— 包登记了宿主 + GMCM + Content Patcher，三家都装着。
+    /// 这不是并列，是"前置不止一个"；谁真该被盖，由包自己的内容（素材落在谁家 / 键是谁家的
+    /// i18n）再筛一遍。把它当并列一律弃权，会让包只要顺手登记了 GMCM 就丢掉整档
+    /// —— 实机 2026-10-13 我改出过这个回归，A/B 对表钉在 <c>DeclaredHostIdentityTests</c>。</item>
+    /// </list>
+    /// <para>号优先：带页面号的行先比页面号；比不到再按名字，但本机那一行<b>自述过别的页面号</b>时
+    /// 即使名字逐字相等也排除（同名不同家＝静默盖错）。手工装的宿主常常没有 manifest、或有 manifest
+    /// 却没填 UpdateKeys（实机 32901 / 41314 那批裸翻译包的宿主就这形状）—— 那种没有号可违，
+    /// 名字是仅剩的证据。起因（实机 50261）：前置行「Parchment - Fishing Log」(50188)、宿主 manifest
+    /// 的 Name「[Parchment] Fishing Logbook」、目录名 FishingLogbook 三个字符串互不相等，
+    /// 旧判据只比名字的拼写键，于是"装着"被判成"没装"。</para></summary>
+    internal List<(int Row, string Host)> DeclaredHostMatches(string gamePath,
+        IReadOnlyList<NexusRequirement>? reqs)
+    {
+        var list = new List<(int, string)>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var row = -1;
         foreach (var r in HostCandidateRows(reqs))
-            foreach (var h in InstalledHostsByName(gamePath, r.ModName))
-                if (hits.Add(h)) one = h;
-        return (hits.Count, hits.Count == 1 ? one : null);
+        {
+            row++;
+            var found = r.ModId > 0 ? InstalledHostsByPageId(gamePath, r.ModId) : new List<string>();
+            if (found.Count == 0) found = InstalledHostsByName(gamePath, r.ModName, r.ModId);
+            foreach (var h in found)
+            {
+                if (!seen.Add(h)) continue;      // 同一家的名字与号都对上 ⇒ 还是一条对应
+                list.Add((row, h));
+            }
+        }
+        return list;
+    }
+
+    /// <summary>某一行前置在本机撞出两家 ⇒ 身份并列（见 <see cref="DeclaredHostMatches"/>）。</summary>
+    internal static bool HasRowTie(IReadOnlyList<(int Row, string Host)> matches)
+        => matches.GroupBy(m => m.Row).Any(g => g.Count() > 1);
+
+    /// <summary>已装 mod 里<b>自己 manifest 的 UpdateKeys 就写着这个页面号</b>的全部宿主。
+    /// 与 <see cref="InstalledHostsByName"/> 同一条收集口径（归一化宿主、目录必须解析得出来），
+    /// 只是把名字换成号。</summary>
+    private List<string> InstalledHostsByPageId(string gamePath, int nexusModId)
+    {
+        var list = new List<string>();
+        if (nexusModId <= 0) return list;
+        try
+        {
+            foreach (var e in ScanRaw(gamePath))
+            {
+                if (e.NexusModId != nexusModId) continue;
+                var host = NormalizeOverlayHost(e.Folder);
+                if (host.Length == 0) continue;
+                if (ResolveHostDir(gamePath, host) is null) continue;
+                if (!list.Contains(host, StringComparer.OrdinalIgnoreCase)) list.Add(host);
+            }
+        }
+        catch { return list; }
+        return list;
     }
 
     /// <summary>已装 mod 里名字（目录末段或 manifest 显示名）与这个前置名对得上的全部宿主。
-    /// 与 <see cref="FindInstalledHostBySpelling"/> 同一套拼写键，只是不替调用方在并列时弃权。</summary>
-    private List<string> InstalledHostsByName(string gamePath, string name)
+    /// 与 <see cref="FindInstalledHostBySpelling"/> 同一套拼写键，只是不替调用方在并列时弃权。
+    /// <paramref name="declaredId"/> 是这一行前置自己的页面号：本机那一行<b>自述过另一个号</b>时
+    /// 即使名字逐字相等也排除掉（同名不同家）；没自述过号的（手工装、manifest 缺 UpdateKeys）
+    /// 仍然算 —— 那种情况下名字是仅剩的证据。</summary>
+    private List<string> InstalledHostsByName(string gamePath, string name, int declaredId = 0)
     {
         var list = new List<string>();
         var key = HostSpellingKey(name);
@@ -1287,6 +1354,7 @@ public sealed partial class ModService
                 var leaf = host.Replace('\\', '/').Split('/')[^1];
                 if (!HostSpellingKey(leaf).Equals(key, StringComparison.Ordinal)
                     && !HostSpellingKey(e.Name ?? "").Equals(key, StringComparison.Ordinal)) continue;
+                if (declaredId > 0 && e.NexusModId is int own && own > 0 && own != declaredId) continue;
                 if (ResolveHostDir(gamePath, host) is null) continue;
                 if (!list.Contains(host, StringComparer.OrdinalIgnoreCase)) list.Add(host);
             }
@@ -1412,28 +1480,38 @@ public sealed partial class ModService
         var packRoot = slash < 0 ? "" : jsonRel[..slash];
         HashSet<string>? reqHostKeys = null;
 
-        var (declaredCount, declaredOne) = MatchDeclaredHosts(gamePath, packRequirements);
-        if (rows.Count > 0 && declaredCount == 0)
+        var matches = DeclaredHostMatches(gamePath, packRequirements);
+        var cands = matches.Select(m => m.Host).ToList();
+        if (rows.Count > 0 && cands.Count == 0)
         {
             // 一条前置都没对上本机已装 mod ⇒ 这才是真的"你还没装它"
             fail = rows.Count == 1 ? OverlayFail.HostNotInstalled : OverlayFail.NoHostInPack;
             hostGuess = rows.Count == 1 ? rows[0].ModName.Trim() : "";
             return null;
         }
-        if (declaredCount == 1 && declaredOne is string reqHost)
+        if (cands.Count > 0 && !HasRowTie(matches))
         {
-            if (ResolveHostDir(gamePath, reqHost) is not string reqDir)
-            { fail = OverlayFail.NoHostInPack; return null; }
-            if (JsonTopKeys(Path.Combine(tempDir, jsonRel.Replace('/', Path.DirectorySeparatorChar)))
-                    is not { Count: > 0 } declaredKeys || !HostI18nCovers(reqDir, declaredKeys))
+            // 前置常常登记好几家且都装着（宿主 + GMCM + Content Patcher）。所以"候选数≠1"不能直接弃权 ——
+            // 拿这份翻译自己的键去问"谁接得住"，只剩一家接得住才算认出来（实机 2026-10-13 A/B 对表
+            // 抓出来的回归：旧写法只要包里多一条 GMCM 就丢掉整档）。
+            var declaredKeys = JsonTopKeys(
+                Path.Combine(tempDir, jsonRel.Replace('/', Path.DirectorySeparatorChar)));
+            var covering = declaredKeys is { Count: > 0 }
+                ? cands.Where(h => ResolveHostDir(gamePath, h) is string d && HostI18nCovers(d, declaredKeys)).ToList()
+                : new List<string>();
+            if (covering.Count == 1)
+                return new OverlayPlan(covering[0], new List<string> { leaf }, packRoot,
+                    new List<string> { "i18n/" + leaf });
+            if (cands.Count == 1)
             {
-                // 名字对上了、条目对不上 ⇒ 不是它的翻译（不许落到宿主根目录当静默无效文件）
+                if (ResolveHostDir(gamePath, cands[0]) is null)
+                { fail = OverlayFail.NoHostInPack; return null; }
+                // 名字/页面号对上了、条目对不上 ⇒ 不是它的翻译（不许落到宿主根目录当静默无效文件）
                 fail = OverlayFail.DeclaredHostKeyMismatch;
-                hostGuess = reqHost;
+                hostGuess = cands[0];
                 return null;
             }
-            return new OverlayPlan(reqHost, new List<string> { leaf }, packRoot,
-                new List<string> { "i18n/" + leaf });
+            // 多家装着而接得住的不止一家、或一家都没有 ⇒ 交给下面那档按键去分
         }
 
         // 页面没给答案（一行都没登记，或登记的名字在本机撞出好几个同名子包分不出该盖谁）
@@ -1478,9 +1556,6 @@ public sealed partial class ModService
     internal OverlayPlan? ProbeOverlayForDeclaredHost(string gamePath, string tempDir,
         IReadOnlyList<NexusRequirement>? packRequirements)
     {
-        if (FindInstalledRequirementHost(gamePath, packRequirements) is not string hostName) return null;
-        if (ResolveHostDir(gamePath, hostName) is not string hostDir) return null;
-
         List<string> packRel;
         try
         {
@@ -1489,12 +1564,25 @@ public sealed partial class ModService
         }
         catch { return null; }
         if (packRel.Count == 0) return null;
-        if (MapPackFilesOntoHost(hostDir, packRel) is not Dictionary<string, string> map) return null;
 
-        var rel = new List<string>();
-        var dst = new List<string>();
-        foreach (var p in packRel) { rel.Add(p); dst.Add(map[p]); }
-        return new OverlayPlan(hostName, rel, "", dst);
+        // 前置行常常不止一条装着（宿主 + GMCM + Content Patcher…）。同一行撞出两家 = 身份并列 ⇒ 一张都不写
+        // （实机 31795 的 SVE 两子包都自述 Nexus:3753）；不同行各对上一家，则逐家试"这包的素材是不是它的"，
+        // 只剩一家接得住才落。早先写法是"候选数≠1 就直接不认"，于是包只要顺手登记了 GMCM 就丢掉整档
+        // —— 实机 2026-10-13 A/B 对表抓出来的回归。
+        var matches = DeclaredHostMatches(gamePath, packRequirements);
+        if (HasRowTie(matches)) return null;
+        OverlayPlan? found = null;
+        foreach (var hostName in matches.Select(m => m.Host))
+        {
+            if (ResolveHostDir(gamePath, hostName) is not string hostDir) continue;
+            if (MapPackFilesOntoHost(hostDir, packRel) is not Dictionary<string, string> map) continue;
+            if (found is not null) return null;
+            var rel = new List<string>();
+            var dst = new List<string>();
+            foreach (var p in packRel) { rel.Add(p); dst.Add(map[p]); }
+            found = new OverlayPlan(hostName, rel, "", dst);
+        }
+        return found;
     }
 
     /// <summary>把包里的文件按【宿主目录里真实存在的同名文件】逐一对上落点，三种形状都试：
@@ -3629,8 +3717,8 @@ public static class NexusUpdateTruth
     /// 而 N 网文件版本栏是作者手填的自由文本（实测 Simple Hoard Chest 填 <c>1</c>、包内 manifest 是
     /// <c>1.24</c>）。把前者抄进后者会让 SMAPI 解析失败而<b>整个 mod 不加载</b>（实机 2026-10-11：
     /// 信件没来，SMAPI-latest.txt 把它列进 "could not be added"）。
-    /// 「显示装到的那一版」走 <see cref="EffectiveLocalVersion"/>，「是否已装这一版」走 fileId，
-    /// 两边都不需要动安装物，见 <see cref="ShouldShowUpdate"/>。</para>
+    /// 而这条记录只用于「这一版是否已装」（fileId）与更新判定的比大小（<see cref="LocalVersionToCompare"/>）；
+    /// 界面显示的那一格永远取包内自述，见 <see cref="EffectiveLocalVersion"/>。两边都不需要动安装物。</para>
     /// <paramref name="downloadedModId"/> 必须是<b>真下载的那一页</b>：非官方续作的 manifest 里
     /// UpdateKeys 仍写着原版页（实测 2026-10-01 从续作页 20702 装的 Friends Forever，
     /// manifest 里写的是 Nexus:1738），拿 <c>m.NexusModId</c> 存就是把来源身份丢掉 ——
@@ -3690,19 +3778,33 @@ public static class NexusUpdateTruth
         cfg.ModNexusInstalls[folderOrUid] = rec;
     }
 
-    /// <summary>
-    /// 列表/详情展示用的本地有效版本：若启动器装过 N 网文件且其版本比 manifest 新，
-    /// 以安装记录为准 —— 用户看到的就是「装到的那一版」，不会一直显示 0.0.1。
-    /// </summary>
+    /// <summary>列表显示用的本地版本：<b>包内 <c>manifest.json</c> 的自述就是答案</b>，只有它空缺时才退回账上的
+    /// N 网文件版本。
+    /// <para>绝不拿两边比大小：N 网「文件版本」栏是作者手填的自由文本，与包内自述常常是两套编号体系
+    /// （实测 2026-10-13：鹕鸟镇 / N 网 50344 包内写 <c>1.2.6</c>，文件栏写 <c>26</c>）。比大小会让 <c>26 &gt; 1</c>
+    /// 成立，于是把作者自己写的版本号盖掉 —— 玩家看到的就是一行「我们的应用改了人家的版本号」，
+    /// 而 SMAPI、作者、更新日志认的都是 <c>1.2.6</c>。安装物从头到尾没动过（见
+    /// <see cref="RecordInstall"/>），错的只是这一格读的是哪个字段。</para>
+    /// <para>更新判定不走这里，走 <see cref="LocalVersionToCompare"/> —— 那里比的确实是「上一次装的那一条文件」。</para></summary>
     public static string EffectiveLocalVersion(JuniGridConfig cfg, ModEntry m)
     {
+        if (!string.IsNullOrWhiteSpace(m.Version)) return m.Version;
         var rec = GetInstallRecord(cfg, m);
-        if (rec is not null && !string.IsNullOrWhiteSpace(rec.RemoteVersion))
-        {
-            if (string.IsNullOrWhiteSpace(m.Version)) return rec.RemoteVersion;
-            if (VersionUtil.IsNewer(rec.RemoteVersion, m.Version)) return rec.RemoteVersion;
-        }
-        return m.Version;
+        return rec is null || string.IsNullOrWhiteSpace(rec.RemoteVersion) ? m.Version : rec.RemoteVersion;
+    }
+
+    /// <summary>更新判定用的本地版本：账上记着「上一次装的是哪一条 N 网文件」，那条记录与远端返回值
+    /// 同出一个字段，只有段数一致（同一套编号体系）时才拿它比大小；否则回到包内自述，
+    /// 让 <see cref="ShouldShowUpdate"/> 里那道「段数不同 = 不可比」的闸照常生效。</summary>
+    public static string LocalVersionToCompare(JuniGridConfig cfg, ModEntry m, string? remoteVersion)
+    {
+        var rec = GetInstallRecord(cfg, m);
+        if (rec is not null && !string.IsNullOrWhiteSpace(rec.RemoteVersion)
+            && !string.IsNullOrWhiteSpace(remoteVersion)
+            && NumericSegments(rec.RemoteVersion) == NumericSegments(remoteVersion)
+            && NumericSegments(rec.RemoteVersion) > 0)
+            return rec.RemoteVersion;
+        return EffectiveLocalVersion(cfg, m);
     }
 
     /// <summary>本地是否已装上「当前这条 N 网 MAIN 文件」（fileId 或文件版本一致）。</summary>
@@ -3746,10 +3848,11 @@ public static class NexusUpdateTruth
     }
 
     /// <summary>
-    /// 用「启动器曾下载过该 fileId」自动校准：缺快照时补写安装快照，让列表立刻与 N 网一致，
+    /// 用「启动器曾下载过该 fileId」自动校准：缺快照时补写安装快照，让更新判定立刻与 N 网一致，
     /// 无需用户再点一次更新（作者忘改 manifest 时的死循环）。
     /// <para>只补账、<b>不改作者的 manifest，也不把 N 网版本盖到 <c>m.Version</c> 上</b>：包内自述优先，
-    /// 显示该显示哪一版由 <see cref="EffectiveLocalVersion"/> 判，「这一版已装」由 fileId 认。</para>
+    /// 显示哪一版由 <see cref="EffectiveLocalVersion"/> 判，比哪一版由 <see cref="LocalVersionToCompare"/> 判，
+    /// 「这一版已装」由 fileId 认。</para>
     /// 返回 true = 已是该文件/已校准成功。
     /// </summary>
     public static bool TryHealFromPriorDownload(JuniGridConfig cfg, ModEntry m,
@@ -3778,7 +3881,7 @@ public static class NexusUpdateTruth
         if (m.IsConvertedPack) return false;
         if (string.IsNullOrWhiteSpace(remoteVersion)) return false;
         if (AlreadyHasRemoteFile(cfg, m, remoteVersion, remoteFileId)) return false;
-        var local = EffectiveLocalVersion(cfg, m);
+        var local = LocalVersionToCompare(cfg, m, remoteVersion);
         if (string.IsNullOrWhiteSpace(local)) return true;
         // 结构性误判护栏：远端版本号只有一段数字（作者把 N 网「文件版本」栏填成 1）、
         // 而本地是多段（0.0.1）—— 两边根本不是同一套编号体系，比大小没意义

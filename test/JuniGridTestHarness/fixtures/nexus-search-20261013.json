@@ -1,0 +1,183 @@
+{
+ "Parchment. Core": {
+  "nodes": []
+ },
+ "Parchment.Core": {
+  "nodes": []
+ },
+ "PeacefulEnd": {
+  "nodes": [
+   {
+    "modId": 9969,
+    "name": "Fashion Sense",
+    "summary": "Framework which allows for bigger accessories, hairstyles, hats, shirts, sleeves, pants and shoes, as well as animation support and more.",
+    "version": "7.5.0",
+    "thumbnailUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/thumbnails/9969/9969-1635337722-1851001863.gif",
+    "pictureUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/9969/9969-1635337722-1851001863.gif",
+    "downloads": 4106991,
+    "endorsements": 74044,
+    "createdAt": "2021-10-27T21:03:13Z",
+    "updatedAt": "2026-03-12T21:45:44Z",
+    "uploader": {
+     "name": "PeacefulEnd",
+     "avatar": "https://avatars.nexusmods.com/4112039/100"
+    },
+    "modCategory": {
+     "name": "Modding Tools"
+    },
+    "fileSize": 311,
+    "adultContent": false
+   },
+   {
+    "modId": 8626,
+    "name": "Custom Companions",
+    "summary": "Framework for creating custom entities that can be spawned on maps or follow you around in Stardew Valley.",
+    "version": "5.1.0",
+    "thumbnailUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/thumbnails/8626/8626-1619979299-1778047035.png",
+    "pictureUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/8626/8626-1619979299-1778047035.png",
+    "downloads": 4012594,
+    "endorsements": 60705,
+    "createdAt": "2021-05-02T18:56:11Z",
+    "updatedAt": "2025-12-19T22:11:58Z",
+    "uploader": {
+     "name": "PeacefulEnd",
+     "avatar": "https://avatars.nexusmods.com/4112039/100"
+    },
+    "modCategory": {
+     "name": "Modding Tools"
+    },
+    "fileSize": 78,
+    "adultContent": false
+   },
+   {
+    "modId": 9246,
+    "name": "Alternative Textures",
+    "summary": "Framework which enables texture variation for placeable objects, buildings and entities in Stardew Valley.",
+    "version": "8.1.1",
+    "thumbnailUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/thumbnails/9246/9246-1628558331-28906488.png",
+    "pictureUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/9246/9246-1628558331-28906488.png",
+    "downloads": 3097800,
+    "endorsements": 51351,
+    "createdAt": "2021-08-11T11:08:26Z",
+    "updatedAt": "2026-01-03T18:41:32Z",
+    "uploader": {
+     "name": "PeacefulEnd",
+     "avatar": "https://avatars.nexusmods.com/4112039/100"
+    },
+    "modCategory": {
+     "name": "Modding Tools"
+    },
+    "fileSize": 157,
+    "adultContent": false
+   },
+   {
+    "modId": 12831,
+    "name": "Dynamic Reflections",
+    "summary": "Framework which enables mirror and water reflections within Stardew Valley.",
+    "version": "4.0.1",
+    "thumbnailUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/thumbnails/12831/12831-1657323446-1322585777.png",
+    "pictureUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/12831/12831-1657323446-1322585777.png",
+    "downloads": 1451648,
+    "endorsements": 21046,
+    "createdAt": "2022-07-08T22:20:42Z",
+    "updatedAt": "2026-01-11T02:30:08Z",
+    "uploader": {
+     "name": "PeacefulEnd",
+     "avatar": "https://avatars.nexusmods.com/4112039/100"
+    },
+    "modCategory": {
+     "name": "Modding Tools"
+    },
+    "fileSize": 117,
+    "adultContent": false
+   },
+   {
+    "modId": 10455,
+    "name": "Stardrop",
+    "summary": "An open-source, cross-platform mod manager for Stardew Valley. Includes mod profiles, update checking, SMAPI integration and Nexus Mods API support!",
+    "version": "1.10.4",
+    "thumbnailUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/thumbnails/10455/10455-1640800123-1170868965.png",
+    "pictureUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/10455/10455-1640800123-1170868965.png",
+    "downloads": 593542,
+    "endorsements": 14337,
+    "createdAt": "2021-12-29T22:22:16Z",
+    "updatedAt": "2026-09-23T20:15:31Z",
+    "uploader": {
+     "name": "PeacefulEnd",
+     "avatar": "https://avatars.nexusmods.com/4112039/100"
+    },
+    "modCategory": {
+     "name": "Modding Tools"
+    },
+    "fileSize": 44419,
+    "adultContent": false
+   },
+   {
+    "modId": 12311,
+    "name": "Solid Foundations",
+    "summary": "Custom buildings framework for Stardew Valley.",
+    "version": "3.0.0",
+    "thumbnailUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/thumbnails/12311/12311-1654368247-748820321.png",
+    "pictureUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/12311/12311-1654368247-748820321.png",
+    "downloads": 441494,
+    "endorsements": 5933,
+    "createdAt": "2022-06-04T20:21:08Z",
+    "updatedAt": "2024-11-04T19:24:33Z",
+    "uploader": {
+     "name": "PeacefulEnd",
+     "avatar": "https://avatars.nexusmods.com/4112039/100"
+    },
+    "modCategory": {
+     "name": "Modding Tools"
+    },
+    "fileSize": 84,
+    "adultContent": false
+   },
+   {
+    "modId": 10102,
+    "name": "FS - Cozy Scarves",
+    "summary": "A Fashion Sense pack which adds 15+ scarf accessories, many of which are recolorable. Some scarves even come with special animations!",
+    "version": "1.2.1",
+    "thumbnailUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/thumbnails/10102/10102-1636598406-1122009727.png",
+    "pictureUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/10102/10102-1636598406-1122009727.png",
+    "downloads": 285362,
+    "endorsements": 5756,
+    "createdAt": "2021-11-11T16:00:33Z",
+    "updatedAt": "2021-11-15T20:21:35Z",
+    "uploader": {
+     "name": "PeacefulEnd",
+     "avatar": "https://avatars.nexusmods.com/4112039/100"
+    },
+    "modCategory": {
+     "name": "Clothing"
+    },
+    "fileSize": 52,
+    "adultContent": false
+   },
+   {
+    "modId": 10211,
+    "name": "FS - Backpacks and Baubles",
+    "summary": "A Fashion Sense pack which adds several backpack accessories, many of which give off light and are recolorable. Includes some small baubles such as floating books!",
+    "version": "1.1.0",
+    "thumbnailUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/thumbnails/10211/10211-1638050337-1014879516.png",
+    "pictureUrl": "https://staticdelivery.nexusmods.com/mods/1303/images/10211/10211-1638050337-1014879516.png",
+    "downloads": 193026,
+    "endorsements": 3187,
+    "createdAt": "2021-11-27T22:24:03Z",
+    "updatedAt": "2021-11-28T03:49:03Z",
+    "uploader": {
+     "name": "PeacefulEnd",
+     "avatar": "https://avatars.nexusmods.com/4112039/100"
+    },
+    "modCategory": {
+     "name": "Clothing"
+    },
+    "fileSize": 36,
+    "adultContent": false
+   }
+  ]
+ },
+ "PeacefulEnd.Parchment.Core": {
+  "nodes": []
+ }
+}
