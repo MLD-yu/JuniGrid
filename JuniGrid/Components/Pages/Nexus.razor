@@ -238,6 +238,81 @@
                 </div>
             }
         </section>
+
+        @* ─── v1.2.9：作者推荐（MLD210 的作品）—— 数据走官网 GraphQL uploader 过滤，不爬网页 ─── *@
+        <section class="jg-home-sec jg-home-sec-hero jg-hero-cream jg-featured-sec">
+            <div class="jg-home-sec-head">
+                <span class="jg-home-sec-title" style="display:inline-flex;align-items:center;gap:6px">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" style="vertical-align:-3px" aria-hidden="true">
+                        <path d="m12 3 2.55 5.17 5.7.83-4.13 4.02.98 5.68L12 15.08 6.9 18.7l.98-5.68L3.75 9l5.7-.83Z"
+                              fill="#f2b01e" stroke="#d99a16" stroke-width="1" stroke-linejoin="round"/>
+                        <path d="M19.2 3.2v3.1M17.65 4.75h3.1" stroke="#f2b01e" stroke-width="1.4" stroke-linecap="round"/>
+                    </svg>
+                    <DepthText Text='@Loc.T("作者推荐")' FontSize="15px" />
+                </span>
+                <button type="button" class="jg-viewall" @onclick="OpenFeaturedAuthorProfile">@Loc.T("Nexus Mods 主页")@((MarkupString)ViewAllArrow)</button>
+            </div>
+
+            <div class="jg-featured-banner">
+                @if (!string.IsNullOrEmpty(AuthorAvatar))
+                {
+                    <img class="jg-featured-avatar" src="@AuthorAvatar" alt="@FeaturedAuthor" loading="lazy" />
+                }
+                else
+                {
+                    <div class="jg-featured-avatar jg-featured-avatar-fb">@FeaturedAuthor[..1]</div>
+                }
+                <div class="jg-featured-meta">
+                    <div class="jg-featured-name">
+                        @FeaturedAuthor
+                        <span class="jg-featured-tag">@Loc.T("作者")</span>
+                    </div>
+                    <div class="jg-featured-sub">
+                        @if (_authorLoading && _authorMods.Count == 0)
+                        {
+                            @Loc.T("正在读取作品…")
+                        }
+                        else
+                        {
+                            @Loc.F("Stardew Valley 作品合集 · 共 {0} 个", _authorTotal)
+                        }
+                    </div>
+                </div>
+            </div>
+
+            @if (_authorLoading && _authorMods.Count == 0)
+            {
+                <div class="jg-browse2 jg-featured-grid">
+                    @for (var i = 0; i < 3; i++)
+                    {
+                        <div class="jg-modcard2 jg-modcard2-skel">
+                            <div class="jg-modcard2-cover-wrap"><div class="jg-modcard2-cover jg-shimmer"></div></div>
+                            <div class="jg-modcard2-body">
+                                <div class="jg-shimmer" style="height:14px;border-radius:4px"></div>
+                                <div class="jg-shimmer" style="height:11px;border-radius:4px;width:55%"></div>
+                            </div>
+                        </div>
+                    }
+                </div>
+            }
+            else if (_authorMods.Count > 0)
+            {
+                <div class="jg-browse2 jg-featured-grid">
+                    @foreach (var mod in _authorMods)
+                    {
+                        <NexusModCard Mod="mod" Installed="_installedIds.Contains(mod.Id)" OnOpen="OpenDetail" />
+                    }
+                </div>
+            }
+            else if (_authorFailed)
+            {
+                <div class="jg-note" style="margin-top:10px">@Loc.T("作者作品暂时拉取失败，可稍后刷新重试。")</div>
+            }
+            else
+            {
+                <div class="jg-note" style="margin-top:10px">@Loc.T("这位作者还没有公开作品。")</div>
+            }
+        </section>
     }
 
     @* ─── v1.02.0：搜索页（独立视图，不再复用查看全部页；尾号命中显示「精确匹配」卡）─── *@
@@ -872,9 +947,22 @@
     private List<NexusModListEntry> _trendingHome = new();
     private List<NexusModListEntry> _homeMods = new();
 
+    // ─── v1.2.9：作者推荐（Nexus 用户 MLD210 的作品）───
+    private const string FeaturedAuthor = "MLD210";
+    private bool _authorLoading = true;
+    private bool _authorFailed;
+    private int _authorTotal;
+    private List<NexusModListEntry> _authorMods = new();
+    private static List<NexusModListEntry>? _svAuthorMods;
+    private static int _svAuthorTotal;
+    private string AuthorAvatar =>
+        _authorMods.FirstOrDefault(m => !string.IsNullOrEmpty(m.UploaderAvatar))?.UploaderAvatar ?? "";
+
     private async Task LoadHomeAsync()
     {
         _homeLoading = true;
+        _authorLoading = true;
+        _authorFailed = false;
         StateHasChanged();
         try
         {
@@ -884,16 +972,25 @@
             var tTask = NexusApi.BrowseModsAsync("trending", 0, 10, timeRange: "week");
             // v0.88.0：精确 20 条（FetchChunkedAsync 内部循环补齐，截断会续拉凑满）
             var mTask = NexusApi.BrowseModsAsync(_homeTab, 0, 20);
-            await Task.WhenAll(tTask, mTask);
+            // v1.2.9：作者推荐单独走 uploader 精确过滤；与上面两路并行，不额外增加首屏等待
+            var aTask = NexusApi.GetModsByUploaderAsync(FeaturedAuthor, 24);
+            await Task.WhenAll(tTask, mTask, aTask);
             var t = tTask.Result;
             if (t is not null) _trendingHome = t;
             // v0.75.0：Mods 模块首页显示 20 个
             var m = mTask.Result;
             if (m is not null) _homeMods = m.Take(20).ToList();   // v0.84.0
+            var a = aTask.Result;
+            if (a is not null) { _authorMods = a.Items; _authorTotal = a.Total; }
+            else _authorFailed = true;
         }
-        catch { }
-        finally { _homeLoading = false; StateHasChanged(); }
+        catch { _authorFailed = true; }
+        finally { _homeLoading = false; _authorLoading = false; StateHasChanged(); }
     }
+
+    /// <summary>作者推荐的「Nexus Mods 主页」—— 站内没有作者聚合页，直接开官网个人主页。</summary>
+    private void OpenFeaturedAuthorProfile() =>
+        UpdateService.OpenUrl("https://www.nexusmods.com/profile/" + Uri.EscapeDataString(FeaturedAuthor));
 
     private async Task SetHomeTab(string key)
     {
@@ -1104,6 +1201,7 @@ protected override async Task OnInitializedAsync()
             _exactMod = _svExact;   // v1.02.0：搜索页快照恢复
             _browse = _svBrowse ?? new(); _trendingHome = _svTrending ?? new();
             _homeMods = _svHomeMods ?? new(); _homeTab = _svHomeTab ?? "new";
+            _authorMods = _svAuthorMods ?? new(); _authorTotal = _svAuthorTotal; _authorLoading = false; _authorFailed = false;
             _homeLoading = false;   // v1.03.0：快照恢复 = 数据已在手，直接显示不再加载
         }
         LoadSearchHistory();   // v1.01.0：一进页就把历史装进内存，聚焦即弹
@@ -1130,7 +1228,7 @@ protected override async Task OnInitializedAsync()
             // v1.03.0：有快照数据就直接用（返回上一页不重复请求）；只有快照缺失（如重启应用后残留 mode）才重新拉
             if (_viewMode == "search" && _browse.Count > 0) { /* 搜索页快照恢复，零请求 */ }
             else if (_viewMode == "browse" && _browse.Count > 0) { /* 浏览页快照恢复，零请求 */ }
-            else if (_viewMode == "home" && (_trendingHome.Count > 0 || _homeMods.Count > 0)) { /* 首页快照恢复 */ }
+            else if (_viewMode == "home" && (_trendingHome.Count > 0 || _homeMods.Count > 0 || _authorMods.Count > 0)) { /* 首页快照恢复 */ }
             else if (_viewMode == "search") await RunSearchAsync();
             else if (_viewMode == "browse") await LoadCurrentPageAsync();
             else await LoadHomeAsync();
@@ -1379,6 +1477,8 @@ protected override async Task OnInitializedAsync()
         _svRange = _timeRange; _svSearch = _searchText; _svExact = _exactMod;
         _svSort = _searchSort; _svSearchDir = _searchDirection;   // v1.1.6：搜索页排序快照
         _svBrowse = _browse; _svTrending = _trendingHome; _svHomeMods = _homeMods; _svHomeTab = _homeTab;
+        _svAuthorMods = _authorMods;
+        _svAuthorTotal = _authorTotal;
         _svFilterVer = NexusService.AdultFilterVersion;   // v1.1.3：记录快照是哪个过滤版本拉的
     }
 

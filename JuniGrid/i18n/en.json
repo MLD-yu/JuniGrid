@@ -1,4 +1,4 @@
-﻿{
+{
   "游戏版本管理": "Game Version Manager",
   "已锁定": "Locked",
   "未锁定": "Unlocked",
@@ -293,6 +293,13 @@
   "未知": "Unknown",
   "榜单暂时拉取失败，可稍后刷新重试。": "The list failed to load for now — refresh later to retry.",
   "模组": "Mods",
+  "作者推荐": "Author picks",
+  "Nexus Mods 主页": "Nexus Mods profile",
+  "作者": "Author",
+  "正在读取作品…": "Loading mods…",
+  "Stardew Valley 作品合集 · 共 {0} 个": "Stardew Valley collection · {0} mods",
+  "作者作品暂时拉取失败，可稍后刷新重试。": "Couldn't load this author's mods — refresh later to retry.",
+  "这位作者还没有公开作品。": "This author has no public mods yet.",
   "搜索：{0}": "Search: {0}",
   "正序": "Ascending",
   "倒序": "Descending",
@@ -602,6 +609,8 @@
   "路径无效": "Invalid path",
   "找不到 manifest.json": "manifest.json not found",
   "游戏运行中，暂不能修改清单": "The game is running, the manifest can't be changed right now",
+  "这些游戏进程没能关闭：{0}": "These game processes couldn't be closed: {0}",
+  "结束请求已被系统接受，但它还挂在进程列表里": "The system accepted the request to end it, but the process is still listed",
   "清单缺少 Name 字段": "The manifest has no Name field",
   "压缩包里没找到 manifest.json": "No manifest.json inside the archive",
   "下载的包不是这个 Mod（发布仓库里含多个 Mod），已放弃安装防止装错": "The downloaded pack isn't this mod (the release repo ships several mods), so installation was aborted to avoid installing the wrong one",

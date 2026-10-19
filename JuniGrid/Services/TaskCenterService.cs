@@ -517,8 +517,6 @@ public sealed class TaskCenterService
         return true;
     }
 
-    public void Notify() => OnChanged?.Invoke();
-
     public double TotalPercent
     {
         get

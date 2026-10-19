@@ -1,6 +1,8 @@
 <Application x:Class="JuniGridInstaller.App"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-             StartupUri="InstallerWindow.xaml">
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!-- 没有 StartupUri：窗口由 App.OnStartup 显式创建。挂了 StartupUri，
+         单实例那条路走完 Shutdown() 之后 WPF 照样会把这个窗口造出来再关掉，
+         用户看到的是「闪一下就没了」。 -->
     <Application.Resources />
 </Application>

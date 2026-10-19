@@ -10,12 +10,15 @@
     <AssemblyName>JuniGrid</AssemblyName>
     <!-- 唯一版本源：发版只改这里。AppInfo.Version 在运行时从程序集版本读取，
          保证 Nexus Application-Version 头与发行构建永远一致（AUP 要求） -->
-    <Version>1.2.8</Version>
+    <Version>1.2.9</Version>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Assets\junigrid-logo.ico</ApplicationIcon>
     <!-- 只保留中英文卫星资源：自包含发布里 40+ 语言的 WPF/FluentUI 资源 dll 占 8MB+，
          中文应用用不到（cs/de/es/fr/... 每个语言一套 PresentationFramework.resources.dll） -->
     <SatelliteResourceLanguages>en;zh-Hans</SatelliteResourceLanguages>
+    <!-- 与安装器同一颗雷：主程序要加载 WebView2 等原生库，声明 CET 后在老 ntdll /
+         带不守规则钩子的机器上启动即被 OS 终止。关掉声明换兼容；少一层 ROP 缓解。 -->
+    <CETCompat>false</CETCompat>
   </PropertyGroup>
 
   <ItemGroup>

@@ -13,12 +13,16 @@
          注意 <ProductName> 对 apphost 无效，实测恒等于 AssemblyName，别往这儿加。 -->
     <AssemblyTitle>JuniGrid 安装程序</AssemblyTitle>
     <Company>JuniGrid</Company>
-    <!-- 与 JuniGrid\Services\AppInfo.cs 保持一致；build-installer.ps1 会用 AppInfo.cs 里的版本号覆盖它 -->
-    <Version>1.2.2</Version>
+    <!-- 与主程序版本同步；build-installer.ps1 会从 JuniGrid.csproj 读取版本并覆盖它 -->
+    <Version>1.2.9</Version>
     <ApplicationIcon>..\..\JuniGrid\Assets\junigrid-logo.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
     <DebugType>none</DebugType>
+    <!-- .NET 9 起 apphost 默认声明 CET 影子栈兼容，OS 便对整个进程执法：被注入的老 DLL
+         或没打补丁的旧 ntdll 一违规就直接终止进程（Win11 21H2 那类停服机器启动即死）。
+         关掉声明换老机器能起；代价是少一层 ROP 缓解，DEP/ASLR/CFG 不受影响。 -->
+    <CETCompat>false</CETCompat>
   </PropertyGroup>
 
   <ItemGroup>

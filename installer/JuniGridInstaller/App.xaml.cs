@@ -1,5 +1,4 @@
 using System.IO;
-using System.Linq;
 using System.Windows;
 using System.Windows.Threading;
 
@@ -7,6 +6,12 @@ namespace JuniGridInstaller;
 
 public partial class App : Application
 {
+    /// <summary>安装窗口的标题，跨进程找它时要逐字相等。InstallerWindow.xaml 的 Title
+    /// 绑的就是这一个值，所以两边不可能各写一份漂移。
+    /// 判据不能只"标题非空"：IME/TSF 那类帧窗口（CiceroUIWndFrame、Default IME、MSCTFIME UI）
+    /// 标题也是非空的，选中它们就等于又回到"什么都没显示"。</summary>
+    public const string WindowTitle = "JuniGrid 安装";
+
     private static Mutex? _single;
 
     public static void Log(string msg)
@@ -155,13 +160,29 @@ public partial class App : Application
             return;
         }
 
-        // 单实例：安装包双击第二次不该再弹一个安装器。已有实例时激活它的窗口置前，
-        // 本实例退出。
+        // 单实例：两个安装器同时往同一个目录写，会留下半新半旧的文件，这道闸要留。
+        // 但过闸的人必须有可见结果 —— 要么把已在运行那个实例的窗口拉到前面，要么弹窗讲清楚。
+        // 1.2.8 及之前读的是本进程的 App.Current.Windows：那一刻窗口还没造出来，列表恒空，
+        // 于是第二次及以后的双击全都「日志记一句就静默退出」，屏上无痕 —— 撞上这条的用户
+        // 会把重下载、换右键、用管理员全都试成白按。
         _single = new Mutex(true, "JuniGrid.Setup.SingleInstance", out var createdNew);
         if (!createdNew)
         {
-            Log("已有安装器实例在运行 → 激活后退出");
-            ActivateExistingWindow();
+            var (hwnd, pid) = FindOtherInstanceWindow();
+            if (hwnd != IntPtr.Zero)
+            {
+                NativeMethods.RestoreAndRaise(hwnd);
+                Log($"已有安装器实例在运行 → 拉起旧窗口 pid={pid} hwnd={hwnd}");
+            }
+            else
+            {
+                Log("已有安装器实例在运行 → 没找到它的窗口 弹窗告知");
+                MessageBox.Show(
+                    "这台电脑上已经有一个 JuniGrid 安装程序在运行，但屏幕上找不到它的窗口。\n\n" +
+                    "先翻一下任务栏和别的显示器，那个安装窗口可能还开着。\n" +
+                    "确实找不到就重启电脑，再双击这个安装包。",
+                    "JuniGrid 安装", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
             Shutdown();
             return;
         }
@@ -184,27 +205,39 @@ public partial class App : Application
             catch { }
             args.Handled = true;
         };
+
+        // 窗口在这儿显式创建，不走 App.xaml 的 StartupUri：StartupUri 会在上面那条
+        // Shutdown() 之后照样把窗口造出来再关掉，用户看到的是「闪一下就没了」。
+        MainWindow = new InstallerWindow();
+        MainWindow.Show();
         Log("App.OnStartup done");
     }
 
-    /// <summary>把已在运行的安装器窗口还原/置前（后台进程无权直接抢焦点，走 Win32）。</summary>
-    private static void ActivateExistingWindow()
+    /// <summary>找另一个安装器进程的顶层窗口。它在别的进程里，只能按进程名 + 窗口句柄找；
+    /// 安装包会被改名发布（JuniGrid-cn-vX.Y.Z-setup.exe），按自己的文件名匹配才不受改名影响。
+    /// 对方比我们先起、窗口还在造的途中时等一会儿再看，最多 ~1.2 秒。</summary>
+    private static (IntPtr Hwnd, int Pid) FindOtherInstanceWindow()
     {
-        try
+        var self = Environment.ProcessId;
+        var image = System.IO.Path.GetFileNameWithoutExtension(Environment.ProcessPath ?? "");
+        for (var attempt = 0; attempt < 4; attempt++)
         {
-            var w = Current.Windows.OfType<InstallerWindow>().FirstOrDefault();
-            if (w is null) return;
-            if (w.WindowState == WindowState.Minimized)
-                w.WindowState = WindowState.Normal;
-            w.Show();
-            w.Activate();
-            var hwnd = new System.Windows.Interop.WindowInteropHelper(w).Handle;
-            if (hwnd != IntPtr.Zero)
-                SetForegroundWindow(hwnd);
+            var others = 0;
+            foreach (var p in System.Diagnostics.Process.GetProcessesByName(image))
+            {
+                try
+                {
+                    if (p.Id == self) continue;
+                    others++;
+                    var h = NativeMethods.FindInstallerWindowOfProcess(p.Id, WindowTitle);
+                    if (h != IntPtr.Zero) return (h, p.Id);
+                }
+                catch (Exception ex) { Log("FindOtherInstanceWindow: " + ex.Message); }
+                finally { p.Dispose(); }
+            }
+            if (others == 0) return (IntPtr.Zero, 0);   // 那个实例已经退场，没东西要拉
+            System.Threading.Thread.Sleep(300);
         }
-        catch (Exception ex) { Log("ActivateExistingWindow: " + ex.Message); }
+        return (IntPtr.Zero, 0);
     }
-
-    [System.Runtime.InteropServices.DllImport("user32.dll")]
-    private static extern bool SetForegroundWindow(IntPtr hWnd);
 }

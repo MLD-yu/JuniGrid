@@ -432,19 +432,28 @@
         _showConfirm = false;
     }
 
-    // 确认关闭游戏：先关确认框，再真正结束进程
-    private void KillGame()
+    // 确认关闭游戏：先关确认框，再真正结束进程。
+    // 关完必须回头再看一眼：Kill() 对被 Windows 错误报告扣住的进程（星谷闪退后尸体留在列表里，
+    // 旁边挂着 WerFault.exe -u -p <pid>）不抛异常、也真的关不掉。这种沉默就是玩家报的
+    // 「点关闭也没有用」，所以要把是谁、为什么说到屏幕上 —— 但只报实测到的原因，
+    // 也不指挥人去任务管理器找：崩溃中的进程往往在玩家打字的几十秒里就被回收了，
+    // 人去查一个查不到的 PID，只会反过来怀疑工具。
+    private async Task KillGame()
     {
         _showConfirm = false;
         Launcher.KillGame();
+        var stuck = await LauncherService.KillAgainAndExplain();
+        if (stuck.Length == 0) return;
+        ShowToast(LocService.Tf("这些游戏进程没能关闭：{0}",
+            string.Join("、", stuck.Select(x => $"{x.Name} (PID {x.Pid}) — {x.Why}"))));
     }
 
     // 轮询真实游戏进程，让「关闭游戏」按钮在 SMAPI / Steam 官方两种模式都生效
     private async Task PollRunningAsync()
     {
-        try
+        while (!_cts.IsCancellationRequested)
         {
-            while (!_cts.IsCancellationRequested)
+            try
             {
                 // 取消清场看门狗运行期间，Steam 迟到拉起的游戏进程不算「运行中」（马上会被清掉）
                 var r = !_cancelWatchdog && Launcher.IsGameRunning;
@@ -453,10 +462,20 @@
                     _isRunning = r;
                     await InvokeAsync(StateHasChanged);
                 }
-                await Task.Delay(1500, _cts.Token);
             }
+            catch (OperationCanceledException) { return; }
+            catch (Exception ex)
+            {
+                // 这一轮抛了就退出循环的话，_isRunning 会永久冻在最后一次读到的 true 上，
+                // 而代码里没有任何别的路径能把它翻回 false：之后点 ✕ 走的是「弹确认框 →
+                // KillGame()」，系统里早就没有进程可杀，什么都不做、也不报错 ——
+                // 玩家看到的就是「星谷闪退了，按钮一直运行中，点关闭也没用」。
+                // 所以异常只能作废这一轮，不能让轮询死掉。
+                AppLog.Warn("AccountPanel", "运行态轮询这一轮失败，1.5s 后重试: " + ex.Message);
+            }
+            try { await Task.Delay(1500, _cts.Token); }
+            catch (OperationCanceledException) { return; }
         }
-        catch (OperationCanceledException) { }
     }
 
 

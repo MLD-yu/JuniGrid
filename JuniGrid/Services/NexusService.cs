@@ -1523,6 +1523,60 @@ public sealed class NexusService
         return list;
     }
 
+    /// <summary>
+    /// v1.2.9：按作者（Nexus 上传者账号名）列出公开 mod —— 不爬网页，走官网同款 GraphQL。
+    /// <para>公开 REST v1 没有「按作者列出 mod」的端点；官方 v2 GraphQL 文档的
+    /// <c>ModsFilter.uploader</c>（https://graphql.nexusmods.com/）支持 EQUALS，
+    /// 实测大小写不敏感（MLD210 → 1 个，mld210 同样 1 个）。
+    /// 只取上传者精确匹配，不拿 <c>author</c>（作者手填的自由文本，可能是「A &amp; B」）。</para>
+    /// <para>结果沿用浏览列表的 10 分钟缓存；成人过滤条件与浏览页同一口径。
+    /// 不写 <see cref="LastBrowseTotalCount"/> —— 那是浏览页分页器的状态，首页作者模块
+    /// 不应该把「共 N 个」改成作者作品数。</para>
+    /// </summary>
+    public async Task<NexusAuthorMods?> GetModsByUploaderAsync(string uploader, int count = 24,
+        string gameDomain = "stardewvalley")
+    {
+        var name = (uploader ?? "").Trim();
+        if (name.Length == 0) return new NexusAuthorMods(new(), 0);
+        if (count <= 0) count = 24;
+        count = Math.Min(count, 50);   // GraphQL 单批上限；更多作品由「作者主页」承接
+
+        var key = Key("uploader|" + gameDomain + "|" + name.ToLowerInvariant() + "|" + count);
+        return await CachedAsync<NexusAuthorMods>(key, async () =>
+        {
+            if (await EnsureGameIdAsync(gameDomain) is not { } gameId) return null;
+
+            // 用户名只保留不会破坏 GraphQL 字符串字面量的字符（与搜索词的清洗同款）。
+            var safe = new string(name.Where(c => char.IsLetterOrDigit(c)
+                || c is ' ' or '-' or '_' or '.' or '&').ToArray()).Trim();
+            if (safe.Length == 0) return new NexusAuthorMods(new(), 0);
+
+            var conds = new List<string>
+            {
+                "{gameId:{value:\"" + gameId + "\"}}",
+                "{uploader:{value:\"" + safe + "\", op:EQUALS}}"
+            };
+            if (!IncludeAdultContent)
+                conds.Add("{adultContent:{value:false, op:EQUALS}}");
+
+            var q = "{ mods(filter:{filter:[" + string.Join(",", conds) + "], op:AND}, "
+                + "sort:{createdAt:{direction:DESC}}, offset:0, count:" + count + ") "
+                + "{ totalCount nodes { " + CardSel + " } } }";
+            var d = await GraphQlAsync(q);
+            if (d is null) return null;
+            if (!d.Value.TryGetProperty("mods", out var mods) || mods.ValueKind != JsonValueKind.Object ||
+                !mods.TryGetProperty("nodes", out var nodes) || nodes.ValueKind != JsonValueKind.Array)
+                return null;
+
+            var items = ParseModNodes(nodes, hideAdult: !IncludeAdultContent);
+            var total = items.Count;
+            if (mods.TryGetProperty("totalCount", out var tv) && tv.ValueKind == JsonValueKind.Number
+                && tv.TryGetInt32(out var tc) && tc >= 0)
+                total = tc;
+            return new NexusAuthorMods(items, total);
+        }, persist: true, sane: c => c.Items is not null);
+    }
+
     /// <summary>纯数字＝N网尾号精确查。<b>只能走 legacyModsByDomain</b>：
     /// <c>mods(filter:{modId:{value:"7416",op:EQUALS}})</c> 已被服务端整条拒，实测 2026-10-03
     /// 五种写法全部失败 —— 应用原样（filter 里本来就带 <c>{gameId:{value:"1303"}}</c>）、
@@ -1728,6 +1782,10 @@ public sealed record NexusModListEntry(
     // 依赖解析会故意不带过滤去查（否则不开开关的人永远装不上成人 mod 的依赖），
     // 但查到的成人候选不能直接端出去。
     bool Adult = false);
+
+/// <summary>v1.2.9：某位上传者的公开作品。Total 是服务端 totalCount（可能大于 Items.Count，
+/// 模块只展示最新一批，完整列表走作者主页）。</summary>
+public sealed record NexusAuthorMods(List<NexusModListEntry> Items, int Total);
 
 public sealed record NexusModDetail(
     int Id, string Name, string Author, string Version, string Summary,

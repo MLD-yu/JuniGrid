@@ -220,7 +220,7 @@ public sealed class LauncherService
 
     public void AttachIfGameRunning()
     {
-        if (_smapiProcess is { HasExited: false }) return;   // 自己启动的，已在跟踪
+        if (IsAlive(_smapiProcess)) return;   // 自己启动的，已在跟踪
         if (AnyProcess("StardewModdingAPI", "Stardew Valley")) StartLogTail(readFromStart: true);
     }
 
@@ -238,8 +238,87 @@ public sealed class LauncherService
 
     private Process? _smapiProcess;
 
-    public bool IsGameRunning =>
-        _smapiProcess is { HasExited: false } || AnyProcess(GameProcessNames);
+    /// <summary>读一个 Process 对象「还活着吗」，且保证不抛。
+    /// <see cref="Process.HasExited"/> 在两种我们真造得出来的形状下抛
+    /// InvalidOperationException("No process is associated with this object.")：Start() 失败后
+    /// 没关联上任何进程的对象、以及已 Dispose 的对象。判活在 1.5s 轮询 + 30s 统计 + 取消看门狗
+    /// 三条路上跑，一抛就把调用方的循环带走 —— 所以这里宁可退化成「当它不在」。</summary>
+    internal static bool IsAlive(Process? p)
+    {
+        if (p is null) return false;
+        try { return !p.HasExited; }
+        catch (Exception ex)
+        {
+            AppLog.Warn("LauncherService", "读 HasExited 抛异常，按「不在」处理: " + ex.Message);
+            return false;
+        }
+    }
+
+    public bool IsGameRunning => IsAlive(_smapiProcess) || AnyProcess(GameProcessNames);
+
+    /// <summary>此刻系统里看到的每个游戏进程（进程名 + PID）。关闭动作做完仍有余留时，
+    /// 要能把「是谁没被关掉」报到人眼前，而不是只进 juni-grid.log。</summary>
+    public static (string Name, int Pid)[] SnapshotGameProcesses()
+    {
+        var found = new List<(string, int)>();
+        foreach (var name in GameProcessNames)
+        {
+            foreach (var p in Process.GetProcessesByName(name))
+            {
+                using (p)
+                {
+                    try { found.Add((name, p.Id)); }
+                    catch (Exception ex) { AppLog.Warn("LauncherService", ex.Message); }
+                }
+            }
+        }
+        return found.ToArray();
+    }
+
+    /// <summary>谁该被报成「没关掉」。判据必须是<b>第二次看到还在</b>，不是"我杀的时候它在"：
+    /// 从我们弹红条到玩家去查，中间几十秒很常见，而崩溃中的游戏恰恰就在这几十秒里被系统回收掉，
+    /// 那时红条已经过期，玩家按图去找只会找到一个不存在的 PID，反过来怀疑我们的工具。
+    /// 原因也一样只报实测到的：拿到异常就报异常原文，没拿到异常说明结束请求已被系统接受、
+    /// 进程只是还挂在列表里 —— 不许写"可能是管理员权限"这种猜的话。</summary>
+    internal static (string Name, int Pid, string Why)[] Survivors(
+        (string Name, int Pid, string? Why)[] attempted, int[] stillPresent)
+    {
+        var present = new HashSet<int>(stillPresent);
+        var left = new List<(string, int, string)>();
+        foreach (var a in attempted)
+            if (present.Contains(a.Pid))
+                left.Add((a.Name, a.Pid, string.IsNullOrEmpty(a.Why)
+                    ? LocService.Tr("结束请求已被系统接受，但它还挂在进程列表里")
+                    : a.Why!));
+        return left.ToArray();
+    }
+
+    /// <summary>再强杀一次此刻还在的游戏进程，等一秒后回看谁还在，把「是谁 + 为什么」带回来。
+    /// 空数组 = 都关掉了。给「确认关闭游戏」这条玩家主动等结果的路径用。</summary>
+    public static async Task<(string Name, int Pid, string Why)[]> KillAgainAndExplain()
+    {
+        var attempted = new List<(string, int, string?)>();
+        foreach (var name in GameProcessNames)
+        {
+            foreach (var p in Process.GetProcessesByName(name))
+            {
+                using (p)
+                {
+                    int pid;
+                    try { pid = p.Id; }
+                    catch (Exception ex) { AppLog.Warn("LauncherService", ex.Message); continue; }
+                    string? why = null;
+                    try { p.Kill(entireProcessTree: true); }
+                    catch (Exception ex) { why = ex.Message; AppLog.Warn("LauncherService", ex.Message); }
+                    attempted.Add((name, pid, why));
+                }
+            }
+        }
+        if (attempted.Count == 0) return Array.Empty<(string, int, string)>();
+
+        await Task.Delay(1500);
+        return Survivors(attempted.ToArray(), SnapshotGameProcesses().Select(x => x.Pid).ToArray());
+    }
 
     // 这里原来有一套「向 SMAPI 发命令」的东西（stdin 管道 + 936 编码 + debug 前缀白名单）——
     // 全部删除：SMAPI 根本不读我们建的管道（带不带控制台窗口两种启动都实测过），跨进程往它的
@@ -284,12 +363,17 @@ public sealed class LauncherService
     /// </summary>
     public void KillGame()
     {
-        // 优先温和关闭所持有的 SMAPI 子进程
-        if (_smapiProcess is { HasExited: false })
+        // 优先温和关闭所持有的 SMAPI 子进程。先摘下来再判活：不管它是活着、已退，
+        // 还是个没关联上进程的残骸（Start() 失败留下的），这一次关完都不该再把它带进下一轮。
+        var own = _smapiProcess;
+        if (own is not null)
         {
-            try { _smapiProcess.CloseMainWindow(); } catch (Exception __ex) { AppLog.Warn("LauncherService", __ex.Message); }
-            try { _smapiProcess.Kill(true); } catch (Exception __ex) { AppLog.Warn("LauncherService", __ex.Message); }
             _smapiProcess = null;
+            if (IsAlive(own))
+            {
+                try { own.CloseMainWindow(); } catch (Exception __ex) { AppLog.Warn("LauncherService", __ex.Message); }
+                try { own.Kill(true); } catch (Exception __ex) { AppLog.Warn("LauncherService", __ex.Message); }
+            }
         }
 
         // 主游戏进程（StardewModdingAPI.exe / Stardew Valley.exe），先通知保存
@@ -473,6 +557,8 @@ public sealed class LauncherService
         }
         catch (Exception ex)
         {
+            // Start() 没成功的对象永远关联不上进程，留在字段里 = 之后每一次判活都要抛一次
+            _smapiProcess = null;
             return LaunchResult.Fail(ex.Message);
         }
     }
