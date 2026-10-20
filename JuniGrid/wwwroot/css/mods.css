@@ -391,7 +391,11 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
     opacity: 1;
     transform: translateY(0) scale(1);
     pointer-events: auto;
-}/* 行尾「⋮」菜单靠窗口底部时整块翻到按钮上方 —— 向下放会把最后一行的菜单裁掉一半
+}/* 排序下拉打开时提升整个工具栏 —— 与 .jg-modrow:has(.jg-modmenu.open) 同一个病（v1.5.1/1.5.3）：
+   toolbar 在 DOM 里先于 .jg-modrows，而 mod 行上入场动画残留的恒等 transform 自建了层叠上下文，
+   于是光给 .jg-sort-menu 的 z-index(1000) 只在本容器内比大小，压不住后绘制的行，菜单被盖住
+   （2026-10-20 实测）。9500 = 高于 .jg-dd-overlay(9000) 与 .jg-al-gradient(50)，与 v1.5.3 对齐。 */
+.jg-mods-toolbar:has(.jg-sort-dd.open) { position: relative; z-index: 9500; }/* 行尾「⋮」菜单靠窗口底部时整块翻到按钮上方 —— 向下放会把最后一行的菜单裁掉一半
    （2026-09-30 实测）。.up 由 junigridJs.fitModMenu 在打开后按实测矩形打上。 */
 .jg-sort-dd.open.up .jg-sort-menu {
     top: auto;
