@@ -1,4 +1,4 @@
-﻿@namespace JuniGrid.Components.Pages
+@namespace JuniGrid.Components.Pages
 @page "/mods"
 @inject ConfigService Cfg
 @inject ModService ModSvc
@@ -1526,6 +1526,10 @@
             _profileOpen = false;
             try { await JS.InvokeVoidAsync("junigridJs.dropdownToggle", ".jg-profile-dd", false); } catch { }
         }
+        // v1.5.4：行内「⋮」菜单也要关 —— 两者同时打开时，行被 :has(.jg-modmenu.open) 提到 9500，
+        // toolbar 的 9500 在 DOM 里更靠前，于是排序下拉被那一行盖住（2026-10-20 实机）。
+        // 互斥本身就是既有设计（上面那条就是），这里只是把 ⋮ 这一路补齐。
+        if (_sortOpen && _menuFolder is not null) _menuFolder = null;
         try { await JS.InvokeVoidAsync("junigridJs.dropdownToggle", ".jg-sort-dd", _sortOpen); } catch { }
     }
 
@@ -3153,6 +3157,9 @@
             CloseMenu();
             return;
         }
+        // v1.5.4：开行内「⋮」前先收掉排序下拉 —— 反向同样会叠（行提到 9500 压住 toolbar）。
+        // CloseSort 内部已经判过 _sortOpen，没开时是空操作。
+        _ = CloseSort();
         _menuFolder = folder;
         // 翻转判定要量的是「这一行有几个条目」的菜单最终矩形，而 StateHasChanged 只是排队渲染：
         // 在这里直接调 JS，浏览器收到的顺序是 JS 先、渲染批次后 ⇒ 量到的是没 .open 的旧 DOM，
