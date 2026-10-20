@@ -1,0 +1,826 @@
+[MarshalAs(UnmanagedType.LPWStr)] public string pcwszFilePath;
+private struct POINT32 { public int X, Y; public POINT32(int x, int y) { X = x; Y = y; } }
+private struct RECT32 { public int Left, Top, Right, Bottom; }
+public (BridgeState State, string Detail) State()
+public (HashSet<string> Enabled, HashSet<string> Disabled) HiddenChildUids { get; private set; }
+public (bool Installed, string? Version) SmapiState(string? gamePath, bool freshRead = false)
+public (int count, long before, long after) TrimWebView2()
+public (long before, long after) CompressSelf()
+public BitBuffer(Stream stream)
+public BlockType BlockType;
+public Bridge? Probe()
+public CancellationTokenSource Cts => _cts;
+public CommandBridgeService(ConfigService cfg) => _cfg = cfg;
+public ConfigService()
+public ContentOverrideRecord? Active => Records.FirstOrDefault(r => r.Enabled);
+public ContentOverrideRecord? ActiveOf(string variant)
+public DateTime AppliedAtUtc { get; set; } = DateTime.UtcNow;
+public DateTime CheckedAtUtc { get; set; } = DateTime.UtcNow;
+public DateTime InstalledAtUtc { get; set; } = DateTime.UtcNow;
+public DateTime LastWrite { get; set; }
+public DateTime RunFrom { get; set; }
+public DateTime StartedAt { get; set; }
+public DateTime? NexusTokenExpiresAt { get; set; }
+public DepotDownloaderService() { }
+public Dictionary<int, ModUpdateFingerprintEntry> ModUpdateFingerprints { get; set; } = new();
+public Dictionary<int, string> NexusCategories { get; set; } = new();
+public Dictionary<string, ContentOverrideRecord> ContentOverrides { get; set; }
+public Dictionary<string, DependencyDisplayEntry> DependencyDisplays { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+public Dictionary<string, List<PlanItem>> VariantItems { get; } = new(StringComparer.OrdinalIgnoreCase);
+public Dictionary<string, List<string>> VariantLabels { get; } = new(StringComparer.OrdinalIgnoreCase);
+public Dictionary<string, NexusInstallRecord> ModNexusInstalls { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+public Dictionary<string, OverlayRecord> Overlays { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+public Dictionary<string, int> DependencyNexusIds { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+public Dictionary<string, string> ActiveProfileByGame { get; set; } = new();
+public Dictionary<string, string> DependencyMinVersions { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+public Dictionary<string, string> FileNotes { get; } = new(StringComparer.OrdinalIgnoreCase);
+public Dictionary<string, string> ModCategories { get; set; } = new();
+public Dictionary<string, string> ModCovers { get; set; } = new();
+public Dictionary<string, string> ModFileLastDownload { get; set; } = new();
+public Dictionary<string, string> ModLastDownload { get; set; } = new();
+public Dictionary<string, string> ModOriginalNames { get; set; } = new();
+public Dictionary<string, string> ModRemarks { get; set; } = new();
+public Dictionary<string, string> PortraitLocks { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+public Dictionary<string, string> PortraitSeasonSkins { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+public Dictionary<string, string> PortraitSkinVariants { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+public Dictionary<string, string> PortraitSkins { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+public Guid Id { get; set; }
+public IDisposable BeginLongRunning(TaskItem t) => new LongRunningScope(this, t.Id);
+public IEnumerable<IGrouping<string, ContentOverrideRecord>> Versions
+public IEnumerable<IGrouping<string, ContentOverrideRecord>> VersionsOf(string variant)
+public IReadOnlyDictionary<string, long> Snapshot { get { lock (_gate) return new Dictionary<string, long>(_seconds); } }
+public IReadOnlyList<KnownVersion> GetKnownVersions(string appId)
+public IReadOnlyList<ModEntry> Scan(string gamePath)
+public IReadOnlyList<string> GetLogSnapshot()
+public InstallService(ConfigService cfg, NexusService nexus, ModService mods,
+public IntPtr hFile;
+public IntPtr hWVTStateData;
+public IntPtr hWnd;
+public IntPtr lParam;
+public IntPtr pFile;
+public IntPtr pPolicyCallbackData;
+public IntPtr pSIPClientData;
+public IntPtr pSignatureSettings;
+public IntPtr pgKnownSubject;
+public IntPtr pwszURLReference;
+public JuniGridConfig Current { get; private set; } = new();
+public LaunchResult LaunchSmapi(string gamePath)
+public LaunchResult LaunchSteam(string steamAppId)
+public LauncherService(ConfigService cfg, DepotDownloaderService? depot = null)
+public List<(string Rel, string Asset, string Msg)> RejectRows { get; } = new();
+public List<ContentOverrideVariant> VariantFacts { get; set; } = new();
+public List<CustomHistoricalVersion> CustomHistoricalVersions { get; set; } = new();
+public List<KnownVersion> GetMergedVersions(string appId, IEnumerable<CustomHistoricalVersion>? custom)
+public List<ModProfile> ModProfiles { get; set; } = new();
+public List<PlanItem> Items { get; } = new();
+public List<StagedPackage> ListStagedPackages()
+public List<StorageCategory> GetCategories()
+public List<TaskItem> Snapshot() { lock (_lock) return Items.ToList(); }
+public List<string> Assets => Items.Select(i => i.Asset).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+public List<string> Assets { get; } = Records.Select(r => r.Asset)
+public List<string> AssetsOf(string variant) => Assets
+public List<string> ContentPackIds { get; set; } = new(); // 它作为内容包时依赖的宿主 mod UniqueID（合并进 Dependencies 用于缺失检测）
+public List<string> CopyLog(TaskItem t) { lock (_lock) return t.Log.ToList(); }
+public List<string> Dependencies { get; set; } = new();  // 本 mod 依赖的 UniqueID（含 ContentPackFor 宿主）
+public List<string> EnabledModUids { get; set; } = new();
+public List<string> Log { get; set; } = new();
+public List<string> ModCategoryTried { get; set; } = new();
+public List<string> NexusSearchHistory { get; set; } = new();
+public List<string> OptionalDependencies { get; set; } = new();
+public List<string> PortraitTrueVanilla { get; set; } = new();
+public List<string> PortraitVanillaDefaults { get; set; } = new();
+public List<string> Rejects => RejectRows.Select(r => r.Msg).ToList();
+public List<string> Resized { get; } = new();
+public List<string> Variants { get; set; } = new();
+public List<string> Variants { get; } = Records.Select(r => VariantOf(r.Asset))
+public LocService(ConfigService cfg)
+public LongRunningScope(TaskCenterService c, Guid id) { _c = c; _id = id; lock (_c._lock) _c._longRunning.Add(id); }
+public LzxDecoder(int window)
+public MainWindow()
+public MemoryService(ConfigService cfg)
+public MemorySnapshot GetSnapshot() => Build();
+public NexusOAuthService(ConfigService cfg) => _cfg = cfg;
+public ObservableCollection<TaskItem> Items { get; } = new();
+public POINT32 ptReserved, ptMaxSize, ptMaxPosition, ptMinTrackSize, ptMaxTrackSize;
+public PlayTimeService(LauncherService launcher)
+public PreFlightResult CheckSmapi(string gamePath)
+public PreFlightResult CheckSteam()
+public RECT32 rc;
+public RECT32 rcMonitor;
+public RECT32 rcWork;
+public SelfUpdateInfo? Latest => _latest;
+public SteamProfile GetProfile() => _cached ??= LoadProfile();
+public StorageService(ConfigService cfg, TaskCenterService center)
+public Task DownloadFileAsync(string url, string destPath,
+public Task<NexusUser?> ValidateAsync()
+public Task<string> CleanCategoryAsync(string id)
+public Task<string> CleanStagingBucketAsync(string key)
+public Task<string> TranslateAsync(string text)
+public Task<string[]> TransBatch(string[] texts)
+public TaskCenterService()
+public TaskItem Start(string title, string? kind = null)
+public TaskItem StartDownload(string label, string manifestId, string? versionLabel, bool applyToGame = false)
+public TaskItem StartOrRestart(string title, string kind, int? nexusId)
+public TranslationService()
+public VersionDownloadService(ConfigService cfg, DepotDownloaderService depot, TaskCenterService center,
+public async Task EnsureDepotDownloaderAsync(IProgress<string>? log = null, CancellationToken ct = default)
+public async Task HandleNxmLinkAsync(string link)
+public async Task KillGameWatchdogAsync(int windowMs = 20000, Func<bool>? stopWhen = null)
+public async Task<(int Id, string Name)?> FindDependencyProviderAsync(
+public async Task<(int ModId, string Name)?> FindModByNameAsync(
+public async Task<(string? Name, string? Avatar)?> GetUploaderInfoAsync(int modId, string gameDomain = "stardewvalley")
+public async Task<DependencyDisplayInfo?> ResolveDependencyDisplayAsync(
+public async Task<Dictionary<int, NexusModFingerprint>?> GetModFingerprintsBatchAsync(
+public async Task<Dictionary<int, string>?> GetCategoriesAsync()
+public async Task<Dictionary<int, string>?> GetDownloadHistoryAsync()
+public async Task<GitHubModRelease?> CheckModGitHubAsync(string repo)
+public async Task<List<(string Version, string Category)>?> GetModFileVersionsAsync(
+public async Task<List<NexusChangelog>?> GetChangelogsAsync(int modId)
+public async Task<List<NexusModListEntry>?> BrowseModsAsync(string kind, int offset, int count,
+public async Task<List<NexusRequirement>?> GetModRequirementsAsync(int modId, string gameDomain = "stardewvalley")
+public async Task<List<NexusRequirementEx>?> GetModRequirementsWithCoversAsync(int modId, string gameDomain = "stardewvalley")
+public async Task<List<NexusTranslationItem>?> GetModTranslationsAsync(int modId, string modName, string gameDomain = "stardewvalley")
+public async Task<ModPageEvidence?> GetModPageEvidenceAsync(int modId)
+public async Task<NexusAuthorMods?> GetModsByUploaderAsync(string uploader, int count = 24,
+public async Task<NexusDownloadResult> GetDownloadUrlAsync(int modId, long fileId,
+public async Task<NexusDownloadResult> GetNxmDownloadUrlAsync(
+public async Task<NexusFileInfo?> GetFileByIdAsync(int modId, long fileId, bool patient = false,
+public async Task<NexusFileInfo?> GetLatestMainFileAsync(int modId,
+public async Task<NexusModDetail?> GetModDetailAsync(int modId)
+public async Task<NexusModInfo?> GetModAsync(int modId)
+public async Task<NexusUser?> LoginAsync(CancellationToken ct = default)
+public async Task<NexusUserExtras?> GetUserExtrasAsync(int memberId)
+public async Task<Result> SendAsync(string command, CancellationToken ct = default)
+public async Task<SelfUpdateInfo?> CheckAsync()
+public async Task<SmapiUpdateInfo> CheckSmapiAsync(string? installedVersion, bool force = false)
+public async Task<SmapiUpdateInfo> CheckSmapiForGameAsync(string? installedVersion, string? gameVersion, bool force = false)
+public async Task<bool> RefreshAllAsync(bool force = false)
+public async Task<bool> RefreshAsync()
+public async Task<int?> FindVersionProviderAsync(string uid, IReadOnlyList<string> requiredVersions,
+public async Task<string> EnsureInstallerAsync(SelfUpdateInfo info,
+public async Task<string> MigrateCacheRootAsync(string? newRoot)
+public async Task<string> QrDownloadAndApplyAsync(
+public async Task<string> QrLoginOnlyAsync(Func<string, Task> onDataUri,
+public async Task<string> RestoreHiddenSavesAsync()
+public async Task<string?> FetchAvatarAsync(string url)
+public async Task<string?> GetUploaderAvatarAsync(int modId, string gameDomain = "stardewvalley")
+public async Task<string?> InstallMissingDependenciesAsync(IReadOnlyList<string>? onlyUids = null,
+public async Task<string?> InstallModDirectAsync(int modId)
+public async Task<string?> InstallSmapiZipAsync(
+public async Task<string?> RunSmapiInstallerAsync(
+public async Task<string[]> TranslateBatchAsync(IReadOnlyList<string> texts)
+public bool AnyOn => Records.Any(r => r.Enabled);
+public bool Busy => Volatile.Read(ref _busyCount) > 0;
+public bool CanPause => Kind is "download" or "install" or "update" or "gameversion";
+public bool CanRetry(TaskItem t) => t.Status == "failed"
+public bool Contains(TaskItem t) { lock (_lock) return Items.Contains(t); }
+public bool DeleteStagedPackage(string manifestId)
+public bool DepotQrLoggedIn { get; set; } = false;
+public bool Disabled { get; set; }
+public bool EnableAutoInstall { get; set; } = false;
+public bool EnableOneClickInstall { get; set; } = true;
+public bool Enabled
+public bool Enabled { get; set; } = true;
+public bool Encoded { get; set; }
+public bool GameProcessRunning()
+public bool HasManifest => !string.IsNullOrWhiteSpace(ManifestId);
+public bool HasManifest { get; set; } = true;   // false = 该文件夹没有有效 manifest（用文件夹名兜底）
+public bool Installable => Items.Count > 0;
+public bool IsAuthorized => _cfg.Current.DepotQrLoggedIn
+public bool IsComputing(string id) { lock (_gate) return _computing.Contains(id); }
+public bool IsConvertedPack =>
+public bool IsGameRunning => IsAlive(_smapiProcess) || AnyProcess(GameProcessNames);
+public bool IsPerson => Key.StartsWith("P|", StringComparison.Ordinal);
+public bool IsQueued(TaskItem t) => _queued.ContainsKey(t.Id);
+public bool IsStagedComplete(string manifestId)
+public bool LastWasControl { get; set; }
+public bool LockGameVersion { get; set; } = false;
+public bool MemThresholdEnabled { get; set; } = false;
+public bool MemTimerEnabled { get; set; } = false;
+public bool NeedsRefresh => TokenExpired(_cfg.Current);
+public bool NexusIsPremium { get; set; }
+public bool Resume(TaskItem t)
+public bool Retry(TaskItem t)
+public bool Revertible => SafeToRevert > 0;
+public bool ShowAdultContent { get; set; } = false;
+public bool ShowTaskDock { get; set; } = false;
+public bool SmapiPresent()
+public bool SpeedReported { get; set; }
+public bool TotalSpeedKnown
+public bool TranslationEnabled { get; set; } = false;
+public bool TryApplyStaged(string gamePath, string appId, string depotId, string manifestId,
+public byte GetBitsLeft() => _bitsLeft;
+public byte[] AlignedLen;
+public byte[] LengthLen;
+public byte[] MaintreeLen;
+public byte[] PretreeLen;
+public byte[] Window;
+public const int RawHeaderSize = 10;
+public const int SmapiNexusId = 2400;
+public const string AssetPackUidPrefix = "JuniGrid.AssetPack.";
+public const string CallbackUrl = "http://localhost:49162/auth/callback";
+public const string ClientId = "junigrid";
+public const string DefaultVariant = "默认";
+public const string ModFolder = "~JuniGrid Command Bridge";
+public const string PortraitureFrameworkUid = "Platonymous.Portraiture";
+public const string RepoName  = "JuniGrid";
+public const string RepoOwner = "MLD-yu";
+public const string SharedStoreFolder = "JuniGrid";
+public const string SmapiLatest = "latest";
+public const string UidMismatchError = "uniqueid-mismatch";
+public const uint FILE_FLAG_BACKUP_SEMANTICS = 0x02000000;
+public const uint FILE_SHARE_READ = 0x1;
+public const uint FILE_SHARE_WRITE = 0x2;
+public const uint GENERIC_READ = 0x80000000;
+public const uint OPEN_EXISTING = 3;
+public const ushort AlignedMaxSymbols = 8;
+public const ushort AlignedTableBits = 7;
+public const ushort LenTableSafety = 64;
+public const ushort LengthMaxSymbols = NumSecondaryLengths + 1;
+public const ushort LengthTableBits = 12;
+public const ushort MaintreeMaxSymbols = NumChars + 50 * 8;
+public const ushort MaintreeTableBits = 12;
+public const ushort MinMatch = 2;
+public const ushort NumChars = 256;
+public const ushort NumPrimaryLengths = 7;
+public const ushort NumSecondaryLengths = 249;
+public const ushort PretreeMaxSymbols = 20;
+public const ushort PretreeTableBits = 6;
+public double Percent { get; set; }
+public double SpeedMBps { get; set; }
+public double SysPercent => SysTotalBytes <= 0
+public double TotalPercent
+public double TotalSpeedMBps
+public enum BridgeState { Off, Ready, GameNotRunning, Incompatible, NoSmapi }
+public enum CloudSync { Disabled, Enabled, Unknown }
+public enum Kind { Portrait, Sprite, Sheet }
+public enum OverrideState { Off, InPlace, AlreadyVanilla, Foreign, Gone }
+public event Action<MemorySnapshot>? OnSnapshot;
+public event Action<TaskItem, bool>? OnFinished;
+public event Action<string>? OnLogLine;
+public event Action<string>? OnRefresh;
+public event Action? Changed;
+public event Action? OnChanged;
+public event Action? OnStats;
+public int CachedDisabledModCount { get; set; }
+public int CachedModCount { get; set; }
+public int CleanupDuplicateCopies(string gamePath)
+public int HeaderRead;
+public int MemThresholdPercent { get; set; } = 80;
+public int MemTimerMinutes { get; set; } = 30;
+public int ModId { get; set; }
+public int NexusModId { get; set; }
+public int Resized => Items.Count > 0 ? Items[0].ResizedCount : 0;
+public int ResizedCount { get; set; }
+public int RunningCount { get { lock (_lock) return Items.Count(t => t.Status == "running"); } }
+public int Skipped => Items.Count > 0 ? Items[0].SkippedCount : 0;
+public int SkippedCount { get; set; }
+public int SurpriseSeed { get; private set; } = Random.Shared.Next();
+public int TargetsSeen;
+public int TotalLaunchCount { get; set; }
+public int TrimGameWorkingSet()
+public int VariantCount => Variants.Count;
+public int VersionCount => Records.Select(r => r.Slot)
+public int cbSize;
+public int? LastBrowseTotalCount
+public int? NexusId { get; set; }
+public int? NexusModId { get; set; }
+public int? NexusModId { get; set; }   // from manifest UpdateKeys "Nexus:<id>"
+public long FileId { get; set; }
+public long GetSeconds(string dateKey) { lock (_gate) return _seconds.TryGetValue(dateKey, out var s) ? s : 0; }
+public long GetSize(string id) { lock (_gate) return _sizes.TryGetValue(id, out var v) ? v : -1; }
+public long LatestFileId { get; set; }
+public long TotalKnownBytes
+public long TotalPlayMinutes { get; set; }
+public long TotalSeconds { get { lock (_gate) { var t = 0L; foreach (var v in _seconds.Values) t += v; return t; } } }
+public long WrittenAtUnixMs { get; set; }
+public partial class App : Application
+public partial class MainWindow : Window
+public readonly record struct LaunchResult(bool Success, int? Pid, string? Error, string? Warning = null,
+public readonly record struct PreFlightResult(bool Success, bool IsWarning, string? Message)
+public required Action Reacquire { get; init; }
+public required Action Release { get; init; }
+public required Func<bool> IsLive { get; init; }
+public sealed class CommandBridgeService
+public sealed class ConfigService
+public sealed class ContentOverrideRecord
+public sealed class CustomHistoricalVersion
+public sealed class DependencyDisplayEntry
+public sealed class DepotException(string message) : Exception(message);
+public sealed class GameService
+public sealed class InstallService
+public sealed class InstallerIntegrityException(string message) : Exception(message);
+public sealed class JuniGridConfig
+public sealed class LauncherService
+public sealed class LocService
+public sealed class LzxDataException(string message) : Exception(message);
+public sealed class MemoryService
+public sealed class ModEntry
+public sealed class ModProfile
+public sealed class ModUpdateFingerprintEntry
+public sealed class ModWatcherSlot
+public sealed class NexusInstallRecord
+public sealed class NexusOAuthService
+public sealed class NexusService
+public sealed class OverlayRecord
+public sealed class PageRefreshService
+public sealed class PermanentDownloadException(string message) : Exception(message);
+public sealed class PlanResult
+public sealed class PlayTimeService : IDisposable
+public sealed class SelfUpdateService
+public sealed class SteamService
+public sealed class StorageService
+public sealed class TaskCenterService
+public sealed class TaskItem
+public sealed class TranslationService
+public sealed class UpdateService
+public sealed class VersionDownloadService
+public sealed partial class DepotDownloaderService
+public sealed partial class ModService
+public sealed record Bridge(string Pipe, string Token, int Pid, string Version);
+public sealed record ContentOverrideVariant(string Label, string Note);
+public sealed record DecodedTexture(byte[] PixelsRgba, int Width, int Height);
+public sealed record DependencyDisplayInfo(string Uid, string? Name, int? ModId, string? CoverUrl);
+public sealed record DependencyRunItem(string Uid, string Status, string? Name, int? ModId, string? Detail);
+public sealed record GitHubModRelease(string Tag, string? ZipUrl);
+public sealed record InstallProgress(
+public sealed record KnownVersion(
+public sealed record MemorySnapshot(
+public sealed record ModPageEvidence(string Name, string UploadedBy, string DescriptionBbCode, string PictureUrl);
+public sealed record NexusAuthorMods(List<NexusModListEntry> Items, int Total);
+public sealed record NexusChangelog(string Version, List<string> Lines);
+public sealed record NexusDownloadProgress(string Message, double Percent, double? SpeedMBps);
+public sealed record NexusDownloadResult(string? Url, string? Error, bool NeedsPremium)
+public sealed record NexusFileInfo(long FileId, string Name, string Version, string Category, long Size = 0);
+public sealed record NexusModDependency(int ModId, string Name, string Availability);
+public sealed record NexusModDetail(
+public sealed record NexusModFingerprint(int ModId, string Version, string UpdatedAt, string? PictureUrl);
+public sealed record NexusModInfo(int Id, string Name, string Version, string PictureUrl, int? CategoryId);
+public sealed record NexusModListEntry(
+public sealed record NexusRequirement(string ModName, string Notes, string Url, int ModId, bool External);
+public sealed record NexusRequirementEx(string ModName, string Notes, string Url, int ModId, bool External, string? PictureUrl);
+public sealed record NexusTranslationItem(string Name, int ModId, string? PictureUrl);
+public sealed record NexusUser(string Name, string Email, string ProfileUrl, string Avatar, bool IsPremium, int MemberId);
+public sealed record NexusUserExtras(string? Avatar, string? About, string? Joined, string? Country,
+public sealed record OrphanOverrideGroup(string Slot, string PackName, string PackDir,
+public sealed record OverlayReport(
+public sealed record PackGroup(string Slot, string PackName, int? NexusModId,
+public sealed record PlanItem(string Asset, byte[] Bytes, bool Encoded, string Source,
+public sealed record Progress(string State, int? Percent, string? Line = null, bool? Queued = null);
+public sealed record RebuildReport(int Packs, int Records, int Applied, int Drifted, int Already,
+public sealed record RejudgeResult(int NewlyInstalled, int StillRejected, int Repaired, string? Error);
+public sealed record Result(bool Ok, string Error);
+public sealed record SelfUpdateInfo(string LatestVersion, string DownloadUrl, string SetupUrl, bool HasUpdate,
+public sealed record Slot(string Name, string Dir, string? FarmerName, string? FarmName,
+public sealed record SmapiUpdateInfo(
+public sealed record StagedPackage(string Label, string ManifestId, string Path, long SizeBytes, DateTime At, bool Complete);
+public sealed record StagingBucketKind(string Key, string[] Folders, string Name, string Tip, bool Danger);
+public sealed record Stamp(string Dir, string SaveName, DateTime At, DateTime SourceWritten,
+public sealed record SteamProfile(
+public sealed record StorageCategory(
+public sealed record StrayOverride(string Asset, string Version, string CurrentFile,
+public sealed record TargetGroup(string Key, string Name, string Category, string Sub,
+public sealed record XnbTextureLayout(byte[] Body, int Width, int Height, int PixelPos, int PixelLen);
+public static (StagingBucketKind Kind, string Path, long Bytes)[] ListStagingBuckets()
+public static (bool Ok, string? Error) SetGameVersionLock(string manifestPath, bool locked)
+public static (int Reverted, int HeldBack) RevertAll(ConfigService cfg, string gamePath)
+public static (long Requests, long Hits, long Misses) TakeTrafficDelta()
+public static (string Line, string? Url) RecommendSmapi(string? gameVersion)
+public static (string Name, int Pid)[] SnapshotGameProcesses()
+public static (string Path, PackThumbService.Kind Kind)? CardThumbSource(string gamePath, TargetGroup t)
+public static Action? RemapThumbHost;
+public static Action? UiReadyCallback { get; set; }
+public static CloudSync CloudSyncFromLog(string? logPath, string appId)
+public static CloudSync CloudSyncFromSharedConfig(string? steamRoot, string appId)
+public static CloudSync ReadCloudSyncState(string? gamePath, string appId)
+public static ContentOverrideRecord? RecordForNote(
+public static DecodedTexture DecodeDxt1(byte[] src, int pos, int w, int h)
+public static DecodedTexture DecodeFontMask(byte[] src, int pos, int w, int h)
+public static DecodedTexture? DecodePng(string path)
+public static DecodedTexture? TryDecode(string xnbPath)
+public static DecodedTexture? TryDecodeFont(string xnbPath)
+public static Func<ContentOverrideRecord, bool> ShownRowPredicate(string gamePath, ConfigService cfg)
+public static Func<Task>? EnsureFreshToken;
+public static IEnumerable<string> GithubUrls(string url)
+public static IServiceProvider? Services { get; set; }
+public static Kind KindOf(string asset)
+public static LaunchResult Blocked(string gateKind, string err) => new(false, null, err, null, gateKind);
+public static LaunchResult Fail(string err) => new(false, null, err);
+public static LaunchResult Ok(int? pid, string? warning = null) => new(true, pid, null, warning);
+public static List<(string Key, string PackName, int Skipped)> SlotsNeedingRejudge(ConfigService cfg)
+public static List<(string SaveName, int Stamps, DateTime Newest, string Note)> StashOverview()
+public static List<ContentOverrideRecord> ImageRows(string gamePath,
+public static List<ContentOverrideRecord> Records(ConfigService cfg)
+public static List<OrphanOverrideGroup> AuditOrphans(string gamePath, ConfigService cfg)
+public static List<PackGroup> Groups(string gamePath, ConfigService cfg)
+public static List<Slot> Scan()
+public static List<Slot> UnreadableBy(string? version)
+public static List<StrayOverride> Strays(ConfigService cfg, string gamePath)
+public static List<TargetGroup> Build(ConfigService cfg, Func<ContentOverrideRecord, bool>? take = null)
+public static List<string> HalfSyncedSaves()
+public static List<string> LocaleSiblings(string gamePath, string asset)
+public static List<string> QuarantineSaveBatches()
+public static List<string> SlotSiblings(ConfigService cfg, string slot, string asset)
+public static ModEntry? FindInstalledEntry(IEnumerable<ModEntry> scanned, int nexusModId, string? nameGuess)
+public static NexusDownloadResult Fail(string err) => new(null, err, false);
+public static NexusDownloadResult Ok(string url) => new(url, null, false);
+public static NexusInstallRecord? GetInstallRecord(JuniGridConfig cfg, ModEntry m)
+public static OverlayReport OverlayHealth(string gamePath, JuniGridConfig cfg)
+public static OverrideState DiskState(string gamePath, ContentOverrideRecord r)
+public static OverrideState ImageGroupState(string gamePath, ConfigService cfg,
+public static OverrideState StateOf(string gamePath, ContentOverrideRecord r)
+public static PlanResult Prepare(string gamePath, string srcDir)
+public static PreFlightResult Fail(string msg) => new(false, false, msg);
+public static PreFlightResult Ok() => new(true, false, null);
+public static PreFlightResult Warn(string msg) => new(true, true, msg);
+public static RebuildReport RebuildFromDisk(ConfigService cfg, string gamePath, bool dryRun)
+public static RejudgeResult Rejudge(ConfigService cfg, string gamePath, string slot,
+public static XnbTextureLayout? TryLocate(byte[] file)
+public static XnbTextureLayout? TryLocate(string xnbPath)
+public static async Task RevealThemeSwitchAsync(
+public static async Task RunAsync(HttpClient http, string url, string destPath,
+public static async Task<(string Name, int Pid, string Why)[]> KillAgainAndExplain()
+public static async Task<IDisposable> HoldSteamSessionAsync(CancellationToken ct = default)
+public static async Task<string?> EnsureInstalledAsync(
+public static bool AlreadyHasRemoteFile(JuniGridConfig cfg, ModEntry m, string? remoteVersion, long? remoteFileId)
+public static bool CanResumeStagedPackage(string stagingDir, string manifestId)
+public static bool Drifted(string gamePath, ContentOverrideRecord r)
+public static bool ForceHideToFocus(Slot s, Action<string>? log)
+public static bool ForeignOnDisk(string gamePath, ContentOverrideRecord r)
+public static bool GameNeedsXna(string? gameVersion)
+public static bool HasSmapiLoader(string? gamePath)
+public static bool IncludeAdultContent
+public static bool IsApplyInProgress => Volatile.Read(ref _applyActive) > 0;
+public static bool IsAuthenticated => !string.IsNullOrEmpty(BearerToken);
+public static bool IsFontAsset(string xnbPath)
+public static bool IsGameProcessRunning() => AnyProcess(GameProcessNames);
+public static bool IsGameVersionLocked(string? manifestPath)
+public static bool IsInstalled()
+public static bool IsLatestOfficialManifest(string appId, string? manifestId)
+public static bool IsNewer(string remote, string local)
+public static bool IsOlderThan(string? a, string? b)
+public static bool IsPerson(string asset)
+public static bool IsSmapiUnsupported(string? gameVersion)
+public static bool IsStagedPackageComplete(string stagingDir)
+public static bool IsSteamRunning => AnyProcess("steam", "steamwebhelper");
+public static bool IsSwappable(string gamePath, string asset)
+public static bool IsTextureAsset(string xnbPath)
+public static bool MatchesFilter(string line, string filter) => filter switch
+public static bool NeedsRebuild(ConfigService cfg, string gamePath)
+public static bool NeedsTranslation(string? s)
+public static bool OverlayAppliedForMod(string gamePath, JuniGridConfig cfg, int modId)
+public static bool ReadableBy(Slot s, string? version)
+public static bool RestoreSmapiFromPool(string gamePath, string? gameVersion)
+public static bool Same(string? a, string? b)
+public static bool SaveSmapiToPool(string gamePath, string? gameVersion)
+public static bool ShouldShowUpdate(JuniGridConfig cfg, ModEntry m, string? remoteVersion, long? remoteFileId)
+public static bool SteamNeedsRepair(string? manifestPath)
+public static bool SteamSessionBusy => Volatile.Read(ref _sessionHeld) > 0;
+public static bool TryGetVersionRank(string? label, out int rank)
+public static bool TryHealFromPriorDownload(JuniGridConfig cfg, ModEntry m,
+public static bool TryMoveTree(string srcDir, string dstDir)
+public static byte[] CropScalePng(DecodedTexture tex, int sx, int sy, int sw, int sh, int dw, int dh)
+public static byte[] WrapRaw(byte[] body)
+public static byte[]? ReadContentRegion(byte[] file)    {
+public static class AppInfo
+public static class AppLog
+public static class ContentOverrideService
+public static class ContentOverrideTargets
+public static class DxtDecoder
+public static class LogLineClassifier
+public static class NexusUpdateTruth
+public static class PackThumbService
+public static class PixelKit
+public static class ResumableDownload
+public static class SaveVersionService
+public static class StoragePaths
+public static class XnaRedistService
+public static class XnbCodec
+public static class XnbDecoder
+public static event Action? Changed;
+public static event Action? Saved;
+public static extern SafeFileHandle CreateFile(string lpFileName, uint dwDesiredAccess,
+public static int AdultFilterVersion => Volatile.Read(ref _adultFilterVersion);
+public static int BackfillVersions(ConfigService cfg, string gamePath)
+public static int BindPageIds(ConfigService cfg, string gamePath)
+public static int CategoryOrder(string category) => category switch
+public static int CompareVersionLabels(string? a, string? b)
+public static int CompareVersions(string? a, string? b)
+public static int CountPackMods(string stagingDir)
+public static int HideUnreadable(string? targetVersion, string pkgDir, Action<string>? log = null)
+public static int NextLoginId() => Interlocked.Increment(ref _loginIdSeed);
+public static int PruneUnreferencedStores(ConfigService cfg, string gamePath)
+public static int PurgePortraitOverrides(List<string> modsDirs)
+public static int RelocateBundleTopOverlays(JuniGridConfig c, string? gamePath)
+public static int RestoreHidden(Action<string>? log = null, string? readableByVersion = null)
+public static int StashedCountAll()
+public static int SteamSessionCount => Volatile.Read(ref _sessionHeld);
+public static int SweepStale(IEnumerable<string> dirs)
+public static int ThemeRevealMs = 400;
+public static int VariantOrder(string variant)
+public static int? TryTextureArea(string xnbPath)
+public static long ApiRequests => Volatile.Read(ref _apiRequests);
+public static long CacheHits => Volatile.Read(ref _cacheHits);
+public static long CacheMisses => Volatile.Read(ref _cacheMisses);
+public static readonly NexusDownloadResult PremiumRequired =
+public static readonly StagingBucketKind[] StagingBucketKinds =
+public static readonly SteamProfile None = new(null, null, null, false, 0);
+public static readonly string ConfigDir = Environment.GetEnvironmentVariable("JUNIGRID_CONFIG_DIR") is { Length: > 0 } dir
+public static readonly string[] GameProcessNames = ["StardewModdingAPI", "Stardew Valley"];
+public static string AppDataDir => Path.Combine(
+public static string AssetFullPath(string gamePath, string asset)
+public static string BackupRoot => Path.Combine(DepotDownloaderService.StagingRoot, "_saves-backup");
+public static string CategoryOf(string asset)
+public static string Classify(string line)
+public static string ConfigFilePath => ConfigPath;
+public static string ContentRoot(string gamePath) => Path.Combine(gamePath, "Content");
+public static string DefaultCacheRoot =>
+public static string DeletePackConfirmText(StagedPackage pkg)
+public static string DepotStagingDir => InCache("depot-staging");
+public static string DerivedRoot(string gamePath) => Path.Combine(StoreRoot(gamePath), DerivedDir);
+public static string DescribeHalfSynced(List<string> bad)
+public static string DescribeHalfSyncedShort(List<string> bad)
+public static string DisplayGameVersion(string? internalVersion, string? lastLabel, string? lastInternal)
+public static string DisplayPack(ContentOverrideRecord r)
+public static string DownloadsDir => InCache("downloads");
+public static string DrawerRoot => DrawerRootOverride ?? StoragePaths.SavesHiddenDir;
+public static string EffectiveLocalVersion(JuniGridConfig cfg, ModEntry m)
+public static string FocusRootOf() => Path.Combine(DrawerRoot, FocusDirName);
+public static string ForeignPath(string gamePath, string asset, string version)
+public static string ForeignRoot(string gamePath) => Path.Combine(StoreRoot(gamePath), "content-foreign");
+public static string FormatBytes(long bytes)
+public static string GameTrashDir(string gamePath) => Path.Combine(gamePath, "Mods", ".junigrid_trash");
+public static string GetSmapiInstallerCacheDir(string? gameVersion)
+public static string HiddenRootOf(string pkgDir) => Path.Combine(DrawerRoot,
+public static string InCache(string sub) => Path.Combine(CacheRoot ?? DefaultCacheRoot, sub);
+public static string InstallerPath(string version)
+public static string KeyOf(string asset, string slot) => asset + "|" + slot;
+public static string LatestApiUrl => $"https://api.github.com/repos/{RepoOwner}/{RepoName}/releases/latest";
+public static string LegacyDepotStagingDir => Path.Combine(LocalAppDataDir, "depot-staging");
+public static string LegacySmapiInstallDat => InCache("_smapi-install.dat");
+public static string LocalAppDataDir => Path.Combine(
+public static string LocalVersionToCompare(JuniGridConfig cfg, ModEntry m, string? remoteVersion)
+public static string LocaleBase(string asset) => LocaleTail.Replace(asset, "");
+public static string ModsBackupDir => InCache("mods-backup");
+public static string NormalizeOverlayHost(string host)
+public static string OriginalPath(string gamePath, string asset)
+public static string OriginalPath(string gamePath, string asset, string? version)
+public static string OriginalVersionSegment(string gamePath)
+public static string OriginalsRoot(string gamePath)
+public static string OverlayKey(string host, string relPath, int? nexusModId, string packName)
+public static string OverlaySlotOf(string key)
+public static string OverlayStoreDir(string storeId)
+public static string PackOriginalDir(string gamePath, string packDir)
+public static string PacksRoot(string gamePath)
+public static string PersonRoot(string leaf)
+public static string PreserveOriginalPack(string gamePath, string srcDir, string packName, string slot,
+public static string QuarantineRoot => Path.Combine(DepotDownloaderService.StagingRoot, "_quarantine");
+public static string ReleasesUrl => $"https://github.com/{RepoOwner}/{RepoName}/releases";
+public static string RestoreStatus(string kind, string savedStatus)
+public static string Sanitize(string s)
+public static string SavesHiddenDir => Path.Combine(LocalAppDataDir, "saves-hidden");
+public static string SelfUpdateDir => InCache("self-update");
+public static string SharedStoreDir(string gamePath) => Path.Combine(gamePath, SharedStoreFolder);
+public static string SlotOf(string packName, int? nexusModId)
+public static string SmapiDetailLabel(bool installed, string? installedVersion, string? gameVersion)
+public static string SmapiInstallerDir => InCache("smapi-installer");
+public static string StampKey(ModEntry m) =>
+public static string SteamUserdataBackupDir => Path.Combine(LocalAppDataDir, "userdata-backup");
+public static string StoreDir(string gamePath, string storeId)
+public static string StoreFile(string gamePath, string storeId, string asset)
+public static string StoreRoot(string gamePath)
+public static string TempRoot => Path.Combine(Path.GetTempPath(), "JuniGrid");
+public static string Tf(string zh, params object?[] args) => _inst?.F(zh, args) ?? string.Format(zh, args);
+public static string Tr(string zh) => _inst?.T(zh) ?? zh;
+public static string VariantOf(string asset)
+public static string Version =>
+public static string WebView2Dir => InCache("webview2");
+public static string? BearerToken
+public static string? BundledParentOf(string missingUid, IEnumerable<string> installedUids)
+public static string? CacheRoot { get; internal set; }
+public static string? Commit(string gamePath, PlanResult plan, string packName, int? nexusModId,
+public static string? Delete(ConfigService cfg, string gamePath, string key)
+public static string? DeletePack(ConfigService cfg, string gamePath, string slot)
+public static string? DrawerRootOverride { get; set; }
+public static string? EngineInternalToFamily(string? raw)
+public static string? FindAppManifest(string? gamePath, string appId)
+public static string? Get(string? xnbPath, Kind kind) => GetCore(xnbPath, kind, large: false);
+public static string? GetLarge(string? xnbPath, Kind kind) => GetCore(xnbPath, kind, large: true);
+public static string? GetSystemAccentHex()
+public static string? HalfOf(string asset)
+public static string? NormalizeVersionLabel(string? label)
+public static string? PackImageSource(string gamePath, ContentOverrideRecord r)
+public static string? PendingNxmLink { get; set; }
+public static string? ReadInstalledDepotManifest(string? manifestPath, string depotId)
+public static string? ReadLocalGameVersion(string? gamePath)
+public static string? RecommendSmapiTag(string? gameVersion)
+public static string? RehomeOrphanMods(string gamePath, Dictionary<int, List<string>> drawersByMajor)
+public static string? ResolveCurrentVersion(string? gamePath)
+public static string? SavesDir()
+public static string? SavesDirOverride { get; set; }
+public static string? SetEnabled(ConfigService cfg, string gamePath, string key, bool enabled)
+public static string? SetPackEnabled(ConfigService cfg, string gamePath, string slot, bool enabled)
+public static string? StagingDirForVersion(string? version) => FindStagingByVersionLabel(version);
+public static string? SwitchVariant(ConfigService cfg, string gamePath, string asset, string slot, string label)
+public static string? ThumbHostBase;
+public static string? ThumbSource(string gamePath, List<ContentOverrideRecord> records, string asset)
+public static string? Validate(byte[] bytes)
+public static string? VanillaSource(string gamePath, string asset)
+public static string? VersionSource(string gamePath, List<ContentOverrideRecord> slotRecords, string asset)
+public static void ApplyShellTheme(bool dark)
+public static void BringMainWindowToFront()
+public static void BumpAdultFilterVersion() => Interlocked.Increment(ref _adultFilterVersion);
+public static void CacheSmapiForCurrentGame(string gamePath)
+public static void ClaimNxmHandlerNow() => EnsureNxmHandlerPointsAtSelf(true);
+public static void ClearResponseCache()
+public static void CopyDirectoryContents(string src, string dest, bool skipTrash = false, bool skipExisting = false)
+public static void EnsureGameVersionLock(string? gamePath, string appId, bool downgradeActive)
+public static void EnsureSmapiSampleMods(string gamePath)
+public static void Error(string source, Exception ex)
+public static void Error(string source, string message)
+public static void Flush()
+public static void Info(string source, string message)
+public static void MigrateLegacyStore(string gamePath)
+public static void MinimizeWindow()
+public static void NotifyUiReady()
+public static void OpenNexusOverlay(string url)
+public static void OpenUrl(string url)
+public static void Prewarm(IEnumerable<(string Path, Kind Kind)> jobs, bool large = false)
+public static void RecordDeployedVersion(string gamePath, string? version, string? manifest)
+public static void RecordInstall(JuniGridConfig cfg, ModEntry m, int downloadedModId,
+public static void RecordInstallByModId(JuniGridConfig cfg, string folderOrUid,
+public static void RegisterModWatcher(ModWatcherSlot slot) => ModWatchers[slot] = 1;
+public static void ReleaseNxmHandler()
+public static void RequestKickNow() => Volatile.Write(ref _kickAt, Environment.TickCount64);
+public static void SeedSmapiSampleMods(string gamePath)
+public static void SetModWatchersEnabled(bool on)
+public static void TrimWorkingSet() =>
+public static void UnregisterModWatcher(ModWatcherSlot slot) => ModWatchers.TryRemove(slot, out _);
+public static void Warn(string source, string message)
+public static void WriteAllText(string path, string content)
+public static volatile bool CacheBusy;
+public string Accent { get; set; } = "system";
+public string ActiveProfile { get; set; } = "默认";
+public string AppliedSha256 { get; set; } = "";
+public string Asset { get; set; } = "";
+public string Author { get; set; } = "";
+public string CachedGameVersion { get; set; } = "";
+public string CachedSmapiVersion { get; set; } = "";
+public string Category => Items.Count > 0 ? Items[0].CategoryName : "";
+public string Category { get; set; } = "";
+public string CategoryName { get; set; } = "";
+public string CoverUrl { get; set; } = "";
+public string Description { get; set; } = "";
+public string DetectGamePath()
+public string DisplayName => !string.IsNullOrEmpty(Version) ? Version : Label;
+public string F(string zh, params object?[] args)
+public string Folder { get; set; } = "";
+public string GamePath { get; set; } = "";
+public string GameVersion { get; set; } = "";
+public string Host { get; set; } = "";
+public string ImportLocalPackage(string dir, string appId = "413150", string depotId = "413151")
+public string Kind { get; set; } = "download";       // download / install / update / gameversion
+public string Label { get; set; } = "";
+public string Lang => string.Equals(_cfg.Current.Language, "en", StringComparison.OrdinalIgnoreCase) ? "en" : "zh";
+public string Language { get; set; } = "zh";
+public string LastHistoricalInternalVersion { get; set; } = "";
+public string LastHistoricalLabel { get; set; } = "";
+public string LastHistoricalManifest { get; set; } = "";
+public string LatestFileVersion { get; set; } = "";
+public string LaunchMode { get; set; } = "smapi";   // "smapi" | "steam"
+public string ManifestId { get; set; } = "";
+public string Name { get; set; } = "";
+public string NexusAccessToken { get; set; } = "";
+public string NexusAvatarDataUri { get; set; } = "";
+public string NexusProfileUrl { get; set; } = "";
+public string NexusRefreshToken { get; set; } = "";
+public string NexusUserEmail { get; set; } = "";
+public string NexusUserName { get; set; } = "";
+public string OriginalSha256 { get; set; } = "";
+public string PackCover => Items.Count > 0 ? Items[0].PackCover : "";
+public string PackCover { get; set; } = "";
+public string PackDir { get; set; } = "";
+public string PackName { get; set; } = "";
+public string PackTitle => Items.Count > 0 ? Items[0].PackTitle : "";
+public string PackTitle { get; set; } = "";
+public string RelPath { get; set; } = "";
+public string RemoteVersion { get; set; } = "";
+public string ResizedNote => Items.Count > 0 ? Items[0].ResizedNote : "";
+public string ResizedNote { get; set; } = "";
+public string SkippedNote => Items.Count > 0 ? Items[0].SkippedNote : "";
+public string SkippedNote { get; set; } = "";
+public string Slot { get; set; } = "";
+public string Source { get; set; } = "";
+public string StampedVersion { get; } = Items.Select(r => r.Version)
+public string Status { get; set; } = "running";      // running / paused / done / failed
+public string SteamAppId { get; set; } = "413150";
+public string SteamCmdAccount { get; set; } = "";
+public string StoreId { get; set; } = "";
+public string T(string zh)
+public string Theme { get; set; } = "dark";
+public string Title { get; set; } = "";
+public string UniqueID { get; set; } = "";           // manifest 里的唯一标识，更新包校验用
+public string UpdatedAt { get; set; } = "";
+public string Uploader { get; set; } = "";
+public string VariantLabel { get; set; } = "";
+public string Version { get; set; } = "";
+public string? ApplyRemarkToManifest(string gamePath, string folder, string remark,
+public string? CacheRoot { get; set; }
+public string? CachedInstallerPath(SelfUpdateInfo info)
+public string? FirstRunDate { get; set; }
+public string? GetGameVersion(string gamePath) => ResolveCurrentVersion(gamePath);
+public string? GetSmapiIconDataUri(string gamePath)
+public string? GitHubRepo { get; set; }  // from manifest UpdateKeys "GitHub:<owner>/<repo>"（免费直下）
+public string? InstallNew(string gamePath, string zipPath, out string? modName, int? nexusModId = null,
+public string? InstallUpdate(string gamePath, string targetFolderName, string zipPath,
+public string? LastError { get; private set; }
+public string? LastLaunchTime { get; set; }          // ISO-8601
+public string? LastLine { get; set; }
+public string? Note { get; set; }
+public string? Payload { get; set; }
+public string? PendingWebView2MoveFrom { get; set; }
+public string? ProbeSmapiVersion(string gamePath, bool freshRead = false)
+public string? RehomeOrphanMods(string gamePath)
+public string? RevertOverlay(string gamePath, string key, ConfigService cfg, bool save = true)
+public string? RevertOverlayGroup(string gamePath, string host, string slot, ConfigService cfg)
+public string? SetDisabled(string gamePath, string folderName, bool disabled)
+public string? SetEnabled(bool on)
+public string? SetOverlayEnabled(string gamePath, string key, bool enabled, ConfigService cfg, bool save = true)
+public string? SetOverlayGroupEnabled(string gamePath, string host, string slot, bool enabled, ConfigService cfg)
+public string? Uninstall(string gamePath, string folderName, bool toTrash = false, ConfigService? cfg = null)
+public string? Version { get; set; }
+public uint BlockLength;
+public uint BlockRemaining;
+public uint GetBuffer() => _buffer;
+public uint PeekBits(byte bits) => _buffer >> (32 - bits);
+public uint R0, R1, R2;
+public uint ReadBits(byte bits)
+public uint WindowPosn;
+public uint WindowSize;
+public uint cbStruct;
+public uint dwFlags;
+public uint dwLength;
+public uint dwMemoryLoad;
+public uint dwProvFlags;
+public uint dwStateAction;
+public uint dwUIChoice;          // 2 = WTD_UI_NONE
+public uint dwUIContext;
+public uint dwUnionChoice;       // 1 = WTD_CHOICE_FILE
+public uint fdwRevocationChecks; // 0 = WTD_REVOKE_NONE
+public uint uCallbackMessage;
+public uint uEdge;
+public ulong ullAvailExtendedVirtual;
+public ulong ullAvailPageFile;
+public ulong ullAvailPhys;
+public ulong ullAvailVirtual;
+public ulong ullTotalPageFile;
+public ulong ullTotalPhys;
+public ulong ullTotalVirtual;
+public ushort MainElements;
+public ushort[] AlignedTable;
+public ushort[] LengthTable;
+public ushort[] MaintreeTable;
+public ushort[] PretreeTable;
+public void Acquire(string trashDir)
+public void AddReject(string rel, string? asset, string msg) => RejectRows.Add((rel, asset ?? "", msg));
+public void AppendLogLines(string text)
+public void AttachIfGameRunning()
+public void ClearLog()
+public void ClearMatching(Func<TaskItem, bool> match)
+public void ClearTransCache()
+public void Decompress(Stream inData, int inLen, Stream outData, int outLen)
+public void Dispose()
+public void Dispose() => _timer.Dispose();
+public void EnsureBits(byte bits)
+public void Finish(TaskItem t, bool success, string? finalMsg = null)
+public void Finish(TaskItem t, bool success, string? finalMsg, bool announce)
+public void Flush()
+public void InitBitStream()
+public void Invalidate() { _cached = null; _cachedAt = DateTime.MinValue; }
+public void KillGame()
+public void Lap(string name)
+public void LaunchInstaller(string path)
+public void Load()
+public void Logout()
+public void Pause(TaskItem t)
+public void ReconcileOnStartup()
+public void Refresh()
+public void RefreshAll(bool force = false) => _ = RefreshAllAsync(force);
+public void RegisterResume(TaskItem t, Func<CancellationToken, Task> work)
+public void Remove(TaskItem t)
+public void RemoveBits(byte bits)
+public void Report(TaskItem t, string line, double? percent = null, double? speedMBps = null, bool control = false)
+public void Report(string source, string head)
+public void Request(string pageKey) => OnRefresh?.Invoke(pageKey);
+public void ResetCts()
+public void ReshuffleSurprise() => SurpriseSeed = Random.Shared.Next();
+public void Restart(TaskItem t, string? newTitle = null, int? nexusId = null)
+public void RestoreSession()
+public void Resume(TaskItem t)
+public void ResumeMark(TaskItem t)
+public void RevealAtStartupPosition()
+public void Save(JuniGridConfig cfg)
+public void SetLang(string lang)
+public void StartBackgroundCheck(string? gamePath, DepotDownloaderService depot)
+public void SyncAllRemarks(string gamePath, ConfigService cfg)
+public void UnregisterResume(TaskItem t)
