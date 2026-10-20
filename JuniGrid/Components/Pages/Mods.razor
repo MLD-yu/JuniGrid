@@ -17,10 +17,31 @@
     <div style="display:flex;justify-content:space-between;align-items:flex-end;flex-wrap:wrap;gap:8px">
         <div>
             <div style="display:flex;align-items:center;gap:14px">
-                <h1 style="margin-top:0;margin-bottom:4px">@Loc.T("Mod 管理")</h1>
+                @* v1.5.5：标题是面包屑式视图切换 —— 两段都可点，当前所在的那段是粗体（不可点）。
+                   mod 列表：Mod 管理 › 回收站（点回收站进去）
+                   回收站：  回收站 › Mod 管理（点 Mod 管理出来） *@
+                <h1 style="margin-top:0;margin-bottom:4px;display:flex;align-items:baseline;gap:8px">
+                    @if (_showTrash)
+                    {
+                        <span>@Loc.T("回收站")</span>
+                        <span style="font-size:15px;font-weight:400;opacity:.5">›</span>
+                        <button type="button" class="jg-crumb" title='@Loc.T("回到 Mod 管理")'
+                                @onclick="ToggleTrash">@Loc.T("Mod 管理")</button>
+                    }
+                    else
+                    {
+                        <span>@Loc.T("Mod 管理")</span>
+                        <span style="font-size:15px;font-weight:400;opacity:.5">›</span>
+                        <button type="button" class="jg-crumb" title='@Loc.T("进入回收站")'
+                                @onclick="ToggleTrash">@Loc.T("回收站")</button>
+                    }
+                </h1>
                 @* v1.07.3：普通文件夹图标，点击打开 Mods 目录；data-tip 与导航栏同款胶囊提示 *@
-                <button class="jg-mods-folder-btn" data-tip='@Loc.T("打开 mods 文件夹")' aria-label='@Loc.T("打开 mods 文件夹")'
-                        @onclick="OpenModsRootFolder">
+                @* v1.5.5：跟着当前视图走 —— mod 列表进 Mods，回收站进 .junigrid_trash *@
+                <button class="jg-mods-folder-btn"
+                        data-tip='@(_showTrash ? Loc.T("在资源管理器里打开回收站") : Loc.T("在资源管理器里打开 Mods"))'
+                        aria-label='@(_showTrash ? Loc.T("在资源管理器里打开回收站") : Loc.T("在资源管理器里打开 Mods"))'
+                        @onclick="OpenCurrentFolder">
                     <svg viewBox="0 0 1024 1024" width="32" height="32" fill="#f2b544">
                         <path d="M855.04 385.024q19.456 2.048 38.912 10.24t33.792 23.04 21.504 37.376 2.048 54.272q-2.048 8.192-8.192 40.448t-14.336 74.24-18.432 86.528-19.456 76.288q-5.12 18.432-14.848 37.888t-25.088 35.328-36.864 26.112-51.2 10.24l-567.296 0q-21.504 0-44.544-9.216t-42.496-26.112-31.744-40.96-12.288-53.76l0-439.296q0-62.464 33.792-97.792t95.232-35.328l503.808 0q22.528 0 46.592 8.704t43.52 24.064 31.744 35.84 12.288 44.032l0 11.264-53.248 0q-40.96 0-95.744-0.512t-116.736-0.512-115.712-0.512-92.672-0.512l-47.104 0q-26.624 0-41.472 16.896t-23.04 44.544q-8.192 29.696-18.432 62.976t-18.432 61.952q-10.24 33.792-20.48 65.536-2.048 8.192-2.048 13.312 0 17.408 11.776 29.184t29.184 11.776q31.744 0 43.008-39.936l54.272-198.656q133.12 1.024 243.712 1.024l286.72 0z"/>
                     </svg>
@@ -28,11 +49,27 @@
             </div>
             <div style="opacity:.7;font-size:13px">
                 @* v1.08：骨架屏只负责磁盘扫描阶段；检查更新期间列表照常显示 *@
-                @if (_initialLoading) { <span>@Loc.T("正在加载 mod 列表…")</span> }
+                @if (_showTrash)
+                {
+                    @if (_trashLoaded)
+                    {
+                        <text>@Loc.F("回收站：{0} 个 mod · {1} 份快照 · 共 {2}", _trashGroups.Count, _trashItems.Count,
+                            ResumableDownload.FormatBytes(_trashItems.Sum(x => x.Bytes)))</text>
+                    }
+                    else
+                    {
+                        <text>@Loc.T("回收站：读取中…")</text>
+                    }
+                }
+                else if (_initialLoading) { <span>@Loc.T("正在加载 mod 列表…")</span> }
                 else { <text>@Loc.F("共 {0} 个（{1} 已启用）", _mods.Count, _mods.Count(m => !m.Disabled))</text> }
             </div>
         </div>
         <div style="display:flex;align-items:center;gap:8px">
+            @* ★★ 存档下拉只在 mod 列表视图显示 —— 它是 mod 存档（启用状态快照），跟回收站无关。
+               回收站视图下整块不渲染（否则用户会以为它管的是回收站里的快照）。 *@
+            @if (!_showTrash)
+            {
             @* v0.47.0：存档下拉挪到最右；GSAP easeReverse 弹性开合（参照官方 demo）*@
             <div class="jg-profile-dd @(_profileOpen ? "open" : "")" data-dd="profile">
                 @* v0.71.4：重命名挪到下拉按钮右边 —— 点铅笔后按钮变输入框、铅笔变确定，改名只在这一个位置发生 *@
@@ -101,10 +138,14 @@
                     </div>
                 </div>
             </div>
+            }
         </div>
     </div>
 
     @* ── SMAPI 永远第一个显示（用自己的 exe 图标，不用 emoji）── *@
+    @* v1.5.5：回收站视图下 SMAPI 卡片没有意义，整块不渲染 *@
+    @if (!_showTrash)
+    {
     <div class="jg-card jg-smapi-card" style="margin-top:12px">
         <div style="display:flex;align-items:center;gap:12px">
             @* v0.37.0：exe 抽不到图标时用自带的 pufferchick 兜底，不再显示灰色 S 占位块 *@
@@ -210,13 +251,19 @@
             }
         </div>
     </div>
+    }
 
-    @if (_rowsLoaded && _mods.Count == 0)
+    @if (!_showTrash && _rowsLoaded && _mods.Count == 0)
     {
         <div class="jg-card" style="margin-top:12px"> @Loc.T("Mods 文件夹为空或未定位到游戏。请先在「设置」里选择游戏目录。") </div>
     }
 
     @* ── v0.34.0 工具条：排序在前 → 筛选 chips → 搜索（点击向右延伸，SVG 图标） ── *@
+    @* ★★ 回收站视图下整条工具条不渲染：它自带 40px 高 + 12px 上边距 + 粘性背景，
+       只剩一个搜索按钮时会撑出一条横贯页面的空白带（用户截图实测）。
+       搜索按钮改为并进下面回收站那一行按钮里。 *@
+    @if (!_showTrash)
+    {
     <div class="jg-mods-toolbar">
         <div class="jg-sort-dd @(_sortOpen ? "open" : "")" data-dd="sort">
             <button class="jg-sort-trigger" @onclick="ToggleSort"> @Loc.T("排序方式") <svg class="jg-sort-arrow" width="12" height="12" viewBox="0 0 12 12" fill="none">
@@ -235,7 +282,7 @@
         <div class="jg-chips" role="group" style="align-items:center">
         @foreach (var f in _filterOptions)
         {
-            <button class="jg-chip @(_filter == f.Key ? "active" : "")"
+            <button class="jg-chip @(!_showTrash && _filter == f.Key ? "active" : "")"
                     style="@(f.Key == "updatable" && FailedCheckCount > 0 ? "position:relative" : "")"
                     data-tip="@FilterTip(f.Key)"
                     @onclick="() => SetFilter(f.Key)">
@@ -270,6 +317,7 @@
             </div>
         </div>
     </div>
+    }
 
     @* ── v1.2.0：缺失依赖横幅 + 一键安装 ── *@
     @if (!_initialLoading && TotalMissingUids.Count > 0)
@@ -290,9 +338,161 @@
         </div>
     }
 
+    @* ── v1.5.5：回收站视图 —— 与 mod 列表同一套 .jg-modrow 卡片，只是行的内容换成快照 *@
+    @if (_showTrash)
+    {
+        @* ★★ 去掉卡片边框：这一行只是回收站的工具条，加了 .jg-card 之后会画出一条横贯页面的
+           框线，把标题和列表隔开，视觉上像"孔板"。保留内边距与圆角布局，只不要边框和底色。 *@
+        @* ★★ 吸顶工具条：滚动时这排按钮（刷新/打开文件夹/全选/搜索）固定在顶部，随时可用。
+           信息行已挪到标题下的副标题，这里只剩按钮。 *@
+        <div class="jg-trash-sticky">
+            <button class="jg-pill-ghost" style="padding:7px 14px;font-size:12.5px" @onclick="LoadTrash">@Loc.T("刷新")</button>
+            <button class="jg-pill-ghost" style="padding:7px 14px;font-size:12.5px" @onclick="OpenTrashFolder">@Loc.T("打开文件夹")</button>
+            @if (_trashItems.Count > 0)
+            {
+                var allSel = _trashSelected.Count >= _trashItems.Count;
+                <button class="jg-pill-ghost" style="padding:7px 14px;font-size:12.5px" @onclick="() => SelectAllTrash(!allSel)">
+                    @(allSel ? Loc.T("取消全选") : Loc.T("全选"))
+                </button>
+            }
+            @if (_trashSelected.Count > 0)
+            {
+                <button class="jg-pill-dark" style="padding:7px 16px;font-size:12.5px" @onclick="AskRestoreTrash">@Loc.F("还原所选（{0}）", _trashSelected.Count)</button>
+                <button class="jg-pill-danger" style="padding:7px 16px;font-size:12.5px" @onclick="AskDeleteTrash">@Loc.F("永久删除所选（{0}）", _trashSelected.Count)</button>
+            }
+            @* ★★ 搜索并进这一行：回收站视图下整条 .jg-mods-toolbar 不渲染了（它空着会撑出一大条空白），
+               但搜索还得留着 —— .jg-search-x 自带 margin-left:auto，会自动贴到最右。 *@
+            <div class="jg-search-x @(_searchOpen ? "open" : "")" style="margin-left:auto">
+                <button class="jg-search-btn" @onclick="ToggleSearch">
+                    <img src="assets/search.svg" alt='@Loc.T("搜索")' style="width:18px;height:18px;display:block" />
+                </button>
+                <div class="jg-search-field">
+                    <input class="jg-search-input" placeholder='@Loc.T("搜mod名/N网尾号")'
+                           @bind="SearchText" @bind:event="oninput" />
+                    <button class="jg-search-clear" @onclick="ClearSearchAndClose">✕</button>
+                </div>
+            </div>
+        </div>
+
+        @if (!_trashLoaded)
+        {
+            @* 后台在算文件大小/读 manifest，先用骨架占位 —— 不留白屏 *@
+            <div class="jg-modrows jg-modrows-skeleton" style="margin-top:12px">
+                @for (var i = 0; i < 6; i++)
+                {
+                    <div class="jg-modrow-shimmer">
+                        <div class="jg-shimmer jg-shimmer-avatar"></div>
+                        <div class="jg-shimmer-lines">
+                            <div class="jg-shimmer jg-shimmer-line" style="width:38%"></div>
+                            <div class="jg-shimmer jg-shimmer-line" style="width:68%"></div>
+                        </div>
+                    </div>
+                }
+            </div>
+        }
+        else if (_trashItems.Count == 0)
+        {
+            <div class="jg-pk-empty jg-mods-empty">
+                <div class="jg-pk-empty-title">@Loc.T("回收站是空的")</div>
+                <div class="jg-pk-empty-sub">@Loc.T("删除 mod 时勾选「移入mod回收站」，它们会出现在这里。")</div>
+            </div>
+        }
+        else
+        {
+            <div class="jg-modrows">
+                @foreach (var g in _trashGroups)
+                {
+                    var open = _trashOpen.Contains(g.Name);
+                    var gcover = TrashCover(g.Name);
+                    var picked = AllSelected(g);
+                    @* v1.5.5：整行点击 = 选中（与 mod 列表同一套 .jg-modrow.selected 高亮），
+                       展开/收起走行尾那颗箭头，互不干扰。 *@
+                    <div class="jg-modrow @(picked ? "selected" : "")" @key="g.Name" @onclick="() => SelectGroup(g, !picked)">
+                        @if (gcover is not null)
+                        {
+                            <img class="jg-modrow-icon" src="@gcover" loading="lazy" alt="" />
+                        }
+                        else
+                        {
+                            <div class="jg-modrow-icon jg-modrow-icon-fallback">
+                                @(g.Name.Length > 0 ? g.Name.TrimStart('.', '[', '~')[..1].ToUpperInvariant() : "?")
+                            </div>
+                        }
+                        <div class="jg-modrow-text">
+                            <div class="jg-modrow-title">
+                                <span class="name">@g.Name</span>
+                                <span class="divider">|</span>
+                                <span class="ver">@(g.Items[0].Version)</span>
+                                @if (g.Items.Any(x => x.AlsoInMods))
+                                {
+                                    <span class="jg-tag" data-tip='@Loc.T("Mods 里已有一份同名的 —— 这条通常可以清掉")'>@Loc.T("Mods 里已有")</span>
+                                }
+                                <span class="jg-tag" style="opacity:.65">@Loc.F("{0} 份 · {1}", g.Items.Count, ResumableDownload.FormatBytes(g.Items.Sum(x => x.Bytes)))</span>
+                            </div>
+                            <div class="jg-modrow-desc">@(g.Items[0].Description)</div>
+                        </div>
+                        <div class="jg-modrow-end" @onclick:stopPropagation>
+                            <button type="button" class="jg-rowbtn" data-tip='@(open ? Loc.T("收起") : Loc.T("展开历史版本"))'
+                                    aria-label='@(open ? Loc.T("收起") : Loc.T("展开历史版本"))'
+                                    @onclick="() => ToggleTrashGroup(g.Name)">
+                                <svg viewBox="0 0 12 12" width="12" height="12" fill="none"
+                                     style="transition:transform .18s ease;transform:rotate(@(open ? "180deg" : "0deg"))">
+                                    <path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.5"
+                                          stroke-linecap="round" stroke-linejoin="round"/>
+                                </svg>
+                            </button>
+                        </div>
+                    </div>
+
+                    @if (open)
+                    {
+                        @foreach (var it in g.Items)
+                        {
+                            var sel = _trashSelected.Contains(it.FolderName);
+                            <div class="jg-modrow jg-modrow-sub @(sel ? "selected" : "")" @key="it.FolderName"
+                                 @onclick="() => SelectItem(it, !sel)">
+                                <div class="jg-modrow-icon jg-modrow-icon-fallback" style="opacity:.5">
+                                    @(it.DeletedAt?.ToString("MM-dd") ?? "?")
+                                </div>
+                                <div class="jg-modrow-text">
+                                    <div class="jg-modrow-title">
+                                        <span class="name">@(it.DeletedAt?.ToString("yyyy-MM-dd HH:mm") ?? Loc.T("时间未知"))</span>
+                                        <span class="divider">|</span>
+                                        <span class="ver">@Loc.F("{0} 个文件 · {1}", it.FileCount, ResumableDownload.FormatBytes(it.Bytes))</span>
+                                        @if (it.AlsoInMods)
+                                        {
+                                            <span class="jg-tag">@Loc.T("同名已在 Mods")</span>
+                                        }
+                                    </div>
+                                </div>
+                                <div class="jg-modrow-end" @onclick:stopPropagation>
+                                    <button class="jg-rowbtn" data-tip='@Loc.T("还原这一份")' aria-label='@Loc.T("还原这一份")'
+                                            @onclick="() => AskRestoreOne(it)">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                                             stroke-linecap="round" stroke-linejoin="round" style="width:15px;height:15px">
+                                            <path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/>
+                                        </svg>
+                                    </button>
+                                    <button class="jg-rowbtn danger" data-tip='@Loc.T("永久删除这一份")' aria-label='@Loc.T("永久删除这一份")'
+                                            @onclick="() => AskDeleteOne(it)">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                                             stroke-linecap="round" stroke-linejoin="round" style="width:15px;height:15px">
+                                            <path d="M3 6h18"/><path d="M8 6V4h8v2"/>
+                                            <path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/>
+                                        </svg>
+                                    </button>
+                                </div>
+                            </div>
+                        }
+                    }
+                }
+            </div>
+        }
+    }
+
     @* ── 单行 mod 列表 ── *@
     @* v1.06.9：首次加载 或 检查更新未完成 → 一律显示 shimmer 骨架屏，真实列表 display:none *@
-    @if (_initialLoading)
+    @if (!_showTrash && _initialLoading)
     {
         <div class="jg-modrows jg-modrows-skeleton">
             @for (var i = 0; i < 8; i++)
@@ -308,7 +508,7 @@
             }
         </div>
     }
-    <div class="jg-modrows" style="@(_initialLoading ? "display:none" : "")">
+    <div class="jg-modrows" style="@(_initialLoading || _showTrash ? "display:none" : "")">
         @foreach (var group in Groups)
         {
             var bundle = group.Key != "";
@@ -591,7 +791,7 @@
             </div>
             }
 
-        @if (_rowsLoaded && FilteredMods.Count == 0)
+        @if (!_showTrash && _rowsLoaded && FilteredMods.Count == 0)
         {
             @* 两种"空"是两件事，分开说：被条件筛空了 ≠ 一个都没装。
                样式与图二那套空态共用（.jg-pk-empty* 是全局类，不是 packs 页专属）。 *@
@@ -736,6 +936,43 @@
     }
 
 
+
+    @* ── v1.5.5：回收站的还原冲突确认 —— 说清楚「现有的可能是新版」，执意才顶替 ── *@
+    @if (_pendingRestore is not null)
+    {
+        <div class="jg-modal-overlay" @onclick="CancelRestoreTrash">
+            <div class="jg-modal" @onclick:stopPropagation>
+                <div class="jg-modal-title">@Loc.T("还原会顶替现有的 mod")</div>
+                <div class="jg-modal-body">
+                    @Loc.F("Mods 里已经有一个叫「{0}」的文件夹，它可能是你后来装的新版。", _pendingRestoreName)
+                    <br /><br />
+                    @Loc.T("继续还原会用回收站里的这份顶替它。现有那份不会被删 —— 它会先被移进回收站，之后还能再找回。")
+                </div>
+                <div class="jg-modal-actions">
+                    <button type="button" class="jg-pill-ghost" @onclick="CancelRestoreTrash">@Loc.T("取消")</button>
+                    <button type="button" class="jg-pill-danger" @onclick="ConfirmRestoreTrash">@Loc.T("仍然还原")</button>
+                </div>
+            </div>
+        </div>
+    }
+
+    @* ── v1.5.5：永久删除确认，不可逆 ── *@
+    @if (_pendingTrashDelete is not null)
+    {
+        <div class="jg-modal-overlay" @onclick="CancelDeleteTrash">
+            <div class="jg-modal" @onclick:stopPropagation>
+                <div class="jg-modal-title">@Loc.T("永久删除")</div>
+                <div class="jg-modal-body">
+                    @Loc.F("将从回收站彻底删除 {0} 份快照（{1}），无法恢复。", _pendingTrashDelete.Count,
+                        ResumableDownload.FormatBytes(_pendingTrashDelete.Sum(x => x.Bytes)))
+                </div>
+                <div class="jg-modal-actions">
+                    <button type="button" class="jg-pill-ghost" @onclick="CancelDeleteTrash">@Loc.T("取消")</button>
+                    <button type="button" class="jg-pill-danger" @onclick="ConfirmDeleteTrash">@Loc.T("永久删除")</button>
+                </div>
+            </div>
+        </div>
+    }
     @* ── v1.2.0：一键安装缺失依赖 —— 确认弹窗（空列表 = 全部缺失依赖）── *@
     @if (_pendingDepUids is not null)
     {
@@ -876,6 +1113,206 @@
     private Dictionary<string, ModEntry> _modsByFolder = new(StringComparer.OrdinalIgnoreCase);
     // v0.59.0：首次进入页面的 shimmer 加载态
     private bool _initialLoading = true;
+    // ─── v1.5.5：回收站视图 ─────────────────────────────────
+
+    private bool _showTrash;
+    private bool _trashLoaded;
+    private int _trashCount;
+    private List<TrashItem> _trashItems = new();
+    private List<TrashGroup> _trashGroups = new();
+    private readonly HashSet<string> _trashOpen = new();
+    private readonly HashSet<string> _trashSelected = new();
+    private List<TrashItem>? _pendingRestore;
+    private string _pendingRestoreName = "";
+    private List<TrashItem>? _pendingTrashDelete;
+
+    /// <summary>同一 mod 的几份历史快照归成一行。</summary>
+    private sealed record TrashGroup(string Name, List<TrashItem> Items);
+
+    private bool AllSelected(TrashGroup g) => g.Items.All(x => _trashSelected.Contains(x.FolderName));
+
+    private void ToggleTrashGroup(string name)
+    {
+        if (!_trashOpen.Remove(name)) _trashOpen.Add(name);
+    }
+
+    private void SelectItem(TrashItem it, bool on)
+    {
+        if (on) _trashSelected.Add(it.FolderName); else _trashSelected.Remove(it.FolderName);
+    }
+
+    private void SelectGroup(TrashGroup g, bool on)
+    {
+        foreach (var it in g.Items) SelectItem(it, on);
+    }
+
+    /// <summary>封面复用 modCovers 缓存 —— 按去掉时间戳的名字查，与 Mods 页同一张图。</summary>
+    private string? TrashCover(string displayName)
+    {
+        if (Cfg.Current.ModCovers.TryGetValue(displayName, out var url)) return url;
+        return null;
+    }
+
+    private void ToggleTrash()
+    {
+        _showTrash = !_showTrash;
+        if (_showTrash)
+        {
+            LoadTrash();
+            // 回收站是与「全部/已启用/…」并列的一个视图，不是叠加筛选 ——
+            // 进去就把筛选复位，否则 chips 会出现两个同时高亮（用户实测 2026-10-20）。
+            _filter = "all";
+            _trashSelected.Clear();
+        }
+        _sortOpen = false;
+        _menuFolder = null;
+    }
+
+    private void SelectAllTrash(bool on)
+    {
+        _trashSelected.Clear();
+        if (on) foreach (var it in _trashItems) _trashSelected.Add(it.FolderName);
+    }
+
+    /// <summary>列回收站。Measure 要遍历几千个文件读大小和 manifest —— 放后台线程跑，
+    /// 否则切到回收站那一刻 UI 线程被 IO 堵住，页面卡一下（用户实测 2026-10-20）。</summary>
+    private void LoadTrash()
+    {
+        _trashLoaded = false;
+        StateHasChanged();
+
+        var game = Cfg.Current.GamePath;
+        _ = Task.Run(() =>
+        {
+            List<TrashItem> items;
+            try
+            {
+                items = string.IsNullOrWhiteSpace(game)
+                    ? new List<TrashItem>()
+                    : TrashService.List(game);
+            }
+            catch (Exception ex)
+            {
+                AppLog.Warn("Trash", "列回收站失败: " + ex.Message);
+                items = new List<TrashItem>();
+            }
+            var groups = items
+                .GroupBy(x => x.DisplayName, StringComparer.OrdinalIgnoreCase)
+                .Select(grp => new TrashGroup(grp.Key,
+                    grp.OrderByDescending(x => x.DeletedAt ?? DateTime.MinValue).ToList()))
+                .OrderBy(grp => grp.Name, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            _ = InvokeAsync(() =>
+            {
+                _trashItems = items;
+                _trashCount = items.Count;
+                _trashGroups = groups;
+                var alive = items.Select(x => x.FolderName).ToHashSet();
+                _trashSelected.RemoveWhere(f => !alive.Contains(f));
+                _trashLoaded = true;
+                StateHasChanged();
+            });
+        });
+    }
+
+    /// <summary>标题右侧那颗文件夹按钮：在 mod 列表时进 Mods，在回收站时进 .junigrid_trash。</summary>
+    private void OpenCurrentFolder()
+    {
+        if (_showTrash) OpenTrashFolder();
+        else OpenModsRootFolder();
+    }
+
+    private void OpenTrashFolder()
+    {
+        try
+        {
+            var game = Cfg.Current.GamePath;
+            if (string.IsNullOrWhiteSpace(game)) return;
+            var dir = TrashService.TrashRoot(game);
+            Directory.CreateDirectory(dir);
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(dir) { UseShellExecute = true });
+        }
+        catch (Exception ex) { AppLog.Warn("Trash", "打开回收站失败: " + ex.Message); }
+    }
+
+    private void AskRestoreOne(TrashItem it) => AskRestoreTrash(new List<TrashItem> { it });
+
+    private void AskRestoreTrash()
+    {
+        AskRestoreTrash(_trashItems.Where(x => _trashSelected.Contains(x.FolderName)).ToList());
+    }
+
+    private void AskRestoreTrash(List<TrashItem> picked)
+    {
+        if (picked.Count == 0) return;
+        var conflicting = picked.FirstOrDefault(x => x.AlsoInMods);
+        if (conflicting is not null)
+        {
+            _pendingRestore = picked;
+            _pendingRestoreName = conflicting.DisplayName;
+            return;
+        }
+        DoRestore(picked, overwrite: false);
+    }
+
+    private void CancelRestoreTrash() => _pendingRestore = null;
+
+    private void ConfirmRestoreTrash()
+    {
+        var picked = _pendingRestore;
+        _pendingRestore = null;
+        if (picked is not null) DoRestore(picked, overwrite: true);
+    }
+
+    private void DoRestore(List<TrashItem> picked, bool overwrite)
+    {
+        var game = Cfg.Current.GamePath;
+        if (string.IsNullOrWhiteSpace(game)) return;
+        var failed = 0;
+        foreach (var it in picked)
+        {
+            var err = TrashService.Restore(game, it, null, overwrite);
+            if (err is not null) { failed++; AppLog.Warn("Trash", err); }
+        }
+        if (failed > 0) AppLog.Warn("Trash", $"[还原] {failed} 份失败");
+        _trashSelected.Clear();
+        LoadTrash();
+        RefreshAfterTrashChange();
+    }
+
+    private void AskDeleteOne(TrashItem it) => AskDeleteTrash(new List<TrashItem> { it });
+
+    private void AskDeleteTrash()
+    {
+        AskDeleteTrash(_trashItems.Where(x => _trashSelected.Contains(x.FolderName)).ToList());
+    }
+
+    private void AskDeleteTrash(List<TrashItem> picked)
+    {
+        if (picked.Count > 0) _pendingTrashDelete = picked;
+    }
+
+    private void CancelDeleteTrash() => _pendingTrashDelete = null;
+
+    private void ConfirmDeleteTrash()
+    {
+        var picked = _pendingTrashDelete;
+        _pendingTrashDelete = null;
+        if (picked is null) return;
+        var game = Cfg.Current.GamePath;
+        if (string.IsNullOrWhiteSpace(game)) return;
+        var failed = TrashService.DeletePermanently(game, picked);
+        if (failed > 0) AppLog.Warn("Trash", $"[永久删除] {failed} 份失败");
+        _trashSelected.Clear();
+        LoadTrash();
+    }
+
+    /// <summary>还原会改 Mods 目录 —— 重扫一遍，回到列表时状态是新的。</summary>
+    private void RefreshAfterTrashChange()
+    {
+        try { Rescan(); } catch (Exception ex) { AppLog.Warn("Trash", "还原后重扫失败: " + ex.Message); }
+    }
     // v0.60.0：更新检查期间的 shimmer 加载态
     private bool _checkingUpdates = false;
     private string? _smapiVersion;

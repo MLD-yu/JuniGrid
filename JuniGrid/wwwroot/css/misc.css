@@ -676,3 +676,47 @@ html[data-theme="dark"] .jg-ver-note.ok { color: #2fdd8d; }
 
 .jg-ver-mini.link { background: transparent; border: none; color: var(--jg-accent, #7aa2ff); cursor: pointer; padding: 2px 0; font-size: 11px; }
 
+/* ── v1.5.5：Mod 回收站 ───────────────────────────────────────
+   一条 = 一个 mod（同名多份历史快照折叠），点标题行展开看各快照。
+   「Mods 里已有」的用暖色徽标标出来 —— 那种条目还原会撞车，通常也该顺手清掉。 */
+.jg-trash-list { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
+.jg-trash-group { border: 1px solid var(--jg-line); border-radius: 10px; overflow: hidden; }
+.jg-trash-head { display: flex; align-items: center; gap: 10px; padding: 9px 12px; cursor: pointer; user-select: none; }
+.jg-trash-head:hover { background: var(--jg-well); }
+.jg-trash-head input { width: 15px; height: 15px; flex: none; cursor: pointer; }
+.jg-trash-name { font-size: 13.5px; font-weight: 600; color: var(--jg-text); }
+.jg-trash-meta { font-size: 12px; color: var(--jg-text-2); white-space: nowrap; }
+.jg-trash-badge {
+    font-size: 11px; padding: 1px 7px; border-radius: 999px;
+    border: 1px solid rgba(240, 181, 90, .5); color: #b8791c;
+    background: rgba(240, 181, 90, .12); white-space: nowrap;
+}
+html[data-theme="dark"] .jg-trash-badge { color: #f0b55a; }
+.jg-trash-caret { margin-left: auto; font-size: 12px; color: var(--jg-text-2); }
+.jg-trash-vers { border-top: 1px solid var(--jg-line); }
+.jg-trash-row { display: flex; align-items: center; gap: 10px; padding: 7px 12px 7px 30px; }
+.jg-trash-row:hover { background: var(--jg-well); }
+.jg-trash-row input { width: 14px; height: 14px; flex: none; cursor: pointer; }
+.jg-trash-when { font-size: 12.5px; color: var(--jg-text); white-space: nowrap; font-variant-numeric: tabular-nums; }
+/* ── v1.5.5：回收站行内操作按钮（还原 / 永久删除）—— 与「更多操作」那颗同尺寸 ── */
+/* v1.5.5：回收站工具条 —— 吸顶，滚动时按钮不跟着走 */
+.jg-trash-sticky {
+    position: sticky;
+    top: 0;
+    z-index: 55;
+    margin-top: 12px;
+    padding: 8px 0;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    background: var(--jg-bg);
+    backdrop-filter: saturate(140%) blur(12px);
+}
+.jg-rowbtn.jg-rowbtn-danger { color: #c50f1f; }
+.jg-rowbtn.jg-rowbtn-danger:hover { color: #e81123; background: rgba(197,15,31,.10); }
+html[data-theme="dark"] .jg-rowbtn.jg-rowbtn-danger { color: #ff7b96; }
+.jg-path-btn.danger { color: #c50f1f; border-color: rgba(197, 15, 31, .35); }
+.jg-path-btn.danger:hover { background: rgba(197, 15, 31, .08); }
+html[data-theme="dark"] .jg-path-btn.danger { color: #ff7b96; }
+

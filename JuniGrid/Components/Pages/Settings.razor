@@ -1056,7 +1056,6 @@
     // 才回得来，所以走上面那个确认弹窗；点「删除」只记目标，确认才真删。
     private DepotDownloaderService.StagedPackage? _pendingDeleteVer;
     private (StorageService.StagingBucketKind Kind, string Path, long Bytes)? _pendingBucket;
-
     private void AskDeleteVerCache(DepotDownloaderService.StagedPackage pkg)
     {
         _pendingDeleteVer = pkg;
