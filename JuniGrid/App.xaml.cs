@@ -220,19 +220,18 @@ public partial class App : Application
 
     /// <summary>补上 URL Protocol 这个空值 —— Windows 认不认 nxm:// 是协议，看的是它，
     /// 不是 command 键。缺了的症状：点网页上的「下载」按钮，浏览器什么都不做。
-    /// 只在缺失时写，返回是否补过。</summary>
-    private static bool EnsureUrlProtocolMarker()
+    /// 只在缺失时写。</summary>
+    private static void EnsureUrlProtocolMarker()
     {
         try
         {
             using var root = Registry.CurrentUser.CreateSubKey(NxmRootKey);
-            if (root is null || root.GetValue("URL Protocol") is not null) return false;
+            if (root is null || root.GetValue("URL Protocol") is not null) return;
             root.SetValue(null, "URL:nxm");
             root.SetValue("URL Protocol", "");
             AppLog.Info("Startup", "nxm:// 缺 URL Protocol 标记（点下载会毫无反应），已补上");
-            return true;
         }
-        catch (Exception ex) { AppLog.Warn("Startup", "补 URL Protocol 失败: " + ex.Message); return false; }
+        catch (Exception ex) { AppLog.Warn("Startup", "补 URL Protocol 失败: " + ex.Message); }
     }
 
     /// <summary>写 nxm 处理器。参数是**整条命令行**，原样落盘不再加工 ——
