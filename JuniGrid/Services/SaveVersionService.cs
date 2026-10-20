@@ -268,27 +268,6 @@ public static class SaveVersionService
         }
     }
 
-    /// <summary>留底区里现在有哪些档、各留了几份底（设置 → 缓存与存储 的「存档升级前的留底」那一行展开用）。
-    /// 按最新一份底的时间倒序。</summary>
-    public static List<(string SaveName, int Stamps, DateTime Newest, string Note)> StashOverview()
-    {
-        var list = new List<(string SaveName, int Stamps, DateTime Newest, string Note)>();
-        if (!Directory.Exists(BackupRoot)) return list;
-        try
-        {
-            foreach (var dir in Directory.GetDirectories(BackupRoot))
-            {
-                var name = Path.GetFileName(dir);
-                var stamps = StampsOfPath(dir);
-                if (stamps.Count == 0) continue;
-                list.Add((name, stamps.Count, stamps[0].At, stamps[0].Note));
-            }
-        }
-        catch { return list; }
-        list.Sort((x, y) => y.Newest.CompareTo(x.Newest));
-        return list;
-    }
-
     /// <summary>聚焦抽屉 + 各版本抽屉里一共压着几份。启动后判「要不要绕开 Steam」用这个持久量。（抽屉里压着档 = 本地 Saves 不完整，走 steam:// 会被 Auto-Cloud 拉回来，见 LauncherService 直启那段。）</summary>
     public static int StashedCountAll()
     {

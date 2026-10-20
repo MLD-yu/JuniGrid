@@ -235,11 +235,7 @@ public static partial class ContentOverrideService
     /// <summary>一条"包已经不在了、但它对本体的覆盖还生效"的对账结果。
     /// 四个计数互斥、相加 = EnabledCount。</summary>
     public sealed record OrphanOverrideGroup(string Slot, string PackName, string PackDir,
-        int EnabledCount, int SafeToRevert, int AlreadyReverted, int DriftedCount, int AddedOnly)
-    {
-        /// <summary>能安全还原的条数（现值 == 我们放上去那份）。界面只在它 &gt; 0 时才该给还原入口。</summary>
-        public bool Revertible => SafeToRevert > 0;
-    }
+        int EnabledCount, int SafeToRevert, int AlreadyReverted, int DriftedCount, int AddedOnly);
 
     /// <summary>孤儿对账：包已经不在了（Mods 下的 mod 目录、或 asset-packs 里的原包副本都没了），
     /// 但它写进游戏本体的覆盖【不会自己撤回】。

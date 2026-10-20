@@ -176,10 +176,8 @@ public sealed partial class NexusService
     /// <summary>本进程真实发出去的 Nexus API/GraphQL 请求数，和命中缓存的次数。
     /// AUP 审的正是「一个客户端消耗多少请求」，界面上给出来比口头保证可信：Nexus 页每次进页
     /// 打一行「本次进页 网络 N 次 / 缓存 M 次」，他截图就能回给审核方。</summary>
-    private static long _apiRequests, _cacheHits, _cacheMisses;
+    private static long _apiRequests;
     public static long ApiRequests => Volatile.Read(ref _apiRequests);
-    public static long CacheHits => Volatile.Read(ref _cacheHits);
-    public static long CacheMisses => Volatile.Read(ref _cacheMisses);
 
     /// <summary>给页面用的一帧快照：本次进页相对上次各涨了多少。</summary>
     public static (long Requests, long Hits, long Misses) TakeTrafficDelta()
@@ -342,7 +340,7 @@ public sealed partial class NexusService
         if (ResponseCache.TryGetValue(key, out var hit) && hit.ExpiresAtMs > Environment.TickCount64)
         {
             if (hit.Value is T memHit && Good(memHit))
-            { Interlocked.Increment(ref _cacheHits); BumpTraffic(0, 1, 0); return memHit; }
+            { BumpTraffic(0, 1, 0); return memHit; }
             ResponseCache.TryRemove(key, out _);   // 坏条目就地踢掉，别一直占着这个键
         }
         var gen = Volatile.Read(ref _cacheGen);
@@ -351,9 +349,9 @@ public sealed partial class NexusService
         if (persist)
         {
             var fromDisk = ReadDisk<T>(key, gen);
-            if (Good(fromDisk)) { Interlocked.Increment(ref _cacheHits); BumpTraffic(0, 1, 0); return fromDisk; }
+            if (Good(fromDisk)) { BumpTraffic(0, 1, 0); return fromDisk; }
         }
-        Interlocked.Increment(ref _cacheMisses); BumpTraffic(0, 0, 1);
+        BumpTraffic(0, 0, 1);
         var tcs = new TaskCompletionSource<T?>(TaskCreationOptions.RunContinuationsAsynchronously);
         var running = InFlight.GetOrAdd(key, tcs.Task);
         if (!ReferenceEquals(running, tcs.Task))

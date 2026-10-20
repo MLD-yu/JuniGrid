@@ -5,11 +5,6 @@ namespace JuniGrid.Services;
 
 public static partial class ContentOverrideService
 {
-    public static List<ContentOverrideRecord> Records(ConfigService cfg)
-        => cfg.Current.ContentOverrides.Values
-            .OrderBy(r => r.PackName, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(r => r.Asset, StringComparer.OrdinalIgnoreCase).ToList();
-
     /// <summary>界面用的一行 = 一个包（一个包可能盖了几十张图，但开关是整包的）。
     /// 分组只看 Slot，不看 PackName —— 两个不同的包重名是常事，重名会把两包并成一行，
     /// 那一行的开关就变成"同时操作两个没关系的包"。
