@@ -59,9 +59,11 @@ Two independent problems, both caused by the absence of a signature:
 A code signing certificate lets the file be evaluated on the identity of its
 publisher rather than on its shape alone.
 
-### Build reproducibility
+### How the build is produced
 
-The build is fully scripted and runs in CI:
+The build is fully scripted and runs in CI — deterministic in *inputs*, not
+byte-identical in *output* (see the note below on why that matters for the
+signed file).
 
 - `.github/workflows/build.yml` — GitHub Actions, `windows-latest`
 - `installer/build-installer.ps1` — the whole pipeline, one entry point
@@ -107,11 +109,28 @@ artifact we ask to be signed is exactly the CI artifact — we will upload that
 exact file, and the SHA-256 in the submission is its hash.
 
 Builds are **not** byte-for-byte reproducible: .NET embeds a PE timestamp and
-build paths, so a local rebuild of the same commit produces a different hash.
-That is why the file submitted for signing is the CI artifact rather than a
-locally rebuilt one.
+build paths, so rebuilding the same commit produces a different hash. Measured
+on this repository — three consecutive CI builds of identical product code
+produced three different sizes and hashes:
 
-The current CI artifact:
+```
+f88b554  run 39607961140  122,517,782  15253a72…   ← the file submitted
+3621d8e  run 39609341258  122,503,958  6d61294e…   (differs only in README)
+cda6b65  run 39609849908  122,445,174  9facb4d6…   (differs only in this doc)
+```
+
+That is why the file submitted for signing is the CI artifact itself rather
+than a locally rebuilt one, and why the SHA-256 below is the only hash that
+refers to the file we are handing over.
+
+Note on the commit recorded below: any commit that *writes a hash into this
+document* necessarily triggers a new build with a new hash, so the recorded
+artifact can never be the build of the commit that contains the record — it is
+the build of the last commit that touched only product code. Every commit after
+`f88b554` is documentation-only (`git diff f88b554..HEAD --stat` shows just
+README.md and this file).
+
+The artifact submitted for signing:
 
 ```
 
