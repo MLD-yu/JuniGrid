@@ -347,7 +347,6 @@
            信息行已挪到标题下的副标题，这里只剩按钮。 *@
         <div class="jg-trash-sticky">
             <button class="jg-pill-ghost" style="padding:7px 14px;font-size:12.5px" @onclick="LoadTrash">@Loc.T("刷新")</button>
-            <button class="jg-pill-ghost" style="padding:7px 14px;font-size:12.5px" @onclick="OpenTrashFolder">@Loc.T("打开文件夹")</button>
             @if (_trashItems.Count > 0)
             {
                 var allSel = _trashSelected.Count >= _trashItems.Count;
@@ -392,9 +391,21 @@
         }
         else if (_trashItems.Count == 0)
         {
+            @* 空态插画：与 mod 列表那套共用 .jg-pk-empty-art 样式（线条 + 透明度层次），
+               画一个回收站桶 + 回收箭头 —— 比纯文字美观，也一眼看出这是回收站。 *@
             <div class="jg-pk-empty jg-mods-empty">
+                <svg class="jg-pk-empty-art" viewBox="0 0 200 160" fill="none" aria-hidden="true">
+                    @* 桶身：高 > 宽，接近正方构图，避免"扁扁的" *@
+                    <path d="M52 56h96l-7 82a9 9 0 0 1-9 8H68a9 9 0 0 1-9-8Z" stroke="currentColor" stroke-width="3" opacity=".9"/>
+                    <path d="M44 56h112" stroke="currentColor" stroke-width="3" stroke-linecap="round" opacity=".9"/>
+                    <path d="M42 46h116" stroke="currentColor" stroke-width="3" stroke-linecap="round" opacity=".4"/>
+                    <path d="M72 46v-4a9 9 0 0 1 9-9h38a9 9 0 0 1 9 9v4" stroke="currentColor" stroke-width="3" opacity=".26"/>
+                    <path d="M76 72v42M100 72v42M124 72v42" stroke="currentColor" stroke-width="3" stroke-linecap="round" opacity=".16"/>
+                    @* 回收箭头（右上）+ 闪星，回收站语义 *@
+                    <path d="M156 28a18 18 0 1 0 4 14" stroke="currentColor" stroke-width="3" stroke-linecap="round" opacity=".55"/>
+                    <path d="m164 22 3 7 7 3-7 3-3 7-3-7-7-3 7-3Z" fill="currentColor" opacity=".7"/>
+                </svg>
                 <div class="jg-pk-empty-title">@Loc.T("回收站是空的")</div>
-                <div class="jg-pk-empty-sub">@Loc.T("删除 mod 时勾选「移入mod回收站」，它们会出现在这里。")</div>
             </div>
         }
         else
@@ -407,7 +418,8 @@
                     var picked = AllSelected(g);
                     @* v1.5.5：整行点击 = 选中（与 mod 列表同一套 .jg-modrow.selected 高亮），
                        展开/收起走行尾那颗箭头，互不干扰。 *@
-                    <div class="jg-modrow @(picked ? "selected" : "")" @key="g.Name" @onclick="() => SelectGroup(g, !picked)">
+                    <div class="jg-modrow @(picked ? "selected" : "")" @key="g.Name" data-al
+                         @onclick="() => SelectGroup(g, !picked)">
                         @if (gcover is not null)
                         {
                             <img class="jg-modrow-icon" src="@gcover" loading="lazy" alt="" />
@@ -449,7 +461,7 @@
                         @foreach (var it in g.Items)
                         {
                             var sel = _trashSelected.Contains(it.FolderName);
-                            <div class="jg-modrow jg-modrow-sub @(sel ? "selected" : "")" @key="it.FolderName"
+                            <div class="jg-modrow jg-modrow-sub @(sel ? "selected" : "")" @key="it.FolderName" data-al
                                  @onclick="() => SelectItem(it, !sel)">
                                 <div class="jg-modrow-icon jg-modrow-icon-fallback" style="opacity:.5">
                                     @(it.DeletedAt?.ToString("MM-dd") ?? "?")
@@ -1203,7 +1215,7 @@
                 .OrderBy(grp => grp.Name, StringComparer.OrdinalIgnoreCase)
                 .ToList();
 
-            _ = InvokeAsync(() =>
+            _ = InvokeAsync(async () =>
             {
                 _trashItems = items;
                 _trashCount = items.Count;
@@ -1212,6 +1224,9 @@
                 _trashSelected.RemoveWhere(f => !alive.Contains(f));
                 _trashLoaded = true;
                 StateHasChanged();
+                // v1.5.5：回收站行是异步回填的，OnAfterRender 的绑定时序不可靠 ——
+                // 回填后显式绑定一次滚动入场观察器，和 mod 列表同一套效果（用户实测 2026-10-20）
+                try { await JS.InvokeVoidAsync("junigridJs.animatedListInit", ".jg-main", ".jg-modrows"); } catch { }
             });
         });
     }

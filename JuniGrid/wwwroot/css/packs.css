@@ -407,7 +407,9 @@
 }
 .jg-pk-empty-art {
     width: 220px;
-    height: 120px;
+    /* v1.5.5：从 120 拉到 180 —— 2:1 的矩形把回收站桶挤得又扁又宽；
+       接近 5:4 之后桶才能画出立体感（回收站空态实测 2026-10-20）。 */
+    height: 180px;
     color: var(--jg-accent);
     margin-bottom: 6px;
 }
