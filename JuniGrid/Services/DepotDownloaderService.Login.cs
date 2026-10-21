@@ -304,27 +304,17 @@ public sealed partial class DepotDownloaderService
     /// 向 GitHub Release API 查这个下载地址对应资产的官方 sha256。
     /// 返回 null = 查不到（限流、不通、API 结构变化）—— 调用方按"没验"处理并留日志。
     ///
-    /// <para>URL 形如
-    /// <c>https://github.com/{owner}/{repo}/releases/download/{tag}/{file}</c>，
-    /// 换成 <c>https://api.github.com/repos/{owner}/{repo}/releases/tags/{tag}</c>
-    /// 取 assets[].name 匹配上的那条 <c>digest</c> 字段（形如 "sha256:abc…"）。</para>
-    ///
-    /// <para>GitHub 从 2024 年起在 Release API 里提供 digest；老仓库/老资产可能没有，
-    /// 那时返回 null，不影响下载。</para>
+    /// <para><b>边界（自述必须带上这条）</b>：这是"取到才校验"——digest 拿到才比对，
+    /// 拿不到（api.github.com 匿名限速 / 国内不可达 / 老资产没有 digest 字段）照常放行。
+    /// 它治得住「镜像把文件换成别的」，治不住「API 不通时等于没校验」。</para>
     /// </summary>
     private static async Task<string?> TryGetOfficialSha256Async(string downloadUrl, CancellationToken ct)
     {
+        var api = ReleaseApiUrlForAsset(downloadUrl, out var fileName);
+        if (api is null || fileName is null) return null;
+
         try
         {
-            var m = Regex.Match(downloadUrl,
-                @"^https://github\.com/([^/]+)/([^/]+)/releases/download/([^/]+)/([^/?#]+)$",
-                RegexOptions.IgnoreCase);
-            if (!m.Success) return null;
-
-            var api = $"https://api.github.com/repos/{m.Groups[1].Value}/{m.Groups[2].Value}" +
-                      $"/releases/tags/{m.Groups[3].Value}";
-            var fileName = Uri.UnescapeDataString(m.Groups[4].Value);
-
             // API 走同一个 HttpClient（带 UA / 代理），并挂镜像候选 —— 国内直连 api.github.com 常不通
             foreach (var candidate in UpdateService.GithubUrls(api))
             {
@@ -333,21 +323,8 @@ public sealed partial class DepotDownloaderService
                     using var resp = await DepotHttp.GetAsync(candidate, ct);
                     if (!resp.IsSuccessStatusCode) continue;
                     var json = await resp.Content.ReadAsStringAsync(ct);
-                    using var doc = JsonDocument.Parse(json);
-                    if (!doc.RootElement.TryGetProperty("assets", out var assets)) continue;
-
-                    foreach (var a in assets.EnumerateArray())
-                    {
-                        if (!a.TryGetProperty("name", out var n)) continue;
-                        if (!string.Equals(n.GetString(), fileName, StringComparison.OrdinalIgnoreCase)) continue;
-                        if (!a.TryGetProperty("digest", out var d)) continue;
-
-                        var digest = d.GetString();
-                        if (string.IsNullOrWhiteSpace(digest)) continue;
-                        const string prefix = "sha256:";
-                        if (digest.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-                            return digest[prefix.Length..].Trim().ToLowerInvariant();
-                    }
+                    var sha = ExtractDigestFromReleaseJson(json, fileName);
+                    if (sha is not null) return sha;
                 }
                 catch (OperationCanceledException) { throw; }
                 catch { /* 这个候选不行，换下一个 */ }
@@ -358,6 +335,49 @@ public sealed partial class DepotDownloaderService
         {
             AppLog.Warn("DepotDownloader", "查询官方 digest 失败（按未校验处理）：" + ex.Message);
         }
+        return null;
+    }
+
+    /// <summary>下载直链 → Release API 地址。URL 形如
+    /// <c>https://github.com/{owner}/{repo}/releases/download/{tag}/{file}</c>，
+    /// 换成 <c>https://api.github.com/repos/{owner}/{repo}/releases/tags/{tag}</c>。
+    /// 不是这个形状（比如镜像前缀没剥干净、或压根不是 GitHub 直链）⇒ null，调用方按"无从校验"走。
+    /// 纯函数，钉在测试里 —— 正则手改一个字符，校验就静默失效。</summary>
+    internal static string? ReleaseApiUrlForAsset(string downloadUrl, out string? fileName)
+    {
+        fileName = null;
+        var m = Regex.Match(downloadUrl,
+            @"^https://github\.com/([^/]+)/([^/]+)/releases/download/([^/]+)/([^/?#]+)$",
+            RegexOptions.IgnoreCase);
+        if (!m.Success) return null;
+        fileName = Uri.UnescapeDataString(m.Groups[4].Value);
+        return $"https://api.github.com/repos/{m.Groups[1].Value}/{m.Groups[2].Value}" +
+               $"/releases/tags/{m.Groups[3].Value}";
+    }
+
+    /// <summary>从 Release API 响应里取指定资产名的 sha256 digest（小写十六进制，去掉
+    /// "sha256:" 前缀）。资产不存在 / 没有 digest 字段 / JSON 不认识 ⇒ null。
+    /// GitHub 从 2024 年起才提供 digest，老仓库/老资产没有，属正常情况。
+    /// 纯函数，钉在测试里。</summary>
+    internal static string? ExtractDigestFromReleaseJson(string json, string assetName)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            if (!doc.RootElement.TryGetProperty("assets", out var assets)) return null;
+            foreach (var a in assets.EnumerateArray())
+            {
+                if (!a.TryGetProperty("name", out var n)) continue;
+                if (!string.Equals(n.GetString(), assetName, StringComparison.OrdinalIgnoreCase)) continue;
+                if (!a.TryGetProperty("digest", out var d)) continue;
+                var digest = d.GetString();
+                if (string.IsNullOrWhiteSpace(digest)) continue;
+                const string prefix = "sha256:";
+                if (digest.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                    return digest[prefix.Length..].Trim().ToLowerInvariant();
+            }
+        }
+        catch { /* 响应不是合法 JSON（错误页/截断）—— 按查不到处理 */ }
         return null;
     }
 

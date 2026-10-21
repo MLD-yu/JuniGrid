@@ -279,21 +279,19 @@ public partial class UninstallWindow : Window
             var exe = Environment.ProcessPath;
             if (string.IsNullOrEmpty(exe) || !File.Exists(exe)) return;
 
-            Process.Start(new ProcessStartInfo
+            var psi = new ProcessStartInfo
             {
                 FileName = exe,
-                Arguments = string.Join(' ', PurgeArguments(dir).Select(Quote)),
                 UseShellExecute = false,
                 CreateNoWindow = true,
                 WindowStyle = ProcessWindowStyle.Hidden,
-            });
+            };
+            // ArgumentList 是只读集合，只能逐条 Add —— 转义交给框架，不手拼命令行字符串。
+            foreach (var a in PurgeArguments(dir)) psi.ArgumentList.Add(a);
+            Process.Start(psi);
         }
         catch { }
     }
-
-    /// <summary>给命令行参数加引号（路径可能带空格）。只做最朴素的转义：
-    /// 前后各一个双引号，内部双引号按 Windows 规则转义成 \"。</summary>
-    private static string Quote(string arg) => "\"" + arg.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"";
 
     private void StartIndeterminate()
     {
