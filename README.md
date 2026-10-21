@@ -72,9 +72,4 @@ node test/js-smoke/js-contract.mjs
 ## 许可
 
 本项目采用 **GNU General Public License v3.0** 发布，许可证全文见 [LICENSE](LICENSE)。
-
-简单说：你可以自由使用、修改、再分发本项目；但**再分发（含修改后的版本）必须同样以 GPL-3.0 开源**，并且必须保留版权声明。这意味着**不能把本项目的代码拿去做闭源商业发行**。
-
 Copyright (C) 2026 MLD (MLD-yu)
-
-本项目同时作为 Nexus Mods API 团队注册审核的源码材料。
