@@ -332,8 +332,10 @@ public partial class App : Application
     /// 这里改成「每 250ms 试一次，最多 20 秒」。</para>
     ///
     /// <para>返回值只影响本进程要不要继续走正常启动流程：true = 这是收尾实例，做完就退。</para>
+    /// <para>internal 是给白盒测试舱的（InternalsVisibleTo 已开）：四场景实测过但没钉进测试，
+    /// 钉上才算防线。</para>
     /// </summary>
-    private static bool TryRunPurgeInstallDir(string[] args)
+    internal static bool TryRunPurgeInstallDir(string[] args)
     {
         var i = Array.FindIndex(args, a => a.Equals("--purge-install-dir", StringComparison.OrdinalIgnoreCase));
         if (i < 0) return false;

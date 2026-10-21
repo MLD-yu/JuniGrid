@@ -11,7 +11,8 @@ namespace JuniGrid;
 
 /// <summary>
 /// GUI 卸载向导（JuniGrid.exe --uninstall）：深色确认页 → 立绘卸载中 → 白底完成页。
-/// 目录删除通过延时 cmd 自删（等本进程退出后 rd /s /q），与旧 uninstall.ps1 同机制。
+/// 目录收尾在退出前拉起自身子实例（--purge-install-dir）删两个 exe + 空目录，
+/// 不再起 cmd 延时自删（原因见 <see cref="ScheduleSelfDelete"/> 的注释）。
 /// </summary>
 public partial class UninstallWindow : Window
 {
@@ -196,7 +197,8 @@ public partial class UninstallWindow : Window
     }
 
     /// <summary>按清单删掉我们自己写出去的文件，并把因此变空的目录收掉。
-    /// 正在运行的两个 exe 删不掉，交给延时 cmd。<b>清单以外的东西一个都不碰。</b></summary>
+    /// 正在运行的两个 exe 删不掉，交给收尾子实例（<see cref="ScheduleSelfDelete"/>）。
+    /// <b>清单以外的东西一个都不碰。</b></summary>
     internal static int CleanByManifest(string dir, List<string> rels)
     {
         var deleted = 0;
