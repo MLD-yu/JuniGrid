@@ -15,6 +15,10 @@
 - 源码中不内嵌任何 API Key / 密钥。Nexus 凭据由用户在登录时输入，仅保存在本机当前用户的本地配置文件中。
 - 所有下载严格以当前登录的 Nexus 用户身份进行；应用不代理、不分发、不为其他用户缓存 Mod 文件。
 
+## 隐私政策
+
+JuniGrid 不收集遥测数据，也没有自建服务器。程序会与哪些外部服务通信、本机保存了什么，见 [PRIVACY.md](PRIVACY.md)。
+
 ## 功能
 
 - **Nexus Mods 集成** —— 支持 SSO（`wss://sso.nexusmods.com`）、OAuth2 授权码 + PKCE（回调地址 `http://localhost:49162/auth/callback`）与个人 API Key 三种登录方式；通过 Nexus GraphQL API 浏览 Mod，以登录用户本人的身份通过官方下载接口获取文件。
