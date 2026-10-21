@@ -86,10 +86,17 @@ jobs:
 
       # 打安装包。build-installer.ps1 自己会做：主程序 publish → payload.lz →
       # 安装器单文件 publish → 拷进 dist-tmp。
+      #
+      # ⚠ 必须直接跑脚本，不要套一层 powershell（5.1）。2026-10-21 实测：
+      #   runner 的系统 ANSI 是 CP1252，5.1 读「无 BOM 的 UTF-8 脚本」按 ANSI 解，
+      #   中文注释里的弯引号（—— 的 UTF-8 字节被逐字节解成 â€”）被当成字符串定界符，
+      #   报 Unexpected token 后整脚本一行都不执行（只跑 3 秒）。
+      #   本机 ANSI 是 936，同样的字节解成汉字，所以本地永远复现不了。
+      #   脚本已补回 UTF-8 BOM（治类别），这里直接调用（治本次），是双保险。
       - name: Build installer
         shell: pwsh
         run: |
-          powershell -NoProfile -ExecutionPolicy Bypass -File installer\build-installer.ps1 -SkipGuards
+          ./installer/build-installer.ps1 -SkipGuards
           if ($LASTEXITCODE -ne 0) { throw "安装器构建失败" }
 
       - name: Collect artifacts

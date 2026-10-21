@@ -1,4 +1,4 @@
-# 一键产出 Riot 风格自研安装器：dist-tmp\JuniGrid-cn-v<版本>-setup.exe
+﻿# 一键产出 Riot 风格自研安装器：dist-tmp\JuniGrid-cn-v<版本>-setup.exe
 # 用法: powershell -File build-installer.ps1 [-SkipAppPublish] [-SkipGuards]
 #   -SkipAppPublish  复用现有 publish\sc，不重新发布主程序（日常打安装器用）
 #   -SkipGuards      跳过 5 个回归防线脚本。只给 CI 用 —— 那几条要起真实进程、
