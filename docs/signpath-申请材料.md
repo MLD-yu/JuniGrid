@@ -83,6 +83,46 @@ build. The three third-party binaries that get bundled are fetched from their
 official publishers and their Authenticode signatures are checked before they
 are allowed into the payload (see the `Verify bundled dependencies` step).
 
+### One deliberate difference between the CI artifact and a local release build
+
+The CI artifact is the file we submit for signing, so this needs stating
+plainly rather than being discovered during review.
+
+`smapi-bridge/JuniGridCommandBridge.csproj` is a small SMAPI mod that ships
+next to the app. It targets .NET 6 and — deliberately — does not use implicit
+framework references; instead it compiles against the 244 assemblies in the
+game's own install directory (the game is self-contained, so `System.Runtime.dll`
+and friends are right there). That means it can only be built on a machine that
+has the game installed.
+
+`JuniGrid.csproj` therefore decides whether to build it based on whether the
+game directory exists (`BuildBridgeMod`, with `-p:BuildBridgeMod=true/false`
+to force either way). On CI there is no game, so the bridge mod is **not built**
+and the artifact does not contain `bridge-mod/`. At runtime the app degrades
+gracefully: `CommandBridgeService.CopyBridgedInto` reports
+"安装包里缺少命令桥文件" and the rest of the app is unaffected.
+
+This is a functional reduction, not a security-relevant difference. The
+artifact we ask to be signed is exactly the CI artifact — we will upload that
+exact file, and the SHA-256 in the submission is its hash.
+
+Builds are **not** byte-for-byte reproducible: .NET embeds a PE timestamp and
+build paths, so a local rebuild of the same commit produces a different hash.
+That is why the file submitted for signing is the CI artifact rather than a
+locally rebuilt one.
+
+The current CI artifact:
+
+```
+
+File    : JuniGrid-cn-v1.2.9-setup.exe
+Size    : 122,517,782 bytes
+SHA-256 : 15253a7248f98f6ae50460c433e7341106a4e97e09730769a6f6015ac8478d5a
+Commit  : f88b55435c5c0290cbec099e4f0ebe3d536f25bd
+Run     : https://github.com/MLD-yu/JuniGrid/actions/runs/39607961140
+
+```
+
 ### Behaviours a reviewer will notice, and what each is for
 
 These are the things that make the installer look unusual. All of them are
@@ -144,22 +184,27 @@ contributions are accepted under the same license.
 
 ---
 
-## 三、你提交前要确认的三件事
+## 三、提交前的确认清单
 
-**1. 仓库根要有 `LICENSE`** ✅ 已放（GPL-3.0 官方全文，SHA-256 与 gnu.org 一致）
+**1. 仓库根要有 `LICENSE`** ✅ GPL-3.0 官方全文（SHA-256 与 gnu.org 一致）
 
-**2. README 的许可段要改** ✅ 已改
+**2. README 的许可段要改** ✅ 已改为 GPL-3.0 并补版权声明
 
-**3. CI 要能真的跑通一次** ⚠️ **还没验证过**
+**3. CI 要能真的跑通一次** ✅ 已通，4 轮迭代
 
-第 3 条是现在唯一的不确定项。我在本地验证了：
+| run | 结果 | 修了什么 |
+|---|---|---|
+| 1 | Build installer 失败（3 秒） | 我编辑 `build-installer.ps1` 时弄丢 UTF-8 BOM，PowerShell 5.1 在 CP1252 runner 上把中文注释里的破折号解成弯引号，解析器被骗 |
+| 2 | 全绿 | 补回 BOM + CI 改用 pwsh 直接调用 |
+| 3 | 全绿，Total 498 | 加了 security 改动 |
+| 4 | 全绿，Total 527 | 加了 29 条新用例，全部被发现并执行 |
 
-- `global.json` 不会破坏本机构建 ✅
-- 游戏目录不存在时主项目仍能编过（自动跳过 bridge）✅
-- workflow YAML 语法正确 ✅
+**4. 送签文件用 CI 产物，不要本机重建** ⚠️ 这条自己别搞错
 
-但**没有在真实 GitHub Actions 上跑过**。第一次 push 之后要看 Actions 页面，
-大概率还要修一两轮（路径、SDK 版本、下载链接失效这类）。
+理由：.NET 构建不逐字节可复现（PE 时间戳、路径），本机重建的哈希必然不同。
+而且本机有游戏目录 ⇒ 会额外编出 `bridge-mod/`，与 CI 产物不是同一种东西。
+
+**做法**：把 artifact 下载下来，上传这一份；表里填它的 SHA-256。别本机重建。
 
 ---
 
