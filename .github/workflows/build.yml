@@ -1,0 +1,118 @@
+name: build
+
+# 产出「可签名的安装包」。
+#
+# ⚠ 这个 workflow 只负责让签名服务拿到一个确定的构建产物，不是发版流程。
+#   和本地发版的差别：
+#     · 跳过 5 个回归防线脚本（-SkipGuards）—— 它们要起真实进程/操真实窗口，
+#       runner 上没有桌面会话，必然失败。发版仍须在本地跑全。
+#     · 没有游戏本体 ⇒ bridge-mod 缺席（见 JuniGrid.csproj 的 BuildBridgeMod 判断）。
+#       命令桥功能在产物里不可用，这是有意的降级。
+#
+# 为什么要有它：SignPath 这类免费签名服务要求「构建可复现、走 CI」，
+# 而且要能对着某次 commit 的产物签名。手动构建的 exe 他们不认。
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+          dotnet-quality: 'preview'
+
+      # installer/deps 被 .gitignore 排除（约 16 MB 二进制，不进源码库）。
+      # build-installer.ps1 缺了它们会打 NOTE 然后跳过 —— 产出的安装包就不含
+      # WebView2 / XNA / DepotDownloader，和本地发的不是同一个东西。
+      # 这里从官方源补齐，保证 CI 产物和本地产物一致。
+      - name: Fetch bundled dependencies
+        shell: pwsh
+        run: |
+          $deps = 'installer\deps'
+          New-Item -ItemType Directory -Force $deps | Out-Null
+
+          # DepotDownloader（SteamRE 官方，MIT）。选 framework 包：体积小，
+          # 且 CI 只是打包，不需要它在 runner 上能跑。
+          Invoke-WebRequest -Uri 'https://github.com/SteamRE/DepotDownloader/releases/download/DepotDownloader_3.4.0/DepotDownloader-framework.zip' `
+            -OutFile "$deps\DepotDownloader-framework.zip" -UseBasicParsing
+          Write-Host "DepotDownloader-framework.zip : $((Get-Item "$deps\DepotDownloader-framework.zip").Length) bytes"
+
+          # WebView2 Evergreen 引导（微软官方固定跳转链接）
+          Invoke-WebRequest -Uri 'https://go.microsoft.com/fwlink/p/?LinkId=2124703' `
+            -OutFile "$deps\MicrosoftEdgeWebView2Setup.exe" -UseBasicParsing
+          Write-Host "MicrosoftEdgeWebView2Setup.exe : $((Get-Item "$deps\MicrosoftEdgeWebView2Setup.exe").Length) bytes"
+
+          # XNA 4.0 Refresh（微软官方 download.microsoft.com）
+          Invoke-WebRequest -Uri 'https://download.microsoft.com/download/5/3/A/53A804C8-EC78-43CD-A0F0-2FB4D45603D3/xnafx40_redist.msi' `
+            -OutFile "$deps\xnafx40_redist.msi" -UseBasicParsing
+          Write-Host "xnafx40_redist.msi : $((Get-Item "$deps\xnafx40_redist.msi").Length) bytes"
+
+      # 三个二进制都是第三方产物，先确认签名/来源，再进安装包。
+      - name: Verify bundled dependencies
+        shell: pwsh
+        run: |
+          $deps = 'installer\deps'
+          # 微软两件必须有有效签名；DepotDownloader 上游未签名（这是已知情况，
+          # 已写进 smartscreen-submission-note.txt 的解释里），只校验大小合理。
+          foreach ($f in 'MicrosoftEdgeWebView2Setup.exe', 'xnafx40_redist.msi') {
+            $p = Join-Path $deps $f
+            $sig = Get-AuthenticodeSignature $p
+            if ($sig.Status -ne 'Valid') { throw "$f 签名无效（$($sig.Status)）—— 来源可疑，中止" }
+            Write-Host "$f : 签名有效，$($sig.SignerCertificate.Subject)"
+          }
+          $dd = Join-Path $deps 'DepotDownloader-framework.zip'
+          if ((Get-Item $dd).Length -lt 1MB) { throw "DepotDownloader zip 体积异常，可能下到了错误页" }
+          Write-Host "DepotDownloader-framework.zip : 体积合理"
+
+      # 单元测试（不需要桌面会话，能在 runner 上跑）
+      - name: Unit tests
+        run: dotnet run --project test/JuniGridTestHarness/JuniGridTestHarness.csproj -c Release
+
+      # 打安装包。build-installer.ps1 自己会做：主程序 publish → payload.lz →
+      # 安装器单文件 publish → 拷进 dist-tmp。
+      - name: Build installer
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File installer\build-installer.ps1 -SkipGuards
+          if ($LASTEXITCODE -ne 0) { throw "安装器构建失败" }
+
+      - name: Collect artifacts
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem dist-tmp -Filter 'JuniGrid-cn-v*-setup.exe' | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (-not $setup) { throw "没找到产出的安装包" }
+          $sha = (Get-FileHash $setup.FullName -Algorithm SHA256).Hash.ToLower()
+          New-Item -ItemType Directory -Force out | Out-Null
+          Copy-Item $setup.FullName "out\$($setup.Name)"
+          @"
+          文件   : $($setup.Name)
+          大小   : $($setup.Length) bytes
+          SHA-256: $sha
+          提交   : $env:GITHUB_SHA
+          构建   : $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID
+          "@ | Set-Content out\build-info.txt -Encoding UTF8
+          Get-Content out\build-info.txt
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: JuniGrid-setup-unsigned
+          path: out/
+          retention-days: 30
+          if-no-files-found: error

@@ -1,6 +1,8 @@
-﻿# 一键产出 Riot 风格自研安装器：dist-tmp\JuniGrid-cn-v<版本>-setup.exe
-# 用法: powershell -File build-installer.ps1 [-SkipAppPublish]
+# 一键产出 Riot 风格自研安装器：dist-tmp\JuniGrid-cn-v<版本>-setup.exe
+# 用法: powershell -File build-installer.ps1 [-SkipAppPublish] [-SkipGuards]
 #   -SkipAppPublish  复用现有 publish\sc，不重新发布主程序（日常打安装器用）
+#   -SkipGuards      跳过 5 个回归防线脚本。只给 CI 用 —— 那几条要起真实进程、
+#                    操真实窗口，GitHub Actions 的无桌面会话跑不了；本地发版必须跑全。
 $param = $args
 $ErrorActionPreference = 'Stop'
 $installerDir = $PSScriptRoot
@@ -13,6 +15,7 @@ if (-not $version) { throw "Cannot read version from JuniGrid.csproj" }
 Write-Host "=== JuniGrid Installer v$version ==="
 
 $skipPublish = $param -contains '-SkipAppPublish'
+$skipGuards = $param -contains '-SkipGuards'
 
 # 2) Main app self-contained publish
 $sc = Join-Path $repo 'publish\sc'
@@ -91,6 +94,11 @@ $guards = @(
 )
 $probe = Join-Path $out 'JuniGridSetup.exe'
 $env:PYTHONIOENCODING = "utf-8"   # 防线脚本要打印中文，控制台默认 GBK 会把 print 打崩
+if ($skipGuards) {
+    # CI 用。这几条要起真实进程 / 操真实窗口，无桌面会话的环境必然失败；
+    # 但本地发版绝不能用这个开关 —— 防线就是发版前最后一道闸。
+    Write-Host "=== 已跳过安装器回归防线（-SkipGuards）—— 此产物不得直接发布 ==="
+} else {
 foreach ($guard in $guards) {
     if (-not (Test-Path $guard)) {
         throw "缺少回归防线脚本 $guard —— 防线空转比没有防线更危险，打包中止"
@@ -103,6 +111,7 @@ foreach ($guard in $guards) {
         python $guard
     }
     if ($LASTEXITCODE -ne 0) { throw "安装器回归防线未通过（$(Split-Path $guard -Leaf)），已中止拷贝到 dist-tmp" }
+}
 }
 
 # 6) Copy to dist-tmp (name matches SelfUpdateService expectations)

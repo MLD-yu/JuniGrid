@@ -31,15 +31,29 @@
     「启用命令桥」把 <应用目录>\bridge-mod\ 整个复制进 Mods。
     ReferenceOutputAssembly=false + Private=false ⇒ 只借它的构建顺序，不把 net6 程序集
     当依赖塞进应用（塞了会被 .NET 10 的 deps.json 认成加载项）。
+
+    ⚠ 它有外部依赖：smapi-bridge.csproj 故意不用 net6 的隐式框架引用，而是直接拿
+    游戏根目录那 244 个程序集当编译期引用（理由见那边的注释）。所以游戏本体不在的
+    机器上（CI、新克隆的仓库、别人的电脑）编它是必然失败的 —— CS0518 满屏。
+    这里按「游戏目录在不在」自动决定编不编，-p:BuildBridgeMod=true/false 可强制覆盖。
+    不编的后果：产物里没有 bridge-mod，应用侧 CopyBridgedInto 返回
+    「安装包里缺少命令桥文件」—— 功能降级，不是崩溃。
   -->
-  <ItemGroup>
+  <PropertyGroup>
+    <GamePath Condition="'$(GamePath)' == ''">$(JUNIGRID_GAME_PATH)</GamePath>
+    <GamePath Condition="'$(GamePath)' == ''">E:\Steam\steamapps\common\Stardew Valley</GamePath>
+    <BuildBridgeMod Condition="'$(BuildBridgeMod)' == '' and Exists('$(GamePath)\StardewModdingAPI.dll')">true</BuildBridgeMod>
+    <BuildBridgeMod Condition="'$(BuildBridgeMod)' == ''">false</BuildBridgeMod>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(BuildBridgeMod)' == 'true'">
     <ProjectReference Include="..\smapi-bridge\JuniGridCommandBridge.csproj">
       <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
       <Private>false</Private>
     </ProjectReference>
   </ItemGroup>
 
-  <Target Name="StageBridgeMod" AfterTargets="Build">
+  <Target Name="StageBridgeMod" AfterTargets="Build" Condition="'$(BuildBridgeMod)' == 'true'">
     <ItemGroup>
       <_BridgeFiles Include="..\smapi-bridge\bin\$(Configuration)\*.*"
                     Exclude="..\smapi-bridge\bin\$(Configuration)\*.pdb;..\smapi-bridge\bin\$(Configuration)\*.deps.json;..\smapi-bridge\bin\$(Configuration)\*.runtimeconfig.json" />
@@ -48,7 +62,7 @@
           SkipUnchangedFiles="true" Condition="'@(_BridgeFiles)' != ''" />
   </Target>
 
-  <Target Name="StageBridgeModOnPublish" AfterTargets="Publish">
+  <Target Name="StageBridgeModOnPublish" AfterTargets="Publish" Condition="'$(BuildBridgeMod)' == 'true'">
     <ItemGroup>
       <_BridgePub Include="..\smapi-bridge\bin\$(Configuration)\*.*"
                   Exclude="..\smapi-bridge\bin\$(Configuration)\*.pdb;..\smapi-bridge\bin\$(Configuration)\*.deps.json;..\smapi-bridge\bin\$(Configuration)\*.runtimeconfig.json" />
