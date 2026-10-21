@@ -34,6 +34,16 @@ public partial class App : Application
 
     protected override void OnStartup(StartupEventArgs e)
     {
+        // 卸载后的收尾模式（JuniGrid.exe --purge-install-dir <dir>）：
+        // 卸载向导退出前拉起一个自己的极短实例，只做「删两个 exe + 删空目录 + 退出」。
+        // 必须在一切之前分流 —— 不进 WPF 消息循环、不建 DI、不碰单实例闸。
+        // 为什么不是 cmd.exe 自删、也不是 MoveFileEx：见 UninstallWindow.ScheduleSelfDelete 的注释。
+        if (TryRunPurgeInstallDir(e.Args))
+        {
+            Shutdown();
+            return;
+        }
+
         // 卸载模式（JuniGrid.exe --uninstall 或安装目录里的独立 Uninstall.exe）：
         // 跳过单实例/管道/splash，只显示卸载向导。
         // 必须在 mutex 之前分流——主实例在跑时控制面板也要能拉起卸载器。
@@ -305,6 +315,66 @@ public partial class App : Application
         {
             AppLog.Warn("Startup", "nxm:// 处理器自检失败: " + ex.Message);
         }
+    }
+
+    /// <summary>
+    /// 卸载收尾模式：<c>JuniGrid.exe --purge-install-dir &lt;dir&gt;</c>。
+    /// 卸载向导在窗口关闭时拉起它，本进程退出后由它收拾目录里剩下的两个 exe。
+    ///
+    /// <para><b>能力边界（与旧 cmd 自删等价的部分）</b>：只删
+    /// <c>JuniGrid.exe</c> / <c>Uninstall.exe</c> 两个固定文件名，然后<b>只在目录已空时</b>
+    /// 删目录 —— 目录里只要还剩一个认不清的文件就原样留着。绝不整树删：
+    /// 缓存目录现在可以合法地住在安装目录里（换目录安装要搬的就是它），
+    /// 整树删等于把 886 MB 版本缓存和登录态一起端走。</para>
+    ///
+    /// <para><b>为什么需要重试</b>：父进程（卸载向导）刚退出时，WebView2 子进程可能还
+    /// 攥着 exe 的文件锁，删除会失败。旧实现靠 <c>ping -n</c> 当 sleep 硬等 3/4/8 秒；
+    /// 这里改成「每 250ms 试一次，最多 20 秒」。</para>
+    ///
+    /// <para>返回值只影响本进程要不要继续走正常启动流程：true = 这是收尾实例，做完就退。</para>
+    /// </summary>
+    private static bool TryRunPurgeInstallDir(string[] args)
+    {
+        var i = Array.FindIndex(args, a => a.Equals("--purge-install-dir", StringComparison.OrdinalIgnoreCase));
+        if (i < 0) return false;
+        if (i + 1 >= args.Length) return true;   // 参数缺失：什么都不做，直接退
+
+        var dir = args[i + 1];
+        try
+        {
+            if (!Directory.Exists(dir)) return true;
+
+            var targets = new[] { "JuniGrid.exe", "Uninstall.exe" }
+                .Select(n => Path.Combine(dir, n))
+                .Where(File.Exists)
+                .ToList();
+
+            var deadline = Environment.TickCount64 + 20_000;
+            while (targets.Count > 0 && Environment.TickCount64 < deadline)
+            {
+                targets.RemoveAll(p =>
+                {
+                    try { File.Delete(p); return !File.Exists(p); }
+                    catch { return false; }
+                });
+                if (targets.Count == 0) break;
+                Thread.Sleep(250);
+            }
+
+            // 目录必须真的空了才删 —— 不带递归，留着用户的东西。
+            if (targets.Count == 0)
+            {
+                try
+                {
+                    if (Directory.Exists(dir) && !Directory.EnumerateFileSystemEntries(dir).Any())
+                        Directory.Delete(dir);
+                }
+                catch { }
+            }
+        }
+        catch { /* 收尾失败不影响用户：目录留着，下次装同一位置会被覆盖 */ }
+
+        return true;
     }
 
     /// <summary>单实例锁被占时（无 nxm 转发场景）：结束其它 JuniGrid 实例并等锁释放。

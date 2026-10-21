@@ -121,15 +121,21 @@ behaviour most likely to match a malware heuristic; see the note below.
 
 ### What we are changing
 
-Two of the above are being removed or narrowed rather than explained away:
+Two of the above have been removed or narrowed rather than explained away:
 
-- The uninstall self-delete is being replaced with
-  `MoveFileEx(..., MOVEFILE_DELAY_UNTIL_REBOOT)`, which removes the
-  `cmd.exe /c del ... & rd ...` command line entirely. That command line is a
-  well-known malware pattern and we would rather not ship it even though ours
-  is benign.
-- Third-party archives downloaded at runtime from GitHub mirrors are being
-  given SHA-256 verification against the publisher's published digest.
+- The uninstall self-delete no longer runs `cmd.exe /c del ... & rd ...` at
+  all. That command line is a well-known malware pattern and we would rather
+  not ship it even though ours is benign. (Note: `MoveFileEx` with
+  `MOVEFILE_DELAY_UNTIL_REBOOT` cannot be used here — it requires
+  administrator rights and the app is deliberately `asInvoker`.) Instead, the
+  uninstaller spawns one short-lived copy of itself with
+  `--purge-install-dir <dir>`, which deletes exactly two known file names and
+  removes the directory only if it is empty. No shell, no command-line
+  deletion verbs, no process-name kills.
+- Third-party archives downloaded at runtime from GitHub mirrors are now
+  verified against the SHA-256 digest published by the upstream release,
+  fetched from the GitHub Release API. If no official digest is reachable the
+  download still proceeds but is recorded in the app log as unverified.
 
 ### Licensing
 
@@ -164,8 +170,8 @@ contributions are accepted under the same license.
 | 可能的问题 | 准备怎么答 |
 |---|---|
 | "为什么捆绑未签名的 DepotDownloader？" | 它是用户登录 Steam 后才需要的组件，上游本身不签名。已考虑改成按需下载，但会让用户多下 32 MB，暂时保留并在此说明。 |
-| "为什么有 cmd.exe 自删？" | 已计划移除（见 "What we are changing"）。这是历史实现，不是新写的。 |
-| "项目活跃度？" | 30+ 提交、多个已发布版本、475 个单元测试。 |
+| "为什么有 cmd.exe 自删？" | 已移除（见 "What we are changing"）：现在卸载收尾由自身子实例完成，不再起 shell。 |
+| "项目活跃度？" | 30+ 提交、多个已发布版本、521 个单元测试。 |
 | "谁在维护？" | 单人项目，GitHub 账号 MLD-yu。 |
 | "有没有商业动机？" | 无。免费、无广告、无遥测、无付费版。 |
 

@@ -237,45 +237,61 @@ public partial class UninstallWindow : Window
         catch { return null; }
     }
 
-    /// <summary>延时自删命令。两种情况都<b>绝不整树删</b>：
-    /// 最后一步统一是不带 <c>/s</c> 的 <c>rd</c> —— 目录里只要还剩一个文件它就失败、原样留着。
-    /// 这是"卸载不该端掉用户东西"的硬保证，不靠代码判断，靠文件系统本身：
-    /// 缓存目录现在可以合法地住在安装目录里（换目录安装要搬的就是它），整树删等于把
-    /// 886 MB 版本缓存和登录态一起端走。
-    /// 有清单 ⇒ 先按清单收干净我们的文件（<see cref="ScheduleSelfDelete"/>），这里再删两个 exe；
-    /// 没清单（老版本装的目录）⇒ 只删两个 exe，认不清的文件一律不动。</summary>
-    internal static string BuildSelfDeleteArguments(string dir)
-    {
-        var own = $"/c ping -n 3 127.0.0.1 > nul & del /q /f \"{dir}\\JuniGrid.exe\" & del /q /f \"{dir}\\Uninstall.exe\""
-                + $" & rd \"{dir}\"";
-        return own
-             + $" & ping -n 4 127.0.0.1 > nul & del /q /f \"{dir}\\JuniGrid.exe\" & del /q /f \"{dir}\\Uninstall.exe\" & rd \"{dir}\""
-             + $" & ping -n 8 127.0.0.1 > nul & del /q /f \"{dir}\\JuniGrid.exe\" & del /q /f \"{dir}\\Uninstall.exe\" & rd \"{dir}\"";
-    }
+    /// <summary>
+    /// 卸载后处理本目录残留的<b>两个 exe</b>（JuniGrid.exe / Uninstall.exe）。
+    ///
+    /// <para>历史实现是起一个 <c>cmd.exe /c ping ... &amp; del /q /f ... &amp; rd ...</c> 延时自删。
+    /// 那串命令是恶意软件家族的经典自删手法（用 ping 当 sleep + del /f + rd），
+    /// 杀软启发式规则里针对它的签名最硬，是误报的主要来源之一。v1.3.0 起彻底不用。</para>
+    ///
+    /// <para><b>为什么不是 MoveFileEx(MOVEFILE_DELAY_UNTIL_REBOOT)：</b>
+    /// 那个标志内部是往 <c>HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\
+    /// PendingFileRenameOperations</c> 写值，该键对 BUILTIN\Users 只有 ReadKey
+    /// （实测非管理员调用返回 ERROR_ACCESS_DENIED = 5），MSDN 也明确要求调用者属于
+    /// administrators 组。本程序清单是 asInvoker（<c>app.manifest</c> 里有说明：
+    /// 装机全程只写 HKCU / %LocalAppData%，不该提权），所以这条路走不通。</para>
+    ///
+    /// <para><b>现在这样做：</b>进程退出后，启动一个<b>极短</b>的子实例
+    /// （<c>JuniGrid.exe --purge-install-dir &lt;dir&gt;</c>），它只做三件事 ——
+    /// 删两个 exe、删空目录、退出。不碰 shell、不拼命令行删除语句、不按名字杀进程，
+    /// 从行为上看就是一个程序在收拾自己的安装目录。</para>
+    ///
+    /// <para>与旧实现的能力差异：旧实现跨 ~15 秒重试三次（等 WebView2 子进程释放文件锁）。
+    /// 新实现用"重试到成功或超时"的循环，覆盖同样的场景。</para>
+    /// </summary>
+    internal static string[] PurgeArguments(string dir) =>
+        ["--purge-install-dir", dir];
 
-    /// <summary>调度目录自删：必须在窗口关闭（进程即将退出）时才执行。
-    /// WebView2 子进程等释放文件锁有延迟，rd 失败会静默跳过，所以跨 ~15s 重试三次。</summary>
+    /// <summary>调度本目录的清理：必须在窗口关闭（进程即将退出）时才执行。</summary>
     private void ScheduleSelfDelete()
     {
         try
         {
             var dir = _installDir;
-            // 有清单就按清单把"我们写出去的文件"收干净（此刻进程还活着，两个 exe 留给延时 cmd）。
-            // 没清单就一个文件都不多删 —— 延时 cmd 只摘两个 exe，最后那次不带 /s 的 rd
-            // 会因为目录非空而失败，整目录原样留着（宁可留一堆 dll，也不能端掉用户的版本缓存）。
+            // 有清单就按清单把"我们写出去的文件"收干净（此刻进程还活着，两个 exe 留给子实例）。
+            // 没清单就一个文件都不多删 —— 子实例只摘两个 exe，空目录才会被收掉，
+            // 目录里只要还剩一个认不清的文件就原样留着（宁可留一堆 dll，也不能端掉用户的版本缓存）。
             var manifest = ReadInstallManifest(dir);
             if (manifest.Count > 0) CleanByManifest(dir, manifest);
 
+            var exe = Environment.ProcessPath;
+            if (string.IsNullOrEmpty(exe) || !File.Exists(exe)) return;
+
             Process.Start(new ProcessStartInfo
             {
-                FileName = "cmd.exe",
-                Arguments = BuildSelfDeleteArguments(dir),
-                CreateNoWindow = true,
+                FileName = exe,
+                Arguments = string.Join(' ', PurgeArguments(dir).Select(Quote)),
                 UseShellExecute = false,
+                CreateNoWindow = true,
+                WindowStyle = ProcessWindowStyle.Hidden,
             });
         }
         catch { }
     }
+
+    /// <summary>给命令行参数加引号（路径可能带空格）。只做最朴素的转义：
+    /// 前后各一个双引号，内部双引号按 Windows 规则转义成 \"。</summary>
+    private static string Quote(string arg) => "\"" + arg.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"";
 
     private void StartIndeterminate()
     {

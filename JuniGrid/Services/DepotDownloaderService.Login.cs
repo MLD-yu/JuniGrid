@@ -4,7 +4,9 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.IO.Compression;
 using System.Net.Http;
+using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 
 namespace JuniGrid.Services;
@@ -267,6 +269,27 @@ public sealed partial class DepotDownloaderService
         }
         if (!downloaded)
             throw new DepotException($"登录组件下载失败（直连与镜像均不通）：{lastErr?.Message}");
+
+        // 镜像投毒防线：只认 GitHub Release 官方公布的 sha256。
+        // 拿不到官方值（API 限流/不通）时记 WARN 放行 —— 与 SelfUpdateService 同一取舍：
+        // 宁可让"这次没验"在日志里留痕，也不因为 API 抽风就把所有人挡在门外。
+        var wantSha = await TryGetOfficialSha256Async(url, ct);
+        if (wantSha is { Length: > 0 })
+        {
+            var gotSha = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(zip))).ToLowerInvariant();
+            if (!string.Equals(gotSha, wantSha, StringComparison.OrdinalIgnoreCase))
+            {
+                try { File.Delete(zip); } catch { }
+                throw new DepotException(
+                    $"登录组件校验失败（本机 {gotSha[..12]}…，官方 {wantSha[..12]}…）—— 镜像可能被篡改，已丢弃。请稍后重试。");
+            }
+            AppLog.Warn("DepotDownloader", $"组件 SHA-256 校验通过：{gotSha[..16]}…");
+        }
+        else
+        {
+            AppLog.Warn("DepotDownloader", "组件未做 SHA-256 校验（本次没取到官方 digest）—— 仅凭 GitHub 域名与 PK 头放行");
+        }
+
         ZipFile.ExtractToDirectory(zip, DepotDownloaderDir, overwriteFiles: true);
         try { File.Delete(zip); } catch { }
         AppLog.Warn("DepotDownloader", $"DepotDownloader 就绪（{(useFramework ? "framework" : "standalone")}）：" + DepotDownloaderExe);
@@ -275,6 +298,67 @@ public sealed partial class DepotDownloaderService
         {
             _depotEnsureGate.Release();
         }
+    }
+
+    /// <summary>
+    /// 向 GitHub Release API 查这个下载地址对应资产的官方 sha256。
+    /// 返回 null = 查不到（限流、不通、API 结构变化）—— 调用方按"没验"处理并留日志。
+    ///
+    /// <para>URL 形如
+    /// <c>https://github.com/{owner}/{repo}/releases/download/{tag}/{file}</c>，
+    /// 换成 <c>https://api.github.com/repos/{owner}/{repo}/releases/tags/{tag}</c>
+    /// 取 assets[].name 匹配上的那条 <c>digest</c> 字段（形如 "sha256:abc…"）。</para>
+    ///
+    /// <para>GitHub 从 2024 年起在 Release API 里提供 digest；老仓库/老资产可能没有，
+    /// 那时返回 null，不影响下载。</para>
+    /// </summary>
+    private static async Task<string?> TryGetOfficialSha256Async(string downloadUrl, CancellationToken ct)
+    {
+        try
+        {
+            var m = Regex.Match(downloadUrl,
+                @"^https://github\.com/([^/]+)/([^/]+)/releases/download/([^/]+)/([^/?#]+)$",
+                RegexOptions.IgnoreCase);
+            if (!m.Success) return null;
+
+            var api = $"https://api.github.com/repos/{m.Groups[1].Value}/{m.Groups[2].Value}" +
+                      $"/releases/tags/{m.Groups[3].Value}";
+            var fileName = Uri.UnescapeDataString(m.Groups[4].Value);
+
+            // API 走同一个 HttpClient（带 UA / 代理），并挂镜像候选 —— 国内直连 api.github.com 常不通
+            foreach (var candidate in UpdateService.GithubUrls(api))
+            {
+                try
+                {
+                    using var resp = await DepotHttp.GetAsync(candidate, ct);
+                    if (!resp.IsSuccessStatusCode) continue;
+                    var json = await resp.Content.ReadAsStringAsync(ct);
+                    using var doc = JsonDocument.Parse(json);
+                    if (!doc.RootElement.TryGetProperty("assets", out var assets)) continue;
+
+                    foreach (var a in assets.EnumerateArray())
+                    {
+                        if (!a.TryGetProperty("name", out var n)) continue;
+                        if (!string.Equals(n.GetString(), fileName, StringComparison.OrdinalIgnoreCase)) continue;
+                        if (!a.TryGetProperty("digest", out var d)) continue;
+
+                        var digest = d.GetString();
+                        if (string.IsNullOrWhiteSpace(digest)) continue;
+                        const string prefix = "sha256:";
+                        if (digest.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                            return digest[prefix.Length..].Trim().ToLowerInvariant();
+                    }
+                }
+                catch (OperationCanceledException) { throw; }
+                catch { /* 这个候选不行，换下一个 */ }
+            }
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            AppLog.Warn("DepotDownloader", "查询官方 digest 失败（按未校验处理）：" + ex.Message);
+        }
+        return null;
     }
 
     private const char BlockChar = (char)0x2588; // █
