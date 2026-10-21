@@ -69,6 +69,17 @@ node test/js-smoke/js-contract.mjs
 2. Windows SmartScreen 弹出蓝色拦截窗口时，点`更多信息`，再点`仍要运行`。
 3. 如果杀毒软件明确显示木马、高危或已经隔离，不要强行运行;删除该文件后重新从官方 GitHub Release 下载，仍然异常请带截图向作者反馈
 
+## Code signing policy（代码签名政策）
+
+Free code signing provided by [SignPath.io](https://signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).
+
+- 签名范围：仅限本仓库通过 GitHub Actions 构建的 Windows 安装包 `JuniGrid-cn-v<版本号>-setup.exe`。
+- Authors：[MLD（@MLD-yu）](https://github.com/MLD-yu)
+- Reviewers：MLD（外部 PR 由维护者审核后合并）
+- Approvers：MLD（每次签名请求由维护者批准）
+
+签名接入尚未完成，当前发布的安装包仍是未签名的。接入完成后，可在文件属性 → 数字签名中核对发布者为 SignPath Foundation。
+
 ## 许可
 
 本项目采用 **GNU General Public License v3.0** 发布，许可证全文见 [LICENSE](LICENSE)。
