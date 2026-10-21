@@ -11,31 +11,26 @@
 @inject IJSRuntime JS
 @inject TaskCenterService Center
 @inject DepotDownloaderService DepotQr
+@inject LocalPackDelivery Delivery
 @implements IDisposable
 
 <div class="jg-page">
     <div style="display:flex;justify-content:space-between;align-items:flex-end;flex-wrap:wrap;gap:8px">
         <div>
             <div style="display:flex;align-items:center;gap:14px">
-                @* v1.5.5：标题是面包屑式视图切换 —— 两段都可点，当前所在的那段是粗体（不可点）。
-                   mod 列表：Mod 管理 › 回收站（点回收站进去）
-                   回收站：  回收站 › Mod 管理（点 Mod 管理出来） *@
-                <h1 style="margin-top:0;margin-bottom:4px;display:flex;align-items:baseline;gap:8px">
-                    @if (_showTrash)
-                    {
-                        <span>@Loc.T("回收站")</span>
-                        <span style="font-size:15px;font-weight:400;opacity:.5">›</span>
-                        <button type="button" class="jg-crumb" title='@Loc.T("回到 Mod 管理")'
-                                @onclick="ToggleTrash">@Loc.T("Mod 管理")</button>
-                    }
-                    else
-                    {
-                        <span>@Loc.T("Mod 管理")</span>
-                        <span style="font-size:15px;font-weight:400;opacity:.5">›</span>
-                        <button type="button" class="jg-crumb" title='@Loc.T("进入回收站")'
-                                @onclick="ToggleTrash">@Loc.T("回收站")</button>
-                    }
-                </h1>
+                @* 视图开关做成顶导航那种滑块胶囊：固定顺序、同字号同字重，
+                   选中态由白色滑块平移承担（GSAP tab-select），不再改字号/挤位置。 *@
+                <div class="jg-viewtabs" role="tablist">
+                    <span class="jg-viewtabs-thumb"></span>
+                    <button type="button" role="tab"
+                            aria-selected="@(!_showTrash ? "true" : "false")"
+                            class="jg-viewtabs-item @(!_showTrash ? "active" : "")"
+                            @onclick="ShowModsView">@Loc.T("Mod 管理")</button>
+                    <button type="button" role="tab"
+                            aria-selected="@(_showTrash ? "true" : "false")"
+                            class="jg-viewtabs-item @(_showTrash ? "active" : "")"
+                            @onclick="ShowTrashView">@Loc.T("回收站")</button>
+                </div>
                 @* v1.07.3：普通文件夹图标，点击打开 Mods 目录；data-tip 与导航栏同款胶囊提示 *@
                 @* v1.5.5：跟着当前视图走 —— mod 列表进 Mods，回收站进 .junigrid_trash *@
                 <button class="jg-mods-folder-btn"
@@ -46,6 +41,24 @@
                         <path d="M855.04 385.024q19.456 2.048 38.912 10.24t33.792 23.04 21.504 37.376 2.048 54.272q-2.048 8.192-8.192 40.448t-14.336 74.24-18.432 86.528-19.456 76.288q-5.12 18.432-14.848 37.888t-25.088 35.328-36.864 26.112-51.2 10.24l-567.296 0q-21.504 0-44.544-9.216t-42.496-26.112-31.744-40.96-12.288-53.76l0-439.296q0-62.464 33.792-97.792t95.232-35.328l503.808 0q22.528 0 46.592 8.704t43.52 24.064 31.744 35.84 12.288 44.032l0 11.264-53.248 0q-40.96 0-95.744-0.512t-116.736-0.512-115.712-0.512-92.672-0.512l-47.104 0q-26.624 0-41.472 16.896t-23.04 44.544q-8.192 29.696-18.432 62.976t-18.432 61.952q-10.24 33.792-20.48 65.536-2.048 8.192-2.048 13.312 0 17.408 11.776 29.184t29.184 11.776q31.744 0 43.008-39.936l54.272-198.656q133.12 1.024 243.712 1.024l286.72 0z"/>
                     </svg>
                 </button>
+                @* v1.8.x：从本地文件安装 —— 拖放之外的正规入口。
+                   拖放在某些机器上可能不响应（WebView2 合成宿主的拖放行为不确定），
+                   这条链路是纯 WPF 文件对话框，一定能用。 *@
+                @if (!_showTrash)
+                {
+                    <button class="jg-mods-folder-btn"
+                            data-tip='@Loc.T("从本地文件安装压缩包")'
+                            aria-label='@Loc.T("从本地文件安装压缩包")'
+                            disabled="@_localPacksBusy"
+                            @onclick="PickLocalPacks">
+                        <svg viewBox="0 0 24 24" width="30" height="30" fill="none"
+                             stroke="#f2b544" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M12 16V4"/>
+                            <path d="m7 9 5-5 5 5"/>
+                            <path d="M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/>
+                        </svg>
+                    </button>
+                }
             </div>
             <div style="opacity:.7;font-size:13px">
                 @* v1.08：骨架屏只负责磁盘扫描阶段；检查更新期间列表照常显示 *@
@@ -1129,6 +1142,8 @@
 
     private bool _showTrash;
     private bool _trashLoaded;
+    private bool _viewSwitched;         // 刚切过 Mod 管理/回收站：OnAfterRender 里落滑块 + 播页面入场
+    private bool _trashEnterPending;    // 切到回收站时列表还在后台读，等回填完成再播入场
     private int _trashCount;
     private List<TrashItem> _trashItems = new();
     private List<TrashGroup> _trashGroups = new();
@@ -1163,6 +1178,20 @@
     {
         if (Cfg.Current.ModCovers.TryGetValue(displayName, out var url)) return url;
         return null;
+    }
+
+    private void ShowModsView()
+    {
+        if (!_showTrash) return;
+        _viewSwitched = true;
+        ToggleTrash();
+    }
+
+    private void ShowTrashView()
+    {
+        if (_showTrash) return;
+        _viewSwitched = true;
+        ToggleTrash();
     }
 
     private void ToggleTrash()
@@ -2492,6 +2521,34 @@
     // v0.36.0：mod 列表 AnimatedList 滚动效果（进入视口 scale/opacity + 顶底渐变）
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
+        // 视图开关：首帧落位；切换时让滑块像顶导航一样滑过去。
+        // 只给列表播入场（不碰整页，避免切换时整页闪）；回收站列表异步回填，等它出现再播。
+        try
+        {
+            if (firstRender)
+                await JS.InvokeVoidAsync("junigridJs.placeViewThumb");
+            if (_viewSwitched)
+            {
+                _viewSwitched = false;
+                await JS.InvokeVoidAsync("junigridJs.placeViewThumb");
+                if (!_showTrash || _trashLoaded)
+                {
+                    _trashEnterPending = false;
+                    await JS.InvokeVoidAsync("junigridJs.playViewEnter");
+                }
+                else
+                {
+                    _trashEnterPending = true;
+                }
+            }
+            else if (_trashEnterPending && _showTrash && _trashLoaded)
+            {
+                _trashEnterPending = false;
+                await JS.InvokeVoidAsync("junigridJs.playViewEnter");
+            }
+        }
+        catch { }
+
         // 刚渲染出 .open 的「⋮」菜单：这时 DOM 里已有它的最终矩形，才能判断该不该翻到按钮上方
         if (_menuFitPending)
         {
@@ -3182,6 +3239,97 @@
         Installer.OnChanged += OnInstallerChanged;
         // v1.06.7：顶栏点「当前页」Mod 管理图标 → 重新扫描 + 重新检查更新
         PageRefresh.OnRefresh += OnPageRefresh;
+        // v1.8.x：本地压缩包送达（WPF 拖放 / 文件对话框）→ 取走并安装
+        Delivery.Delivered += OnLocalPackDelivered;
+        // 拖入时本页可能还没挂载（用户停在别的页，MainLayout 导航过来才建这个组件）。
+        // 那一次 Delivered 已经发过了，这里补领一次队列里剩下的。
+        _ = InvokeAsync(DrainLocalPacksAsync);
+    }
+
+    /// <summary>有一批本地包送达。队列可能有积压（连拖两批），一次取一批装完再取。</summary>
+    private void OnLocalPackDelivered() => _ = InvokeAsync(DrainLocalPacksAsync);
+
+    /// <summary>把队列里所有待装批次取出来，逐个装。</summary>
+    private async Task DrainLocalPacksAsync()
+    {
+        if (_disposed) return;
+        // 防止重入：上一批还在装的时候又来一批，第二次调用直接返回 —— 第一轮循环
+        // 会一直 Take() 到队列空，所以新进的批次不会被漏掉。
+        if (_localPacksBusy) return;
+        _localPacksBusy = true;
+        await InvokeAsync(StateHasChanged);   // 让「从文件安装」按钮立刻变灰
+        try
+        {
+            while (!_disposed && Delivery.Take() is { } batch)
+            {
+                if (string.IsNullOrWhiteSpace(Cfg.Current.GamePath))
+                {
+                    await JS.InvokeVoidAsync("junigridJs.toast",
+                        Loc.T("还没设置游戏目录 —— 先到「设置」页选择"), "err");
+                    continue;
+                }
+                await InvokeAsync(StateHasChanged);
+                var installed = await Installer.InstallLocalPacksAsync(batch);
+                var failed = batch.Count - installed;
+                var msg = failed <= 0
+                    ? Loc.F("已安装 {0} 个本地包", installed)
+                    : Loc.F("已安装 {0} 个；{1} 个失败（原因见任务中心）", installed, failed);
+                await JS.InvokeVoidAsync("junigridJs.toast", msg, failed <= 0 ? "ok" : "err");
+            }
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warn("Mods", "本地包装失败：" + ex.Message);
+        }
+        finally
+        {
+            _localPacksBusy = false;
+            if (!_disposed) await InvokeAsync(StateHasChanged);   // 按钮恢复可点
+        }
+    }
+
+    /// <summary>「从文件安装」按钮：WPF 原生文件选择框，多选，只筛压缩包。</summary>
+    private async Task PickLocalPacks()
+    {
+        // 不因为 _localPacksBusy 直接返回 —— 那样用户点了没反应，会以为按钮坏了。
+        // 按钮本身已经 disabled，这里只是兜底提示。
+        if (_localPacksBusy)
+        {
+            await JS.InvokeVoidAsync("junigridJs.toast",
+                Loc.T("正在安装上一批，装完再选"), "err");
+            return;
+        }
+        AppLog.Info("LocalPack", $"文件安装按钮：busy={_localPacksBusy}");
+        var dlg = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = Loc.T("选择要安装的 mod 压缩包"),
+            Multiselect = true,
+            Filter = Loc.T("Mod 压缩包") + "|*.zip;*.7z;*.rar|" + Loc.T("所有文件") + "|*.*",
+            CheckFileExists = true,
+        };
+        bool? picked;
+        try
+        {
+            // 明确给 owner：没有 owner 时原生对话框可能开到主窗后面/别的显示器，看起来就是“卡住”。
+            var owner = System.Windows.Application.Current?.MainWindow;
+            picked = owner is null ? dlg.ShowDialog() : dlg.ShowDialog(owner);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error("LocalPack", "文件对话框异常: " + ex);
+            await JS.InvokeVoidAsync("junigridJs.toast", Loc.T("打开文件选择框失败"), "err");
+            return;
+        }
+        AppLog.Info("LocalPack", $"文件对话框返回：{picked}");
+        if (picked != true) return;
+        var packs = InstallService.FilterLocalPacks(dlg.FileNames);
+        if (packs.Count == 0)
+        {
+            await JS.InvokeVoidAsync("junigridJs.toast",
+                Loc.T("只支持压缩包（zip / 7z / rar）"), "err");
+            return;
+        }
+        Delivery.Deliver(packs);   // 与拖放走同一条路：入队 → Delivered → 本页取走
     }
 
     /// <summary>顶栏刷新信号（只有已停留在本页时才会触发）。
@@ -3228,6 +3376,9 @@
     // 批量改名 63 次触发 63×N 个 Rescan 回调 → UI 卡死（"进详情再回来才卡"的根因）。
     private bool _disposed;
 
+    // v1.8.x：本地压缩包安装进行中（禁掉「从文件安装」按钮，并挡住重入）
+    private bool _localPacksBusy;
+
     /// <summary>离开本页时叫停在飞的 N 网扇出（更新检查 / 精查 / 封面与分类回填）。
     /// AUP 二审盯着的就是这个：旧写法 Dispose 只解绑事件，那几路扇出会一路打完才停，
     /// 表现成「人已经不在 Mods 页了，客户端还在连着发请求」，同时占着 NexusService 的 2 个槽，
@@ -3244,6 +3395,7 @@
         try { LeaveCts.Cancel(); } catch { }
         Installer.OnChanged -= OnInstallerChanged;
         PageRefresh.OnRefresh -= OnPageRefresh;
+        Delivery.Delivered -= OnLocalPackDelivered;
         // vNext：留下扫描快照 —— 从其它页回来时先用它秒显列表，后台再重扫磁盘
         _svMods = _mods;
         _svFilter = _filter;

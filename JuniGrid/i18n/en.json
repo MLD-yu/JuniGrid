@@ -1,4 +1,4 @@
-{
+﻿{
   "游戏版本管理": "Game Version Manager",
   "已锁定": "Locked",
   "未锁定": "Unlocked",
@@ -1088,5 +1088,20 @@
   "对不上": "Mismatch",
   "{0} 张图盘上的样子不是我们记下的那份": "{0} images on disk aren't the copy we recorded",
   "这张我们挪开过，那份存在 content-foreign 里": "We set this one aside; that image is kept in content-foreign",
-  "要恢复游戏原版：Steam 客户端 → 库 → 星露谷物语 → 属性 → 已安装文件 → 验证游戏文件完整性。这一栏只标注：我们不会拿自己记下的那份去覆盖本体，因为那张也可能是别人盖上去的图。": "To get the real vanilla images back: Steam client → Library → Stardew Valley → Properties → Installed Files → Verify integrity of game files. This list only points them out: we never overwrite the game with our own copy, because ours may itself be someone else's mod image."
+  "要恢复游戏原版：Steam 客户端 → 库 → 星露谷物语 → 属性 → 已安装文件 → 验证游戏文件完整性。这一栏只标注：我们不会拿自己记下的那份去覆盖本体，因为那张也可能是别人盖上去的图。": "To get the real vanilla images back: Steam client → Library → Stardew Valley → Properties → Installed Files → Verify integrity of game files. This list only points them out: we never overwrite the game with our own copy, because ours may itself be someone else's mod image.",
+  "从本地文件安装压缩包": "Install an archive from a local file",
+  "松手即安装": "Drop to install",
+  "支持 zip / 7z / rar · mod / 内容包": "Supports zip / 7z / rar · mods & content packs",
+  "选择要安装的 mod 压缩包": "Choose mod archives to install",
+  "Mod 压缩包": "Mod archives",
+  "所有文件": "All files",
+  "只支持压缩包（zip / 7z / rar）": "Only archives are supported (zip / 7z / rar)",
+  "已安装 {0} 个本地包": "Installed {0} local pack(s)",
+  "已安装 {0} 个；{1} 个失败（原因见任务中心）": "Installed {0}; {1} failed (see the task center for details)",
+  "安装本地包：{0}": "Installing local pack: {0}",
+  "安装完成：{0}": "Installed: {0}",
+  "安装已取消": "Install cancelled",
+  "打开文件选择框失败": "Couldn't open the file picker",
+  "只支持压缩包（zip / 7z / rar），已忽略这 {0} 个文件": "Only archives are supported (zip / 7z / rar); ignored {0} file(s)",
+  "正在安装上一批，装完再选": "Another batch is still installing — pick again when it finishes"
 }

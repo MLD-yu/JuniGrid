@@ -58,5 +58,58 @@
                Visibility="Collapsed"/>
 
         <!-- 内置 Nexus 浏览器覆盖层已移除：统一改用系统浏览器跳转 -->
+
+        <!-- ===== v1.8.x：本地 mod 压缩包拖放蒙层 =====
+             必须用 WPF 画，不能用网页 DOM：外部拖放由注册在主窗 HWND 上的
+             OLE drop target（WindowFileDropTarget）整层接管，网页收不到任何
+             drag 事件。与 ThemeRevealOverlay 同级 —— 那一层已经证明 WPF 元素
+             能盖在合成 WebView 之上。IsHitTestVisible=false：不挡任何交互。 -->
+        <Border x:Name="DropHint"
+                Visibility="Collapsed"
+                IsHitTestVisible="False"
+                Background="#CC0B1510">
+            <Border x:Name="DropHintFrame"
+                    Margin="36"
+                    BorderBrush="#F3F6FB"
+                    BorderThickness="3"
+                    CornerRadius="18"
+                    Background="#14F3F6FB">
+                <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                    <Border x:Name="DropHintIconBg"
+                            Width="136" Height="136"
+                            CornerRadius="68"
+                            Background="#24F3F6FB"
+                            HorizontalAlignment="Center">
+                        <Viewbox Width="80" Height="80"
+                                 HorizontalAlignment="Center"
+                                 VerticalAlignment="Center"
+                                 Stretch="Uniform">
+                            <Canvas Width="24" Height="24">
+                                <!-- 下载标志：箭头落进托盘，线条风格与 Mods 页的文件安装图标一致 -->
+                                <Path Data="M12,4 V16 M7,11 L12,16 L17,11 M4,16 V18 A2,2 0 0 0 6,20 H18 A2,2 0 0 0 20,18 V16"
+                                      Stroke="#FFF3F6FB"
+                                      StrokeThickness="1.9"
+                                      StrokeStartLineCap="Round"
+                                      StrokeEndLineCap="Round"
+                                      StrokeLineJoin="Round"/>
+                            </Canvas>
+                        </Viewbox>
+                    </Border>
+                    <TextBlock x:Name="DropHintTitle"
+                               Margin="0,26,0,0"
+                               FontSize="30"
+                               FontWeight="SemiBold"
+                               Foreground="#FFF3F6FB"
+                               HorizontalAlignment="Center"
+                               Text="松手即安装"/>
+                    <TextBlock x:Name="DropHintSub"
+                               Margin="0,12,0,0"
+                               FontSize="15"
+                               Foreground="#B3F3F6FB"
+                               HorizontalAlignment="Center"
+                               Text="支持 zip / 7z / rar · mod / 内容包"/>
+                </StackPanel>
+            </Border>
+        </Border>
     </Grid>
 </Window>

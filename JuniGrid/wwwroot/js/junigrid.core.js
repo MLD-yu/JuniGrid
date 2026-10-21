@@ -378,11 +378,54 @@ window.junigridJs.placeNavThumb = function (opts) {
     // 双 rAF：等 Blazor 把 .active 挪到目标项 + 布局回流完成后再量
     requestAnimationFrame(() => requestAnimationFrame(place));
 };
+// Mod 管理页的「Mod 管理 / 回收站」视图开关：与顶导航同一支滑块（GSAP tab-select 弹簧）。
+window.junigridJs.placeViewThumb = function (opts) {
+    const bar = document.querySelector('.jg-viewtabs');
+    const thumb = document.querySelector('.jg-viewtabs-thumb');
+    if (!bar || !thumb) return;
+    const instant = !!(opts && opts.instant);
+    const place = () => {
+        const active = bar.querySelector('.jg-viewtabs-item.active');
+        if (!active) { thumb.style.width = '0px'; return; }
+        const br = bar.getBoundingClientRect();
+        const r = active.getBoundingClientRect();
+        const left = r.left - br.left, width = r.width;
+        if (!window.gsap || instant || !thumb.__placed) {
+            if (thumb.__tl) { thumb.__tl.kill(); thumb.__tl = null; }
+            thumb.style.left = left + 'px';
+            thumb.style.width = width + 'px';
+        } else {
+            if (thumb.__tl) thumb.__tl.kill();
+            thumb.__tl = gsap.to(thumb, {
+                left: left, width: width, duration: 0.28,
+                ease: 'back.out(1.4)', overwrite: 'auto',
+                onComplete: function () { thumb.__tl = null; }
+            });
+        }
+        thumb.__placed = true;
+    };
+    requestAnimationFrame(() => requestAnimationFrame(place));
+};
+// 视图切换时只让列表入场（与 jg-child-in 同一套 300ms 淡入+上移），不碰整页 ——
+// 用 playPageEnter 会把 .jg-main 的 opacity 从 0 拉起，切换时整页会闪一下。
+window.junigridJs.playViewEnter = function () {
+    const lists = Array.from(document.querySelectorAll('.jg-modrows:not(.jg-modrows-skeleton)'));
+    const list = lists.find(el => el.offsetHeight > 0);
+    if (!list) return;
+    list.classList.remove('jg-view-enter');
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+        list.classList.add('jg-view-enter');
+        setTimeout(() => list.classList.remove('jg-view-enter'), 340);
+    }));
+};
 // 缩放/字体加载等导致宽度变化时，滑块实时跟随（缩放走即时落位，不弹）
 (function () {
     if (window.__navThumbBound) return; window.__navThumbBound = true;
     let raf = 0;
-    const re = () => { cancelAnimationFrame(raf); raf = requestAnimationFrame(() => window.junigridJs.placeNavThumb({ instant: true })); };
+    const re = () => { cancelAnimationFrame(raf); raf = requestAnimationFrame(() => {
+        window.junigridJs.placeNavThumb({ instant: true });
+        window.junigridJs.placeViewThumb({ instant: true });
+    }); };
     window.addEventListener('resize', re);
     if (document.fonts && document.fonts.ready) document.fonts.ready.then(re);
 })();

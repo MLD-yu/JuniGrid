@@ -346,15 +346,47 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
 }.jg-page-enter > *:nth-child(1) { animation-delay: 20ms; }.jg-page-enter > *:nth-child(2) { animation-delay: 40ms; }.jg-page-enter > *:nth-child(3) { animation-delay: 60ms; }.jg-page-enter > *:nth-child(4) { animation-delay: 80ms; }.jg-page-enter > *:nth-child(5) { animation-delay: 100ms; }.jg-page-enter > *:nth-child(6) { animation-delay: 120ms; }
 @keyframes jg-child-in {from { opacity: 0; transform: translateY(10px); }to   { opacity: 1; transform: translateY(0); }
 }/* ── v0.32.0：Mod 管理工具条（chips + 排序下拉 + 展开式搜索） ── */
-/* v1.5.5：标题里的面包屑段 —— 用真按钮而不是 span，键盘和读屏都能操作 */
-.jg-crumb {
-    font-size: 15px; font-weight: 600; opacity: .65;
-    background: none; border: none; padding: 0; margin: 0;
-    color: inherit; font-family: inherit; cursor: pointer;
-    border-radius: 4px;
+/* 视图开关：沿用顶导航的磨砂底 + 白色滑块（.jg-topnav 的同一套视觉语言） */
+.jg-viewtabs {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    padding: 4px;
+    background: var(--jg-topnav-bg);
+    border-radius: 14px;
+    backdrop-filter: saturate(180%) blur(20px);
 }
-.jg-crumb:hover { opacity: 1; text-decoration: underline; text-underline-offset: 3px; }
-.jg-crumb:focus-visible { outline: 2px solid var(--jg-outline); outline-offset: 2px; }
+.jg-viewtabs-thumb {
+    position: absolute;
+    top: 4px; bottom: 4px; left: 0; width: 0;
+    border-radius: 10px;
+    background: var(--jg-nav-thumb);
+    box-shadow: 0 1px 6px rgba(0,0,0,0.10);
+    pointer-events: none;
+    will-change: left, width;
+}
+.jg-viewtabs-item {
+    position: relative;
+    z-index: 1;
+    height: 30px;
+    padding: 0 18px;
+    border: none;
+    background: none;
+    border-radius: 10px;
+    color: var(--jg-text-2);
+    font: inherit;
+    font-size: 14px;
+    font-weight: 600;
+    line-height: 30px;
+    cursor: pointer;
+    transition: color 120ms ease;
+}
+.jg-viewtabs-item.active { color: var(--jg-ink-strong); }
+.jg-viewtabs-item:hover { color: var(--jg-ink-strong); }
+.jg-viewtabs-item:focus-visible { outline: 2px solid var(--jg-outline); outline-offset: 2px; }
+/* 视图切换只给列表播入场，头部不闪（.jg-page-enter 的整页动画不在这里用） */
+.jg-view-enter { animation: jg-child-in 300ms cubic-bezier(.22, 1, .36, 1) both; }
 
 .jg-mods-toolbar {
     display: flex;

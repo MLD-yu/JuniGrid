@@ -601,13 +601,18 @@
         ("violet",    "紫罗兰", "Violet",    "#7c3aed"),
     };
 
-    private void SetAccent(string key)
+    private async Task SetAccent(string key)
     {
         var c = Cfg.Current;
         if (string.Equals(c.Accent, key, StringComparison.OrdinalIgnoreCase)) return;
         c.Accent = key;
         Cfg.Save(c);
-        _ = JS.InvokeVoidAsync("junigridJs.applyAccent", key, SystemHex);
+        try
+        {
+            var accentHex = await JS.InvokeAsync<string>("junigridJs.applyAccent", key, SystemHex);
+            MainWindow.ApplyAccent(accentHex);
+        }
+        catch { }
         StateHasChanged();   // 刷新选中态描边
     }
     private string _nexusName = "";

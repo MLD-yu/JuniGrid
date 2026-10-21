@@ -46,10 +46,13 @@ public sealed class TrashService
         foreach (var dir in Directory.GetDirectories(root))
         {
             var folder = Path.GetFileName(dir);
-            if (folder.StartsWith('.')) continue;   // 回收站自己的隐藏标记之类
+            // 不要按 "." 前缀跳过：被禁用的 mod 原目录名就以 "." 开头，进回收站后仍是
+            // ".原名_时间戳"。用户实测 .TP's Emily Portrait 因此在回收站里消失。
             var (name, at) = ParseFolderName(folder);
             var (bytes, files) = Measure(dir);
             var meta = ReadManifestMeta(dir);
+            // 还原默认会去掉开头的点（启用被禁用的 mod），冲突判定也按还原目标名比。
+            var restoreName = name.Trim('.', ' ');
             list.Add(new TrashItem(
                 FolderName: folder,
                 DisplayName: name,
@@ -57,7 +60,7 @@ public sealed class TrashService
                 Bytes: bytes,
                 FileCount: files,
                 NexusModId: ReadNexusId(dir),
-                AlsoInMods: Directory.Exists(Path.Combine(modsDir, name)),
+                AlsoInMods: restoreName.Length > 0 && Directory.Exists(Path.Combine(modsDir, restoreName)),
                 RelPath: folder,
                 Author: meta.Author,
                 Version: meta.Version,
@@ -96,6 +99,18 @@ public sealed class TrashService
             }
 
             Directory.Move(src, dst);
+            // 还原也算一次「新装」：文件夹 mtime 刷新到现在，列表的「最新在前」才会把它排到顶部。
+            // 捆绑包的子包也可能各自排序，所以子目录一起刷新。
+            try
+            {
+                var now = DateTime.Now;
+                Directory.SetLastWriteTime(dst, now);
+                foreach (var sub in Directory.EnumerateDirectories(dst, "*", SearchOption.AllDirectories))
+                {
+                    try { Directory.SetLastWriteTime(sub, now); } catch { }
+                }
+            }
+            catch (Exception ex) { AppLog.Warn("Trash", "还原后刷新时间戳失败: " + ex.Message); }
             AppLog.Info("Trash", $"[还原] {item.FolderName} → {name}");
             return null;
         }
@@ -162,7 +177,10 @@ public sealed class TrashService
     {
         var bad = Path.GetInvalidFileNameChars();
         var cleaned = new string(s.Trim().Select(c => bad.Contains(c) ? '_' : c).ToArray());
-        return cleaned.Trim('.', ' ');
+        // 开头的 "." 是禁用标记；还原进 Mods 时去掉它，用户才能在列表里看到并管理。
+        // 结尾的 "." / 空格本来就非法，一并裁掉；全是点的名字直接拒绝。
+        cleaned = cleaned.Trim('.', ' ');
+        return cleaned is "" or "." or ".." ? "" : cleaned;
     }
 
     private static (long Bytes, int Files) Measure(string dir)

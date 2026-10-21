@@ -121,6 +121,29 @@ public class TrashServiceTests : IDisposable
         Assert.Equal(49397, item.NexusModId);
     }
 
+    /// <summary>被禁用的 mod 原目录名以 "." 开头；进回收站后仍叫 ".原名_时间戳"，
+    /// 不能被当成"回收站自己的隐藏标记"跳过（用户实测 .TP's Emily Portrait 消失）。</summary>
+    [Fact]
+    public void List_IncludesDotPrefixedDisabledMod()
+    {
+        MakeTrashEntry(".HiddenMod_20261016_120000");
+
+        var item = Assert.Single(TrashService.List(_game));
+        Assert.Equal(".HiddenMod", item.DisplayName);
+        Assert.Equal(".HiddenMod_20261016_120000", item.FolderName);
+    }
+
+    /// <summary>还原会去掉点前缀（启用），冲突判定要看启用后的目标名，而不是带点的那份。</summary>
+    [Fact]
+    public void List_DotPrefixedEntry_FlagsVisibleTargetInMods()
+    {
+        MakeTrashEntry(".HiddenMod_20261016_120000");
+        Directory.CreateDirectory(Path.Combine(ModsDir, "HiddenMod"));
+
+        var item = Assert.Single(TrashService.List(_game));
+        Assert.True(item.AlsoInMods);
+    }
+
     // ── 还原 ──────────────────────────────────────────────────
 
     [Fact]
@@ -175,6 +198,33 @@ public class TrashServiceTests : IDisposable
 
         Assert.Null(TrashService.Restore(_game, item, "Correct Name", overwrite: false));
         Assert.True(Directory.Exists(Path.Combine(ModsDir, "Correct Name")));
+    }
+
+    /// <summary>还原被禁用的 mod 时去掉开头的 "." —— 否则它仍是隐藏目录，用户在 Mods
+    /// 列表里根本看不到刚还原的那份（用户实测 .TP's Emily Portrait 还原后消失）。</summary>
+    [Fact]
+    public void Restore_EnablesDotPrefixedDisabledMod()
+    {
+        MakeTrashEntry(".HiddenMod_20261016_120000");
+        var item = Assert.Single(TrashService.List(_game));
+
+        Assert.Null(TrashService.Restore(_game, item, null, overwrite: false));
+        Assert.True(Directory.Exists(Path.Combine(ModsDir, "HiddenMod")));
+        Assert.False(Directory.Exists(Path.Combine(ModsDir, ".HiddenMod")));
+    }
+
+    /// <summary>「最新在前」按目录 mtime 排；还原必须把 mtime 刷到现在，否则刚还原的
+    /// 那份会停在旧位置（用户实测还原后不在顶部）。</summary>
+    [Fact]
+    public void Restore_RefreshesFolderTime_ForNewestFirstSort()
+    {
+        MakeTrashEntry("Old_20200101_000000");
+        var item = Assert.Single(TrashService.List(_game));
+        var before = DateTime.Now.AddSeconds(-2);
+
+        Assert.Null(TrashService.Restore(_game, item, null, overwrite: false));
+
+        Assert.True(Directory.GetLastWriteTime(Path.Combine(ModsDir, "Old")) >= before);
     }
 
     [Fact]

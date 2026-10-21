@@ -4,6 +4,7 @@
 @inject TranslationService Trans
 @inject NavigationManager Nav
 @inject ConfigService Cfg
+@inject LocalPackDelivery Delivery
 @implements IDisposable
 
 <div class="jg-shell">
@@ -31,6 +32,24 @@
     protected override void OnInitialized()
     {
         Nav.LocationChanged += OnLocChanged;
+        Delivery.Delivered += OnLocalPackDelivered;
+    }
+
+    /// <summary>v1.8.x：有本地包送达时，若用户不在 Mod 管理页就带他过去 ——
+    /// 安装结果、列表刷新都在那一页，留在原地装完等于什么都没看见。
+    /// <para>真正的安装在 <c>Mods.razor</c>：它是唯一从队列里 <c>Take()</c> 的地方。
+    /// 这里只管导航，不碰队列。</para></summary>
+    private void OnLocalPackDelivered()
+    {
+        _ = InvokeAsync(() =>
+        {
+            try
+            {
+                if (!Nav.Uri.Contains("/mods", StringComparison.OrdinalIgnoreCase))
+                    Nav.NavigateTo("/mods");
+            }
+            catch { }
+        });
     }
 
     private void OnLocChanged(object? sender, Microsoft.AspNetCore.Components.Routing.LocationChangedEventArgs e)
@@ -46,7 +65,13 @@
         if (firstRender)
         {
             // 颜色主题 + 系统强调色：首帧应用（system 模式注入 Windows 强调色，其余走 CSS 主题块）
-            try { await JS.InvokeVoidAsync("junigridJs.applyAccent", Cfg.Current.Accent, JuniGrid.App.GetSystemAccentHex()); } catch { }
+            try
+            {
+                var accentHex = await JS.InvokeAsync<string>("junigridJs.applyAccent",
+                    Cfg.Current.Accent, JuniGrid.App.GetSystemAccentHex());
+                MainWindow.ApplyAccent(accentHex);
+            }
+            catch { }
             // v0.20.0：不要一挂载完就通知 —— 那时 shell DOM 有了但 CSS 还没铺完，
             // WPF 层立刻淡入会看到深色兜底底色。让 JS 那边先等两帧 rAF + 一小段 stabilize，
             // 直到浅色主题真正绘制稳定，再通知 WPF 主窗淡入。
@@ -72,5 +97,6 @@
     public void Dispose()
     {
         Nav.LocationChanged -= OnLocChanged;
+        Delivery.Delivered -= OnLocalPackDelivered;
     }
 }

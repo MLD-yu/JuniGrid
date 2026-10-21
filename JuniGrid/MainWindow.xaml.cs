@@ -275,6 +275,8 @@ public partial class MainWindow : Window
             services.AddSingleton<PageRefreshService>();
             services.AddSingleton<TaskCenterService>();
             services.AddSingleton<InstallService>();
+            // v1.8.x：本地压缩包拖放/文件选择 —— WPF 宿主层与 Blazor 页之间的交接点
+            services.AddSingleton<LocalPackDelivery>();
             services.AddSingleton<NexusOAuthService>();
             // v0.2.1：缓存与存储管理 + 内存管理
             services.AddSingleton<StorageService>();
@@ -357,6 +359,11 @@ public partial class MainWindow : Window
                 try
                 {
                     _wv2 = args.WebView;   // v0.2.1：留存引用，最小化时挂起 WebView2 省内存
+                    // v1.8.x：本地 mod 压缩包拖放 —— 把外部拖放从 WebView2 手里收回来，
+                    // 由 WPF 窗口这一层接（只有 WPF 拿得到真实磁盘路径；网页侧 DataTransfer
+                    // 只有 File 对象，几百 MB 的包不可能走 JS interop 转字节）。
+                    // 见 HookLocalPackDrop 的说明与 OnWindowDrop。
+                    HookLocalPackDrop(args.WebView);
                     // 未渲染帧的兜底色默认是白色：最小化恢复/可见性切换的瞬间会先闪白再出
                     // 内容（浅色主题下是"白→内容"跳变）。设为 shell 主题色后，
                     // 任何"还没内容"的帧都是界面本来的浅色，恢复全程无色跳。
@@ -498,6 +505,228 @@ public partial class MainWindow : Window
     // 在部分系统上不会真正把窗口从屏幕撤掉，会残留一个透明交互窗口，
     // 把下面的桌面鼠标点拦截（最小化后原区域点不动）。用 ShowWindow
     // 强制系统级最小化，会连同 WebView 子窗口一起正确处理。
+    // ══════════════════════════════════════════════════════════════
+    // v1.8.x：本地 mod 压缩包拖放（OLE drop target 直接接管 HWND）
+    // ══════════════════════════════════════════════════════════════
+    // 为什么必须在 WPF 层接：网页侧的 DataTransfer 只暴露 File 对象、不暴露磁盘路径，
+    // 而一个 mod 包动辄几十上百 MB，不可能走 JS interop 转字节。
+    //
+    // 为什么不用 WPF 的 AllowDrop/Drop 事件（2026-10-21 实机证伪 + 窗口属性实测）：
+    // Composition 宿主在主窗里只建了一个 0×0 的 Chrome_WidgetWin_0 子窗（不盖客户区）；
+    // 主窗 HWND 上的 OleDropTargetInterface 属性指向的是旧构建自己开 Window.AllowDrop
+    // 时 WPF 注册的 target（vtable 在 coreclr 托管 thunk）。WPF 的 target 以命中元素
+    // 的 AllowDrop 为准：光标下是 WebView2 控件，它没开，DragEnter 直接判 None ——
+    // 窗口上的 DragEnter/Drop 一次都不会触发，光标全程禁止。
+    //
+    // 现在的做法：初始化完成后 RevokeDragDrop 摘掉既有 target，RegisterDragDrop
+    // 换上我们自己的（WindowFileDropTarget），不经过 WPF 的命中判定。1s/3s、
+    // 导航完成、窗口重新激活时各补一次注册，兜住迟到/重注册的竞态。
+
+    private WindowFileDropTarget? _dropTarget;
+    private bool _dropHooked;
+    private IntPtr _dropTargetProp;          // 我们注册后 OLE 写在主窗上的 target 指针
+    private System.Windows.Threading.DispatcherTimer? _dropWatch;
+
+    /// <summary>WebView2 初始化完成后调用：摘掉它的 OLE 拖放目标，换上我们的。</summary>
+    private void HookLocalPackDrop(Microsoft.Web.WebView2.Wpf.WebView2CompositionControl webView)
+    {
+        try
+        {
+            // 让 WebView2 自己对"外部拖放"失去兴趣（它的 target 马上会被摘掉；
+            // 万一哪天又被它注册回来，这个开关保证它拒绝而不是吞掉）。
+            webView.AllowExternalDrop = false;
+        }
+        catch (Exception ex) { Log("关掉 WebView2 外部拖放失败: " + ex.Message); }
+
+        if (_dropHooked) return;
+        _dropHooked = true;
+
+        _dropTarget = new WindowFileDropTarget(
+            show => Dispatcher.BeginInvoke(() => { if (show) ShowDropHint(); else ResetDropHint(); }),
+            files => Dispatcher.BeginInvoke(() => OnFilesDropped(files)),
+            line => Log(line));
+
+        RegisterOurDropTarget("init");
+        // 竞态兜底：WebView2 的初始化收尾可能晚于本事件，各再查一次。
+        ScheduleDropTargetRetry(TimeSpan.FromSeconds(1), "retry1");
+        ScheduleDropTargetRetry(TimeSpan.FromSeconds(3), "retry3");
+
+        // 导航/重新激活后 WebView2 有可能把 target 注册回来。这里只「查」不「换」：
+        // 指针还是我们的就什么都不做 —— 每次激活都 Revoke+Register 会在拖拽刚进入时
+        // 把 target 摘掉，正是「有时候光标是禁止符」的来源。
+        try
+        {
+            webView.CoreWebView2.NavigationCompleted += (_, _) =>
+                Dispatcher.BeginInvoke(() => EnsureOurDropTarget("NavigationCompleted"));
+        }
+        catch (Exception ex) { Log("[drop] 挂 NavigationCompleted 失败: " + ex.Message); }
+        Activated += (_, _) => EnsureOurDropTarget("Activated");
+
+        // 1s 看门狗：读窗口属性判断 target 有没有被换掉；顺带清掉子窗上可能迟到的 target。
+        _dropWatch = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
+        _dropWatch.Tick += (_, _) => EnsureOurDropTarget("watch");
+        _dropWatch.Start();
+
+        Deactivated += (_, _) => _dropTarget?.ForceLeave();   // 切走时强制收蒙层，防卡死
+        Log("本地包拖放：OLE drop target 接管已发起");
+    }
+
+    private void ScheduleDropTargetRetry(TimeSpan delay, string reason)
+    {
+        var timer = new System.Windows.Threading.DispatcherTimer { Interval = delay };
+        timer.Tick += (_, _) => { timer.Stop(); EnsureOurDropTarget(reason); };
+        timer.Start();
+    }
+
+    /// <summary>只读窗口上的 <c>OleDropTargetInterface</c>：还是我们注册的那个就跳过，
+    /// 只有被换掉/被摘掉才重新接管。拖拽进行中绝不 Revoke（会打断 OLE 会话）。</summary>
+    private void EnsureOurDropTarget(string reason)
+    {
+        if (_dropTarget is null) return;
+        if (_dropTarget.IsDragging) return;   // 拖拽进行中绝不 Revoke（会打断 OLE 会话）
+        try
+        {
+            var hwnd = new WindowInteropHelper(this).Handle;
+            if (hwnd == IntPtr.Zero) return;
+            var current = WindowFileDropTarget.GetDropTargetPointer(hwnd);
+            if (current != _dropTargetProp || current == IntPtr.Zero)
+            {
+                Log($"[drop] {reason}: target 指针 0x{_dropTargetProp:X} → 0x{current:X}，重新接管");
+                RegisterOurDropTarget(reason);
+            }
+            // 只读检查，不在这里碰 OLE：原生文件对话框打开期间，任何 Revoke/Register
+            // 都可能与它的 Shell OLE 会话抢锁（表现就是“点从本地文件安装后卡住”）。
+        }
+        catch (Exception ex) { Log($"[drop] {reason} 检查异常: {ex.Message}"); }
+    }
+
+    /// <summary>摘掉主窗既有 target，换上我们的；顺手摘掉子窗上的（有则摘，没有是常态）。
+    /// <para>2026-10-21 实测：主窗 HWND 有 <c>OleDropTargetInterface</c> 属性、0×0 的
+    /// <c>Chrome_WidgetWin_0</c> 子窗没有 —— 旧 WPF AllowDrop 路线失败是命中元素
+    /// （WebView2 控件）没开 AllowDrop，不是子窗截胡。日志保留 revoke/register 的
+    /// HRESULT 与子窗清单，下一轮实机可直接判读。</para></summary>
+    private void RegisterOurDropTarget(string reason)
+    {
+        if (_dropTarget is null) return;
+        if (_dropTarget.IsDragging)
+        {
+            Log($"[drop] {reason}: 拖拽进行中，跳过重注册");
+            return;
+        }
+        try
+        {
+            var hwnd = new WindowInteropHelper(this).Handle;
+            if (hwnd == IntPtr.Zero) { Log($"[drop] {reason}: HWND=0"); return; }
+            int oleHr = WindowFileDropTarget.OleInitialize(IntPtr.Zero);   // 已初始化返回 S_FALSE，无害
+            int revokeHr = WindowFileDropTarget.RevokeDragDrop(hwnd);      // 有则摘，没有报 NOTREGISTERED
+            int regHr = WindowFileDropTarget.RegisterDragDrop(hwnd, _dropTarget);
+            _dropTargetProp = WindowFileDropTarget.GetDropTargetPointer(hwnd);
+            Log($"[drop] {reason}: ole={WindowFileDropTarget.HrName(oleHr)} " +
+                $"revoke(main)={WindowFileDropTarget.HrName(revokeHr)} " +
+                $"register={WindowFileDropTarget.HrName(regHr)} prop=0x{_dropTargetProp:X}");
+
+            var children = WindowFileDropTarget.RevokeChildDropTargets(hwnd);
+            if (children.Count == 0) Log($"[drop] {reason}: 无子 HWND");
+            foreach (var c in children)
+                Log($"[drop] {reason}: child hwnd=0x{c.Hwnd:X} class={c.ClassName} " +
+                    $"{c.Width}x{c.Height} vis={c.Visible} revoke={WindowFileDropTarget.HrName(c.RevokeHr)}");
+        }
+        catch (Exception ex) { Log($"[drop] {reason} 异常: {ex.Message}"); }
+    }
+
+    /// <summary>松手后拿到路径。粗筛在这一层做完：拖进来的如果是文件夹或 .txt，
+    /// 根本不该跳到 Mod 管理页、更不该开任务。</summary>
+    private void OnFilesDropped(string[] dropped)
+    {
+        if (dropped.Length == 0) return;
+        var packs = InstallService.FilterLocalPacks(dropped);
+        if (packs.Count == 0)
+        {
+            Log($"拖放的 {dropped.Length} 个条目里没有可用压缩包");
+            NotifyDroppedNothing(dropped.Length);
+            return;
+        }
+        Log($"拖入 {packs.Count} 个本地包");
+        App.Services?.GetService<LocalPackDelivery>()?.Deliver(packs);
+    }
+
+    // 拖放蒙层的颜色：前端回传 "mode|实际强调色"。
+    // system（默认）主题是中性黑白，蒙层用白色；命名主题才用其强调色。
+    private static readonly System.Windows.Media.Color DropHintNeutral =
+        System.Windows.Media.Color.FromRgb(0xF3, 0xF6, 0xFB);
+    private System.Windows.Media.Color _dropAccent = DropHintNeutral;
+
+    /// <summary>前端 applyAccent 之后调用，参数是 "mode|强调色"。
+    /// 默认/system 模式取 <see cref="DropHintNeutral"/>（黑白主题），其余取强调色。</summary>
+    public static void ApplyAccent(string? info)
+    {
+        var w = Application.Current?.MainWindow as MainWindow;
+        if (w is null) return;
+        w.Dispatcher.BeginInvoke(() =>
+        {
+            try
+            {
+                var raw = (info ?? "").Trim();
+                var sep = raw.IndexOf('|');
+                var mode = sep > 0 ? raw[..sep] : "system";
+                var accentHex = sep > 0 ? raw[(sep + 1)..] : raw;
+                var color = string.Equals(mode, "system", StringComparison.OrdinalIgnoreCase)
+                    ? DropHintNeutral
+                    : System.Windows.Media.ColorConverter.ConvertFromString(accentHex)
+                        is System.Windows.Media.Color parsed ? parsed : DropHintNeutral;
+                w._dropAccent = color;
+                w.RefreshDropHintBrushes();
+                Log($"[drop] 蒙层颜色 = #{color.R:X2}{color.G:X2}{color.B:X2} " +
+                    $"(mode={mode}, accent={accentHex})");
+            }
+            catch (Exception ex) { Log("ApplyAccent 失败: " + ex.Message); }
+        });
+    }
+
+    private void RefreshDropHintBrushes()
+    {
+        try
+        {
+            var c = _dropAccent;
+            DropHintFrame.BorderBrush = new System.Windows.Media.SolidColorBrush(c);
+            DropHintFrame.Background = new System.Windows.Media.SolidColorBrush(
+                System.Windows.Media.Color.FromArgb(0x14, c.R, c.G, c.B));
+            DropHintIconBg.Background = new System.Windows.Media.SolidColorBrush(
+                System.Windows.Media.Color.FromArgb(0x24, c.R, c.G, c.B));
+        }
+        catch { }
+    }
+
+    private void ShowDropHint()
+    {
+        try
+        {
+            DropHintTitle.Text = LocService.Tr("松手即安装");
+            DropHintSub.Text = LocService.Tr("支持 zip / 7z / rar · mod / 内容包");
+            RefreshDropHintBrushes();
+            DropHint.Visibility = Visibility.Visible;
+        }
+        catch { }
+    }
+
+    private void ResetDropHint()
+    {
+        try { DropHint.Visibility = Visibility.Collapsed; } catch { }
+    }
+
+    /// <summary>拖进来的东西一个都用不上 —— 交给前端弹 toast（WPF 这边没有 toast 能力）。
+    /// 用 ExecuteScriptAsync 直接调全站已有的 toast，不额外造一条通道。</summary>
+    private void NotifyDroppedNothing(int count)
+    {
+        try
+        {
+            var msg = LocService.Tf("只支持压缩包（zip / 7z / rar），已忽略这 {0} 个文件", count);
+            _ = _wv2?.ExecuteScriptAsync(
+                $"window.junigridJs && junigridJs.toast({System.Text.Json.JsonSerializer.Serialize(msg)}, 'err')");
+        }
+        catch { }
+    }
+
     private const int SW_MINIMIZE = 6;
 
     [DllImport("user32.dll", PreserveSig = true, SetLastError = true)]

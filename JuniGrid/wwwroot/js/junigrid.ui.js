@@ -13,13 +13,18 @@
 
     // 颜色主题：给 <html> 打 data-accent 选色卡；仅 "system" 时用内联 --jg-accent 注入系统色
     // （内联优先级最高，故非 system 时必须 removeProperty，让 CSS 主题块生效）
+    // 返回值 = "mode|解析后的实际强调色"（WPF 拖放蒙层用，避免在 C# 里复制一份主题色表）
+    // 注意：system 模式的界面是中性黑白，系统色只作辅助强调；蒙层在 C# 侧按 mode 取白色。
     window.junigridJs.applyAccent = function (mode, sysHex) {
+        var m = mode || 'system';
         try {
             var r = document.documentElement;
-            r.dataset.accent = mode || 'system';
-            if (mode === 'system' && sysHex) r.style.setProperty('--jg-accent', sysHex);
+            r.dataset.accent = m;
+            if (m === 'system' && sysHex) r.style.setProperty('--jg-accent', sysHex);
             else r.style.removeProperty('--jg-accent');
-        } catch (e) { }
+            var got = getComputedStyle(r).getPropertyValue('--jg-accent').trim();
+            return m + '|' + (got || sysHex || '#7aa2ff');
+        } catch (e) { return m + '|' + (sysHex || '#7aa2ff'); }
     };
 
     // 行尾「⋮」菜单：先按默认（向下）量一次，下方放不下就整块翻到按钮上方。
