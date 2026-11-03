@@ -975,6 +975,36 @@
 
 
 
+    @* ── v1.3.14：删除进度弹窗 —— 关掉它就等于取消删除 ── *@
+    @if (_delJob is { } dj)
+    {
+        var indet = dj.Percent is null;
+        <div class="jg-modal-overlay jg-del-overlay" @onclick="CancelDeleteJob">
+            <div class="jg-modal jg-del-modal" @onclick:stopPropagation role="dialog" aria-modal="true">
+                <button type="button" class="jg-del-x" @onclick="CancelDeleteJob"
+                        title='@Loc.T("取消删除")' aria-label='@Loc.T("取消删除")'>
+                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor"
+                         stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18" /></svg>
+                </button>
+                <div class="jg-del-title">@dj.Title</div>
+                <div class="jg-del-msg">@dj.Message</div>
+                <div class="jg-del-bar @(indet ? "indet" : "")">
+                    <div class="jg-del-fill" style="@(indet ? null : $"width:{dj.Percent!.Value.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture)}%")"></div>
+                </div>
+                <div class="jg-del-foot">
+                    <span class="jg-del-foot-l">@(dj.Total > 0
+                        ? LocService.Tf("已处理 {0} / {1}", ResumableDownload.FormatBytes(dj.Done), ResumableDownload.FormatBytes(dj.Total))
+                        : indet ? LocService.Tr("正在统计…") : "")</span>
+                    <span class="jg-del-pct">@(indet ? "" : dj.Percent!.Value.ToString("0") + "%")</span>
+                </div>
+                <div class="jg-modal-actions" style="margin-top:16px">
+                    <button type="button" class="jg-pill-ghost" @onclick="CancelDeleteJob"
+                            disabled="@dj.Canceling">@(dj.Canceling ? Loc.T("正在取消…") : Loc.T("取消删除"))</button>
+                </div>
+            </div>
+        </div>
+    }
+
     @* ── v1.5.5：回收站的还原冲突确认 —— 说清楚「现有的可能是新版」，执意才顶替 ── *@
     @if (_pendingRestore is not null)
     {
@@ -1464,6 +1494,22 @@
     // v1.09：删除确认弹窗里的"移入mod回收站"复选框 —— 默认不勾（沿用旧的彻底删除），
     // 勾选后删除的 mod 进 Mods/.junigrid_trash 常驻回收站，可从 设置→存储 打开手动还原
     private bool _deleteToTrash;
+
+    // ── v1.3.14：删除进度弹窗 ──────────────────────────────────────────
+    // 删除原本是同步调用（UI 线程直接 Move + 递归删），大包会把整个界面钉死十几秒。
+    // 现在整段丢到后台，前台只显示这条进度；关掉弹窗 = 取消。
+    private sealed class DeleteJobState
+    {
+        public string Title = "";
+        public string Message = "";
+        public double? Percent;       // null = 总量未知（统计阶段），进度条走不确定态
+        public long Done;
+        public long Total;
+        public bool Canceling;
+    }
+    private DeleteJobState? _delJob;
+    private CancellationTokenSource? _delCts;
+
     private bool _coversDirty;
 
     // ---- 备注/重命名弹窗 ----
@@ -3889,8 +3935,124 @@
         var toTrash = _deleteToTrash;
         _pendingDeleteMod = null;
         _pendingBatchDelete = false;
-        if (mod is not null) Uninstall(mod, toTrash);
-        else if (batch) BatchDelete(toTrash);
+
+        if (mod is not null)
+        {
+            _ = StartDeleteAsync([mod.Folder], [mod.Name], toTrash);
+        }
+        else if (batch)
+        {
+            // 先把名字抓下来 —— 删除过程中 _selected 会被清、_mods 会被重扫，
+            // 目标必须在开工前固定住，否则删到一半目标就变了
+            var picked = _mods.Where(m => _selected.Contains(m.Folder)).ToList();
+            if (picked.Count == 0) return;
+            _ = StartDeleteAsync(picked.Select(m => m.Folder).ToList(), picked.Select(m => m.Name).ToList(), toTrash);
+        }
+    }
+
+    /// <summary>
+    /// v1.3.14：真正执行删除 —— 后台跑 + 进度弹窗 + 可取消。
+    /// <para>
+    /// 以前的 <c>Uninstall(m, toTrash)</c> 是同步的：<c>ModSvc.Uninstall</c> 里的
+    /// <c>Directory.Move</c> 和 <c>Directory.Delete(recursive: true)</c> 直接在 Blazor 的
+    /// <c>@onclick</c> 事件处理器里跑，渲染线程被占满 —— 界面冻结、点不动、动画停摆。
+    /// 现在搬运与删除全在 <see cref="ModDeleteService"/> 的线程池里，前台只剩一条进度。
+    /// </para>
+    /// </summary>
+    private async Task StartDeleteAsync(IReadOnlyList<string> folders, IReadOnlyList<string> names, bool toTrash)
+    {
+        if (_delJob is not null)
+        {
+            // 弹窗还开着就再点删除：不能静默无反应，否则用户以为按钮坏了
+            ShowNotice("err", LocService.Tr("上一次删除还没结束"));
+            return;
+        }
+        _delCts = new CancellationTokenSource();
+        var job = new DeleteJobState
+        {
+            Title = folders.Count == 1
+                ? LocService.Tf("正在删除「{0}」", names.FirstOrDefault() ?? folders[0])
+                : LocService.Tf("正在删除 {0} 个 mod", folders.Count),
+            Message = LocService.Tr("正在准备…"),
+        };
+        _delJob = job;
+        StateHasChanged();
+
+        // v1.3.14：进度直接改 DOM，不走 StateHasChanged ——
+        // 这个页面挂着上千行 mod 卡片，每次重渲染都要把整棵组件树 diff 一遍，
+        // 90ms 一次（11 次/秒）等于把刚修好的卡顿换个位置复现。
+        // 弹窗的静态骨架由 Blazor 渲染一次，之后三个节点交给 JS 更新。
+        var progress = new Progress<DeleteTick>(t => _ = InvokeAsync(async () =>
+        {
+            if (_delJob != job) return;                     // 弹窗已关，别往死对象上写
+            job.Message = t.Message;
+            job.Percent = t.Percent;
+            job.Done = t.DoneBytes;
+            job.Total = t.TotalBytes;
+            try { await JS.InvokeVoidAsync("junigridJs.delBar", t.Percent, t.Message, DeleteFootText(t)); }
+            catch { /* 页面已销毁等情况下 JS 不可用，静默 */ }
+        }));
+
+        try
+        {
+            var res = await ModDeleteService.DeleteAsync(
+                Cfg.Current.GamePath, folders, toTrash, Cfg, progress, _delCts.Token);
+
+            _delJob = null;
+            StateHasChanged();
+
+            if (res.Canceled)
+            {
+                ShowNotice(res.Deleted > 0 ? "ok" : "err", res.Deleted > 0
+                    ? LocService.Tf("已取消删除：{0} 个已删除，其余已还原", res.Deleted)
+                    : LocService.Tr("已取消删除，什么都没动"));
+            }
+            else if (res.AnyFailed)
+            {
+                ShowNotice("err", res.FirstError ?? LocService.Tf("{0} 个删除失败", res.Failed));
+            }
+            else
+            {
+                ShowNotice("ok", toTrash
+                    ? LocService.Tf("已移入回收站 {0} 个 mod", res.Deleted)
+                    : LocService.Tf("已删除 {0} 个 mod", res.Deleted));
+            }
+        }
+        catch (Exception ex)
+        {
+            _delJob = null;
+            ShowNotice("err", ex.Message);
+        }
+        finally
+        {
+            _delCts?.Dispose();
+            _delCts = null;
+        }
+
+        ClearSelection();
+        RescanAndRestate();
+    }
+
+    /// <summary>进度弹窗左下角那行字：有总量就报字节，没总量就是"正在统计"。</summary>
+    private static string DeleteFootText(DeleteTick t) =>
+        t.TotalBytes > 0
+            ? LocService.Tf("已处理 {0} / {1}",
+                ResumableDownload.FormatBytes(t.DoneBytes), ResumableDownload.FormatBytes(t.TotalBytes))
+            : t.Percent is null ? LocService.Tr("正在统计…") : "";
+
+    /// <summary>关掉进度弹窗 = 取消删除。取消不是"假装没发生"：已经删掉的回不来，
+    /// 所以立刻把状态切成「正在取消…」，等服务把剩余部分还原完再关窗（文案见 StartDeleteAsync）。</summary>
+    private void CancelDeleteJob()
+    {
+        if (_delCts is null || _delCts.IsCancellationRequested) return;
+        if (_delJob is { } j)
+        {
+            j.Canceling = true;
+            j.Message = LocService.Tr("正在取消，把没删的还原回去…");
+            j.Percent = null;
+        }
+        _delCts.Cancel();
+        StateHasChanged();
     }
 
     /// <summary>v0.71.0：跳详情前记住列表滚动位置（静态字段，组件销毁后仍存活）。</summary>
@@ -4191,13 +4353,8 @@
         ModsPerf("　↳ 收尾", ("肖像刷新+存档+配置", ElapsedMs(__t)));
     }
 
-    private void Uninstall(ModEntry m, bool toTrash)
-    {
-        var err = ModSvc.Uninstall(Cfg.Current.GamePath, m.Folder, toTrash, Cfg);
-        if (err is not null) ShowNotice("err", err);
-        else ShowNotice("ok", toTrash ? LocService.Tf("已移入回收站 {0}", m.Name) : $"已删除 {m.Name}");
-        Rescan();
-    }
+    // v1.3.14：删除统一走 StartDeleteAsync（后台 + 进度 + 可取消）。
+    // 原来这里是一个同步的 Uninstall(m, toTrash)，直接调 ModSvc.Uninstall —— 见该方法上的注释。
 
     // ------------------------------------------------------------------
     // 批量处理
@@ -4421,22 +4578,8 @@
         Cfg.Save(Cfg.Current);
     }
 
-    private void BatchDelete(bool toTrash)
-    {
-        _pendingBatchDelete = false;
-        var count = _selected.Count;
-        var failed = 0;
-        foreach (var folder in _selected.ToList())
-            if (ModSvc.Uninstall(Cfg.Current.GamePath, folder, toTrash, Cfg) is not null)
-                failed++;
-
-        ShowNotice(failed == 0 ? "ok" : "err",
-            failed == 0
-                ? toTrash ? LocService.Tf("已移入回收站 {0} 个 mod", count) : $"已删除 {count} 个 mod"
-                : $"{failed} 个删除失败");
-        ClearSelection();
-        Rescan();
-    }
+    // v1.3.14：批量删除并入 StartDeleteAsync —— 旧版在这里同步循环调 ModSvc.Uninstall，
+    // 删 N 个就是 N 次 UI 线程阻塞，而且中途完全没法取消。目标清单在确认那一刻固定。
 
     private async Task BatchUpdate()
     {
@@ -5411,7 +5554,11 @@
         if (Interlocked.Exchange(ref _checkNotifyPending, 1) == 1) return;
         _ = Task.Run(async () =>
         {
-            await Task.Delay(500);
+            // v1.3.14：500ms → 900ms。这个页面挂着整张 mod 列表，每次 StateHasChanged
+            // 都要把几千个节点 diff 一遍；批量更新时三路并行下载各自在报进度，
+            // 500ms 的窗口会被连续撞开，等于让渲染线程一直忙 —— 表现就是"下载时界面发木"。
+            // 进度数字晚半秒更新没人看得出来，但卡顿是立刻能感觉到的。
+            await Task.Delay(900);
             Interlocked.Exchange(ref _checkNotifyPending, 0);
             if (_disposed) return;
             await InvokeAsync(StateHasChanged);
@@ -5787,14 +5934,15 @@
             await FetchAsync();
 
             // v1.3.13：md5 只做「可疑就重下一次」，不做拦截 —— 见 DownloadIntegrity 的注释
+            // v1.3.14：必须走异步版。这里在 UI 线程的续体上，同步算 md5 会把界面直接冻住。
             if (!string.IsNullOrWhiteSpace(expectedMd5)
-                && DownloadIntegrity.CheckMd5(zipPath, expectedMd5) == DownloadIntegrity.Md5Verdict.Mismatch)
+                && await DownloadIntegrity.CheckMd5Async(zipPath, expectedMd5, ct) == DownloadIntegrity.Md5Verdict.Mismatch)
             {
                 Center.Report(t, LocService.Tr("文件校验值不符，重新下载一次…"), 0, 0);
                 onTick?.Invoke(LocService.Tr("文件校验值不符，重新下载一次…"), 0, 0);
                 try { System.IO.File.Delete(zipPath); } catch { }
                 await FetchAsync();
-                if (DownloadIntegrity.CheckMd5(zipPath, expectedMd5) == DownloadIntegrity.Md5Verdict.Mismatch)
+                if (await DownloadIntegrity.CheckMd5Async(zipPath, expectedMd5, ct) == DownloadIntegrity.Md5Verdict.Mismatch)
                     Center.Report(t, LocService.Tr("注意：文件与 Nexus 记录的 md5 不一致（可能官方重打包过），继续安装"), null, null);
             }
 

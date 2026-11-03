@@ -580,9 +580,23 @@ public sealed partial class ModService
         }
     }
 
+    /// <summary>v1.3.14：删除落定后的收尾 —— 空壳清理 + 覆盖记录清理。
+    /// <para>
+    /// <see cref="ModDeleteService"/> 自己负责搬运与物理删除（要能报进度、要能取消），
+    /// 但「子包删空了清顶层空壳」和「宿主没了别留死账覆盖记录」这两件事的语义必须和
+    /// <see cref="Uninstall"/> 完全一致 —— 所以从这里统一出口，不许两边各写一份。
+    /// </para>
+    /// </summary>
+    internal static void AfterUninstallCleanup(string gamePath, string folderName, ConfigService? cfg)
+    {
+        if (folderName.Contains('/'))
+            TryRemoveEmptyTopShell(gamePath, folderName.Split('/')[0]);
+        if (cfg is not null) PurgeOverlaysOf(folderName, cfg);
+    }
+
     /// <summary>v1.1.4：子包卸载后清理顶层空壳。仅当顶层文件夹里已经没有任何
     /// 文件/子目录（真空）时才删；删不动（被占用）静默放弃，下次再清。</summary>
-    private static void TryRemoveEmptyTopShell(string gamePath, string top)
+    internal static void TryRemoveEmptyTopShell(string gamePath, string top)
     {
         try
         {

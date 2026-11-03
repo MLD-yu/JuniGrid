@@ -1158,5 +1158,21 @@
   "已开启分片加速 —— 下一个下载会同时开多条连接（不支持时会自动退回单连接）": "Segmented download on — the next download will use multiple connections (falling back to one if unsupported)",
   "已关闭分片加速 —— 恢复单连接下载": "Segmented download off — back to a single connection",
   "文件校验值不符，重新下载一次…": "Checksum mismatch, downloading once more…",
-  "注意：文件与 Nexus 记录的 md5 不一致（可能官方重打包过），继续安装": "Note: file md5 differs from the one Nexus recorded (the author may have repacked it). Continuing with install."
+  "注意：文件与 Nexus 记录的 md5 不一致（可能官方重打包过），继续安装": "Note: file md5 differs from the one Nexus recorded (the author may have repacked it). Continuing with install.",
+  "正在准备…": "Preparing…",
+  "正在统计文件…": "Counting files…",
+  "正在统计…": "Counting…",
+  "已处理 {0} / {1}": "{0} / {1} processed",
+  "正在删除 {0}": "Deleting {0}",
+  "正在移入回收站 {0}": "Moving {0} to trash",
+  "正在删除「{0}」": "Deleting “{0}”",
+  "正在删除 {0} 个 mod": "Deleting {0} mods",
+  "取消删除": "Cancel delete",
+  "正在取消…": "Canceling…",
+  "正在取消，把没删的还原回去…": "Canceling — restoring what hasn’t been removed…",
+  "已取消删除，什么都没动": "Delete canceled — nothing was removed",
+  "已取消删除：{0} 个已删除，其余已还原": "Delete canceled: {0} removed, the rest restored",
+  "{0} 个删除失败": "{0} failed to delete",
+  "「{0}」里有文件正被占用": "Files in “{0}” are in use",
+  "上一次删除还没结束": "The previous delete hasn't finished yet"
 }

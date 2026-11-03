@@ -315,7 +315,7 @@ public sealed partial class ModService
     /// <summary>卸载宿主时清掉它名下的覆盖记录与副本目录。
     /// <b>不做还原</b>：宿主目录本身就要没了，把原版拷回去毫无意义，而副本留在 AppData 里
     /// 就再也无人引用 —— 记录也会变成一条永远"找不到宿主"的死账。</summary>
-    private static void PurgeOverlaysOf(string folderName, ConfigService cfg)
+    internal static void PurgeOverlaysOf(string folderName, ConfigService cfg)
     {
         var c = cfg.Current;
         if (c.Overlays.Count == 0) return;
