@@ -144,6 +144,11 @@ public partial class MainWindow : Window
             // v0.2.2：配置最早加载 —— 缓存位置（含 WebView2 目录）由它决定
             var configService = new ConfigService();
 
+            // v1.3.13：下载层（NexusService / SegmentDownloader 都是静态类）读不到 DI 的配置，
+            // 这里挂两个"现读"的钩子：设置页拨开关后立刻生效，不用重启进程。
+            SegmentDownloader.EnabledHook = () => configService.Current.SegmentDownload;
+            SegmentDownloader.LanesHook = () => configService.Current.SegmentDownloadLanes;
+
             // v1.2.7：默认缓存落点已从 %TEMP%\JuniGrid 改成安装目录 —— "配置里那一栏空着"的含义
             // 变了，所以必须先把历史默认位置里的东西搬过来，WebView2 才能定地址（它只能在
             // 初始化之前搬）。搬不动的 webview2 会写进 PendingWebView2MoveFrom，下面的待搬链

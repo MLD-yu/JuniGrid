@@ -15,8 +15,12 @@ public sealed record NexusModInfo(int Id, string Name, string Version, string Pi
 /// Version 是 mod 顶层版本（作者手填、可能滞后，仅诊断参考，判定更新仍以文件版本为准）。</summary>
 public sealed record NexusModFingerprint(int ModId, string Version, string UpdatedAt, string? PictureUrl);
 
+/// <summary>N 网 files.json 的一条文件记录。
+/// <para>v1.3.13 新增 <see cref="Md5"/>：API 自带、可能为空，只用于「下完之后对一下」——
+/// 长度和文件头能抓出被换成图片/网页的脏包，抓不出「大小刚好对上但内容坏了」的半截包。
+/// 空值一律跳过校验，不能因为 API 没给就把原本能装的包拦下来。</para></summary>
 public sealed record NexusFileInfo(long FileId, string Name, string Version, string Category,
-    long Size = 0, long UploadedTs = 0);
+    long Size = 0, long UploadedTs = 0, string? Md5 = null);
 
 /// <summary>v0.69.0：一个版本的更新日志。</summary>
 public sealed record NexusChangelog(string Version, List<string> Lines);
@@ -53,10 +57,25 @@ public sealed record NexusRequirementEx(string ModName, string Notes, string Url
 /// <summary>v0.69.7：译本条（GraphQL mods 搜索得到）。</summary>
 public sealed record NexusTranslationItem(string Name, int ModId, string? PictureUrl);
 
-public sealed record NexusDownloadResult(string? Url, string? Error, bool NeedsPremium)
+/// <summary>取链结果。<para>v1.3.13：<see cref="Mirrors"/> 是同一个文件的其余 CDN 服务器地址
+/// （N 网 API 一次就返回好几个）。以前拿到第一个就 return，剩下的全扔了 ——
+/// 第一个节点抽风时只能整条重试；现在带着走，直连失败立刻换下一个。</para></summary>
+public sealed record NexusDownloadResult(string? Url, string? Error, bool NeedsPremium,
+    IReadOnlyList<string>? Mirrors = null)
 {
-    public static NexusDownloadResult Ok(string url) => new(url, null, false);
+    public static NexusDownloadResult Ok(string url, IReadOnlyList<string>? mirrors = null)
+        => new(url, null, false, mirrors);
     public static NexusDownloadResult Fail(string err) => new(null, err, false);
+
+    /// <summary>首选地址 + 其余候选，去重、跳过空串。下载器按顺序试。</summary>
+    public IEnumerable<string> AllUrls()
+    {
+        if (!string.IsNullOrWhiteSpace(Url)) yield return Url;
+        if (Mirrors is null) yield break;
+        foreach (var m in Mirrors)
+            if (!string.IsNullOrWhiteSpace(m) && !string.Equals(m, Url, StringComparison.Ordinal))
+                yield return m;
+    }
 
     public static readonly NexusDownloadResult PremiumRequired =
         new(null, "Nexus 免费账户不能通过 API 直接下载（需要 Premium 会员）", true);

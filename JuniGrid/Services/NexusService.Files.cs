@@ -46,7 +46,10 @@ public sealed partial class NexusService
             // v1.04.0：主文件大小（字节）—— 详情页统计行「大小」用；缺失按 0 处理（详情页照样显示 0 B）
             var size = f.TryGetProperty("size", out var fz) && fz.ValueKind == JsonValueKind.Number
                 && fz.TryGetInt64(out var szl) ? szl : 0;
-            list.Add((new NexusFileInfo(id, name, ver, cat, size), ts));
+            // v1.3.13：md5 —— N 网自己算的，下完拿它对一遍。缺/空 → null，校验那一步直接跳过
+            var md5 = f.TryGetProperty("md5", out var fm) ? fm.GetString() : null;
+            if (string.IsNullOrWhiteSpace(md5) || md5.Length != 32) md5 = null;
+            list.Add((new NexusFileInfo(id, name, ver, cat, size, Md5: md5), ts));
         }
         return list;
     }

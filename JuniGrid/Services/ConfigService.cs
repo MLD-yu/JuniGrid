@@ -595,6 +595,17 @@ public sealed class JuniGridConfig
 
     /// <summary>v0.2.2：任务管理悬浮窗常驻开关。开启常驻显示；关闭后仅在下载任务运行时显示。</summary>
     public bool ShowTaskDock { get; set; } = false;
+
+    /// <summary>v1.3.13：分片加速下载（实验性，默认关）。
+    /// <para>打开后，同一个文件会开 <see cref="SegmentDownloadLanes"/> 条 Range 连接并行拉 —— CDN 往往
+    /// 「每个连接各给一份配额」，所以能实打实快几倍。只在服务器明确支持 Range、文件 &gt; 4MB、
+    /// 且目标是新文件时才启用；任何一片失败整体回落到单连接，最坏情况等于没开。</para>
+    /// <para>默认关的理由：多连接对 CDN 友不友善各家不同，先让用户自己试。</para></summary>
+    public bool SegmentDownload { get; set; } = false;
+
+    /// <summary>v1.3.13：分片车道数（1~6）。1 = 等价于不分片。</summary>
+    public int SegmentDownloadLanes { get; set; } = 4;
+
     public string NexusAvatarDataUri { get; set; } = "";
 
     /// <summary>累计游玩时间（分钟）。LauncherService 在游戏进程退出时累加。</summary>

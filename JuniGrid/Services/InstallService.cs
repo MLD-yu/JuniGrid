@@ -277,7 +277,9 @@ public sealed partial class InstallService
                 else
                 {
                     Step(LocService.Tr("正在获取下载地址…"), 5);
-                    var dl = await _nexus.GetDownloadUrlAsync(modId, file.FileId, ct, patient: true);
+                    // v1.3.13：一次取回这个文件的全部 CDN 候选（旧实现拿第一个就 return，
+                    // 首选节点抽风时整条下载只能从头重试）
+                    var dl = await _nexus.GetDownloadUrlsAsync(modId, file.FileId, ct, patient: true);
                     ct.ThrowIfCancellationRequested();
                     if (dl.NeedsPremium)
                     {
@@ -305,7 +307,20 @@ public sealed partial class InstallService
                     var progress = new Progress<NexusDownloadProgress>(p =>
                         Step(p.Message, p.Percent, p.SpeedMBps));
                     Step(LocService.Tf("正在下载 {0}…", file.Name), 8, 0);
-                    await _nexus.DownloadFileAsync(dl.Url, zip, progress, ct);
+                    await _nexus.DownloadFileAsync(dl.Url, zip, progress, ct, dl.Mirrors);
+
+                    // v1.3.13：md5 抽查。只有 N 网 files.json 给了值才比；
+                    // 不符先重下一次（仅一次），两次都不符只记警告、不拦安装 ——
+                    // 校验是为了少装坏包，不是为了把原本能装的包拦下来。
+                    var md5Second = DownloadIntegrity.Md5Verdict.Skipped;
+                    if (DownloadIntegrity.CheckMd5(zip, file.Md5) == DownloadIntegrity.Md5Verdict.Mismatch)
+                    {
+                        Step(LocService.Tr("文件校验值不符，重新下载一次…"), 8, 0);
+                        try { File.Delete(zip); } catch { }
+                        await _nexus.DownloadFileAsync(dl.Url, zip, progress, ct, dl.Mirrors);
+                        md5Second = DownloadIntegrity.CheckMd5(zip, file.Md5);
+                    }
+
                     // 下完先按文件头验一次：取链那几层偶尔会把网页静态资源当直链
                     // （2026-11-04 04:43 实机：avatars.nexusmods.com 的 100×100 头像被 Chromium
                     // 标成 application/octet-stream，两条更新都下回一张 jpg，最后报「压缩包损坏」）。
@@ -324,6 +339,8 @@ public sealed partial class InstallService
                         _center.Finish(task, false, bad);
                         return bad;
                     }
+                    if (md5Second == DownloadIntegrity.Md5Verdict.Mismatch)
+                        Step(LocService.Tr("注意：文件与 Nexus 记录的 md5 不一致（可能官方重打包过），继续安装"), null, null);
                     if (ct.IsCancellationRequested)   // 下完才发现被移除/暂停 → 别装了
                     {
                         if (MayDiscardHalfPack(task, ct))
@@ -478,7 +495,7 @@ public sealed partial class InstallService
                 dest = UniquifyPath(dest);
                 Step(LocService.Tf("正在下载 {0}…", safe), 8, 0);
                 var progress = new Progress<NexusDownloadProgress>(p => Step(p.Message, p.Percent, p.SpeedMBps));
-                await _nexus.DownloadFileAsync(dl.Url, dest, progress, ct);
+                await _nexus.DownloadFileAsync(dl.Url, dest, progress, ct, dl.Mirrors);
                 ct.ThrowIfCancellationRequested();
 
                 _center.Finish(task, true, LocService.Tf("已下载到 {0}", dest));
@@ -572,7 +589,7 @@ public sealed partial class InstallService
             var dlProgress = new Progress<NexusDownloadProgress>(
                 p => Step(p.Message, p.Percent, p.SpeedMBps));
             Step(LocService.Tr("正在下载 SMAPI 安装器（你选择的版本）…"), 10, 0);
-            await _nexus.DownloadFileAsync(dl.Url, zipPath, dlProgress, ct);
+            await _nexus.DownloadFileAsync(dl.Url, zipPath, dlProgress, ct, dl.Mirrors);
             if (ct.IsCancellationRequested)
             {
                 if (MayDiscardHalfPack(task, ct))
@@ -785,7 +802,7 @@ public sealed partial class InstallService
                 var progress = new Progress<NexusDownloadProgress>(p =>
                     Step(p.Message, p.Percent, p.SpeedMBps));
                 Step(LocService.Tr("正在下载…"), 12, 0);
-                await _nexus.DownloadFileAsync(dl.Url, zip, progress, ct);
+                await _nexus.DownloadFileAsync(dl.Url, zip, progress, ct, dl.Mirrors);
                 if (ct.IsCancellationRequested)   // 下完才发现被移除/暂停 → 别装了
                 {
                     if (MayDiscardHalfPack(task, ct))
@@ -1147,7 +1164,7 @@ public sealed partial class InstallService
                             {
                                 var progress = new Progress<NexusDownloadProgress>(p => Step(p.Message, p.Percent, p.SpeedMBps));
                                 Step(LocService.Tf("({0}/{1}) 正在下载 {2}…", idx, total, c.Name), null, 0);
-                                await _nexus.DownloadFileAsync(dl.Url, zipPath, progress, task.Cts.Token);
+                                await _nexus.DownloadFileAsync(dl.Url, zipPath, progress, task.Cts.Token, dl.Mirrors);
                                 if (task.Cts.IsCancellationRequested)
                                     return task.Status == "paused" ? "已暂停" : "已取消";
 

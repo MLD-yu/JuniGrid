@@ -5596,7 +5596,7 @@
                             $"更新 Mod「{m.Name}」",
                             $"正在下载 {m.Name}…",
                             (msg, pct, spd) => { st.Message = msg; NotifyCheckProgress(); },
-                            task: task);
+                            task: task, mirrors: dl.Mirrors, expectedMd5: file.Md5);
 
                         var err = ModSvc.InstallUpdate(Cfg.Current.GamePath, m.Folder, zip, out var newVer);
                         if (err is null)
@@ -5732,11 +5732,14 @@
     /// <para>v1.3.6：<paramref name="task"/> 非空时表示调用方<b>已经建好了任务行</b>
     /// （更新流水线要在取直链之前就把行摆出来），这里只往它上面报进度、<b>不</b>收尾 ——
     /// 收尾交给调用方，因为后面还有「安装」一步，下载完就标 done 是假完成。</para>
+    /// <para>v1.3.13：<paramref name="mirrors"/> 是同一文件的其余 CDN 地址（直连失败立刻换下一个）；
+    /// <paramref name="expectedMd5"/> 给了就在下完后对一次，不符自动重下一次，
+    /// 两次都不符只记警告并放行（不能因为校验把原本能装的包拦下来）。</para>
     /// </summary>
     private async Task DownloadWithTask(
         string url, string zipPath, string taskTitle, string startMsg,
         Action<string, double?, double?>? onTick = null, CancellationToken ct = default,
-        TaskItem? task = null)
+        TaskItem? task = null, IReadOnlyList<string>? mirrors = null, string? expectedMd5 = null)
     {
         var own = task is null;
         var t = task ?? Center.Start(taskTitle, "download");
@@ -5750,33 +5753,51 @@
                     Center.Report(t, p.Message, p.Percent, p.SpeedMBps);
                     onTick?.Invoke(p.Message, p.Percent, p.SpeedMBps);
                 }));
+
             // v1.08：GitHub 资源直连失败（国内 443 被拒）自动切换镜像前缀重试；
-            // Nexus CDN 是签名 URL，镜像无法代理，维持直连。
-            if (url.Contains("github.com/", StringComparison.OrdinalIgnoreCase)
-                && !url.StartsWith("https://api.github.com/", StringComparison.Ordinal))
+            // Nexus CDN 是签名 URL，镜像无法代理，维持直连（CDN 多节点由 mirrors 承担）。
+            async Task FetchAsync()
             {
-                Exception? last = null;
-                foreach (var candidate in UpdateService.GithubUrls(url))
+                if (url.Contains("github.com/", StringComparison.OrdinalIgnoreCase)
+                    && !url.StartsWith("https://api.github.com/", StringComparison.Ordinal))
                 {
-                    try
+                    Exception? last = null;
+                    foreach (var candidate in UpdateService.GithubUrls(url))
                     {
-                        if (candidate != url)
+                        try
                         {
-                            try { System.IO.File.Delete(zipPath); } catch { }
-                            Center.Report(t, LocService.Tr("GitHub 直连失败，切换镜像下载…"), 0, 0);
+                            if (candidate != url)
+                            {
+                                try { System.IO.File.Delete(zipPath); } catch { }
+                                Center.Report(t, LocService.Tr("GitHub 直连失败，切换镜像下载…"), 0, 0);
+                            }
+                            await Nexus.DownloadFileAsync(candidate, zipPath, progress, ct);
+                            EnsureRealPack(zipPath);
+                            return;
                         }
-                        await Nexus.DownloadFileAsync(candidate, zipPath, progress, ct);
-                        EnsureRealPack(zipPath);
-                        if (own) Center.Finish(t, true, LocService.Tr("下载完成"));
-                        return;
+                        catch (Exception ex) when (ex is not OperationCanceledException) { last = ex; }
                     }
-                    catch (Exception ex) when (ex is not OperationCanceledException) { last = ex; }
+                    throw last!;
                 }
-                throw last!;
+
+                await Nexus.DownloadFileAsync(url, zipPath, progress, ct, mirrors);
+                EnsureRealPack(zipPath);
             }
 
-            await Nexus.DownloadFileAsync(url, zipPath, progress, ct);
-            EnsureRealPack(zipPath);
+            await FetchAsync();
+
+            // v1.3.13：md5 只做「可疑就重下一次」，不做拦截 —— 见 DownloadIntegrity 的注释
+            if (!string.IsNullOrWhiteSpace(expectedMd5)
+                && DownloadIntegrity.CheckMd5(zipPath, expectedMd5) == DownloadIntegrity.Md5Verdict.Mismatch)
+            {
+                Center.Report(t, LocService.Tr("文件校验值不符，重新下载一次…"), 0, 0);
+                onTick?.Invoke(LocService.Tr("文件校验值不符，重新下载一次…"), 0, 0);
+                try { System.IO.File.Delete(zipPath); } catch { }
+                await FetchAsync();
+                if (DownloadIntegrity.CheckMd5(zipPath, expectedMd5) == DownloadIntegrity.Md5Verdict.Mismatch)
+                    Center.Report(t, LocService.Tr("注意：文件与 Nexus 记录的 md5 不一致（可能官方重打包过），继续安装"), null, null);
+            }
+
             if (own) Center.Finish(t, true, LocService.Tr("下载完成"));
         }
         catch (OperationCanceledException)

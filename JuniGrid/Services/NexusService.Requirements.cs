@@ -279,6 +279,15 @@ public sealed partial class NexusService
     /// <summary>CDN download URL for a file. NeedsPremium=true on free accounts (HTTP 403).</summary>
     public async Task<NexusDownloadResult> GetDownloadUrlAsync(int modId, long fileId,
         CancellationToken ct = default, bool patient = false)
+        => await GetDownloadUrlsAsync(modId, fileId, ct, patient);
+
+    /// <summary>v1.3.13：一次把这个文件的<b>全部</b> CDN 候选都取回来。
+    /// <para>N 网 <c>download_link.json</c> 本来就返回一组服务器（不同区域各一条 URI），
+    /// 旧代码 <c>foreach ... return 第一个</c> 把其余全扔了 —— 第一个节点抽风/超时，
+    /// 整条下载就得从头重试，而旁边明明还有两条能用的。现在首选放 <c>Url</c>，
+    /// 其余进 <c>Mirrors</c>，交给下载器"一个字节都没下到就立刻换下一个"。</para></summary>
+    public async Task<NexusDownloadResult> GetDownloadUrlsAsync(int modId, long fileId,
+        CancellationToken ct = default, bool patient = false)
     {
         // v1.09.0：安装流程传 patient=true 走 SlowHttp(45s)。download_link 是玩家点了
         // "安装"之后立刻要的那一下，15s 快速失败通道在 Nexus 边缘抖动（实测 TTFB
@@ -290,10 +299,13 @@ public sealed partial class NexusService
         if (!res.IsSuccessStatusCode) return NexusDownloadResult.Fail($"HTTP {(int)res.StatusCode}");
 
         using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+        var urls = new List<string>();
         foreach (var server in doc.RootElement.EnumerateArray())
-            if (server.TryGetProperty("URI", out var u) && u.GetString() is { } uri)
-                return NexusDownloadResult.Ok(uri);
-        return NexusDownloadResult.Fail(LocService.Tr("响应里没有下载地址"));
+            if (server.TryGetProperty("URI", out var u) && u.GetString() is { Length: > 0 } uri
+                && !urls.Contains(uri, StringComparer.Ordinal))
+                urls.Add(uri);
+        if (urls.Count == 0) return NexusDownloadResult.Fail(LocService.Tr("响应里没有下载地址"));
+        return NexusDownloadResult.Ok(urls[0], urls.Skip(1).ToList());
     }
 
     // 大文件下载用单独的长超时客户端（免费账户限速约 1MB/s，
@@ -302,7 +314,15 @@ public sealed partial class NexusService
 
     private static HttpClient CreateDownloadClient()
     {
-        var h = new HttpClient();
+        // v1.3.13：分片下载要真的开出多条 TCP。HTTP/1.1 默认就允许多连接；
+        // HTTP/2 默认**只复用一条**（多路复用），4 条车道会挤在一根管子里，
+        // 等于没加速 —— 这个开关让 H2 也按车道数开独立连接。
+        var handler = new SocketsHttpHandler
+        {
+            EnableMultipleHttp2Connections = true,
+            PooledConnectionLifetime = TimeSpan.FromMinutes(10),
+        };
+        var h = new HttpClient(handler);
         h.DefaultRequestHeaders.UserAgent.ParseAdd($"JuniGrid/{AppInfo.Version}");
         // AUP 那两个头也带上：它打的是 CDN 不是 api.nexusmods.com，但少一个"这客户端是谁、什么版本"
         // 的自报家门就多一轮问答（审核方上次就盯着版本头问过）。
@@ -316,13 +336,28 @@ public sealed partial class NexusService
     /// 带实时进度回调的流式下载，供任务中心展示下载百分比和速度。
     /// progress 为 null 时退化为普通下载。
     /// v1.07：断点续传/自动重试统一走 ResumableDownload（掉连接不再从 0 重下）。
+    /// <para>v1.3.13：两个新口子 —— <paramref name="mirrors"/> 是同一文件的其余 CDN 地址，
+    /// 直连一个字节都没下到时会立刻换下一个；分片加速开着且服务器支持 Range 时，
+    /// 先试多连接分片，不成就回落单连接（见 <see cref="SegmentDownloader"/>）。</para>
     /// </summary>
-    public Task DownloadFileAsync(string url, string destPath,
-        IProgress<NexusDownloadProgress>? progress, CancellationToken ct = default)
+    public async Task DownloadFileAsync(string url, string destPath,
+        IProgress<NexusDownloadProgress>? progress, CancellationToken ct = default,
+        IReadOnlyList<string>? mirrors = null)
     {
-        return ResumableDownload.RunAsync(DownloadHttp, url, destPath,
-            (msg, pct, spd) => progress?.Report(new NexusDownloadProgress(msg, pct ?? 0, spd)),
-            ct: ct);
+        void Report(string msg, double? pct, double? spd)
+            => progress?.Report(new NexusDownloadProgress(msg, pct ?? 0, spd));
+
+        if (SegmentDownloader.Enabled)
+        {
+            // 分片只在全新文件上做（目标已存在 = 续传场景，洞补不了）。
+            // TryRunAsync 内部把"不支持/太小/某片失败"一律收敛成 false，这里不额外判断。
+            if (await SegmentDownloader.TryRunAsync(DownloadHttp, url, destPath,
+                    SegmentDownloader.Lanes, Report, ct).ConfigureAwait(false))
+                return;
+        }
+
+        await ResumableDownload.RunAsync(DownloadHttp, url, destPath, Report,
+            ct: ct, fallbackUrls: mirrors).ConfigureAwait(false);
     }
 
     // v1.1.6：私有 FormatBytes 副本已删（无任何调用者）—— 统一用 ResumableDownload.FormatBytes。
@@ -346,9 +381,13 @@ public sealed partial class NexusService
         }
 
         using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+        var urls = new List<string>();
         foreach (var server in doc.RootElement.EnumerateArray())
-            if (server.TryGetProperty("URI", out var u) && u.GetString() is { } uri)
-                return NexusDownloadResult.Ok(uri);
-        return NexusDownloadResult.Fail(LocService.Tr("响应里没有下载地址"));
+            if (server.TryGetProperty("URI", out var u) && u.GetString() is { Length: > 0 } uri
+                && !urls.Contains(uri, StringComparer.Ordinal))
+                urls.Add(uri);
+        if (urls.Count == 0) return NexusDownloadResult.Fail(LocService.Tr("响应里没有下载地址"));
+        // v1.3.13：同样把其余服务器带回去（nxm 一次性链接也有多个 CDN 节点）
+        return NexusDownloadResult.Ok(urls[0], urls.Skip(1).ToList());
     }
 }
