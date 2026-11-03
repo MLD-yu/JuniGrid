@@ -141,7 +141,7 @@ public class SupersededRunTests
         var run1 = row.Cts.Token;
         center.Pause(row);
         center.ResumeMark(row);                       // 行是 running，run1 成僵尸
-        var svc = new InstallService(null!, null!, null!, center, null!, null!, null!);
+        var svc = new InstallService(null!, null!, null!, center, null!, null!, null!, null!);
 
         Assert.Null(svc.FinishIfTimeout(row, new TimeoutException("模拟超时"), run1));
         Assert.Equal("running", row.Status);          // 僵尸没写成 failed
@@ -161,8 +161,8 @@ public class PremiumExitTests
     public void PremiumExit_HandsOverTheFilesPageUrl()
     {
         string? opened = null;
-        InstallService.PremiumNeedsWebFallback(20581, u => opened = u);
-        Assert.Equal("https://www.nexusmods.com/stardewvalley/mods/20581?tab=files", opened);
+        InstallService.PremiumNeedsWebFallback(20581, 35407, u => opened = u);
+        Assert.Equal("https://www.nexusmods.com/stardewvalley/mods/20581?tab=files&file_id=35407", opened);
     }
 
     [Fact]
@@ -170,7 +170,7 @@ public class PremiumExitTests
     {
         // ModDetail 的分流判据就是 err.Contains("premium") —— 动这句字面量的前缀，
         // 详情页那条路会静默降级成普通失败（不弹提示、也不开页面）。
-        var msg = InstallService.PremiumNeedsWebFallback(20581, _ => { });
+        var msg = InstallService.PremiumNeedsWebFallback(20581, 35407, _ => { });
         Assert.True(msg.Contains("premium", StringComparison.OrdinalIgnoreCase), "返回=" + msg);
     }
 }

@@ -405,15 +405,17 @@ public sealed partial class UpdateService
 
         try
         {
-            // v1.1.8：latest 查询同样走国内镜像（与 CheckModGitHubAsync / 历史 tag 一致）
+            // v1.9.x：并行打各通道，第一个可用的就返回 —— 串行时一个挂死的镜像要等满 12s。
+            // 本机实测 2026-10-29：直连 api.github.com 403 只用 0.9s，ghfast.top 挂满 12s，
+            // gh-proxy.com 1.7s 给 200 —— 串行把一次 SMAPI 检查拖成 14s。
+            var (apiResp, apiStatus) = await FirstSuccessAsync(
+                GithubUrls("https://api.github.com/repos/Pathoschild/SMAPI/releases/latest"),
+                HttpCompletionOption.ResponseContentRead);
             string? json = null;
-            Exception? lastApiEx = null;
-            foreach (var api in GithubUrls("https://api.github.com/repos/Pathoschild/SMAPI/releases/latest"))
-            {
-                try { json = await Http.GetStringAsync(api); break; }
-                catch (Exception ex) { lastApiEx = ex; }
-            }
-            if (json is null) throw lastApiEx ?? new InvalidOperationException("GitHub API 不可达");
+            using (apiResp)
+                if (apiResp is not null) json = await apiResp.Content.ReadAsStringAsync();
+            if (json is null)
+                throw new InvalidOperationException(apiStatus is int st ? $"HTTP {st}" : "GitHub API 不可达");
 
             using var doc = JsonDocument.Parse(json);
             var root = doc.RootElement;
@@ -490,6 +492,39 @@ public sealed partial class UpdateService
         return !installedOk && remoteOk && !string.IsNullOrWhiteSpace(installedVersion);
     }
 
+    /// <summary>并行请求所有 GitHub 通道，取第一个成功的响应；非 2xx/异常的就地释放。
+    /// <para>为什么不是串行：本机实测 2026-10-29 —— 直连 api.github.com 返回 403 只用 0.9s，
+    /// 但第一个镜像 ghfast.top 会一直挂到 12s 超时才轮到下一个，而 gh-proxy.com 1.7s 就能给
+    /// 200。串行把一次 SMAPI 检查拖成约 14s，用户看到的就是「别的都好了，SMAPI 还在转」。</para>
+    /// <para>Status 带出第一个非 2xx 的状态码（通常是直连那发的 403），供上层给出「限流」这类
+    /// 能说清楚的失败原因；全部失败时它也是 null。</para></summary>
+    private static async Task<(HttpResponseMessage? Resp, int? Status)> FirstSuccessAsync(
+        IEnumerable<string> urls, HttpCompletionOption completion)
+    {
+        var pending = urls.Select(async u =>
+        {
+            try { return await Http.GetAsync(u, completion); }
+            catch { return (HttpResponseMessage?)null; }
+        }).ToList();
+        int? firstStatus = null;
+        while (pending.Count > 0)
+        {
+            var done = await Task.WhenAny(pending);
+            pending.Remove(done);
+            var resp = await done;
+            if (resp is { IsSuccessStatusCode: true })
+            {
+                // 其余通道还在路上：让它们跑完自行释放，不阻塞返回
+                foreach (var rest in pending)
+                    _ = rest.ContinueWith(t => { try { t.Result?.Dispose(); } catch { } },
+                        TaskContinuationOptions.ExecuteSynchronously);
+                return (resp, firstStatus);
+            }
+            if (resp is not null) { firstStatus ??= (int)resp.StatusCode; resp.Dispose(); }
+        }
+        return (null, firstStatus);
+    }
+
     /// <summary>
     /// v0.38.0：GitHub API 限流时的回落通道 —— 请求 releases/latest（HTML），
     /// 从重定向后的最终 URL 里抠出 tag（如 /releases/tag/4.5.2），
@@ -504,34 +539,30 @@ public sealed partial class UpdateService
             // https://github.com/Pathoschild/SMAPI/releases/tag/4.5.2
             // v1.08：直连失败（国内 github.com 443 不通）时依次走镜像；
             // 镜像回传的最终 URL 同样带 /releases/tag/，tag 解析逻辑不变。
-            HttpResponseMessage? resp = null;
-            foreach (var url in GithubUrls("https://github.com/Pathoschild/SMAPI/releases/latest"))
+            // v1.9.x：与 API 那条一样改成并行，谁先成功用谁。
+            var (resp, _) = await FirstSuccessAsync(
+                GithubUrls("https://github.com/Pathoschild/SMAPI/releases/latest"),
+                HttpCompletionOption.ResponseHeadersRead);
+            using (resp)
             {
-                try
-                {
-                    resp = await Http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead);
-                    if (resp.IsSuccessStatusCode) break;
-                    resp.Dispose(); resp = null;
-                }
-                catch { /* 换下一个通道 */ }
+                if (resp is null) return null;
+
+                var finalUrl = resp.RequestMessage?.RequestUri?.ToString() ?? "";
+                const string marker = "/releases/tag/";
+                var idx = finalUrl.IndexOf(marker, StringComparison.Ordinal);
+                if (idx < 0) return null;
+                var tag = finalUrl[(idx + marker.Length)..].TrimEnd('/').Split('?')[0];
+                if (string.IsNullOrWhiteSpace(tag)) return null;
+
+                var zipUrl = $"https://github.com/Pathoschild/SMAPI/releases/download/{tag}/SMAPI-{tag}-installer.zip";
+                var pageUrl = $"https://github.com/Pathoschild/SMAPI/releases/tag/{tag}";
+
+                var installedOk = Version.TryParse(Normalize(installedVersion), out _);
+                var hasUpdate = CompareSmapiVersion(installedVersion, tag);
+
+                return new SmapiUpdateInfo(
+                    installedVersion, tag, hasUpdate, installedOk, zipUrl, pageUrl, null);
             }
-            if (resp is null) return null;
-
-            var finalUrl = resp.RequestMessage?.RequestUri?.ToString() ?? "";
-            const string marker = "/releases/tag/";
-            var idx = finalUrl.IndexOf(marker, StringComparison.Ordinal);
-            if (idx < 0) return null;
-            var tag = finalUrl[(idx + marker.Length)..].TrimEnd('/').Split('?')[0];
-            if (string.IsNullOrWhiteSpace(tag)) return null;
-
-            var zipUrl = $"https://github.com/Pathoschild/SMAPI/releases/download/{tag}/SMAPI-{tag}-installer.zip";
-            var pageUrl = $"https://github.com/Pathoschild/SMAPI/releases/tag/{tag}";
-
-            var installedOk = Version.TryParse(Normalize(installedVersion), out _);
-            var hasUpdate = CompareSmapiVersion(installedVersion, tag);
-
-            return new SmapiUpdateInfo(
-                installedVersion, tag, hasUpdate, installedOk, zipUrl, pageUrl, null);
         }
         catch
         {

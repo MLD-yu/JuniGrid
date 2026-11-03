@@ -276,3 +276,138 @@ html[data-theme="dark"] .jg-user-tip-bubble {
    同一帧摘除；「先画顶部、再闪回中间」的那几帧浏览器永远画不出来 */
 .jg-restore-pending .jg-nexus-scope { visibility: hidden; }
 
+
+/* ═══ v1.3.5：详情页 04 Files —— 文件列表（挑文件装 / 仅下载） ═══ */
+.jg-file-cat {
+    display: flex; align-items: center; gap: 8px;
+    margin: 14px 0 6px; font-size: 11.5px; font-weight: 700;
+    color: var(--jg-text-3); letter-spacing: .05em;
+}
+.jg-file-cat:first-child { margin-top: 2px; }
+.jg-file-cat-n { font-variant-numeric: tabular-nums; opacity: .7; }
+.jg-file-table { border: 1px solid var(--jg-line); border-radius: 9px; overflow: hidden; }
+.jg-file-row {
+    display: grid; grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center; gap: 12px; padding: 8px 12px;
+}
+.jg-file-row + .jg-file-row { border-top: 1px solid var(--jg-line); }
+.jg-file-row:hover { background: var(--jg-well); }
+.jg-file-main { min-width: 0; }
+.jg-file-name {
+    display: block; font-size: 13px; font-weight: 600; color: var(--jg-text);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.jg-file-meta {
+    display: block; margin-top: 2px; font-size: 11.5px;
+    color: var(--jg-text-3); font-variant-numeric: tabular-nums;
+}
+.jg-file-tag { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 999px; font-size: 10.5px; line-height: 16px; }
+.jg-file-tag.installed { background: rgba(46,160,67,.14); color: #2ea043; }
+.jg-file-actions { display: flex; gap: 6px; flex: none; }
+.jg-file-btn-main { background: var(--jg-ink); color: var(--jg-on-ink); border-color: transparent; font-weight: 600; }
+.jg-file-btn-main:hover { background: var(--jg-ink-hover); }
+
+
+/* ═══ 版本选择弹窗（顶部「安装」先选文件再下） ═══
+   全部走主题 token + 详情页主 CTA 那种「墨色药丸」按钮，不套 shell.css 里
+   备注弹窗那套蓝紫渐变 —— 那是另一套视觉语言，摆在这个页面里像外挂控件。 */
+.jg-pick-modal {
+    width: min(520px, 94vw);
+    background: var(--jg-card);
+    border: 1px solid var(--jg-line);
+    border-radius: 18px;
+    padding: 22px 22px 18px;
+    box-shadow: 0 24px 60px -18px rgba(0, 0, 0, .45);
+}
+.jg-pick-title { font-size: 15.5px; font-weight: 700; color: var(--jg-text); }
+.jg-pick-sub {
+    margin-top: 3px; font-size: 12.5px; color: var(--jg-text-3);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.jg-pick-cap {
+    margin: 14px 0 7px; font-size: 11.5px; font-weight: 700;
+    color: var(--jg-text-3); letter-spacing: .05em;
+}
+.jg-pick-list {
+    display: flex; flex-direction: column; gap: 6px;
+    max-height: 210px; overflow-y: auto; scrollbar-width: thin;
+}
+/* 弹窗里现在最多三节（主文件 / 可选文件 / 更多文件下拉），每节列表都收紧一档：
+   三节一起铺满会把「下载并安装」挤出屏幕。单节内部照旧自己滚。 */
+.jg-pick-list.jg-pick-sm { max-height: 148px; }
+.jg-pick-row {
+    display: flex; align-items: flex-start; gap: 9px;
+    padding: 10px 12px; border: 1px solid transparent; border-radius: 12px;
+    background: var(--jg-well);
+    cursor: pointer; transition: border-color .14s ease, background .14s ease;
+}
+.jg-pick-row:hover { border-color: var(--jg-line-strong); }
+.jg-pick-row.on { border-color: var(--jg-ink); background: var(--jg-card); }
+.jg-pick-row input { margin: 2px 0 0; flex: none; accent-color: var(--jg-ink); }
+.jg-pick-main { display: block; min-width: 0; }
+.jg-pick-name {
+    display: block; font-size: 13px; font-weight: 600; color: var(--jg-text);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.jg-pick-meta {
+    display: block; margin-top: 2px; font-size: 11.5px;
+    color: var(--jg-text-3); font-variant-numeric: tabular-nums;
+}
+.jg-pick-select {
+    width: 100%; padding: 9px 10px; font-size: 12.5px;
+    color: var(--jg-text); background: var(--jg-well);
+    border: 1px solid var(--jg-line-strong); border-radius: 10px; cursor: pointer;
+    font-family: inherit;
+}
+.jg-pick-select:focus { outline: none; border-color: var(--jg-ink); }
+
+/* 「历史版本」下拉 —— 复用站内 .jg-sort-dd（mod 管理的排序/存档下拉同款）。
+   原生 <select> 的弹出列表由系统绘制，圆角/配色不受主题控制，深浅色切换时永远是白底方角。 */
+.jg-modal.jg-pick-modal { overflow: visible; }        /* 菜单要能探出弹窗边界 */
+.jg-pick-vdd { display: block; width: 100%; }
+.jg-pick-vdd .jg-pick-vdd-btn {
+    display: flex; width: 100%; justify-content: space-between; gap: 10px;
+    padding: 9px 12px; border-radius: 10px; font-size: 12.5px;
+}
+.jg-pick-vdd-t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 还没选历史版本时的占位态：字色退一档，跟「未选择」的语义一致 */
+.jg-pick-vdd-t.jg-pick-vdd-ph { color: var(--jg-text-3); }
+.jg-pick-vdd .jg-sort-menu {
+    left: 0; right: 0; width: 100%; min-width: 0;
+    max-height: 216px; overflow-y: auto;
+}
+.jg-pick-vdd .jg-sort-item { white-space: normal; line-height: 1.45; }
+.jg-pick-vdd.open.up .jg-sort-menu { transform-origin: bottom left; }
+/* 弹窗内的遮罩要压在菜单之下：全局 .jg-dd-overlay 是 9000，会盖住菜单（看得见、点不中）。 */
+.jg-pick-modal .jg-dd-overlay { z-index: 15; }
+.jg-pick-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
+/* 药丸按钮：和详情页那颗 .jg-dl4-cta 同一套皮（墨色实心 / 描边次要） */
+.jg-pick-btn {
+    padding: 9px 20px; border-radius: 999px;
+    border: 1px solid var(--jg-line-strong); background: transparent;
+    color: var(--jg-text-2); font-size: 13.5px; font-weight: 600;
+    font-family: inherit; cursor: pointer;
+    transition: background .14s ease, color .14s ease, border-color .14s ease, transform .14s ease;
+}
+.jg-pick-btn:hover { background: var(--jg-well); color: var(--jg-text); }
+.jg-pick-btn.primary {
+    border-color: transparent; background: var(--jg-ink); color: var(--jg-on-ink);
+    box-shadow: 0 4px 14px rgba(0, 0, 0, .18);
+}
+.jg-pick-btn.primary:hover:not(:disabled) { background: var(--jg-ink-hover); color: var(--jg-on-ink); transform: translateY(-1px); }
+.jg-pick-btn:disabled { opacity: .5; cursor: not-allowed; }
+.jg-pick-empty { margin: 14px 0; font-size: 12.5px; color: var(--jg-text-3); }
+
+/* 「显示全部（另有 N 个旧版本/杂项）」—— 原来是蓝色下划线链接（.jg-linklike），
+   在这个灰白页面上像超链接而不像控件，改成描边药丸按钮。 */
+.jg-file-more {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 6px 14px; border-radius: 999px;
+    border: 1px solid var(--jg-line-strong); background: transparent;
+    color: var(--jg-text-2); font-size: 12.5px; font-weight: 600;
+    font-family: inherit; cursor: pointer;
+    transition: background .14s ease, color .14s ease, border-color .14s ease;
+}
+.jg-file-more:hover { background: var(--jg-well); color: var(--jg-text); border-color: var(--jg-ink); }
+/* 装过的那条：按钮直接显示「已安装」并灰掉 */
+.jg-file-btn-done { opacity: .5; cursor: default; }

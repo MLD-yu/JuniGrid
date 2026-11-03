@@ -95,6 +95,8 @@
     color: var(--jg-on-ink);
     font-weight: 600;
 }.jg-path-btn.primary:hover { background: var(--jg-ink-hover); }/* v0.2.2：设置页开关行 —— 整行可点、黑色滑块、开启态行底黑色标记线 */
+/* 自动检测进行中：置灰 + 不响应重复点击（探测在后台跑，界面本身不冻） */
+.jg-path-btn:disabled { opacity: .55; cursor: default; pointer-events: none; }
 .jg-switch-col {
     display: flex;
     flex-direction: column;
@@ -372,6 +374,34 @@
     background: var(--jg-ink);
     border-color: var(--jg-outline);
     color: var(--jg-on-ink);
+}.jg-sponsor-note {
+    margin: 2px 0 0;
+    text-align: center;
+    font-size: 12.5px;
+    color: var(--jg-text-2);
+}
+.jg-sponsor-note .jg-help-tip {
+    margin-left: 4px;
+    vertical-align: -3px;
+}/* 关于页：付完才发现忘了写备注 —— 弹一张加好友二维码（只有关闭按钮） */
+.jg-sponsor-forgot {
+    appearance: none;
+    margin-top: 2px;
+    padding: 6px 16px;
+    border: 1px solid var(--jg-line-strong);
+    border-radius: 999px;
+    background: transparent;
+    color: var(--jg-text-2);
+    font: inherit;
+    font-size: 12.5px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background .18s ease, color .18s ease, border-color .18s ease;
+}
+.jg-sponsor-forgot:hover {
+    background: var(--jg-well);
+    border-color: var(--jg-line-heavy);
+    color: var(--jg-text);
 }.jg-sponsor-qr {
     width: 180px;
     height: 180px;
@@ -544,7 +574,20 @@
     transform: translateX(-50%);
     border: 6px solid transparent;
     border-top-color: #fffce1;
-}/* 贴在页面左上角的问号（立绘标题旁）：气泡朝下 + 左对齐 ——
+}/* 问号在文案末尾时，气泡改用右缘对齐：居中会顶出容器右边界，
+   被 .jg-main 的 overflow-x:hidden 裁成半截（就是「问号显示不全」）。 */
+.jg-help-tip--right .jg-help-tip-bubble {
+    left: auto;
+    right: 0;
+    transform: none;
+    transform-origin: bottom right;
+}
+.jg-help-tip--right .jg-help-tip-bubble::after {
+    left: auto;
+    right: 6px;
+    transform: none;
+}
+/* 贴在页面左上角的问号（立绘标题旁）：气泡朝下 + 左对齐 ——
    默认朝上会被导航条/视口上沿裁掉半截，居中又会让气泡左边伸出屏幕外 */
 .jg-help-tip--down .jg-help-tip-bubble {
     bottom: auto;

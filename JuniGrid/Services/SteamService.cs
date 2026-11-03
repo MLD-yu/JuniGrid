@@ -81,7 +81,7 @@ public sealed class SteamService
         return m.Success ? m.Groups["v"].Value : null;
     }
 
-    private static string? FindSteamPath()
+    internal static string? FindSteamPath()
     {
         try
         {
@@ -91,7 +91,7 @@ public sealed class SteamService
             if (!string.IsNullOrWhiteSpace(p))
             {
                 p = p.Replace('/', Path.DirectorySeparatorChar);
-                if (Directory.Exists(p)) return p;
+                if (GameService.DriveUsable(p) && Directory.Exists(p)) return p;
             }
         }
         catch (Exception __ex) { AppLog.Warn("SteamService", __ex.Message); }
@@ -104,8 +104,9 @@ public sealed class SteamService
             @"E:\Steam",
             @"F:\Steam",
         };
+        // 先筛「盘就绪」再摸目录：断开的网络盘/空读卡器上一次 Directory.Exists 就能卡几十秒
         foreach (var c in candidates)
-            if (Directory.Exists(c)) return c;
+            if (GameService.DriveUsable(c) && Directory.Exists(c)) return c;
         return null;
     }
 

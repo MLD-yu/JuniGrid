@@ -412,3 +412,37 @@ html[data-theme="dark"] .jg-trans-toggle.on .jg-tt-knob { left: 22px; }
 body.jg-max .jg-shell,
 body.jg-max .jg-titlebar,
 body.jg-max .jg-winbtn-close { border-radius: 0; }
+
+/* ============================================================
+   v1.2.11：颜色主题切换 —— 从点击点圆形扩散（View Transitions）
+   ------------------------------------------------------------
+   原理：document.startViewTransition 给「旧画面」「新画面」各拍一张快照，
+   把新快照用 clip-path 圆形从 --jg-vt-x/y 展开到 --jg-vt-r，旧快照原地静止。
+   观感 = 新配色像墨水滴在纸上，从色卡那一点铺满整个窗口。
+   --jg-vt-* 三个量由 junigrid.ui.js 的 applyAccentWave 注入、动画后清掉；
+   不支持该 API 的旧 WebView2 或开了「减少动效」时 JS 压根不启动过渡，
+   下面这些规则自然不生效，主题照旧瞬间切换。
+   ============================================================ */
+html { --jg-win-radius: 10px; }
+html:has(body.jg-max) { --jg-win-radius: 0; }
+
+/* 关掉默认的交叉淡入：新版盖在旧版上做裁切，两者都不该再叠一层透明度，否则圆边缘发灰 */
+::view-transition-old(root),
+::view-transition-new(root) { animation: none; mix-blend-mode: normal; }
+
+::view-transition-new(root) {
+    animation: jg-accent-wave 550ms cubic-bezier(0.33, 0.02, 0.12, 1) forwards;
+    /* 起始裁到 0，避免动画第一帧之前从圆外漏出新配色 */
+    clip-path: circle(0 at var(--jg-vt-x, 50%) var(--jg-vt-y, 50%));
+    will-change: clip-path;
+}
+@keyframes jg-accent-wave {
+    from { clip-path: circle(0 at var(--jg-vt-x, 50%) var(--jg-vt-y, 50%)); }
+    to   { clip-path: circle(var(--jg-vt-r, 150vmax) at var(--jg-vt-x, 50%) var(--jg-vt-y, 50%)); }
+}
+
+/* 快照是矩形，窗口是 10px 圆角 —— 不裁一下，过渡期间四个角会方出来 */
+::view-transition-image-pair(root) {
+    border-radius: var(--jg-win-radius);
+    overflow: hidden;
+}

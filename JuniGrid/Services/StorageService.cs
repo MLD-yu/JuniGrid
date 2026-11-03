@@ -42,6 +42,9 @@ public sealed partial class StorageService
     private readonly HashSet<string> _computing = new(StringComparer.Ordinal);
     private DateTime _lastRefreshUtc = DateTime.MinValue;
 
+    /// <summary>下载/安装临时文件的保留时长：超过这么久没动过就自动清掉。</summary>
+    internal static readonly TimeSpan DownloadsRetention = TimeSpan.FromHours(24);
+
     public bool IsComputing(string id) { lock (_gate) return _computing.Contains(id); }
     public long GetSize(string id) { lock (_gate) return _sizes.TryGetValue(id, out var v) ? v : -1; }
 
@@ -64,11 +67,11 @@ public sealed partial class StorageService
     {
         var list = new List<StorageCategory>();
 
-        list.Add(new("downloads", "下载与安装临时", "下载 zip 与解压临时文件",
+        list.Add(new("downloads", "下载与安装临时", "下载 zip 与解压临时文件（超过 24 小时自动清理）",
             StoragePaths.DownloadsDir,
             new[] { StoragePaths.DownloadsDir }, new[] { StoragePaths.DownloadsDir },
             Cleanable: true, Movable: true,
-            Tip: "从 Nexus 或 GitHub 下载 mod 时的压缩包和解压中间产物 安装完成后就没用了 可放心清理"));
+            Tip: "从 Nexus 或 GitHub 下载 mod 时的压缩包和解压中间产物 安装完成后就没用了 超过 24 小时没动过的会自动清掉 有任务进行中时不会动 也可随时手动清理"));
 
         // v1.6.12：缓存根上的历史遗留 _smapi-install.dat（早期解压 install.dat 落下的）
         // 必须挂在本项下，否则 G3 审计会把它钉成「看不见就删不掉」的无主条目。
@@ -319,6 +322,83 @@ public sealed partial class StorageService
         return RunClean(c.Id, c.Name, c.CleanRoots);
     }
 
+    /// <summary>自动清理的常驻循环：启动后立刻跑一遍，之后每小时一遍。
+    /// 删的是「上次写入早于 24 小时」的条目 —— 正在写的东西时间戳一直是新的。</summary>
+    public void StartDownloadAutoClean()
+    {
+        _ = Task.Run(async () =>
+        {
+            while (true)
+            {
+                try { AutoCleanDownloads(); }
+                catch (Exception ex) { AppLog.Warn("Storage", "下载/安装临时自动清理失败：" + ex.Message); }
+                await Task.Delay(TimeSpan.FromHours(1)).ConfigureAwait(false);
+            }
+        });
+    }
+
+    /// <summary>扫一遍下载/安装临时目录，删掉超过 24 小时没动过的文件和临时目录，返回删掉的条目数。
+    /// 有下载/安装任务进行中时整轮跳过 —— 那里可能有正在写的半截包。</summary>
+    public int AutoCleanDownloads()
+    {
+        if (_center.RunningCount > 0) return 0;
+        var n = PruneStaleEntries(StoragePaths.DownloadsDir, DateTime.UtcNow - DownloadsRetention);
+        if (n > 0)
+        {
+            AppLog.Warn("Storage", $"下载/安装临时自动清理：删掉 {n} 个超过 24 小时的条目");
+            lock (_gate) _sizes["downloads"] = DirSize(StoragePaths.DownloadsDir);
+            OnStats?.Invoke();
+        }
+        return n;
+    }
+
+    /// <summary>删掉 <paramref name="dir"/> 下最后写入早于 <paramref name="cutoffUtc"/> 的一级条目。
+    /// 目录要连里面的文件一起看：只要还有一份文件比闸门新就整目录留着（目录项时间不反映
+    /// 深层文件的改动）。占用中/读不动的一律跳过 —— 自动清理不许误删还在用的东西。</summary>
+    internal static int PruneStaleEntries(string dir, DateTime cutoffUtc)
+    {
+        string[] entries;
+        try
+        {
+            if (!Directory.Exists(dir)) return 0;
+            entries = Directory.GetFileSystemEntries(dir);
+        }
+        catch { return 0; }
+
+        var removed = 0;
+        foreach (var entry in entries)
+        {
+            try
+            {
+                var isDir = Directory.Exists(entry);
+                if (isDir ? !IsDirStale(entry, cutoffUtc) : File.GetLastWriteTimeUtc(entry) >= cutoffUtc) continue;
+                if (isDir) Directory.Delete(entry, recursive: true);
+                else File.Delete(entry);
+                removed++;
+            }
+            catch { }
+        }
+        return removed;
+    }
+
+    private static bool IsDirStale(string dir, DateTime cutoffUtc)
+    {
+        try
+        {
+            if (Directory.GetLastWriteTimeUtc(dir) >= cutoffUtc) return false;
+            foreach (var f in Directory.EnumerateFiles(dir, "*", new EnumerationOptions
+            {
+                RecurseSubdirectories = true,
+                IgnoreInaccessible = false
+            }))
+            {
+                if (File.GetLastWriteTimeUtc(f) >= cutoffUtc) return false;
+            }
+            return true;
+        }
+        catch { return false; }   // 读不全就别删
+    }
+
     /// <summary>depot-staging 里除版本包之外的附属目录。删的代价不同的东西**必须分行**：
     /// SMAPI 本体删了下次切版本要重装，Mod 暂存里是用户的东西（所以那条走回收站）。
     /// 人工隔离区（我排查跨版本污染时挪东西用的）不上界面。</summary>
@@ -380,7 +460,7 @@ public sealed partial class StorageService
     /// 扫描与列表都跳过它）。挪完批次目录空了就摘掉，界面那行随之消失。绝不硬删。</summary>
     private string MoveBucketsToTrash(string gamePath, string[] dirs, string title)
     {
-        var task = _center.Start("移出：" + title, "cleanup");
+        var task = _center.Start("移出：" + title, "cleanup", silent: true);
         _center.Report(task, LocService.Tr("正在移进游戏卸载回收站…"), 5);
         try
         {
@@ -424,7 +504,8 @@ public sealed partial class StorageService
 
     private Task<string> RunClean(string sizeKey, string title, string[] roots)
     {
-        var task = _center.Start("清理：" + title, "cleanup");
+        // silent：缓存清理是「点完就等结果」的杂活，不该在任务管理里占一行
+        var task = _center.Start("清理：" + title, "cleanup", silent: true);
         _center.Report(task, LocService.Tr("开始清理…"), 3);
 
         var pruneDirs = roots.Any(Directory.Exists);   // 目录根才需要收尾空壳

@@ -274,6 +274,8 @@ public partial class MainWindow : Window
             services.AddSingleton<NexusService>();
             services.AddSingleton<PageRefreshService>();
             services.AddSingleton<TaskCenterService>();
+            // v1.2.10：免费账号的应用内无感下载（隐藏 WebView2 代按 Slow download）
+            services.AddSingleton<NexusWebDownloadService>();
             services.AddSingleton<InstallService>();
             // v1.8.x：本地压缩包拖放/文件选择 —— WPF 宿主层与 Blazor 页之间的交接点
             services.AddSingleton<LocalPackDelivery>();
@@ -322,6 +324,9 @@ public partial class MainWindow : Window
             // v1.1.5：游玩时长统计循环随启动常驻 —— 不管首页开不开都在累计
             _ = provider.GetRequiredService<PlayTimeService>();
 
+            // 下载/安装临时目录超过 24 小时自动清掉（启动后立刻一遍，之后每小时一遍）
+            provider.GetRequiredService<StorageService>().StartDownloadAutoClean();
+
             // v1.0.2：启动后台检查一次应用新版本（不阻塞 UI，失败静默）
             // v1.7.x：同一次调用里认出「更新已落地」（旧安装包缓存被清掉），顺手硬删旧肖像页
             // 遗留在各版本 Mods 里的覆盖包 —— 页面已经没了，留着会被 CP 继续加载。
@@ -330,8 +335,8 @@ public partial class MainWindow : Window
                 provider.GetRequiredService<DepotDownloaderService>());
 
             InitializeComponent();
-            // v1.1.2b：拖拽最小尺寸完全由 WM_GETMINMAXINFO hook 强制（v1.1.8 起按所在
-            // 显示器工作区比例计算，见 WndProcClampMaximized）。
+            // v1.1.2b：拖拽最小尺寸完全由 WM_GETMINMAXINFO hook 强制（v1.2.11 起为
+            // CSS 像素下限 480×420 × 本窗缩放，见 MonitorMinTrackSize）。
             // 必须放在 InitializeComponent 之后 —— XAML 里的 MinWidth/MinHeight(1100/650 DIP)
             // 会在高 DPI 下换算成更大的物理值把窗口二次拉大，覆盖这里清零前的设置。
             // WPF 属性清零让位给 hook。
@@ -843,13 +848,11 @@ public partial class MainWindow : Window
         }
         // v1.1.2：拖拽最小尺寸强制 —— hook 里的一切坐标都是物理像素，不要再乘 DPI。
         // 更早版本则根本没设此项，窗口能拖到几百像素宽。
-        // v1.1.8b：最小尺寸随显示器 —— 所在显示器分辨率的 60% × 54%。
-        // 校准基准（用户确认的设计规定值）：2560×1600 的屏上 = 1536×864PX。
-        // 大屏最小值等比放大、小屏等比缩小；每条 WM_GETMINMAXINFO 都按窗口当前
-        // 所在屏重算，跨屏拖动自动跟随，无需 DPI 换算。
+        // v1.2.11：最小尺寸不再随显示器等比 —— 响应式布局已支持窄窗，改为固定小下限，
+        // 超小屏让位本屏 95%（见 MonitorMinTrackSize）。
         try
         {
-            var (minW, minH) = MonitorMinTrackSize(mi.rcMonitor);
+            var (minW, minH) = MonitorMinTrackSize(mi.rcMonitor, GetDpiForWindow(hwnd) / 96.0);
             mm.ptMinTrackSize = new POINT32(minW, minH);
         }
         catch { }
@@ -858,13 +861,19 @@ public partial class MainWindow : Window
         return IntPtr.Zero;
     }
 
-    // v1.1.8b：本屏拖拽最小尺寸（物理像素）—— 所在显示器分辨率的 60% × 54%。
-    // 校准基准（用户确认）：2560×1600 屏 = 1536×864PX。注意基数是【整块显示器】
-    // 而非工作区，否则有任务栏的屏上高会比无任务栏的屏小一截。
+    // v1.2.11：本屏拖拽最小尺寸（物理像素）—— 响应式布局（home.css 断点阶梯）已支持窄窗，
+    // 下限不再随显示器等比放大：旧的 60%×54% 在 2K 屏上强制最小 1536×864PX，
+    // 想把窗口拖小的用户拖不动。下限按 CSS 像素钉死 480×420 再乘本窗缩放 —— 断点媒体查询
+    // 读的是 CSS 像素，这样任何 DPI 缩放下最小窗都正好落在布局实测过的最窄档上
+    // （固定物理值在 200% 屏上会漏到 350 CSS 宽，比实测下限还窄）。超小屏让位本屏 95%。
     // WndProcClampMaximized 与尺寸检查点日志共用，保证两处口径永远一致。
-    private static (int W, int H) MonitorMinTrackSize(RECT32 monitorRect) =>
-        ((int)((monitorRect.Right - monitorRect.Left) * 60 / 100),
-         (int)((monitorRect.Bottom - monitorRect.Top) * 54 / 100));
+    private static (int W, int H) MonitorMinTrackSize(RECT32 monitorRect, double scale)
+    {
+        var w = monitorRect.Right - monitorRect.Left;
+        var h = monitorRect.Bottom - monitorRect.Top;
+        return ((int)Math.Min(w * 95 / 100.0, Math.Ceiling(480 * scale)),
+                (int)Math.Min(h * 95 / 100.0, Math.Ceiling(420 * scale)));
+    }
 
 
 
@@ -1132,21 +1141,27 @@ public partial class MainWindow : Window
     }
 
     /// <summary>Blazor 页面调这里：在主窗口内打开 Nexus 浏览覆盖层。</summary>
-    public static void OpenNexusOverlay(string url)
+    public static void OpenNexusOverlay(string url) => OpenExternalUrl(url);
+
+    /// <summary>
+    /// 用系统默认浏览器打开外链。WebView2 里 target=_blank 的行为不可靠（可能把整个应用
+    /// 导航走），所以页面上的外链入口统一走这里。
+    /// </summary>
+    public static void OpenExternalUrl(string url)
     {
-        var w = System.Windows.Application.Current?.MainWindow as MainWindow;
-        if (w is null) return;
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri)
+            || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps)) return;
         try
         {
             System.Diagnostics.Process.Start(
-                new System.Diagnostics.ProcessStartInfo(url) { UseShellExecute = true });
+                new System.Diagnostics.ProcessStartInfo(uri.AbsoluteUri) { UseShellExecute = true });
         }
         catch (Exception ex) { Log("打开系统浏览器失败: " + ex.Message); }
     }
 
     // ─── v1.1.5/v1.1.8：窗口尺寸策略 ───
     // 启动即窗口化、按所在屏 77.1%×72.7% 居中现身（见 OnSourceInitialized/RevealAtStartupPosition）；
-    // 拖拽最小尺寸按所在显示器 60%×54%（2560×1600 屏 = 1536×864PX，见 WndProcClampMaximized）。
+    // 拖拽最小尺寸按 CSS 像素钉死 480×420 再乘本窗缩放（超小屏让位本屏 95%，见 MonitorMinTrackSize）。
     // 从最大化点「还原」时恢复到所在屏工作区的 77.1%×72.6%，不用系统 RestoreBounds
     // 里记的旧尺寸（那可能是很久之前随手拖出来的小窗，还原出来突兀）。
     private bool _wasMaximized;
@@ -1298,12 +1313,12 @@ public partial class MainWindow : Window
                     (_restoreTargetPhysW < 1970 ? " ≈ 1974×1110PX 基准" : ""));
             else
             {
-                // v1.1.8b：最小尺寸检查点 —— 与 WndProcClampMaximized 同口径，按窗口所在
-                // 显示器 60%×54% 计算。
+                // v1.1.8b：最小尺寸检查点 —— 与 WndProcClampMaximized 同口径（固定小下限，
+                // 见 MonitorMinTrackSize）。
                 var mi = new MONITORINFO { cbSize = Marshal.SizeOf<MONITORINFO>() };
                 if (GetMonitorInfo(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), ref mi))
                 {
-                    var (minW, minH) = MonitorMinTrackSize(mi.rcMonitor);
+                    var (minW, minH) = MonitorMinTrackSize(mi.rcMonitor, scale);
                     if (Math.Abs(pw - minW) < 4 && Math.Abs(ph - minH) < 4)
                         Log($"[尺寸检查点] ★ 到达本屏最小尺寸 {minW}×{minH}PX（实际 {pw:F0}×{ph:F0}PX，" +
                             $"Width={ActualWidth:F0} Height={ActualHeight:F0} DIP，dpi={dpi}，WindowState={WindowState}，Left={Left:F0} Top={Top:F0}）");

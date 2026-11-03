@@ -96,7 +96,65 @@
 }
 @media (max-width: 860px) {.jg-grid-4 { grid-template-columns: repeat(2, 1fr); }.jg-taskdock { right: 12px; bottom: 12px; padding: 8px 10px; }.jg-taskdock-title { font-size: 12px; }
 }
-@media (max-width: 680px) {.jg-grid-4 { grid-template-columns: 1fr; }.jg-account { width: 160px; padding: 10px 8px; }
+/* v1.2.11：窄窗阶梯 —— 侧栏随窗口逐级让宽给内容区 */
+@media (max-width: 760px) {
+    .jg-account { width: 184px; padding: 12px 10px; }
+    .jg-avatar { width: 72px; height: 72px; }
+    .jg-account-name { font-size: 14px; }
+    .jg-launch-big { font-size: 13.5px; padding: 10px 10px; min-height: 54px; }
+}
+@media (max-width: 680px) {
+    .jg-grid-4 { grid-template-columns: 1fr; }
+    .jg-account { width: 160px; padding: 10px 8px; }
+    .jg-avatar { width: 56px; height: 56px; border-width: 2px; }
+    .jg-account-name { font-size: 13px; }
+    .jg-account-sub { font-size: 11px; }
+    .jg-launch-big { font-size: 13px; min-height: 50px; }
+}
+/* v1.2.11：≤640 侧栏改横向顶条 —— 切换 pills / 账户 / 启动按钮同一行，
+   内容区拿全宽；窗口拖到最小 700×480 物理像素也不挤破 */
+@media (max-width: 640px) {
+    .jg-body { flex-direction: column; }
+    .jg-account {
+        width: 100%; flex: 0 0 auto; min-width: 0;
+        flex-direction: row; align-items: center; gap: 10px;
+        padding: 8px 12px;
+        overflow: visible;
+        border-bottom-left-radius: 0;
+    }
+    .jg-mode-row { width: auto; flex: 1 1 auto; min-width: 0; }
+    .jg-mode-pills .jg-pill { padding: 6px 6px; font-size: 12px; }
+    .jg-account-mid { flex: 0 1 auto; min-width: 0; flex-direction: row; justify-content: flex-start; margin: 0; gap: 8px; }
+    .jg-avatar-wrap { margin-top: 0; }
+    .jg-avatar { width: 34px; height: 34px; }
+    .jg-avatar-dot { width: 10px; height: 10px; right: -1px; bottom: -1px; border-width: 1.5px; }
+    .jg-account-name { font-size: 13px; text-align: left; max-width: 110px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .jg-account-sub { display: none; }
+    .jg-launch-row { flex: 0 0 auto; width: 168px; margin-top: 0; }
+    .jg-launch-big { flex-direction: row; gap: 6px; min-height: 40px; padding: 6px 12px; font-size: 13px; border-radius: 10px; }
+    .jg-launch-ver { display: none; }
+    .jg-close-btn { width: 34px; border-radius: 10px; font-size: 15px; }
+    .jg-launch-row.running .jg-launch-big,
+    .jg-launch-row.launching .jg-launch-big { width: calc(100% - 42px); }
+    .jg-topnav { padding: 6px 8px 0; gap: 2px; }
+    .jg-topnav-item { height: 38px; padding: 4px 6px; max-width: 64px; }
+    .jg-topnav-icon { width: 24px; height: 24px; }
+    .jg-main { padding: 12px 12px 0; }
+    .jg-search-x.open { width: min(220px, 46vw); }
+    .jg-nexus-island.open { width: min(300px, calc(100vw - 24px)); }
+    .jg-batchbar { overflow-x: auto; }
+}
+/* v1.2.11：≤480 只留最小可读件 —— 账户名与 pill 图标让位给宽度 */
+@media (max-width: 480px) {
+    .jg-account { gap: 8px; padding: 8px 8px; }
+    .jg-account-name { display: none; }
+    .jg-mode-pills .jg-pill img { display: none; }
+    .jg-launch-row { width: 128px; }
+    .jg-launch-big { font-size: 12px; padding: 6px 8px; }
+    .jg-topnav-icon { width: 22px; height: 22px; }
+    .jg-winbtn { width: 40px; }
+    .jg-theme-wrap { padding: 0 6px 0 2px; }
+    .jg-titlebar-drag { padding: 0 8px; }
 }/* 大屏：字号、间距同步放大，避免"放大后跟没放大一样" */
 @media (min-width: 1400px) {
     .jg-account-name { font-size: 16px; }

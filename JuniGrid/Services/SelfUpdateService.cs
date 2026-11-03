@@ -103,10 +103,26 @@ public sealed class SelfUpdateService
         return deleted;
     }
 
-    /// <summary>请求 GitHub 最新版本并与当前版本比较（API 失败自动走 HTML 回落）。</summary>
+    /// <summary>请求 GitHub 最新版本并与当前版本比较（API 失败自动走 HTML 回落）。
+    /// <para>v1.2.11：两条通道内部改成并发竞速，并记下分段耗时。此前是「四条 API 通道串行
+    /// → 三条 HTML 通道（还只有直连）」：直连不通时，一次检查要把 12 秒超时预算花在死链上
+    /// 才轮到镜像，实测最坏 >50 秒，用户看到的就是「检查更新转半天，然后说没网」。</para></summary>
     public async Task<SelfUpdateInfo?> CheckAsync()
     {
-        SelfUpdateInfo? result = await TryCheckViaApiAsync() ?? await TryCheckViaHtmlAsync();
+        var sw = Stopwatch.StartNew();
+        var api = await TryCheckViaApiAsync();
+        var apiMs = sw.ElapsedMilliseconds;
+        SelfUpdateInfo? result = api;
+        if (result is null)
+        {
+            result = await TryCheckViaHtmlAsync();
+            AppLog.Info("SelfUpdate", $"检查更新：API 通道 {apiMs}ms 未拿到版本，HTML 回落 {(sw.ElapsedMilliseconds - apiMs)}ms"
+                + (result is null ? " 也失败" : " 成功"));
+        }
+        else
+        {
+            AppLog.Info("SelfUpdate", $"检查更新：API 通道 {apiMs}ms 命中 v{result.LatestVersion}");
+        }
         if (result is not null)
         {
             _latest = result;
@@ -276,60 +292,128 @@ public sealed class SelfUpdateService
         return landed;
     }
 
-    // 通道 1：GitHub API（信息全，但有限流；直连不通依次换镜像 —— gh-proxy 可代理 API）
-    // <para><b>403/429 例外</b>：那是匿名配额（60 次/小时/IP）打满，镜像代理的是同一个 API、
-    // 同一个来源 IP，换过去只会再吃一次 403。实测每次开机因此白打四条请求、刷四条日志，
-    // 而真正拿到版本的是下面那条不受配额限制的 HTML 回落 —— 所以这两种状态码直接跳出镜像循环。</para>
+    // 通道 1：GitHub API（信息全，但有限流；直连不通时换镜像 —— gh-proxy 可代理 API）
+    // <para><b>v1.2.11：并发竞速，不再串行 foreach</b>。直连 + 三条镜像同时发，先拿到版本的赢。
+    // 此前串行时，一台直连不通的机器要把 12 秒超时预算耗在死链上才轮到镜像（实测本机四个通道
+    // 单个耗时：直连 2.2s / ghfast 403 2.1s / gh-proxy 0.25s 即断 / ghproxy 403 2.0s —— 光是
+    // 一路 403 累积就要 6.7s，真遇到超时是 48s+）。竞速后典型 = 最快那条（~2s），最坏 = 最慢那条。</para>
+    // <para><b>403/429 不再早退</b>：那是匿名配额（60 次/小时/IP）打满，镜像代理的是同一个 API、
+    // 同一个来源 IP，换过去只会再吃一次 403 —— 既然已经并发发了，就让它自然失败，整轮落空后
+    // 走不受配额限制的 HTML 回落。</para>
     private async Task<SelfUpdateInfo?> TryCheckViaApiAsync()
     {
-        foreach (var api in UpdateService.GithubUrls(AppInfo.LatestApiUrl))
-        {
-            try
-            {
-                using var resp = await Http.GetAsync(api);
-                if (!resp.IsSuccessStatusCode)
-                {
-                    var code = (int)resp.StatusCode;
-                    AppLog.Warn("SelfUpdate", $"API 通道失败：HTTP {code}（{new Uri(api).Host}）"
-                        + (code is 403 or 429 ? "，配额打满，换镜像没用 → 走 HTML 回落" : "，换下一通道"));
-                    if (code is 403 or 429) return null;
-                    continue;
-                }
-                using var doc = JsonDocument.Parse(await resp.Content.ReadAsStreamAsync());
-                var root = doc.RootElement;
-                var tag = root.TryGetProperty("tag_name", out var t) ? t.GetString() ?? "" : "";
-                // 只有这条通道能拿到官方校验值（release asset 上的 digest/size）
-                return Build(tag, root);
-            }
-            catch (Exception ex)
-            {
-                AppLog.Warn("SelfUpdate", $"API 通道异常：{ex.Message}，换下一通道");
-            }
-        }
-        return null;
+        var probes = UpdateService.GithubUrls(AppInfo.LatestApiUrl).Select(ProbeApiAsync).ToList();
+        return await FirstNonNullAsync(probes);
     }
 
-    // 通道 2：releases/latest 页面 302 重定向里抠 tag（SMAPI 检查同款方案，无配额限制）
-    private async Task<SelfUpdateInfo?> TryCheckViaHtmlAsync()
+    private static async Task<SelfUpdateInfo?> ProbeApiAsync(string api)
     {
         try
         {
-            using var resp = await Http.GetAsync(AppInfo.ReleasesUrl + "/latest");
+            using var resp = await Http.GetAsync(api);
+            if (!resp.IsSuccessStatusCode)
+            {
+                var code = (int)resp.StatusCode;
+                AppLog.Warn("SelfUpdate", $"API 通道失败：HTTP {code}（{new Uri(api).Host}）"
+                    + (code is 403 or 429 ? "，配额打满 → 走 HTML 回落" : ""));
+                // 直连吃 403/429 = 本机 IP 的匿名配额（60 次/小时）打满。镜像代理的是同一个 API，
+                // 换过去只会再吃一次 403 —— 这是原串行版本「直接跳出镜像循环」的那条判断，
+                // 改成并发后要显式抛出来，否则会陪着一条挂到 12 秒的镜像把预算耗光。
+                // 只认直连这一条：某个镜像 403 可能只是它自己的问题，不能因此放弃整轮 API。
+                if (code is 403 or 429 && string.Equals(api, AppInfo.LatestApiUrl, StringComparison.OrdinalIgnoreCase))
+                    throw new QuotaExhaustedException();
+                return null;
+            }
+            using var doc = JsonDocument.Parse(await resp.Content.ReadAsStreamAsync());
+            var root = doc.RootElement;
+            var tag = root.TryGetProperty("tag_name", out var t) ? t.GetString() ?? "" : "";
+            // 只有这条通道能拿到官方校验值（release asset 上的 digest/size）
+            return Build(tag, root);
+        }
+        catch (QuotaExhaustedException) { throw; }   // 配额信号要穿透到 FirstNonNullAsync，不能被下面的兜底吞掉
+        catch (Exception ex)
+        {
+            AppLog.Warn("SelfUpdate", $"API 通道异常（{new Uri(api).Host}）：{ex.Message}");
+            return null;
+        }
+    }
+
+    // 通道 2：releases/latest 页面 302 重定向里抠 tag（SMAPI 检查同款方案，无配额限制）
+    // <para><b>v1.2.11：补上镜像链</b>。这条以前只打 github.com 直连 —— 而它恰恰只在
+    // 「直连不通 / 配额打满」时才会走到，于是在最需要它的场景里它必失败（12 秒超时后
+    // 报「没网」），全库其它 GitHub 出口都挂了镜像，唯独这里漏了。</para>
+    private async Task<SelfUpdateInfo?> TryCheckViaHtmlAsync()
+    {
+        var probes = UpdateService.GithubUrls(AppInfo.ReleasesUrl + "/latest").Select(ProbeHtmlAsync).ToList();
+        return await FirstNonNullAsync(probes);
+    }
+
+    private static async Task<SelfUpdateInfo?> ProbeHtmlAsync(string url)
+    {
+        try
+        {
+            using var resp = await Http.GetAsync(url);
             var finalUrl = resp.RequestMessage?.RequestUri?.ToString() ?? "";
             var marker = finalUrl.IndexOf(TagMarker, StringComparison.OrdinalIgnoreCase);
             if (!resp.IsSuccessStatusCode || marker < 0)
             {
-                AppLog.Warn("SelfUpdate", $"HTML 回落失败：HTTP {(int)resp.StatusCode}");
+                AppLog.Warn("SelfUpdate", $"HTML 回落失败：HTTP {(int)resp.StatusCode}（{new Uri(url).Host}）");
                 return null;
             }
-            var tag = finalUrl[(marker + TagMarker.Length)..];
-            return Build(tag);
+            return Build(finalUrl[(marker + TagMarker.Length)..]);
         }
         catch (Exception ex)
         {
-            AppLog.Warn("SelfUpdate", $"HTML 回落异常：{ex.Message}");
+            AppLog.Warn("SelfUpdate", $"HTML 回落异常（{new Uri(url).Host}）：{ex.Message}");
             return null;
         }
+    }
+
+    /// <summary>直连 API 明确回了 403/429 —— 本机 IP 的匿名配额打满，继续试镜像没有意义
+    /// （见 <see cref="ProbeApiAsync"/> 里的说明）。仅用于在竞速中立刻让位给 HTML 回落。</summary>
+    private sealed class QuotaExhaustedException : Exception;
+
+    /// <summary>并发跑一组候选，返回第一个非 null 的结果；全部失败返回 null。
+    /// <para>刻意不用 Task.WhenAll —— 一条挂到超时的慢通道不该拖住已经拿到答案的那条。
+    /// 落败的探针不取消（都是几百字节的请求，各自 abort 的复杂度不值得）。</para></summary>
+    private static async Task<SelfUpdateInfo?> FirstNonNullAsync(List<Task<SelfUpdateInfo?>> probes)
+    {
+        try
+        {
+            while (probes.Count > 0)
+            {
+                var done = await Task.WhenAny(probes);
+                probes.Remove(done);
+                SelfUpdateInfo? info;
+                try { info = await done; }               // 探针内部吃掉所有网络异常，这里只可能收到配额信号
+                catch (QuotaExhaustedException) { return null; }
+                if (info is not null) return info;
+            }
+            return null;
+        }
+        finally
+        {
+            // v1.2.14：落败的探针不取消，但它们的异常必须有人「领走」。
+            // 之前直连那条在配额打满时抛 QuotaExhaustedException，而镜像先返回结果 → 这里直接 return，
+            // 那个 task 的异常再没人 await，最终由终结器线程重抛成
+            // `[ERR] [Task] AggregateException ... unobserved`（每次启动刷一条）。
+            // 探针本身不取消（几百字节的请求，各自 abort 的复杂度不值得），所以只挂一个只管异常的延续。
+            foreach (var t in probes) ObserveFault(t);
+        }
+    }
+
+    /// <summary>把一条可能失败的任务标记为「已观察」，避免未观察异常在终结器线程重抛。
+    /// 用延续而不是 await：调用点要立刻返回结果，不能陪着一条挂到超时的慢通道。</summary>
+    private static void ObserveFault(Task task)
+    {
+        if (task.IsCompleted)
+        {
+            _ = task.Exception;                      // 访问即标记 observed；成功/取消时为 null
+            return;
+        }
+        _ = task.ContinueWith(static t => _ = t.Exception, CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
     }
 
     internal static string SetupAssetName(string ver) => $"JuniGrid-cn-v{ver}-setup.exe";

@@ -213,6 +213,10 @@ public sealed partial class ModService
                 break;
             case "html":
                 throw new InvalidOperationException("下载到的是网页而不是压缩包（可能被网络拦截），请稍后重试。");
+            case "jpeg":
+            case "gif":
+            case "webp":
+                throw new InvalidOperationException("下载到的是图片而不是压缩包：取到的直链其实是网页上的静态资源，请重试。");
             case "empty":
                 throw new InvalidOperationException("压缩包是空的或不完整（下载中断），请重新下载。");
             default:
@@ -229,7 +233,7 @@ public sealed partial class ModService
     /// 实机 2026-10-08 的 193 个缓存文件里有 14 个其实是 RAR/7z），别处要认格式只能走这同一个文件头判定。</summary>
     internal static string DetectArchiveFormat(string path)
     {
-        var head = new byte[8];
+        var head = new byte[12];
         int read;
         using (var s = File.OpenRead(path))
             read = s.Read(head, 0, head.Length);
@@ -249,6 +253,18 @@ public sealed partial class ModService
             return "png";
         if (read >= 1 && head[0] == (byte)'<')
             return "html";
+        // JPEG / GIF：N 网的静态资源（头像、徽章、封面）就是这两种格式。
+        // 落盘后发现是图片，说明「取到的直链」其实是网页上的资源而不是文件 ——
+        // 单独归类，好给用户一句人话，而不是笼统的「压缩包损坏」。
+        if (read >= 3 && head[0] == 0xFF && head[1] == 0xD8 && head[2] == 0xFF)
+            return "jpeg";
+        if (read >= 3 && head[0] == (byte)'G' && head[1] == (byte)'I' && head[2] == (byte)'F')
+            return "gif";
+        // WebP：N 网头像就是这种（RIFF....WEBP），实测 10 KB 一张，被当成直链下回来
+        if (read >= 12 && head[0] == (byte)'R' && head[1] == (byte)'I' && head[2] == (byte)'F'
+            && head[3] == (byte)'F' && head[8] == (byte)'W' && head[9] == (byte)'E'
+            && head[10] == (byte)'B' && head[11] == (byte)'P')
+            return "webp";
         if (read < 4)
             return "empty";
         return "unknown";

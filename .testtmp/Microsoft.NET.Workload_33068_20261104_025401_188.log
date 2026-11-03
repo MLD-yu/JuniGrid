@@ -1,0 +1,14 @@
+[2026-11-04 02:54:01.191] [0000812C] === Logging started ===
+[2026-11-04 02:54:01.202] [0000812C] Executing: "C:\Program Files\dotnet\dotnet.exe" build test\JuniGridTestHarness\JuniGridTestHarness.csproj -v q --nologo --no-incremental, PID: 33068, PPID: 42316
+[2026-11-04 02:54:01.204] [0000812C] IsElevated: False
+[2026-11-04 02:54:01.205] [0000812C] Is64BitProcess: True
+[2026-11-04 02:54:01.205] [0000812C] RebootPending: False
+[2026-11-04 02:54:01.205] [0000812C] ProcessorArchitecture: amd64
+[2026-11-04 02:54:01.205] [0000812C] HostArchitecture: x64
+[2026-11-04 02:54:01.205] [0000812C] SdkDirectory: 10.0.114
+[2026-11-04 02:54:01.205] [0000812C] VerifySignatures: False
+[2026-11-04 02:54:01.205] [0000812C] SDK feature band: 10.0.100
+[2026-11-04 02:54:28.178] [0000812C] Shutting down
+[2026-11-04 02:54:28.179] [0000812C] Shutdown completed.
+[2026-11-04 02:54:28.179] [0000812C] Restart required: False
+[2026-11-04 02:54:28.179] [0000812C] === Logging ended ===

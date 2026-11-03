@@ -6,7 +6,9 @@
    规则：
    · 行首 [HH:MM:SS LEVEL SMAPI] 式日志前缀原样保留（SMAPI 分类筛选依赖它）；
    · SCRIPT/STYLE/CODE/PRE/TEXTAREA/INPUT/IFRAME 与 contenteditable、[data-notrans] 不翻；
-   · 纯数字/纯链接/纯 Windows 路径/已是中文/堆栈帧不翻（C# 侧 NeedsTranslation 再兜一层）；
+   · 纯数字/纯链接/纯 Windows 路径/已是中文/堆栈帧/点连接标识符（UniqueID、文件名）不翻；
+     C# 侧 NeedsTranslation 再兜一层（标识符那条两边都有一条：引擎会把句点改成「。」，
+     spacechase0.GenericModConfigMenu 曾被翻成 spacechase0。GenericModConfigMenu）；
    · 自身写回的中文不再触发下一轮（写回后中文主导，worth() 直接拒绝，天然无回环）。
    开关：junigridJs.transSetEnabled(bool)；初始化：junigridJs.transInit(dotNetRef)。 */
 (function (w, d) {
@@ -42,6 +44,7 @@
         if (cjk > 0 && cjk * 2 >= latin) return false;             // 中文已主导（含半中文混合行）
         if (/^https?:\/\/\S+$/i.test(t)) return false;             // 纯链接
         if (/^[A-Za-z]:\\[\w\\ .:()\-&']+$/.test(t)) return false; // 纯 Windows 路径
+        if (/^[A-Za-z0-9_]+(\.[A-Za-z0-9_]+)+$/.test(t)) return false; // 点连接标识符（UniqueID / 文件名）：翻译引擎会把句点改成「。」
         return true;
     }
 

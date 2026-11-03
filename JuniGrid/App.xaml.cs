@@ -521,8 +521,23 @@ public partial class App : Application
             // 尺寸与位置永远同屏匹配（SystemParameters.WorkArea 只描述主屏，而窗口
             // 屏外挂载就近落在哪块屏并不确定，两屏不一致时会出现"按 A 屏算尺寸、
             // 摆到 B 屏居中"的错位）。
-            main!.RevealAtStartupPosition();
-            main.Activate();
+            var m = main!;
+            m.RevealAtStartupPosition();
+            // v1.2.11：ShowActivated=false 只是「屏外挂载时别抢焦点」的手段，现身之后
+            // 它已经没有意义，恢复默认 —— 否则以后任何 Hide/Show 又会静默挂到后台。
+            m.ShowActivated = true;
+            // 不能再用裸 Activate()：见 ForceForeground 的注释（前台锁）。
+            ForceForeground(m);
+            // 兜底一次：splash 销毁时系统自己还会挑一次前台窗口，偶尔把我们刚拿到的顶掉。
+            // 用 ApplicationIdle 让这一轮排在本帧的布局/渲染之后 —— 那时"顶掉"已经发生过。
+            m.Dispatcher.BeginInvoke(new Action(() =>
+            {
+                if (m.IsActive) return;
+                var h = new System.Windows.Interop.WindowInteropHelper(m).Handle;
+                if (h != IntPtr.Zero && GetForegroundWindow() == h) return;
+                LogInfo("RevealMain: 前台被顶掉，补一次置前");
+                ForceForeground(m);
+            }), DispatcherPriority.ApplicationIdle);
         }
 
         void TryReveal()
@@ -535,6 +550,15 @@ public partial class App : Application
             if (!revealed && splash.Visibility == System.Windows.Visibility.Visible)
             {
                 splash.Closed += (_, _) => RevealMain();
+                // v1.2.11：先把前台权交给主窗，再关 splash —— 顺序不能反。
+                // 旧实现在 Closed 里才 Activate()，那一刻 splash 的 HWND 已销毁，
+                // 系统已把前台交还给别的应用（浏览器/资源管理器），我们不再是前台进程，
+                // SetForegroundWindow 被前台锁静默拒绝：窗口出来了却压在别人后面，
+                // 键盘焦点也还在原来那个应用上（只有任务栏闪一下）。
+                // 此刻前台是本进程的 splash，同进程内部转让前台是允许的；
+                // 主窗还挂在屏外(-32000)也没关系 ——「成为前台」与「可见」是两件事，
+                // 等 Closed 里挪回正中时它天然就在 Z 序最前、并且是活动窗口。
+                ClaimForeground(main);
                 splash.FadeOutAndClose();
             }
             else
@@ -680,15 +704,10 @@ public partial class App : Application
         {
             var w = Current.MainWindow;
             if (w is null) return;
-            if (w.WindowState == WindowState.Minimized)
-                w.WindowState = WindowState.Normal;
-            w.Show();
-            w.Activate();
-            var hwnd = new System.Windows.Interop.WindowInteropHelper(w).Handle;
-            if (hwnd != IntPtr.Zero)
-            {
-                SetForegroundWindow(hwnd);
-            }
+            // v1.2.11：原来这里是裸 SetForegroundWindow —— 主实例早已不是前台进程，
+            // 这个调用会被前台锁静默丢掉，症状是「再点图标只有任务栏闪一下，窗口纹丝不动」。
+            // 统一走 ForceForeground 的 AttachThreadInput 链。
+            ForceForeground(w);
         }
         catch (Exception ex) { LogInfo("ActivateExistingWindow: " + ex.Message); }
     }
@@ -696,40 +715,110 @@ public partial class App : Application
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     private static extern bool SetForegroundWindow(IntPtr hWnd);
 
-    /// <summary>把主窗口拉到所有应用最前并抢前台焦点（登录、下载完成时调用）。
-    /// Windows 有「前台锁」：非前台进程直接调 SetForegroundWindow 会被系统忽略。
-    /// 这里用经典绕过链 —— AttachThreadInput 把本线程输入队列临时挂到当前前台窗口线程，
-    /// 再 BringWindowToTop + SetForegroundWindow，并短暂置 Topmost 抬升 Z 序。</summary>
-    public static void BringMainWindowToFront()
+    /// <summary>把主窗口拉到所有应用最前并抢前台焦点（登录、下载完成时调用）。</summary>
+    public static void BringMainWindowToFront() => ForceForeground(Current?.MainWindow);
+
+    /// <summary>
+    /// 统一的「置前 + 抢焦点」。<b>所有</b>需要把窗口抬到最前的路径都走这里，别再各写一遍。
+    ///
+    /// <para>为什么裸 <c>Activate()</c> 不够：Windows 有前台锁，只有「当前前台进程 / 被前台进程
+    /// 拉起的进程 / 刚收到输入事件的进程」才能调 SetForegroundWindow，其它进程的调用会被
+    /// <b>静默丢弃且不抛异常</b>（只有任务栏按钮闪一下）。这正是启动时「窗口出来了却压在别人
+    /// 后面、键盘焦点还在原来那个应用」的根因 —— 我们唯一的错是抢的时机太晚。</para>
+    ///
+    /// <para>两条腿：① 抬 Z 序 —— 短暂置 Topmost 再撤销。前台锁拒绝的是<b>焦点</b>，拦不住
+    /// Z 序，所以哪怕焦点抢不到，视觉上也已经压到最前；② 抢焦点 —— AttachThreadInput 把本线程
+    /// 输入队列临时挂到当前前台窗口线程上，冒充前台进程调 SetForegroundWindow，做完立刻断开
+    /// （不断开会把两个线程的输入绑死）。最后用 GetForegroundWindow 校验并写日志：这类
+    /// 「失败了也不报错」的调用不留痕，是最难查的一类问题。</para>
+    /// </summary>
+    internal static void ForceForeground(Window? w)
     {
+        if (w is null) return;
+        var app = Current;
+        if (app is not null && !app.Dispatcher.CheckAccess())
+        {
+            app.Dispatcher.Invoke(() => ForceForeground(w));
+            return;
+        }
         try
         {
-            var app = Current;
-            if (app is null) return;
-            if (!app.Dispatcher.CheckAccess()) { app.Dispatcher.Invoke(BringMainWindowToFront); return; }
-            var w = app.MainWindow;
-            if (w is null) return;
             if (w.WindowState == WindowState.Minimized) w.WindowState = WindowState.Normal;
-            w.Show();
+            if (!w.IsVisible) w.Show();
             var hwnd = new System.Windows.Interop.WindowInteropHelper(w).Handle;
             if (hwnd == IntPtr.Zero) { w.Activate(); return; }
 
+            // ① 抬 Z 序
             w.Topmost = true;
             w.Topmost = false;
-            ShowWindow(hwnd, SW_RESTORE);
+            // 只有最小化时才用 SW_RESTORE —— 对<b>已最大化</b>的窗口它是「还原成普通大小」
+            // （MSDN 原文：minimized or maximized → restores it to its original size and
+            // position）。旧代码无条件调它，于是登录/下载完成这类置前顺带把最大化窗口缩了。
+            ShowWindow(hwnd, w.WindowState == WindowState.Maximized ? SW_SHOW : SW_RESTORE);
             BringWindowToTop(hwnd);
+
+            // ② 抢焦点
             var fore = GetForegroundWindow();
-            var foreTid = GetWindowThreadProcessId(fore, IntPtr.Zero);
-            var curTid = GetCurrentThreadId();
-            bool attached = foreTid != 0 && foreTid != curTid && AttachThreadInput(curTid, foreTid, true);
-            try { SetForegroundWindow(hwnd); }
-            finally { if (attached) AttachThreadInput(curTid, foreTid, false); }
+            if (fore != hwnd)
+            {
+                var foreTid = GetWindowThreadProcessId(fore, IntPtr.Zero);
+                var curTid = GetCurrentThreadId();
+                bool attached = foreTid != 0 && foreTid != curTid
+                                && AttachThreadInput(curTid, foreTid, true);
+                try { SetForegroundWindow(hwnd); }
+                finally { if (attached) AttachThreadInput(curTid, foreTid, false); }
+            }
             w.Activate();
+
+            // ③ 提权窗口兜底：对面是管理员进程时 AttachThreadInput 会被 UIPI 直接拒掉
+            // （实测：前台是「玩家动力」(管理员) 时 SetForegroundWindow 全链路失败，
+            // 前台是普通进程时同一套代码成功）。SwitchToThisWindow 走的是任务栏切换那条
+            // 路径，对提权窗口仍然有效 —— 它不是 SetForegroundWindow 的别名，规则更宽松。
+            if (GetForegroundWindow() != hwnd)
+            {
+                SwitchToThisWindow(hwnd, true);
+                w.Activate();
+            }
+
+            var now = GetForegroundWindow();
+            if (now != hwnd)
+                LogInfo($"ForceForeground: 焦点未抢到，前台仍是 {DescribeWindow(now)}（本窗已抬到 Z 序顶）");
         }
-        catch { }
+        catch (Exception ex) { LogInfo("ForceForeground: " + ex.Message); }
+    }
+
+    /// <summary>在「本进程仍是前台进程」的窗口期把前台交给目标窗口（启动时 splash → 主窗）。
+    /// 这个时机唯一可靠：一旦本进程失去前台，就得靠 <see cref="ForceForeground"/> 的那套绕行。</summary>
+    private static void ClaimForeground(Window w)
+    {
+        try
+        {
+            var hwnd = new System.Windows.Interop.WindowInteropHelper(w).Handle;
+            if (hwnd != IntPtr.Zero) SetForegroundWindow(hwnd);
+        }
+        catch (Exception ex) { LogInfo("ClaimForeground: " + ex.Message); }
+    }
+
+    /// <summary>日志用：把 HWND 描述成「进程名(pid) "标题" [类名]」，失败就退回十六进制句柄。</summary>
+    private static string DescribeWindow(IntPtr h)
+    {
+        if (h == IntPtr.Zero) return "（无前台窗口）";
+        try
+        {
+            var title = new System.Text.StringBuilder(256);
+            GetWindowText(h, title, title.Capacity);
+            var cls = new System.Text.StringBuilder(128);
+            GetClassName(h, cls, cls.Capacity);
+            GetWindowThreadProcessId(h, out var pid);
+            var name = "?";
+            try { using var p = Process.GetProcessById((int)pid); name = p.ProcessName; } catch { }
+            return $"{name}({pid}) \"{title}\" [{cls}]";
+        }
+        catch { return "0x" + h.ToString("X"); }
     }
 
     private const int SW_RESTORE = 9;
+    private const int SW_SHOW = 5;
 
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
@@ -743,6 +832,18 @@ public partial class App : Application
     private static extern uint GetCurrentThreadId();
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     private static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
+    // 任务栏切换路径，比 SetForegroundWindow 宽松（见 ForceForeground 第三步）
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern void SwitchToThisWindow(IntPtr hWnd, bool fAltTab);
+
+    // DescribeWindow 用：与上面那个 GetWindowThreadProcessId(IntPtr, IntPtr) 同一个导出，
+    // 只是换个托管签名把 pid 取出来（DllImport 允许同名导出配多个签名）。
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+    [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    private static extern int GetWindowText(IntPtr hWnd, System.Text.StringBuilder text, int maxCount);
+    [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    private static extern int GetClassName(IntPtr hWnd, System.Text.StringBuilder name, int maxCount);
 
     /// <summary>读 Windows 系统强调色（HKCU\...\DWM\AccentColor，0x00BBGGRR）→ "#RRGGBB"。
     /// 读不到返回 null（前端回落到默认蓝）。用于「成功」类 toast 跟随系统配色。</summary>

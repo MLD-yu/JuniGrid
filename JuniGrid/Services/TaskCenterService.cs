@@ -207,6 +207,13 @@ public sealed class TaskCenterService
             }
             catch { }
         }
+        finally
+        {
+            // 升级前落盘的「缓存清理 / 移出」行不再恢复 —— v1.3.12 起这类任务
+            // 根本不进任务中心（见 Start 的 silent 参数），历史里也不该留。
+            for (var i = Items.Count - 1; i >= 0; i--)
+                if (Items[i].Kind == "cleanup") Items.RemoveAt(i);
+        }
     }
 
     /// <summary>落盘恢复时"上次退出还在跑"的任务该标成什么：
@@ -267,7 +274,12 @@ public sealed class TaskCenterService
     /// <summary>单个任务日志的线程安全副本（渲染下拉面板用，避免与后台 Report 竞态）。</summary>
     public List<string> CopyLog(TaskItem t) { lock (_lock) return t.Log.ToList(); }
 
-    public TaskItem Start(string title, string? kind = null)
+    /// <param name="silent">true = 不进任务列表（也不落盘成历史）。
+    /// <para>给「缓存清理」这类用户不需要盯着的后台杂活用：它们几秒钟就结束，却会在
+    /// 任务管理里挤出一条、把真正的下载任务往下推，用户明确要求「自己清理就行，别放进来」。
+    /// 返回的 <see cref="TaskItem"/> 仍可正常 <see cref="Report"/>/<see cref="Finish"/>，
+    /// 只是 UI 里看不到它 —— 调用方自己的界面（设置页）照样能显示结果。</para></param>
+    public TaskItem Start(string title, string? kind = null, bool silent = false)
     {
         var t = new TaskItem
         {
@@ -278,6 +290,12 @@ public sealed class TaskCenterService
             RunFrom = DateTime.Now,
             Status = "running"
         };
+        if (silent)
+        {
+            // 只登记进度心跳（看门狗不扫它，这里纯粹保持语义一致），不插入列表。
+            lock (_lock) MarkProgress(t);
+            return t;
+        }
         // 插到列表头，让最新创建/下载的任务始终排在最上面（/tasks 页从上到下看）。
         lock (_lock) { Items.Insert(0, t); MarkProgress(t); }
         OnChanged?.Invoke();

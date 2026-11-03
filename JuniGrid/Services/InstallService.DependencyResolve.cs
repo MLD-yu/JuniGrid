@@ -4,39 +4,52 @@ namespace JuniGrid.Services;
 
 public sealed partial class InstallService
 {
+    /// <summary>一次依赖展示解析的结果。<see cref="Unknown"/> 与 <see cref="NotFound"/> 必须分开：
+    /// 前者是"没问到"（断网/限流，下次可以再问），后者是"问过了、确实认不出"。
+    /// 两者混成一个 null，界面就会在搜索还没回来时印「未找到对应 mod」—— 实机 2026-10-29：
+    /// Content Patcher 十几秒后自己就解析出来了（1915），而红字那一刻已经写死了"没找到"。</summary>
+    public enum DependencyResolveStatus { Found, NotFound, Unknown }
+
+    public sealed record DependencyResolveResult(DependencyResolveStatus Status, DependencyDisplayInfo? Info);
+
     /// <summary>父包 Requirements 表的进程内缓存（父 modId → 行）。
     /// <b>只缓存服务端答出来的</b>（含"作者确实一行没填"这个空表）；请求失败不缓存，
     /// 下次还会再问 —— 否则一次网络抖动会把某个父包永久钉成"没有权威答案"。
-    /// 空表在下游就是"这条链给不出答案"，与搜索降级同一条出路。</summary>
+    /// 空表在下游就是"这条链答过了、没有"，请求失败则是"没答上"（返回 null），两者不能混。</summary>
     private static readonly ConcurrentDictionary<int, List<NexusRequirementEx>> ParentReqCache = new();
 
-    private async Task<List<NexusRequirementEx>> ParentRequirementsAsync(int parentModId)
+    private async Task<List<NexusRequirementEx>?> ParentRequirementsAsync(int parentModId)
     {
         if (ParentReqCache.TryGetValue(parentModId, out var cached)) return cached;
         List<NexusRequirementEx>? got = null;
         try { got = await _nexus.GetModRequirementsWithCoversAsync(parentModId); }
         catch { }
-        if (got is null) return new List<NexusRequirementEx>();
+        if (got is null) return null;
         ParentReqCache[parentModId] = got;
         return got;
     }
 
     /// <summary>这个依赖在<b>所有</b>声明它的父包的 Requirements 里能不能认出唯一一行。
-    /// 行取并集而不是"第一个父包说了算"：同一个名字段在不同父包的前置里可以各自命中一行
-    /// （Sharogg 与 DaisyNiko 各有一个 Tilesheets），并起来才看得出谁带作者佐证。</summary>
-    private async Task<NexusRequirementEx?> MatchDeclaredRequirement(
+    /// 行取并集而不是"第一个父包说了算"：同一个名字段在不同父包的前置里各自命中一行
+    /// （Sharogg 与 DaisyNiko 各有一个 Tilesheets），并起来才看得出谁带作者佐证。
+    /// <para><c>Answered</c> = 每个父包都答上了（空表也算答上）。任何一个请求失败，
+    /// 并集就是不完整的，不能拿它当"问过了、没有"。</para></summary>
+    private async Task<(NexusRequirementEx? Row, bool Answered)> MatchDeclaredRequirement(
         string uid, IReadOnlyList<int>? parentModIds)
     {
-        if (parentModIds is null) return null;
+        if (parentModIds is null || !parentModIds.Any(p => p > 0)) return (null, false);
         var union = new List<NexusRequirementEx>();
         var seen = new HashSet<int>();
+        var answered = true;
         foreach (var pid in parentModIds.Distinct())
         {
             if (pid <= 0) continue;
-            foreach (var r in await ParentRequirementsAsync(pid))
+            var rows = await ParentRequirementsAsync(pid);
+            if (rows is null) { answered = false; continue; }
+            foreach (var r in rows)
                 if (r.ModId > 0 && seen.Add(r.ModId)) union.Add(r);
         }
-        return MatchRequirement(uid, union);
+        return (MatchRequirement(uid, union), answered);
     }
 
 
@@ -99,7 +112,8 @@ public sealed partial class InstallService
         if (parentModIds is not null) pool.AddRange(parentModIds);
         if (cfg.DependencyDisplays.TryGetValue(uid, out var dd) && dd.ModId > 0) pool.Add(dd.ModId);
         if (cfg.DependencyNexusIds.TryGetValue(uid, out var kn) && kn > 0) pool.Add(kn);
-        foreach (var c in await SearchDependencyCandidatesAsync(uid))
+        var search = await SearchDependencyCandidatesAsync(uid);
+        foreach (var c in search.Hits)
             if (c.Id > 0) pool.Add(c.Id);
 
         var found = await FindVersionProviderAsync(uid, needs, pool);
@@ -118,12 +132,15 @@ public sealed partial class InstallService
     /// （<c>legacyModRequirementsEnabled=false</c>）时还剩说明里那条链接是作者亲笔的；
     /// 两者都给不出唯一一行时，才降级到搜索 —— 而搜索的命中必须过
     /// <see cref="SearchHitIdentifies"/>（作者段＋名字段双闸）才敢拿出来当"这个依赖是谁"。
-    /// 认不出就返回 null（弹窗退回显示裸 UID，不再给出可点的错误页面），并顺手把
-    /// 老版本按"下载数第一"存下来的错答案从配置里清掉（自愈，不靠用户手动删配置）。</summary>
-    public async Task<DependencyDisplayInfo?> ResolveDependencyDisplayAsync(
+    /// <para>认不出就返回 <see cref="DependencyResolveStatus.NotFound"/>（弹窗退回显示裸 UID，
+    /// 不再给出可点的错误页面）；<b>一条通道都没答上</b>（断网/限流）返回
+    /// <see cref="DependencyResolveStatus.Unknown"/> —— 调用方不能把它说成"未找到"，
+    /// 也不能记成"搜过了"，下次还要再试。</para></summary>
+    public async Task<DependencyResolveResult> ResolveDependencyDisplayAsync(
         string uid, IReadOnlyList<int>? parentModIds = null)
     {
-        if (DisplayCache.TryGetValue(uid, out var cached)) return cached;
+        if (DisplayCache.TryGetValue(uid, out var cached))
+            return new DependencyResolveResult(DependencyResolveStatus.Found, cached);
         // v1.2.4：配置持久缓存 —— 跨会话同步出结果，重启后弹窗首开不再等搜索
         var cfg = _cfg.Current;
         var staleSaved = false;
@@ -137,48 +154,57 @@ public sealed partial class InstallService
                     saved.ModId > 0 ? saved.ModId : null,
                     saved.CoverUrl.Length > 0 ? saved.CoverUrl : null);
                 DisplayCache[uid] = fromSaved;
-                return fromSaved;
+                return new DependencyResolveResult(DependencyResolveStatus.Found, fromSaved);
             }
             staleSaved = true;   // 缓存里没有上传者、或上传者与 UID 作者段对不上 → 重新解析
         }
+        // 至少有一条通道答过"谁/没有"，才敢把结论定成 NotFound
+        var answered = false;
         try
         {
             // ① 权威：拿父包登记的 Requirements 认这一行
-            if (await MatchDeclaredRequirement(uid, parentModIds) is { } req)
+            var declared = await MatchDeclaredRequirement(uid, parentModIds);
+            answered |= declared.Answered;
+            if (declared.Row is { } req)
             {
                 var byReq = new DependencyDisplayInfo(uid, req.ModName, req.ModId,
                     string.IsNullOrWhiteSpace(req.PictureUrl) ? null : req.PictureUrl);
                 DisplayCache[uid] = byReq;
                 SaveDisplay(cfg, uid, byReq, DependencySourceRequirements, "");
-                return byReq;
+                return new DependencyResolveResult(DependencyResolveStatus.Found, byReq);
             }
             // ② 父包说明里作者亲笔的 N 网链接（页面级 Requirements 被作者关掉时仅剩的权威源）
-            if (await MatchDescriptionLinkAsync(uid, parentModIds) is { } viaDesc)
+            var viaDesc = await MatchDescriptionLinkAsync(uid, parentModIds);
+            answered |= viaDesc.Answered;
+            if (viaDesc.Info is { } descInfo)
             {
-                DisplayCache[uid] = viaDesc.Info;
-                SaveDisplay(cfg, uid, viaDesc.Info, DependencySourceDescription, viaDesc.Uploader);
-                return viaDesc.Info;
+                DisplayCache[uid] = descInfo;
+                SaveDisplay(cfg, uid, descInfo, DependencySourceDescription, viaDesc.Uploader);
+                return new DependencyResolveResult(DependencyResolveStatus.Found, descInfo);
             }
             // ③ 降级：全站搜索。放行判据是作者段＋名字段双闸（见 SearchHitIdentifies）——
             // 只过作者闸等于让兜底搜索词自己给自己投票。
-            var ranked = RankByAuthor(uid, await SearchDependencyCandidatesAsync(uid));
+            var search = await SearchDependencyCandidatesAsync(uid);
+            answered |= search.Answered;
+            var ranked = RankByAuthor(uid, search.Hits);
             var top = ranked.FirstOrDefault(h => h.Id > 0 && SearchHitIdentifies(uid, h.Name, h.Uploader));
             if (top is null)
             {
                 if (staleSaved) DropStaleDisplay(cfg, uid);
-                return null;
+                return new DependencyResolveResult(
+                    answered ? DependencyResolveStatus.NotFound : DependencyResolveStatus.Unknown, null);
             }
             var info = new DependencyDisplayInfo(uid, top.Name, top.Id,
                 string.IsNullOrWhiteSpace(top.ThumbnailUrl) ? top.PictureUrl : top.ThumbnailUrl);
             DisplayCache[uid] = info;
             // 回写持久缓存（连上传者一起存，下次会话能直接判它可不可信），写失败不影响本次展示
             SaveDisplay(cfg, uid, info, "", top.Uploader ?? "");
-            return info;
+            return new DependencyResolveResult(DependencyResolveStatus.Found, info);
         }
         catch
         {
             if (staleSaved) DropStaleDisplay(cfg, uid);
-            return null;
+            return new DependencyResolveResult(DependencyResolveStatus.Unknown, null);
         }
     }
 
@@ -186,20 +212,23 @@ public sealed partial class InstallService
     private const string DependencySourceDescription = "description";
 
     /// <summary>取父包说明里的 N 网链接，逐条查那一页自己的名字与上传者，交给
-    /// <see cref="PickDescriptionLink"/> 定唯一赢家；null = 这条链给不出答案，调用方继续降级。
+    /// <see cref="PickDescriptionLink"/> 定唯一赢家；Info 为 null = 这条链给不出答案，调用方继续降级。
     /// <para>链接数封顶 12 条（与搜索候选池同一个上限）：说明里贴几十个链接的页面很常见，
     /// 不封顶就等于为一次展示发几十个请求。</para>
+    /// <para><c>Answered</c> = 该看的页面都看成了：父包页面本身没取到、或某个候选页查询失败时，
+    /// 这份候选表是残缺的，不能据此说"没有"（返回 false，由别的通道或下一次再试）。</para>
     /// <para>存进配置时带上真上传者，所以读取处的 <see cref="SavedDisplayStillTrustworthy"/>
     /// 会照旧重跑双闸 —— 这一道不享受 requirements 那种"按来源免检"。</para></summary>
-    private async Task<(DependencyDisplayInfo Info, string Uploader)?> MatchDescriptionLinkAsync(
+    private async Task<(DependencyDisplayInfo? Info, string Uploader, bool Answered)> MatchDescriptionLinkAsync(
         string uid, IReadOnlyList<int>? parentModIds)
     {
-        if (parentModIds is null) return null;
+        if (parentModIds is null || !parentModIds.Any(p => p > 0)) return (null, "", false);
+        var answered = true;
         foreach (var pid in parentModIds.Distinct())
         {
             if (pid <= 0) continue;
             var parent = await _nexus.GetModPageEvidenceAsync(pid);
-            if (parent is null) continue;
+            if (parent is null) { answered = false; continue; }
             var links = NexusService.DescriptionModLinks(parent.DescriptionBbCode)
                 .Where(id => id != pid).Take(12).ToList();
             if (links.Count == 0) continue;
@@ -208,7 +237,7 @@ public sealed partial class InstallService
             foreach (var id in links)
             {
                 var ev = await _nexus.GetModPageEvidenceAsync(id);
-                if (ev is null) continue;              // 查询失败：既不定罪，也不算命中
+                if (ev is null) { answered = false; continue; }   // 查询失败：既不定罪，也不算命中
                 evById[id] = ev;
                 cands.Add((id, ev.Name, ev.UploadedBy));
             }
@@ -218,9 +247,9 @@ public sealed partial class InstallService
             AppLog.Info("Install", $"[依赖解析] {uid} ← 父包 {pid} 说明里的链接 → 页面 {picked}「{win.Name}」"
                 + $"（上传者 {win.UploadedBy}）");
             return (new DependencyDisplayInfo(uid, win.Name, picked,
-                string.IsNullOrWhiteSpace(win.PictureUrl) ? null : win.PictureUrl), win.UploadedBy);
+                string.IsNullOrWhiteSpace(win.PictureUrl) ? null : win.PictureUrl), win.UploadedBy, true);
         }
-        return null;
+        return (null, "", answered);
     }
 
     /// <summary>把一次解析结果写进持久缓存。写失败不影响本次展示。</summary>
@@ -264,8 +293,8 @@ public sealed partial class InstallService
         if (installedNexusId is > 0 && seen.Add(installedNexusId.Value)) ids.Add(installedNexusId.Value);
         // 父包在官网 Requirements 里登记的那一行：作者自己填的映射，比"弹窗预解析/历史缓存"
         // 更新鲜，也远比全站搜索的"疑似"可靠 —— 排在它们前面。
-        if (await MatchDeclaredRequirement(uid, parentModIds) is { } req && seen.Add(req.ModId))
-            ids.Add(req.ModId);
+        var declared = await MatchDeclaredRequirement(uid, parentModIds);
+        if (declared.Row is { } req && seen.Add(req.ModId)) ids.Add(req.ModId);
         if (preResolved is not null && preResolved.TryGetValue(uid, out var pre) && pre > 0 && seen.Add(pre))
             ids.Add(pre);
         if (cfg.DependencyNexusIds.TryGetValue(uid, out var known) && known > 0 && seen.Add(known))
@@ -283,11 +312,14 @@ public sealed partial class InstallService
     }
 
     /// <summary>官网搜索候选（v1.2.3：已知候选全落空时的降级通道。免 key GraphQL，
-    /// 按下载数排序）。候选只是"疑似"，真正放行靠下载后校验 manifest UniqueID。</summary>
-    private async Task<List<NexusModListEntry>> SearchDependencyCandidatesAsync(string uid)
+    /// 按下载数排序）。候选只是"疑似"，真正放行靠下载后校验 manifest UniqueID。
+    /// <para><c>Answered</c> = 至少有一发搜索真的回了结果（0 条也算回）：全都没发出去时
+    /// 返回 false，调用方不能据此说"搜过了、没有"。</para></summary>
+    private async Task<(List<NexusModListEntry> Hits, bool Answered)> SearchDependencyCandidatesAsync(string uid)
     {
         var list = new List<NexusModListEntry>();
         var seen = new HashSet<int>();
+        var answered = false;
         foreach (var term in UidSearchTerms(uid))
         {
             List<NexusModListEntry>? hits = null;
@@ -301,6 +333,7 @@ public sealed partial class InstallService
             }
             catch { }
             if (hits is null) continue;
+            answered = true;
             foreach (var h in hits)
             {
                 if (h.Id <= 0 || !seen.Add(h.Id)) continue;
@@ -316,7 +349,7 @@ public sealed partial class InstallService
             if (list.Count >= 12) break;   // 候选上限，防跑飞
         }
         // 作者段能对上的候选排前面：下载数高≠就是它（搜 "Miku" 下载第一是别人的皮肤包）
-        return RankByAuthor(uid, list);
+        return (RankByAuthor(uid, list), answered);
     }
 
     /// <summary>premiumBlocked 快速通道专用：只找一个候选 id 生成手动链接
@@ -332,6 +365,6 @@ public sealed partial class InstallService
         var known = await KnownCandidatesAsync(cfg, uid, preResolved, parentModIds: parentModIds);
         if (known.Count > 0) return known[0];
         var hits = await SearchDependencyCandidatesAsync(uid);
-        return hits.FirstOrDefault(h => SearchHitIdentifies(uid, h.Name, h.Uploader));
+        return hits.Hits.FirstOrDefault(h => SearchHitIdentifies(uid, h.Name, h.Uploader));
     }
 }

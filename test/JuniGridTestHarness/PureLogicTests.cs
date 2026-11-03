@@ -228,3 +228,267 @@ public class DependencyDisplayTrustTests
         => Assert.Equal(expected, InstallService.SavedDisplayStillTrustworthy(
                uid, Entry(name, modId, uploader, source)));
 }
+
+// ------------------------------------------------- SponsorPrompt
+
+/// <summary>赞助提示的触发口径：里程碑（10/100/200/500，之后每 1000）必弹；
+/// 没有里程碑时每 7 天兜底一次。里程碑与 7 天都从「上次弹窗时间」重新计时。</summary>
+public class SponsorPromptTests
+{
+    private static readonly DateTime Now = new(2026, 11, 2, 18, 0, 0, DateTimeKind.Local);
+
+    [Theory]
+    [InlineData(9, false)]        // 不到 10 次不弹
+    [InlineData(10, true)]        // 第一个里程碑
+    [InlineData(11, false)]       // 刚弹过、又没到下一个里程碑
+    [InlineData(99, false)]
+    [InlineData(100, true)]
+    [InlineData(101, false)]
+    [InlineData(199, false)]
+    [InlineData(200, true)]
+    [InlineData(201, false)]
+    [InlineData(499, false)]
+    [InlineData(500, true)]
+    [InlineData(501, false)]
+    [InlineData(999, false)]
+    [InlineData(1000, true)]
+    [InlineData(1500, false)]
+    [InlineData(2000, true)]
+    [InlineData(3000, true)]
+    public void ShouldPrompt_OnlyOnMilestones(int count, bool expected)
+        => Assert.Equal(expected,
+            SponsorPrompt.ShouldPrompt(count, Now.AddDays(-1), lastMilestone: 0, Now, disabled: false));
+
+    [Theory]
+    [InlineData(0, false)]        // 同一档已经提示过，昨天刚弹 → 不弹
+    [InlineData(6, false)]
+    [InlineData(7, true)]         // 满 7 天兜底
+    [InlineData(30, true)]
+    public void ShouldPrompt_FallsBackToSevenDays(int daysSinceLast, bool expected)
+    {
+        // 250 次不是里程碑；上次额度已提示到 200
+        var last = Now.AddDays(-daysSinceLast);
+        Assert.Equal(expected,
+            SponsorPrompt.ShouldPrompt(250, last, lastMilestone: 200, Now, disabled: false));
+    }
+
+    [Fact]
+    public void ShouldPrompt_FirstEverLaunchAfterUpdate()
+    {
+        // 老配置没有时间/里程碑字段：次数过了 10 就补一次
+        Assert.True(SponsorPrompt.ShouldPrompt(747, null, 0, Now, disabled: false));
+        Assert.False(SponsorPrompt.ShouldPrompt(9, null, 0, Now, disabled: false));
+    }
+
+    [Fact]
+    public void ShouldPrompt_NewUserUnderTenNeverPrompts()
+    {
+        // 新用户不足 10 次一律不弹 —— 即使 7 天兜底的时钟早就走完、即使记账里从没弹过。
+        // 到第 10 次那一刻才是第一次弹（第一个里程碑）。
+        Assert.False(SponsorPrompt.ShouldPrompt(9, null, 0, Now, disabled: false));
+        Assert.False(SponsorPrompt.ShouldPrompt(5, Now.AddDays(-30), 0, Now, disabled: false));
+        Assert.False(SponsorPrompt.ShouldPrompt(1, Now.AddDays(-365), 0, Now, disabled: false));
+        Assert.False(SponsorPrompt.ShouldPrompt(9, Now.AddDays(-30), 0, Now, disabled: false));
+        // 到 10 次那一刻才弹
+        Assert.True(SponsorPrompt.ShouldPrompt(10, null, 0, Now, disabled: false));
+    }
+
+    [Fact]
+    public void ShouldPrompt_SameMilestoneDoesNotRepeat()
+    {
+        // 第 100 次已经弹过（lastMilestone=100），重启后次数仍是 100，不该再弹
+        Assert.False(SponsorPrompt.ShouldPrompt(100, Now.AddMinutes(-5), 100, Now, disabled: false));
+        // 但满 7 天后仍然按兜底弹
+        Assert.True(SponsorPrompt.ShouldPrompt(100, Now.AddDays(-8), 100, Now, disabled: false));
+    }
+
+    [Fact]
+    public void ShouldPrompt_LegacyDonatedFlagStillSilencesBeforeMigration()
+    {
+        // 老数据里的永久静默标记在【迁移前那一瞬】仍然算数（迁移会把它转成「已支持」，
+        // 见 SponsorPromptStateTests）。这里只钉住判定函数本身不会无视它。
+        Assert.False(SponsorPrompt.ShouldPrompt(2000, null, 0, Now, disabled: true));
+        Assert.False(SponsorPrompt.ShouldPrompt(2000, Now.AddDays(-30), 1000, Now, disabled: true));
+    }
+
+    [Fact]
+    public void ShouldPrompt_SupportedHasNoSpecialCadence()
+    {
+        // 「已支持」不再降频：支持过的人同样 7 天一次（曾经是 30 天）。
+        // 这个条件已经不参与判定，SupportedAt 只作为"谁支持过"的账本记录保留。
+        Assert.False(SponsorPrompt.ShouldPrompt(1500, Now.AddDays(-6), 1000, Now, false));
+        Assert.True(SponsorPrompt.ShouldPrompt(1500, Now.AddDays(-7), 1000, Now, false));
+    }
+
+    [Fact]
+    public void ShouldPrompt_MilestoneWinsOverSevenDayQuiet()
+    {
+        // 里程碑不受 7 天限制：第 1000 次即便昨天刚弹过，只要这一档没提示过就要弹。
+        Assert.True(SponsorPrompt.ShouldPrompt(1000, Now.AddDays(-1), 500, Now, false));
+        // 同一档已经提示过则不重复，回到 7 天节奏
+        Assert.False(SponsorPrompt.ShouldPrompt(1000, Now.AddDays(-1), 1000, Now, false));
+    }
+
+    [Fact]
+    public void ShouldPrompt_ClockRollbackDoesNotPrompt()
+    {
+        Assert.False(SponsorPrompt.ShouldPrompt(250, Now.AddDays(1), 200, Now, disabled: false));
+    }
+
+    [Fact]
+    public void Constants_PinTheAgreedCadence()
+    {
+        Assert.Equal(10, SponsorPrompt.FirstPromptLaunchCount);
+        Assert.Equal(7, SponsorPrompt.IntervalDays);
+        Assert.True(SponsorPrompt.IsMilestone(10));
+        Assert.True(SponsorPrompt.IsMilestone(100));
+        Assert.True(SponsorPrompt.IsMilestone(200));
+        Assert.True(SponsorPrompt.IsMilestone(500));
+        Assert.True(SponsorPrompt.IsMilestone(1000));
+        Assert.True(SponsorPrompt.IsMilestone(9000));
+        Assert.False(SponsorPrompt.IsMilestone(999));
+        Assert.False(SponsorPrompt.IsMilestone(1001));
+        Assert.False(SponsorPrompt.IsMilestone(1500));
+    }
+
+    /// <summary>把产品口径逐条钉住（用户原话）：
+    /// ① 新用户 ≤10 次不触发（第 10 次本身就是里程碑）；
+    /// ② 老用户 ≥10 次，到里程碑触发一次；同一档不重复；
+    /// ③ 7 天内没碰到里程碑，就按 7 天兜底弹一次；
+    /// ④ 「已支持」不改变以上任何一条。</summary>
+    [Fact]
+    public void ShouldPrompt_MatchesTheAgreedRuleMatrix()
+    {
+        // ① 不足 10 次：记账不管写成什么样都不弹
+        Assert.False(SponsorPrompt.ShouldPrompt(0, null, 0, Now, false));
+        Assert.False(SponsorPrompt.ShouldPrompt(9, Now.AddDays(-999), 0, Now, false));
+
+        // ② 里程碑到点必弹 —— 哪怕一小时前刚弹过（不受 7 天限制）
+        foreach (var n in new[] { 10, 100, 200, 500, 1000, 2000, 3000 })
+            Assert.True(SponsorPrompt.ShouldPrompt(n, Now.AddHours(-1), n - 1, Now, false),
+                $"第 {n} 次是里程碑，应弹");
+
+        // ②-补 同一档已经提示过：不重复，回到 7 天节奏
+        Assert.False(SponsorPrompt.ShouldPrompt(10, Now.AddDays(-1), 10, Now, false));
+        Assert.False(SponsorPrompt.ShouldPrompt(1000, Now.AddDays(-1), 1000, Now, false));
+
+        // ③ 非里程碑：不满 7 天安静，满 7 天弹
+        Assert.False(SponsorPrompt.ShouldPrompt(11, Now.AddDays(-6), 10, Now, false));
+        Assert.True(SponsorPrompt.ShouldPrompt(11, Now.AddDays(-7), 10, Now, false));
+        Assert.False(SponsorPrompt.ShouldPrompt(1500, Now.AddDays(-6), 1000, Now, false));
+        Assert.True(SponsorPrompt.ShouldPrompt(1500, Now.AddDays(-8), 1000, Now, false));
+
+        // ④ 「已支持」不影响频率：ShouldPrompt 已经不接收 supportedAt，
+        //    记账里有 SupportedAt 也只是账本 —— 这里靠签名保证，无分支可测。
+    }
+}
+
+// ------------------------------------------------- SponsorPromptState
+/// <summary>赞助记账的独立文件：读回、只迁移一次、损坏不炸。</summary>
+public class SponsorPromptStateTests : IDisposable
+{
+    private readonly string _path = Path.Combine(Path.GetTempPath(),
+        "jg-sponsor-state-" + Guid.NewGuid().ToString("N")[..8] + ".json");
+
+    public SponsorPromptStateTests() => SponsorPromptState.FilePathOverride = _path;
+
+    public void Dispose()
+    {
+        SponsorPromptState.FilePathOverride = null;
+        try { if (File.Exists(_path)) File.Delete(_path); } catch { }
+    }
+
+    [Fact]
+    public void SaveThenLoad_RoundTrips()
+    {
+        var t = new DateTime(2026, 11, 3, 9, 38, 40, DateTimeKind.Local);
+        SponsorPromptState.Save(new SponsorPromptState.State
+        {
+            LastPromptedAt = t,
+            LastMilestone = 100,
+            Disabled = false,
+            Migrated = true
+        });
+
+        var loaded = SponsorPromptState.Load();
+        Assert.Equal(t, loaded.LastPromptedAt);
+        Assert.Equal(100, loaded.LastMilestone);
+        Assert.True(loaded.Migrated);
+    }
+
+    [Fact]
+    public void LoadOrMigrate_MovesLegacyConfigOver_ExactlyOnce()
+    {
+        var legacy = new JuniGridConfig
+        {
+            LastSponsorPromptAt = new DateTime(2026, 11, 2, 19, 41, 0, DateTimeKind.Local),
+            LastSponsorMilestone = 10,
+            SponsorPromptDisabled = false
+        };
+
+        var first = SponsorPromptState.LoadOrMigrate(legacy);
+        Assert.Equal(legacy.LastSponsorPromptAt, first.LastPromptedAt);
+        Assert.Equal(10, first.LastMilestone);
+        Assert.True(first.Migrated);
+
+        // 主配置后来被别的 JuniGrid 抹成 null（今天这个 bug 的现场）——
+        // 第二次读【不许】再把 null 搬回来，否则弹窗又被重新武装。
+        var clobbered = new JuniGridConfig { LastSponsorPromptAt = null, LastSponsorMilestone = 0 };
+        var second = SponsorPromptState.LoadOrMigrate(clobbered);
+        Assert.Equal(legacy.LastSponsorPromptAt, second.LastPromptedAt);
+        Assert.Equal(10, second.LastMilestone);
+    }
+
+    [Fact]
+    public void Load_CorruptFileFallsBackToEmptyState()
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
+        File.WriteAllText(_path, "{ 这不是 json");
+        var s = SponsorPromptState.Load();
+        Assert.Null(s.LastPromptedAt);
+        Assert.Equal(0, s.LastMilestone);
+        Assert.False(s.Disabled);
+    }
+
+    [Fact]
+    public void LoadOrMigrate_LegacyDonatedFlagBecomesSupported_NotPermanentSilence()
+    {
+        // 老版本点过「已捐赠」的用户（很可能只是误点，根本没付钱）：升级后不再永久闭嘴，
+        // 转成「已支持」记录下来；频率与其他人完全一致 —— 7 天一次，里程碑照常。
+        var state = SponsorPromptState.LoadOrMigrate(new JuniGridConfig { SponsorPromptDisabled = true });
+        Assert.False(state.Disabled);
+        Assert.NotNull(state.SupportedAt);
+
+        var now = DateTime.Now;
+        // 从没提示过 → 更新后第一次打开就弹一次（老用户次数早就过了 10）
+        Assert.True(SponsorPrompt.ShouldPrompt(752, null, 500, now, state.Disabled));
+        // 弹过之后 7 天内安静
+        Assert.False(SponsorPrompt.ShouldPrompt(752, now.AddDays(-2), 500, now, state.Disabled));
+        // 满 7 天照常回来
+        Assert.True(SponsorPrompt.ShouldPrompt(752, now.AddDays(-8), 500, now, state.Disabled));
+    }
+
+    [Fact]
+    public void LoadOrMigrate_ClearsDonatedFlagEvenWhenAlreadyMigrated()
+    {
+        // 在跑 v1.2.12 的用户文件里 Migrated 早就是 true —— 转换不能藏在迁移分支里，
+        // 否则这批人永远解不开永久静默。
+        SponsorPromptState.Save(new SponsorPromptState.State { Migrated = true, Disabled = true });
+        var state = SponsorPromptState.LoadOrMigrate(new JuniGridConfig());
+        Assert.False(state.Disabled);
+        Assert.NotNull(state.SupportedAt);
+
+        var reread = SponsorPromptState.Load();
+        Assert.False(reread.Disabled);
+        Assert.NotNull(reread.SupportedAt);
+    }
+
+    [Fact]
+    public void LoadOrMigrate_KeepsSupportedAtOnReread()
+    {
+        // 幂等：第二次读不许把 SupportedAt 重新推到「现在」，否则这笔账会被反复改写。
+        var first = SponsorPromptState.LoadOrMigrate(new JuniGridConfig { SponsorPromptDisabled = true });
+        var second = SponsorPromptState.LoadOrMigrate(new JuniGridConfig());
+        Assert.Equal(first.SupportedAt, second.SupportedAt);
+    }
+}

@@ -108,6 +108,12 @@ public sealed class ConfigService
         }
         SyncAdultFilter();
         SyncStoragePaths();
+        // v1.2.12：把「这次是从哪儿载入的、赞助记账是什么」记一条 —— 弹窗反复出现的现场
+        // 往往就发生在"载入的值已经不是预期值"的那一刻（另一个副本把盘上的账抹了）。
+        AppLog.Info("Config",
+            $"[赞助记账载入] {WriterTag} 来源={(restoredFromBak ? "备份文件" : "主文件")} " +
+            $"at={Current.LastSponsorPromptAt?.ToString("yyyy-MM-dd HH:mm:ss") ?? "<null>"} " +
+            $"disabled={Current.SponsorPromptDisabled} 里程碑={Current.LastSponsorMilestone}");
         // 覆盖记录键迁移：老键「宿主|文件」一个槽位只够记一个包，第二个汉化包会把第一个顶掉。
         // 新键多一段来源槽位（N 网 modId，没有就退回包名），同一个文件因此能并存多条记录。
         if (NormalizeOverlayKeys(Current)) Save(Current);
@@ -192,6 +198,57 @@ public sealed class ConfigService
     private System.Threading.CancellationTokenSource? _debounceCts;
     private const int DebounceMs = 250;
 
+    /// <summary>写日志用的进程身份标签：同机可能同时跑着好几份 JuniGrid（开发构建、
+    /// 安装副本、别人手动起的），出问题时得能一眼看出「这份账是哪份程序写的」。</summary>
+    private static readonly string WriterTag = BuildWriterTag();
+
+    private static string BuildWriterTag()
+    {
+        try
+        {
+            var start = System.Diagnostics.Process.GetCurrentProcess().StartTime;
+            return $"pid={Environment.ProcessId} 启动于={start:MM-dd HH:mm:ss}";
+        }
+        catch { return $"pid={Environment.ProcessId}"; }
+    }
+
+    /// <summary>
+    /// 写盘前把「盘上的赞助记账」与「内存里的记账」并排记一条日志。
+    /// <para>为什么要记：赞助弹窗靠 <c>lastSponsorPromptAt</c> 做 7 天节流，而这个字段
+    /// 在同一份 <c>junigrid.config.json</c> 里，任何一份 JuniGrid 整份存回去都能把它抹回 null
+    /// （抹掉 = 弹窗重新武装 → 下次启动又弹）。这种覆盖不抛异常、不留痕迹，
+    /// 现场只表现为「怎么每次启动都弹」，没有日志就永远查不出是谁干的。</para>
+    /// <para>只在记账已经启用过（盘上或内存里任一非默认）时才记，避免每次写盘都刷一行。</para>
+    /// </summary>
+    private void LogSponsorStateBeforeWrite(JuniGridConfig cfg)
+    {
+        try
+        {
+            if (!File.Exists(ConfigPath)) return;
+            using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(ConfigPath));
+            var root = doc.RootElement;
+            var diskAt = root.TryGetProperty("lastSponsorPromptAt", out var a)
+                         && a.ValueKind != System.Text.Json.JsonValueKind.Null ? a.GetString() : null;
+            var diskOff = root.TryGetProperty("sponsorPromptDisabled", out var d)
+                          && d.ValueKind == System.Text.Json.JsonValueKind.True;
+            var memAt = cfg.LastSponsorPromptAt?.ToString("o");
+            var memOff = cfg.SponsorPromptDisabled;
+            if (diskAt is null && memAt is null && !diskOff && !memOff) return;   // 从没用过，不记
+            // 比时间要用解析后的值：盘上是 "…033504+08:00"（6 位小数），
+            // 内存里 ToString("o") 是 "…0335040+08:00"（7 位），直接比字符串永远"不一致"。
+            DateTime? diskAtParsed = null;
+            if (!string.IsNullOrEmpty(diskAt)
+                && DateTime.TryParse(diskAt, System.Globalization.CultureInfo.InvariantCulture,
+                                     System.Globalization.DateTimeStyles.RoundtripKind, out var parsed))
+                diskAtParsed = parsed;
+            if (diskAtParsed == cfg.LastSponsorPromptAt && diskOff == memOff) return;   // 一致，不记
+            AppLog.Warn("Config",
+                $"[赞助记账漂移] {WriterTag} 盘上 at={diskAt ?? "<null>"} disabled={diskOff} " +
+                $"→ 将写入 at={memAt ?? "<null>"} disabled={memOff}");
+        }
+        catch { }
+    }
+
     /// <summary>统一保存入口：更新 Current + 打脏标记 + 调度合并写盘。立即返回，不阻塞调用线程。
     /// 现有全部调用点（含 4 处同步调用）无需改动 —— 最终持久化语义由防抖+退出 Flush 保证。</summary>
     /// <summary>v0.2.2：任意保存后触发的轻量通知（如 TaskDock 监听 ShowTaskDock 即时显隐）。
@@ -247,6 +304,7 @@ public sealed class ConfigService
                 if (json is null)
                 { AppLog.Error("Config", "配置序列化连续失败（并发修改过频），保持 dirty 等待下次保存"); return; }
 
+                LogSponsorStateBeforeWrite(cfg);
                 if (await WriteAtomicAsync(json).ConfigureAwait(false))
                     System.Threading.Volatile.Write(ref _savedVersion, v);
                 else
@@ -333,6 +391,7 @@ public sealed class ConfigService
                 catch (InvalidOperationException) { System.Threading.Thread.Sleep(20); }
             }
             if (json is null) { AppLog.Error("Config", "退出 Flush 序列化失败"); return; }
+            LogSponsorStateBeforeWrite(cfg);
             json = KeepUnknownTopLevel(json);   // 退出这条写盘口也一样：不许把别的版本写的键抹掉
             for (var attempt = 1; ; attempt++)
             {
@@ -377,6 +436,20 @@ public sealed class JuniGridConfig
     // Launch history
     public string? LastLaunchTime { get; set; }          // ISO-8601
     public int TotalLaunchCount { get; set; }
+
+    /// <summary>v1.2.11：「已经启动 N 次」的赞助提示 —— 老版本「已捐赠」按钮置 true 后
+    /// 一律不弹。v1.2.13 起按钮改叫「已支持」且不再写入（防假点永久闭嘴）；
+    /// 这里只是给老数据/别的工具看的镜像，权威记账在 sponsor-prompt.json。</summary>
+    public bool SponsorPromptDisabled { get; set; }
+
+    /// <summary>v1.2.11：上一次弹赞助提示的时间。没有里程碑命中时，下一次要等满
+    /// <see cref="SponsorPrompt.IntervalDays"/> 天（7 天）—— 记在配置里，重启应用不会重新计时。
+    /// 空 = 从没弹过：老用户更新到带这个功能的版本后，打开启动器就会看到第一次提示。</summary>
+    public DateTime? LastSponsorPromptAt { get; set; }
+
+    /// <summary>v1.2.12：已经提示到的最大启动里程碑（10/100/200/500/1000…）。
+    /// 同一档只弹一次 —— 否则第 10 次启动后重开启动器会重复弹。</summary>
+    public int LastSponsorMilestone { get; set; }
 
     /// <summary>v1.1.5：首次使用 JuniGrid 的日期（ISO-8601，首次保存配置时补写一次）。
     /// 首页游玩热力图的年份列表从这里起算到今年。</summary>
@@ -507,6 +580,14 @@ public sealed class JuniGridConfig
     public Dictionary<string, string> ModLastDownload { get; set; } = new();
     /// <summary>v0.69.0：fileId → 该文件的下载日期（仅本机经系统内下载过的）。</summary>
     public Dictionary<string, string> ModFileLastDownload { get; set; } = new();
+
+    /// <summary>v1.3.7：modId → 当前装在本机的那一条 fileId。
+    /// <para>详情页文件列表靠它判断哪一条该显示「已安装」。只靠 <see cref="ModFileLastDownload"/>
+    /// 不行 —— 那份是「装过/下过哪些」的流水账，只增不减：同一个 mod 先装 AT 包再换上 CP 包，
+    /// 两条都会标成已安装；用户在 Mods 里删掉 mod 之后更是整个 mod 明明没有、文件却全绿。
+    /// 这里只记<b>最后真正装进去的那一条</b>。</para>
+    /// <para>老数据没有这个键 → 详情页回落到流水账判定（见 ModDetail.IsInstalledFile）。</para></summary>
+    public Dictionary<string, string> ModInstalledFile { get; set; } = new();
 
     /// <summary>v0.68.2：设置页「自动安装更新」开关（仅 Nexus Premium 会员可开启）。
     /// 开启后进入 Mod 页检测到更新不再弹询问窗，直接在系统内自动安装。</summary>

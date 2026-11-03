@@ -185,6 +185,7 @@ public sealed class TranslationService
         if (t.Length < 3) return false;
         if (WinPathRegex.IsMatch(t)) return false;                 // 纯 Windows 路径
         if (UrlOnlyRegex.IsMatch(t)) return false;                 // 纯 URL
+        if (DottedIdentifierRegex.IsMatch(t)) return false;        // 点连接标识符：UniqueID / 文件名
 
         var cjk = 0; var latin = 0;
         foreach (var ch in t)
@@ -200,6 +201,12 @@ public sealed class TranslationService
     private static readonly Regex StackFrameRegex = new(@"^\s{2,}at\s+\S", RegexOptions.Compiled);
     private static readonly Regex WinPathRegex = new(@"^[A-Za-z]:\\[\w\\ .:()\-&']+$", RegexOptions.Compiled);
     private static readonly Regex UrlOnlyRegex = new(@"^https?://\S+$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    /// <summary>点连接的标识符（<c>spacechase0.GenericModConfigMenu</c>、<c>junigrid.config.json</c>）。
+    /// 不许送翻：引擎会把英文句点当标点本地化成「。」，UID 被改成
+    /// <c>spacechase0。GenericModConfigMenu</c>，玩家复制去别处就对不上了（实机 2026-10-29）。
+    /// 只认"整串由点连接的字母数字段组成"——正常的英文名带空格（"Content Patcher"）不受影响。
+    /// 纯数字版本号（1.2.10）在 latin &lt; 3 那关已经拦掉了，这里只管带字母的。</summary>
+    private static readonly Regex DottedIdentifierRegex = new(@"^[A-Za-z0-9_]+(\.[A-Za-z0-9_]+)+$", RegexOptions.Compiled);
 
     // ═══════════════ 微批排水器 ═══════════════
 

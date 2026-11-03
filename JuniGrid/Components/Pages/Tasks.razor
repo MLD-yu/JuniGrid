@@ -222,8 +222,30 @@
     {
         RebuildVisible();
         Center.OnChanged += Refresh;
+
+        // 「已运行 X 秒」是渲染时拿 DateTime.Now 现算的，本身没有任何事件推动它 ——
+        // 只有任务状态变化（Center.OnChanged）才会重绘，于是这个数字会僵在最后一次变化的那一刻：
+        // 界面上写着「已运行 30 秒」，过了两分钟还是 30 秒，看着像卡死。
+        // 这里补一个走秒器：只在有 running 任务时才干活，全静止就空转（不重建、不重绘）。
+        _tick = new Timer(_ =>
+        {
+            if (!HasRunning) return;
+            _ = InvokeAsync(() =>
+            {
+                try { RebuildVisible(); StateHasChanged(); } catch { }
+            });
+        }, null, 1000, 1000);
     }
-    public void Dispose() => Center.OnChanged -= Refresh;
+
+    public void Dispose()
+    {
+        Center.OnChanged -= Refresh;
+        _tick?.Dispose();
+        _tick = null;
+    }
+
+    /// <summary>走秒器（见 OnInitialized）。Dispose 时停掉，避免页面切走后还在空跑。</summary>
+    private Timer? _tick;
     private void Refresh() => InvokeAsync(() => { RebuildVisible(); StateHasChanged(); });
 
     private void RebuildVisible()
@@ -232,9 +254,12 @@
         HasPaused = snap.Any(t => t.Status == "paused");
         HasRunning = snap.Any(t => t.Status == "running");
         IEnumerable<TaskItem> q = snap;
-        // 类型维度：Mod 下载 = 下载/安装/更新；缓存清理 = cleanup
+        // v1.3.12：缓存清理不再进任务中心（用户要求「自己进行清理就行了」）。
+        // 新任务已经不登记（TaskCenterService.Start(..., silent:true)），这里再兜一道：
+        // 升级前落盘的历史 cleanup 行也不该继续占着任务管理。
+        q = q.Where(t => t.Kind != "cleanup");
+        // 类型维度：Mod 下载 = 下载/安装/更新
         if (_kind == "mod") q = q.Where(t => t.Kind != "cleanup");
-        else if (_kind == "cleanup") q = q.Where(t => t.Kind == "cleanup");
         // 状态维度
         q = _filter switch
         {
@@ -254,10 +279,10 @@
     };
     private static readonly (string Key, string Label)[] Kinds =
     {
-        ("all", "全部"), ("mod", "Mod 下载"), ("cleanup", "缓存清理")
+        ("all", "全部"), ("mod", "Mod 下载")
     };
     private string _filter = "all";   // 状态维度：all / running / done / failed
-    private string _kind = "all";     // 类型维度：all / mod / cleanup
+    private string _kind = "all";     // 类型维度：all / mod
 
     private string KindLabel(string key) =>
         Loc.T(Kinds.FirstOrDefault(k => k.Key == key).Label ?? "全部");
@@ -392,7 +417,7 @@
             // 「premium：…」原样甩给用户（那个前缀是给调用方分流用的，不是文案）。
             await JS.InvokeVoidAsync("junigridJs.toast",
                 err.Contains("premium", StringComparison.OrdinalIgnoreCase)
-                    ? LocService.Tr("需要 Nexus Premium 会员，已改为网页方式") : err, "err");
+                    ? LocService.Tr("应用内没取到直链，已改为打开网页") : err, "err");
     }
     private void Resume(TaskItem t)
     {

@@ -15,7 +15,8 @@ public sealed record NexusModInfo(int Id, string Name, string Version, string Pi
 /// Version 是 mod 顶层版本（作者手填、可能滞后，仅诊断参考，判定更新仍以文件版本为准）。</summary>
 public sealed record NexusModFingerprint(int ModId, string Version, string UpdatedAt, string? PictureUrl);
 
-public sealed record NexusFileInfo(long FileId, string Name, string Version, string Category, long Size = 0);
+public sealed record NexusFileInfo(long FileId, string Name, string Version, string Category,
+    long Size = 0, long UploadedTs = 0);
 
 /// <summary>v0.69.0：一个版本的更新日志。</summary>
 public sealed record NexusChangelog(string Version, List<string> Lines);

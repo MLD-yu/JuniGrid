@@ -51,6 +51,35 @@ public sealed partial class NexusService
         return list;
     }
 
+    /// <summary>
+    /// 详情页「文件」列表：这个 mod 的**全部**文件（MAIN / OPTIONAL / OLD_VERSION /
+    /// MISCELLANEOUS 都有），按「类别优先 → 上传时间倒序」排好。
+    /// <para>为什么需要它：一个 mod 经常同时挂 CP 主包、AT 素材包、若干旧版本，
+    /// 「安装」按钮只认最新 MAIN，玩家想装另一个变体就没有入口。</para>
+    /// <para>返回 null = 拉取失败（未登录/网络），页面据此显示重试。</para>
+    /// </summary>
+    public async Task<List<NexusFileInfo>?> GetAllFilesAsync(int modId, bool patient = true,
+        CancellationToken ct = default)
+    {
+        var all = await ListFilesAsync(modId, patient, ct);
+        if (all is null) return null;
+        return all
+            .OrderBy(x => CategoryRank(x.F.Category))
+            .ThenByDescending(x => x.Ts)
+            .Select(x => x.F with { UploadedTs = x.Ts })
+            .ToList();
+    }
+
+    /// <summary>文件类别排序：主文件在最前，杂项最后。未知类别排中间偏后。</summary>
+    private static int CategoryRank(string? cat) => (cat ?? "").ToUpperInvariant() switch
+    {
+        "MAIN" => 0,
+        "OPTIONAL" => 1,
+        "OLD_VERSION" => 2,
+        "MISCELLANEOUS" => 3,
+        _ => 4,
+    };
+
     /// <summary>从一条 mod 的文件列表里挑「代表这个 mod 的那一条文件」。</summary>
     private static NexusFileInfo? PickMainFile(IReadOnlyList<(NexusFileInfo F, long Ts)> all, string? installedFolder)
     {

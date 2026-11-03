@@ -15,7 +15,7 @@
     // （内联优先级最高，故非 system 时必须 removeProperty，让 CSS 主题块生效）
     // 返回值 = "mode|解析后的实际强调色"（WPF 拖放蒙层用，避免在 C# 里复制一份主题色表）
     // 注意：system 模式的界面是中性黑白，系统色只作辅助强调；蒙层在 C# 侧按 mode 取白色。
-    window.junigridJs.applyAccent = function (mode, sysHex) {
+    function applyAccentDom(mode, sysHex) {
         var m = mode || 'system';
         try {
             var r = document.documentElement;
@@ -25,6 +25,59 @@
             var got = getComputedStyle(r).getPropertyValue('--jg-accent').trim();
             return m + '|' + (got || sysHex || '#7aa2ff');
         } catch (e) { return m + '|' + (sysHex || '#7aa2ff'); }
+    }
+    window.junigridJs.applyAccent = applyAccentDom;
+
+    // v1.2.11：主题切换的「圆形扩散」——View Transitions 给新旧两版各拍一张快照，
+    // 新快照用 clip-path 从点击点长出圆形，新配色像墨水一样铺满全站（样式在 base.css 末尾）。
+    // 只做视觉：不支持的旧 WebView2、或用户开了「减少动效」时，直接瞬间切，行为与原先一致。
+    // 返回 Promise<"mode|强调色">，在「新快照拍完」就 resolve，不等 0.55s 动画 ——
+    // C# 侧拿它去刷 WPF 拖放蒙层配色，没道理被动画拖住。
+    window.junigridJs.applyAccentWave = function (mode, sysHex, x, y) {
+        var reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        if (!document.startViewTransition || reduced) {
+            return Promise.resolve(applyAccentDom(mode, sysHex));
+        }
+
+        // 键盘 Enter 触发时没有坐标：退化成从这张色卡的圆心扩散
+        if ((!x && !y)) {
+            var card = document.querySelector('.jg-accent-card[data-key="' + (mode || 'system') + '"]');
+            if (card) {
+                var b = card.getBoundingClientRect();
+                x = b.left + b.width / 2;
+                y = b.top + b.height / 2;
+            }
+        }
+        if (typeof x !== 'number' || typeof y !== 'number' || isNaN(x) || isNaN(y)) {
+            return Promise.resolve(applyAccentDom(mode, sysHex));
+        }
+
+        // 半径 = 点击点到最远那个角的距离，保证圆最终铺满整个视口
+        var r = Math.hypot(Math.max(x, window.innerWidth - x), Math.max(y, window.innerHeight - y)) + 4;
+        var root = document.documentElement;
+        root.style.setProperty('--jg-vt-x', x + 'px');
+        root.style.setProperty('--jg-vt-y', y + 'px');
+        root.style.setProperty('--jg-vt-r', r + 'px');
+
+        var out = mode, vt;
+        try {
+            vt = document.startViewTransition(function () { out = applyAccentDom(mode, sysHex); });
+        } catch (e) {
+            root.style.removeProperty('--jg-vt-x');
+            root.style.removeProperty('--jg-vt-y');
+            root.style.removeProperty('--jg-vt-r');
+            return Promise.resolve(applyAccentDom(mode, sysHex));
+        }
+
+        var done = vt.updateCallbackDone || Promise.resolve();
+        // 动画收场后再清变量（被 skipTransition 打断也算收场）；变量留着不影响，只是别积脏值
+        (vt.finished || Promise.resolve()).then(clean, clean);
+        function clean() {
+            root.style.removeProperty('--jg-vt-x');
+            root.style.removeProperty('--jg-vt-y');
+            root.style.removeProperty('--jg-vt-r');
+        }
+        return done.then(function () { return out; }, function () { return out; });
     };
 
     // 行尾「⋮」菜单：先按默认（向下）量一次，下方放不下就整块翻到按钮上方。
@@ -43,6 +96,18 @@
         // 素材包对象弹窗里的版本下拉：往下放会掉出弹窗 ⇒ 按实测矩形翻到上方。
         // 量的是最近的 .jg-modal 而不是窗口 —— 裁掉菜单的是弹窗自己。
         var dd = document.querySelector('.jg-pk-vardd.open');
+        if (!dd) return;
+        dd.classList.remove('up');
+        var menu = dd.querySelector('.jg-sort-menu');
+        if (!menu) return;
+        var host = menu.closest('.jg-modal') || document.documentElement;
+        if (menu.getBoundingClientRect().bottom > host.getBoundingClientRect().bottom - 8) dd.classList.add('up');
+    };
+
+    window.junigridJs.fitPickVdd = function () {
+        // 详情页「选择要安装的版本」弹窗里的历史版本下拉：往下放会掉出弹窗 ⇒ 按实测矩形翻到上方。
+        // 和 fitPkVar 同因不同框（那边是素材包对象弹窗的版本下拉）。
+        var dd = document.querySelector('.jg-pick-vdd.open');
         if (!dd) return;
         dd.classList.remove('up');
         var menu = dd.querySelector('.jg-sort-menu');
@@ -212,6 +277,7 @@ window.junigridJs.tiltPerspective = function (selector, opts) {
 })();
 
 
+
 // ------------------ v1.1.9：热力图月份悬停 —— 从当月 1 号到月末的阶梯描边（深色白线/浅色黑线，配色在 CSS） ------------------
 // 月份标签带 data-month、格子带 data-m；悬停标签时把该月格子按周列聚合，
 // 沿真实阶梯边界画 SVG 折线（首列从 1 号所在行起、末列到月末所在行止，
@@ -354,7 +420,11 @@ window.junigridJs.tiltPerspective = function (selector, opts) {
     // 朝上的气泡靠 translateX(-50%) 居中，朝下的（--down）贴问号左缘、CSS 写的是 transform:none。
     // 这里必须跟着变体走：GSAP 的行内 transform 会盖掉那条 transform:none，
     // 写死 -50 会让朝下气泡从第二次 hover 起整体左移半个气泡宽（实测 130px）。
-    function xPercentOf(wrap) { return wrap.classList.contains('jg-help-tip--down') ? 0 : -50; }
+    function xPercentOf(wrap) {
+        var cls = wrap.classList;
+        // --down / --right 的气泡都用 CSS 的 transform:none 对齐，GSAP 这边就不能再给 -50%
+        return (cls.contains('jg-help-tip--down') || cls.contains('jg-help-tip--right')) ? 0 : -50;
+    }
     function close(wrap) {
         if (wrap._tipTl) { wrap._tipTl.kill(); wrap._tipTl = null; }
         var b = bubbleOf(wrap), btn = btnOf(wrap);
@@ -843,4 +913,79 @@ window.junigridJs.remarkCountBump = function (atLimit) {
 window.junigridJs.setRemarkValue = function (v) {
     var i = document.querySelector('.jg-remark-input');
     if (i) i.value = v;
+};
+
+// ------------------ 赞助弹窗换屏：高度弹簧（小窗长大窗） ------------------
+// measure：换屏前记下当前高度。morph：换屏渲染后从旧高度弹到新高度，并在
+// "弹簧起跑"这一刻才给新一屏加入场动画（--in，带 165ms 延迟 ≈ 弹簧到位时刻），
+// 于是内容浮现时框一定够高，不会再出现"卡片还在长高、底部按钮被裁掉半截"。
+window.junigridJs.sponsorMeasure = function () {
+    var el = document.querySelector('.jg-sponsor-viewport');
+    window.__jgSponsorH = el ? el.offsetHeight : 0;
+};
+
+window.junigridJs.sponsorMorph = function () {
+    var el = document.querySelector('.jg-sponsor-viewport');
+    if (!el) return;
+    var pane = el.querySelector('.jg-sponsor-pane:not(.jg-sponsor-pane--leaving)');
+    var leave = el.querySelector('.jg-sponsor-pane--leaving');
+    var from = window.__jgSponsorH || 0;
+
+    // 先把框钉在旧高度：等二维码解码的这几十毫秒里，卡片不能先跳到新高度再弹回来。
+    if (from) {
+        el.classList.add('jg-sponsor-morph');
+        el.style.height = from + 'px';
+    }
+
+    var start = function () {
+        if (!pane) return;
+        var to = pane.offsetHeight;              // 新一屏的自然高度（父层高度被钉住也不影响它）
+        window.__jgSponsorH = to;
+        if (leave) leave.style.animation = 'jg-sponsor-pane-out 150ms ease forwards';
+        // 入场动画与弹簧同一刻起跑；弹簧 165ms 时已到/过冲目标高度。
+        // 用 inline style 而不是加类名：Blazor 重渲染会把它没渲染过的类名冲掉。
+        pane.classList.remove('jg-sponsor-pane--waiting');
+        pane.style.animation = 'jg-sponsor-pane-in 300ms cubic-bezier(0.22, 1, 0.36, 1) 165ms both';
+
+        var finish = function () {
+            el.classList.remove('jg-sponsor-morph');
+            el.style.height = '';
+            el.__jgMorph = null;
+        };
+        if (!from || !to || Math.abs(from - to) < 0.5 || !el.animate ||
+            (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches)) {
+            finish();
+            return;
+        }
+        // 只取消上一次的高度动画：el.getAnimations() 会连子树一起返回，
+        // 把入场/二维码切换的动画半路 cancel 掉（"滑一半突然贴到位"）。
+        if (el.__jgMorph) { try { el.__jgMorph.cancel(); } catch (e) { } }
+        // 长高用带过冲的弹簧，但尾巴只从上方逼近 1（原来结尾会掉到 0.993，那一下
+        // 会让框比内容矮 1~2px，把按钮底边裁掉一丝）；收缩反过来用不出界的缓动，
+        // 保证任何时刻框都不小于内容 —— 于是"内容完整"是几何上成立的，不靠时序。
+        var SPRING = 'linear(0, 0.0603, 0.2033, 0.3821, 0.5633, 0.7258, 0.8584, 0.9574, 1.0242, 1.0634, 1.0809, 1.0828, 1.0747, 1.0613, 1.046, 1.0313, 1.0186, 1.0085, 1.0043, 1.0025, 1.0016, 1.001, 1.0007, 1.0005, 1.0003, 1.0002, 1.0001, 1.0001, 1)';
+        var SMOOTH = 'cubic-bezier(0.22, 1, 0.36, 1)';
+        var anim = el.animate(
+            [{ height: from + 'px' }, { height: to + 'px' }],
+            { duration: 520, easing: to > from ? SPRING : SMOOTH }
+        );
+        el.__jgMorph = anim;
+        anim.onfinish = finish;
+        anim.oncancel = finish;
+    };
+
+    // 二维码是异步解码的：不等它，量到的目标高度会偏小（矮框 → 内容被裁）。
+    // 400ms 兜底，图片异常也不会把弹窗卡住。
+    var waits = [].slice.call(el.querySelectorAll('img')).map(function (img) {
+        if (img.complete && img.naturalWidth > 0) return Promise.resolve();
+        if (img.decode) return img.decode().catch(function () { });
+        return new Promise(function (res) {
+            img.addEventListener('load', res, { once: true });
+            img.addEventListener('error', res, { once: true });
+        });
+    });
+    var guard = new Promise(function (res) { setTimeout(res, 400); });
+    Promise.race([Promise.all(waits), guard]).then(function () {
+        requestAnimationFrame(start);
+    });
 };

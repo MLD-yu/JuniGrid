@@ -95,6 +95,11 @@ public static class StoragePaths
     /// MainWindow 启动时先执行遗留迁移再设 WEBVIEW2_USER_DATA_FOLDER。</summary>
     public static string WebView2Dir => InCache("webview2");
 
+    /// <summary>v1.2.10：应用内 Nexus 下载页（隐藏 WebView2）的独立用户数据目录。
+    /// 必须与 <see cref="WebView2Dir"/> 分开 —— 同一个目录不能同时起两个 WebView2 环境。
+    /// 里面存着用户在 N 网网页侧的登录态（自动点下载要靠它）。</summary>
+    public static string NexusWebDir => InCache("nexus-web");
+
     /// <summary>SMAPI 更新前的 Mods 安全备份。跟随缓存目录。</summary>
     public static string ModsBackupDir => InCache("mods-backup");
 

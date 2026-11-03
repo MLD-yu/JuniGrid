@@ -186,8 +186,14 @@
         LoadStatsAsync(cfg.GamePath);
     }
 
+    // 每次 LoadStatsAsync 自增：检测到目录后重算统计时，前一轮（空目录那轮）的结果
+    // 不允许回头覆盖新一轮，也不允许把缓存写成空。
+    private int _statsGen;
+
     private void LoadStatsAsync(string? gamePath)
     {
+        var gen = ++_statsGen;
+
         // 先画缓存的上次结果（秒开），后台再对齐磁盘真相
         if (!string.IsNullOrWhiteSpace(_cfg.CachedGameVersion))
             _gameVersion = _cfg.CachedGameVersion;
@@ -220,6 +226,9 @@
             {
                 AppLog.Warn("Home", "扫描 Mods 失败: " + ex.Message);
             }
+            // 已被更新一轮探测取代（检测到目录后重算）：旧结果不写缓存、不画界面
+            if (Volatile.Read(ref _statsGen) != gen) return Task.CompletedTask;
+
             try
             {
                 _cfg.CachedGameVersion = _gameVersion ?? "";
@@ -229,6 +238,7 @@
                 Cfg.Save(_cfg);
             }
             catch { /* 缓存写失败不影响界面 */ }
+
             _statsReady = true;
             return InvokeAsync(StateHasChanged);
         });
@@ -266,12 +276,20 @@
 
         if (string.IsNullOrWhiteSpace(_cfg.GamePath))
         {
-            var detected = Game.DetectGamePath();
-            if (!string.IsNullOrEmpty(detected))
+            // 检测丢后台：旧版同步跑在渲染线程上，碰上「盘符在、设备不在」的盘会把首页冻住
+            // （用户报的「自动检测游戏目录超级超级慢」就是这条链路）。探到再落盘并重算统计。
+            _ = Task.Run(async () =>
             {
-                _cfg.GamePath = detected;
-                Cfg.Save(_cfg);
-            }
+                var detected = await Game.DetectGamePathAsync(_cfg.SteamAppId);
+                if (string.IsNullOrEmpty(detected)) return;
+                await InvokeAsync(() =>
+                {
+                    _cfg.GamePath = detected;
+                    Cfg.Save(_cfg);
+                    LoadStatsAsync(detected);
+                    StateHasChanged();
+                });
+            });
         }
 
         // v1.4.6：版本探测（读 exe FileVersion + SMAPI freshRead 拷贝）也丢后台 ——

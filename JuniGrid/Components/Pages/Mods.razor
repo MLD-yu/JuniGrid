@@ -1,3 +1,4 @@
+﻿@using System.Collections.Concurrent
 @namespace JuniGrid.Components.Pages
 @page "/mods"
 @inject ConfigService Cfg
@@ -600,6 +601,7 @@
                     var cover = GetCover(m);
                     var missing = MissingDeps(m);
                     var stale = StaleDeps(m);
+                    var needSmapi = SmapiTooOldNeed(m);
                     var toInstall = DepsToInstall(m);
                     @* v1.1.8：@key 换成"启禁用不会变"的身份键（UID，没 UID 的散装文件夹退回 folder）。
                        旧 key 是 Folder#序号 —— 启禁用就是把 Folder 改名（X ↔ .X），于是每次点开关
@@ -761,6 +763,14 @@
                                     }
                                 </div>
                             }
+                            @if (needSmapi is not null)
+                            {
+                                @* manifest 要的 SMAPI 比本机高：SMAPI 会把这一条整条跳过，
+                                   原因得写在脸上，否则玩家只会看到「装了却不加载」。 *@
+                                <div class="jg-mod-updmsg failed" style="white-space:normal">
+                                    @Loc.F(" 需要 SMAPI {0} 或更高（本机 {1}） ", needSmapi, _smapiVersion)
+                                </div>
+                            }
                             @* v1.08：检查失败/超时不再在行内显示红字，统一收进筛选栏提示 *@
                         </div>
 
@@ -859,7 +869,7 @@
 @if (_selected.Count > 0)
 {
     @* v0.42.0：纯图标按钮（SVG 文件）+ 胶囊提示（data-tip，禁用按钮也有）+ 全选在最前 *@
-    var anyUpdatable = _selected.Any(f => _modsByFolder.TryGetValue(f, out var mm) && IsUpdatable(mm));
+    var anyUpdatable = _selected.Any(f => _modsByFolder.TryGetValue(f, out var mm) && CanBatchUpdate(mm));
     var anyDisabled  = _selected.Any(f => _modsByFolder.TryGetValue(f, out var mm2) && mm2.Disabled);
     var anyEnabled   = _selected.Any(f => _modsByFolder.TryGetValue(f, out var mm3) && !mm3.Disabled);
     <div class="jg-batchbar-anchor">
@@ -873,7 +883,10 @@
                 <path d="M10 17.5l1.8 1.8 3.7-3.7"/>
             </svg>
         </button>
-        <button class="jg-mini-btn jg-ico" data-tip='@Loc.T("批量更新")' disabled="@(_selected.Count == 0 || !anyUpdatable)" @onclick="BatchUpdate">
+        <button class="jg-mini-btn jg-ico"
+                data-tip='@(anyUpdatable ? Loc.T("批量更新")
+                    : Loc.T("选中的 Mod 没有可更新来源（缺 Nexus / GitHub 标识）"))'
+                disabled="@(_selected.Count == 0 || !anyUpdatable)" @onclick="BatchUpdate">
             <img src="assets/actions/batch-update.svg" alt="" draggable="false" />
         </button>
         <button class="jg-mini-btn jg-ico" data-tip='@Loc.T("启用")' disabled="@(!anyDisabled)" @onclick="() => BatchSetDisabled(false)">
@@ -2056,7 +2069,7 @@
     {
         "broken" => Loc.T("SMAPI 兼容性清单给的维护状态（需非官方版 / 有替代版 / 已失效 / 已过期 / 作者弃养），不代表当前版本用不了 —— 能不能用看游戏启动日志"),
         // 光看标签会以为这里只有"没装"的；版本过旧那批同样让依赖方跑不起来，得说清
-        "missing" => Loc.T("没装、以及装了但版本低于 manifest 要求的，都算 —— SMAPI 对这两种的处置一样：依赖方整条不加载"),
+        "missing" => Loc.T("没装、装了但版本低于 manifest 要求、以及要求的 SMAPI 版本高于本机的，都算 —— 后果一样：这一条整条不加载"),
         _ => null,
     };
 
@@ -2079,7 +2092,9 @@
                 case "missing":
                     // v1.1.4：缺依赖筛选 —— 含 ContentPackFor 宿主缺失（SMAPI 同样会 Skipped）
                     // 版本过旧的那批也在这里：SMAPI 对两者的处置是同一条（依赖方不加载）
-                    q = q.Where(m => MissingDeps(m).Count > 0 || StaleDeps(m).Count > 0);
+                    // v1.9.x：manifest 要的 SMAPI 比本机新的也归这里 —— 同样是整条跳过
+                    q = q.Where(m => MissingDeps(m).Count > 0 || StaleDeps(m).Count > 0
+                        || SmapiTooOldNeed(m) is not null);
                     break;
                 case "broken":
                     q = q.Where(IsBroken);
@@ -2113,7 +2128,8 @@
         "enabled" => _mods.Count(m => !m.Disabled),
         "disabled" => _mods.Count(m => m.Disabled),
         "updatable" => _mods.Count(m => IsUpdatable(m)),
-        "missing" => _mods.Count(m => MissingDeps(m).Count > 0 || StaleDeps(m).Count > 0),
+        "missing" => _mods.Count(m => MissingDeps(m).Count > 0 || StaleDeps(m).Count > 0
+            || SmapiTooOldNeed(m) is not null),
         "broken" => _mods.Count(IsBroken),
         _ => 0,
     };
@@ -2762,25 +2778,22 @@
 
     /// <summary>装了、但版本低于 manifest 要求的依赖 —— MissingDeps 之外的第三条出路。
     /// SMAPI 对「没装」和「装得不够新」的处置完全一样（依赖方整条 Skipped），
-    /// 启动器这边的说法不一样：一个要去装，一个要换成更新的版本，所以分开列、一起装。</summary>
+    /// 启动器这边的说法不一样：一个要去装，一个要换成更新的版本，所以分开列、一起装。
+    /// <b>可选依赖也在这条判据里</b>：作者标 IsRequired=false 只是说"缺了也能用"，
+    /// 装着却太旧时 SMAPI 照样整条跳过（实机 2026-10-29：Iconic Framework 与 Self Checkout
+    /// 的 GMCM 都标了 false，仍因 1.12.0 &lt; 1.14.1 被跳过）。没装的可选依赖不在
+    /// _installedVersions 里，自然不会产生这一行。</summary>
     private List<StaleDepRow> StaleDeps(ModEntry m)
     {
         if (_staleDepsCache.TryGetValue(m.Folder, out var cached)) return cached;
         var list = new List<StaleDepRow>();
-        if (m.DependencyMinVersions.Count > 0)
+        foreach (var dep in DependencyRules.StaleDepUids(m, _installedVersions))
         {
-            foreach (var d in m.Dependencies.Concat(m.ContentPackIds))
-            {
-                var dep = d?.Trim();
-                if (string.IsNullOrWhiteSpace(dep)
-                    || !m.DependencyMinVersions.TryGetValue(dep, out var need)
-                    || !_installedVersions.TryGetValue(dep, out var have)
-                    || !VersionUtil.IsOlderThan(have, need)) continue;
-                if (list.Any(x => x.Uid.Equals(dep, StringComparison.OrdinalIgnoreCase))) continue;
-                var e = _mods.FirstOrDefault(x => string.Equals(x.UniqueID.Trim(), dep, StringComparison.OrdinalIgnoreCase));
-                list.Add(new StaleDepRow(dep, string.IsNullOrWhiteSpace(e?.Name) ? dep : e!.Name,
-                    string.IsNullOrWhiteSpace(have) ? "?" : have.Trim(), need.Trim()));
-            }
+            var have = _installedVersions[dep];
+            var need = m.DependencyMinVersions[dep];
+            var e = _mods.FirstOrDefault(x => string.Equals(x.UniqueID.Trim(), dep, StringComparison.OrdinalIgnoreCase));
+            list.Add(new StaleDepRow(dep, string.IsNullOrWhiteSpace(e?.Name) ? dep : e!.Name,
+                string.IsNullOrWhiteSpace(have) ? "?" : have.Trim(), need.Trim()));
         }
         _staleDepsCache[m.Folder] = list;
         return list;
@@ -2803,10 +2816,16 @@
     private string? _depError;
     // v1.2.1：依赖的展示名与封面（免 key 搜索异步填充）。列表行和确认弹窗共用这一本账，
     // 所以它<b>不随弹窗开关而清空</b> —— 否则每次打开弹窗都要把整批 UID 重新搜一遍。
-    private readonly Dictionary<string, InstallService.DependencyDisplayInfo> _depNames
+    private readonly ConcurrentDictionary<string, InstallService.DependencyDisplayInfo> _depNames
         = new(StringComparer.OrdinalIgnoreCase);
-    // 搜过的 UID（含搜不到的）。没有这本账，每次重扫都会对同一批失败项重发搜索。
-    private readonly HashSet<string> _depNameTried = new(StringComparer.OrdinalIgnoreCase);
+    // 问过、且确实认不出来的 UID。只记「有明确答复」的那一批 —— 断网/限流不算问过，
+    // 否则一次抖动就把某个依赖永久钉成「未找到对应 mod」（实机 2026-10-29：Content Patcher
+    // 还在搜的时候红字就先写死了结论，十几秒后它自己解析出了 1915）。
+    private readonly ConcurrentDictionary<string, byte> _depNameNoMatch = new(StringComparer.OrdinalIgnoreCase);
+    // 正在解析的 UID（防同一批里重复发请求）与最近一次尝试时刻（没问到的退避 60 秒，
+    // 别让后台重扫把接口打爆）。
+    private readonly ConcurrentDictionary<string, byte> _depNameResolving = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, DateTime> _depNameAttemptAt = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>并行解析依赖的展示名与封面（免 key 搜索；失败保持 UID 显示并标"未找到"）。</summary>
     /// <summary>「装了但版本不够」的依赖 → 真正有那一版的那一页（值为 null = 查过了，N 网没有这一版）。
@@ -2844,19 +2863,54 @@
 
     private async Task ResolveDepNamesAsync(List<string> uids)
     {
-        // 本机已装的依赖（「版本过旧」那批）名字本地条目就有，发搜索请求纯属白费
-        var todo = uids.Where(u => !_depNameTried.Contains(u) && !_installedVersions.ContainsKey(u))
-            .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        var now = DateTime.UtcNow;
+        var todo = new List<string>();
+        var filledLocally = false;
+        foreach (var u in uids.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            if (_depNames.ContainsKey(u) || _depNameNoMatch.ContainsKey(u)
+                || _depNameResolving.ContainsKey(u)) continue;
+            // 本机已装的依赖（「版本过旧」那批）：名字/页面号/封面本地条目就有，不必发搜索请求。
+            // 但必须照样灌进 _depNames —— 确认弹窗只认这本账；原先这里直接跳过已装项，
+            // 弹窗里就只剩裸 UID（实机 2026-10-29：GMCM 明明装在列表里，弹窗显示
+            // "spacechase0.GenericModConfigMenu"）。
+            if (_installedVersions.ContainsKey(u))
+            {
+                var e = _mods.FirstOrDefault(x => string.Equals(x.UniqueID.Trim(), u,
+                    StringComparison.OrdinalIgnoreCase));
+                if (e is not null)
+                {
+                    _depNames[u] = new InstallService.DependencyDisplayInfo(u, RemarkName(e), e.NexusModId, GetCover(e));
+                    filledLocally = true;
+                    continue;
+                }
+            }
+            if (!_depNameAttemptAt.TryGetValue(u, out var at) || now - at > TimeSpan.FromSeconds(60))
+                todo.Add(u);
+        }
+        if (filledLocally) await InvokeAsync(StateHasChanged);
         if (todo.Count == 0) return;
-        foreach (var u in todo) _depNameTried.Add(u);
+        foreach (var u in todo) { _depNameResolving[u] = 1; _depNameAttemptAt[u] = now; }
         await Task.WhenAll(todo.Select(async u =>
         {
-            var info = await Installer.ResolveDependencyDisplayAsync(u, ParentNexusIdsForDep(u));
-            if (info is not null)
+            try
             {
-                _depNames[u] = info;
-                await InvokeAsync(StateHasChanged);
+                var res = await Installer.ResolveDependencyDisplayAsync(u, ParentNexusIdsForDep(u));
+                if (res.Status == InstallService.DependencyResolveStatus.Found && res.Info is { } info)
+                {
+                    _depNames[u] = info;
+                    await InvokeAsync(StateHasChanged);
+                }
+                else if (res.Status == InstallService.DependencyResolveStatus.NotFound)
+                {
+                    // 只在这时才记成「问过了」—— 行内那句「未找到对应 mod」由它授权
+                    _depNameNoMatch[u] = 1;
+                    await InvokeAsync(StateHasChanged);
+                }
+                // Unknown（没问到）：不记账，等下一次重扫/进页再试
             }
+            catch (Exception ex) { AppLog.Warn("Mods", "依赖名解析失败 " + u + ": " + ex.Message); }
+            finally { _depNameResolving.TryRemove(u, out _); }
         }));
     }
 
@@ -2877,8 +2931,8 @@
         return ids;
     }
 
-    /// <summary>行内展示：有名字就用名字；搜过却没搜到就带着 UID 明说"未找到对应 mod"，
-    /// 而不是甩一串玩家看不懂的字符；还在搜就先给 UID。
+    /// <summary>行内展示：有名字就用名字；问过且确实没有才带着 UID 明说"未找到对应 mod"，
+    /// 而不是甩一串玩家看不懂的字符；还在搜（或没问到）就先给 UID —— 空态不下结论。
     /// 同包子模块单独一条 —— 它压根没有 N 网页面，报"未找到"会让人以为我们搜过了却没有。</summary>
     private string DepLabel(string uid, StaleDepRow? stale = null)
     {
@@ -2904,7 +2958,7 @@
                 return Loc.F("{0}（随「{1}」一起装）", uid,
                     string.IsNullOrWhiteSpace(pe.Name) ? pe.Folder : pe.Name);
         }
-        return _depNameTried.Contains(uid)
+        return _depNameNoMatch.ContainsKey(uid)
             ? Loc.F("{0}（未找到对应 mod）", uid)
             : uid;
     }
@@ -2924,7 +2978,15 @@
         }
     }
 
+    /// <summary>横幅那行的「影响 N 个 mod」—— 只算依赖问题（没装 / 版本过旧），因为横幅的按钮
+    /// 是「一键安装依赖」，修不了 SMAPI 太旧的那批。筛选栏的计数另算一路（见 CountFor）。</summary>
     private int MissingAffectedMods => _mods.Count(m => MissingDeps(m).Count > 0 || StaleDeps(m).Count > 0);
+
+    /// <summary>manifest 声明的最低 SMAPI 版本高于本机实际会加载的版本 → 返回它要求的那一串。
+    /// SMAPI 对这种情况的处置与缺前置一样：整条 Skipped（实机 2026-10-29：StardewUI 要 4.5.2、
+    /// 实际跑 4.5.1）。判据在 <see cref="DependencyRules.SmapiTooOldNeed"/>，测试舱直接跑它。</summary>
+    private string? SmapiTooOldNeed(ModEntry m)
+        => DependencyRules.SmapiTooOldNeed(m.MinApiVersion, _smapiVersion);
 
     /// <summary>uids 为 null = 全部缺失依赖；否则只装这一批（传给确认弹窗与安装管线）。</summary>
     private void AskInstallMissingDeps(List<string>? uids)
@@ -3008,6 +3070,13 @@
         var st = GetState(m.Folder);
         return NexusUpdateTruth.ShouldShowUpdate(Cfg.Current, m, st.RemoteVersion, st.RemoteFileId);
     }
+
+    /// <summary>「批量更新」按钮能不能点 —— 必须和 <see cref="BatchUpdate"/> 的取数口径一致，
+    /// 否则会出现「按钮是亮的、点下去报没有可更新的」。差别只在两处：
+    /// ① 只有 smapi.io 快道查到版本、没 Nexus/GitHub 标识的 mod 不算（点了也没地方下包）；
+    /// ② 禁用与否<b>不</b>影响 —— 更新只换文件，不改变启停状态。</summary>
+    private bool CanBatchUpdate(ModEntry m)
+        => (m.NexusModId is not null || m.GitHubRepo is not null) && IsUpdatable(m);
 
     /// <summary>按最外层文件夹分组（根目录直接受让的 mod 为 "" 组），再排成界面上的行序。</summary>
     private IReadOnlyList<ModGroup> Groups
@@ -3704,7 +3773,7 @@
             ? ModService.OverlayHealth(Cfg.Current.GamePath, Cfg.Current)
             : new ModService.OverlayReport(new(), new());
         // 缺失依赖的展示名后台解析，列表行才显示得出"是哪个 mod"而不是裸 UID。
-        // 只在出现没搜过的 UID 时才真发请求（见 _depNameTried），重扫不会反复打网络。
+        // 只在出现还没问出结果的 UID 时才真发请求（见 _depNameNoMatch），重扫不会反复打网络。
         var missingAll = TotalMissingUids;
         if (missingAll.Count > 0) _ = GuardedFireAndForget(ResolveDepNamesAsync(missingAll), "依赖名解析");
         // 「版本不够」那批：后台认一次"哪一页真有要求的那一版"（每个依赖每轮最多 2 次文件表查询，
@@ -3980,9 +4049,12 @@
 
     private void OpenUpdatePage(ModEntry m)
     {
-        // v0.68.2：N 网源优先 —— 有 Nexus ID 的 mod（含 SDV-辉光这类双源 mod）
-        // 免费用户一律跳 N 网文件页手动下载；会员系统内直装（走 N 网直链）。
-        // 只有「纯 GitHub 源」（无 N 网源）的 mod 才走系统内 GitHub 更新。
+        // v1.3.5：免费账号也不再一律跳浏览器 —— 应用内隐藏窗口能替他们按下
+        // Slow download 拿到一次性直链，所以「更新」和「安装」走同一条通道。
+        // 只有三种情况还回落到打开网页：
+        //   ① 这一版根本不在 N 网页面（offsite：非官方续作）；
+        //   ② 应用内通道也失败了（没登录 / 验证过不去 / 页面改版）；
+        //   ③ 纯 GitHub 源但 release 没挂 zip。
         var isPremium = Cfg.Current.NexusIsPremium;
         var st0 = GetState(m.Folder);
         var offsite = OffsiteUpdateUrl(m, st0);
@@ -3993,8 +4065,7 @@
                 LocService.Tr("在页面上找「非官方/续作」那条文件下载"));
             return;
         }
-        if ((isPremium && m.NexusModId is not null)
-            || (m.NexusModId is null && m.GitHubRepo is not null))
+        if (m.NexusModId is not null || m.GitHubRepo is not null)
         {
             _ = InvokeAsync(async () =>
             {
@@ -4007,10 +4078,10 @@
                 }
                 else if (st.Status == "premium" && m.NexusModId is not null)
                 {
-                    // 账号实际非会员（403）→ 回退打开官网手动下载
+                    // 应用内两条路都不通（API 403 + 隐藏窗口也没拿到）→ 兜底开网页手动下载
                     UpdateService.OpenUrl(offsite
                         ?? $"https://www.nexusmods.com/stardewvalley/mods/{m.NexusModId}?tab=files");
-                    ShowNotice("err", LocService.Tr("当前 Nexus 账号非 Premium，已为你打开下载页"));
+                    ShowNotice("err", LocService.Tr("应用内没能取到下载链接（可能是未登录或不支持），已为你打开下载页"));
                 }
                 else if (st.Status == "failed")
                 {
@@ -4028,9 +4099,6 @@
             });
             return;
         }
-        if (m.NexusModId is not null)
-            UpdateService.OpenUrl(
-                $"https://www.nexusmods.com/stardewvalley/mods/{m.NexusModId}?tab=files");
     }
 
     // ------------------------------------------------------------------
@@ -4372,64 +4440,50 @@
 
     private async Task BatchUpdate()
     {
-        // v0.68.0：批量更新 —— 严格按「验证过的 Premium」分流：
-        //  免费用户 → 系统浏览器依次打开每个所选 mod 的 N 网文件页（有几个跳几个），
-        //            v0.68.2：有 N 网源的一律跳 N 网（双源 mod 也能跳转了）；
-        //            只有纯 GitHub 源（无 N 网源）的才系统内免费直更；
-        //  会员     → 全部在系统内依次自动更新（N 网优先），不跳任何网页。
+        // v1.3.5：批量更新不再按账号类型分流。
+        // 以前免费账号这条路是「选了几个 mod 就开几个浏览器标签页」，用户得逐个手点；
+        // 现在统一走系统内流水线 —— 免费账号那一步由应用内隐藏窗口代按 Slow download
+        // 拿一次性直链（见 InstallService.ResolveDownloadUrlAsync），只有确实拿不到
+        // 的那几个才在收尾时补开下载页。
         var selectedMods = _mods.Where(m => _selected.Contains(m.Folder)).ToList();
         if (selectedMods.Count == 0)
         {
             ShowNotice("err", LocService.Tr("没有选中的 mod。"));
             return;
         }
-        var isPremium = Cfg.Current.NexusIsPremium;
-        var ghTargets = selectedMods
-            .Where(m => m.NexusModId is null && m.GitHubRepo is not null && !m.Disabled).ToList();
-
-        if (!isPremium)
-        {
-            var webTargets = selectedMods
-                .Where(m => m.NexusModId is not null).ToList();
-            foreach (var m in webTargets)
-            {
-                // 非官方续作那一版不在 N 网页面上 —— 有来源页就先跳它
-                UpdateService.OpenUrl(OffsiteUpdateUrl(m, GetState(m.Folder))
-                    ?? $"https://www.nexusmods.com/stardewvalley/mods/{m.NexusModId}?tab=files");
-                await Task.Delay(200);   // 逐个弹出，避免多标签被浏览器合并/拦截
-            }
-            if (webTargets.Count > 0)
-                ShowNotice("ok", LocService.Tf("已打开 {0} 个 mod 的官网下载页（免费账户请在网页手动下载）", webTargets.Count));
-            if (webTargets.Count == 0 && ghTargets.Count == 0)
-            {
-                ShowNotice("err", LocService.Tr("所选 mod 都没有 Nexus ID / GitHub 源，无法更新（多为本地/其他来源 mod）"));
-                return;
-            }
-            if (ghTargets.Count > 0)
-            {
-                ShowNotice("ok", LocService.Tf("正在系统内更新 {0} 个 GitHub 源 mod…", ghTargets.Count));
-                await RunUpdatePipeline(ghTargets);
-            }
-            return;
-        }
-
         var targets = selectedMods
-            .Where(m => (m.NexusModId is not null || m.GitHubRepo is not null) && !m.Disabled)
+            .Where(m => m.NexusModId is not null || m.GitHubRepo is not null)
             .ToList();
         if (targets.Count == 0)
         {
-            ShowNotice("err", LocService.Tr("选中的 Mod 没有可自动更新的（缺 Nexus/GitHub 更新标识或已禁用）。"));
+            // 注意：这里<b>不再</b>排除禁用的 mod。禁用只是磁盘上给目录加了点前缀，
+            // 更新换的是包内容，装完仍然保持禁用 —— 而 CheckUpdates 那边早就写明
+            // 「用户禁用 ≠ 不想更新」。原来两边口径不一致，表现就是：
+            // 选中一个已禁用但有新版的 mod，批量更新按钮是亮的（按 IsUpdatable 判），
+            // 点下去却报「没有可自动更新的」—— 2026-11-04 用户截图就是这个。
+            ShowNotice("err", LocService.Tr("选中的 Mod 没有可自动更新的（缺 Nexus / GitHub 更新标识，只能手动更新）。"));
             return;
         }
-        ShowNotice("ok", LocService.Tf("正在系统内依次更新 {0} 个 mod…（后台进行，完成后会提示）", targets.Count));
+        ShowNotice("ok", LocService.Tf("正在系统内并行更新 {0} 个 mod…（后台进行，完成后会提示）", targets.Count));
         if (NexusService.IsAuthenticated)
             _ = GuardedFireAndForget(BackfillCoversAsync(), "封面回填");
         await RunUpdatePipeline(targets);
-        // v0.68.1：GitHub 源 release 没挂 zip、系统内装不了的，补开其下载页
+        // 收尾兜底：应用内没拿到的（premium）和发布页没挂安装包的（available）才开网页。
+        // 非官方续作那种「这一版不在 N 网页面」的情况仍然优先跳来源页。
         foreach (var m in targets)
         {
-            if (GetState(m.Folder).Status == "available" && m.GitHubRepo is not null)
-            { OpenUpdateDownloadPage(m); await Task.Delay(200); }
+            var st = GetState(m.Folder);
+            if (st.Status == "premium" && m.NexusModId is not null)
+            {
+                UpdateService.OpenUrl(OffsiteUpdateUrl(m, st)
+                    ?? $"https://www.nexusmods.com/stardewvalley/mods/{m.NexusModId}?tab=files");
+                await Task.Delay(200);   // 逐个弹出，避免多标签被浏览器合并/拦截
+            }
+            else if (st.Status == "available" && m.GitHubRepo is not null)
+            {
+                OpenUpdateDownloadPage(m);
+                await Task.Delay(200);
+            }
         }
     }
 
@@ -5384,6 +5438,9 @@
         StateHasChanged();
 
         // AUP 二审：更新流水线 16 → 3；网络层 ApiGate=2 仍是硬顶
+        // v1.3.6：免费账号也用 3 —— 隐藏窗口从「全局唯一」改成了 3 个的池子
+        //（NexusWebDownloadService.PoolSize），排队的瓶颈没了，再限制成 1
+        // 只会让批量更新一个一个等。再多也没意义：N 网对免费账号本来就限速。
         var semaphore = new SemaphoreSlim(3);
         await Task.WhenAll(targets.Select(async m =>
         {
@@ -5412,7 +5469,7 @@
             ShowNotice(failed == 0 && premiumBlocked == 0 ? "ok" : "err",
                 LocService.Tf("已自动更新 {0} 个 Mod ✔", updated)
                 + (failed > 0 ? $"，{failed} 个失败（原因见各行提示）" : "")
-                + (premiumBlocked > 0 ? $"，{premiumBlocked} 个需 Premium 会员（可点行内更新按钮跳官网手动下载）" : "")
+                + (premiumBlocked > 0 ? $"，{premiumBlocked} 个应用内没能自动下载（已打开网页，可手动下载）" : "")
                 + (manualGh > 0 ? $"，{manualGh} 个发布页未挂安装包，已打开下载页/可点行内 ⇧ 手动更新" : ""));
 
         // vNext：人为保底 0.6s「加载观感」延迟已删 —— 更新中状态都在行内实时呈现
@@ -5425,6 +5482,8 @@
         // 徽标与「可更新」计数的证据是「版本号 + fileId」这一对：v0.61.0 为了不闪而保留旧值时
         // 只搬了版本号，等于把「这一版我已经装过了」丢掉 —— 整轮精查期间这一行会假亮
         // （实机 2026-10-12 边境农场：1.15.11 亮 1.2 秒后自己灭）。三个字段一起搬。
+        // v1.3.6：任务行提到方法作用域 —— catch 里要给它收尾，不能让它永远转圈。
+        TaskItem? task = null;
         var prevState = _states.TryGetValue(m.Folder, out var ps) ? ps : null;
         var st = _states[m.Folder] = new ModUpdateState
         {
@@ -5487,15 +5546,44 @@
                         st.Message = LocService.Tf("发现新版本 {0}（Nexus 源），正在自动更新…", remoteVer);
                         NotifyCheckProgress();
 
-                        var dl = await Nexus.GetDownloadUrlAsync(m.NexusModId!.Value, file.FileId);
+                        // v1.3.6：任务行【先】建出来，再去取直链。
+                        // 以前要等 ResolveDownloadUrlAsync 返回了任务才出现，而免费账号那一步
+                        // 要先开隐藏窗口把 N 网文件页走一遍（十几到几十秒）—— 用户点了更新，
+                        // 任务中心里空空的，看着就像没反应。现在点下去立刻就有一行在转。
+                        task = Center.StartOrRestart($"更新 Mod「{m.Name}」", "update", m.NexusModId);
+                        Center.Report(task, st.Message, 0);
+
+                        // v1.3.5：免费账号不再直接标 premium 收工 —— 先走应用内隐藏窗口
+                        // （自动按网页上那颗 Slow download 拿一次性直链），两条路都不通才回落。
+                        // 以前这里只判 NeedsPremium 就 return，于是「安装」能在应用内下完、
+                        // 「更新」却跳外部浏览器，同一个 mod 两套行为。
+                        var dl = await Installer.ResolveDownloadUrlAsync(
+                            m.NexusModId!.Value, file.FileId,
+                            (msg, _, _) =>
+                            {
+                                st.Message = msg;
+                                Center.Report(task!, msg);
+                                NotifyCheckProgress();
+                            },
+                            CancellationToken.None,
+                            task);
                         if (dl.NeedsPremium)
                         {
+                            // 别再写「需要 Premium」了：这条分支现在的真实含义是
+                            // 「API 拿不到 + 应用内隐藏窗口也没拿到」，报 Premium 只会让人
+                            // 以为得充会员，而实际原因就在 dl.Error 里（登录墙 / 页面没交文件…）。
+                            SettleUpdateTask(task, false,
+                                LocService.Tr("应用内没取到直链：")
+                                + (string.IsNullOrWhiteSpace(dl.Error) ? LocService.Tr("未知原因") : dl.Error)
+                                + LocService.Tr("（已改为打开网页）"));
                             st.Status = "premium";
                             st.Message = null;   // 极简：只在版本号后加紫色 ⇧ new 标签，不再显示黄色说明
                             StateHasChanged(); return;
                         }
                         if (dl.Url is null)
                         {
+                            SettleUpdateTask(task, false,
+                                LocService.Tr("获取下载地址失败：") + dl.Error);
                             st.Status = "failed"; st.Message = LocService.Tr("获取下载地址失败：") + dl.Error;
                             StateHasChanged(); return;
                         }
@@ -5507,15 +5595,18 @@
                             dl.Url, zip,
                             $"更新 Mod「{m.Name}」",
                             $"正在下载 {m.Name}…",
-                            (msg, pct, spd) => { st.Message = msg; NotifyCheckProgress(); });
+                            (msg, pct, spd) => { st.Message = msg; NotifyCheckProgress(); },
+                            task: task);
 
                         var err = ModSvc.InstallUpdate(Cfg.Current.GamePath, m.Folder, zip, out var newVer);
                         if (err is null)
                         {
+                            SettleUpdateTask(task, true, LocService.Tf("已更新到 {0}", newVer ?? remoteVer ?? ""));
                             st.Status = "updated";
                             st.Message = null;
                             Cfg.Current.ModLastDownload[m.NexusModId!.Value.ToString()] = DateTime.Now.ToString("yyyy-MM-dd");
                             Cfg.Current.ModFileLastDownload[file.FileId.ToString()] = DateTime.Now.ToString("yyyy-MM-dd");
+                            Cfg.Current.ModInstalledFile[m.NexusModId!.Value.ToString()] = file.FileId.ToString();
                             // 两套编号体系各记各的：账上写 N 网「文件版本」栏的原文（将来新版本也出自同一栏，
                             // 段数一致才谈得上比大小，见 LocalVersionToCompare）；内存里的 m.Version 只认
                             // 刚装出来的那份 manifest —— 拿网站那一栏盖它，就是「鹕鸟镇 1.2.6 显示成 26」
@@ -5528,6 +5619,7 @@
                         }
                         else
                         {
+                            SettleUpdateTask(task, false, LocService.Tr("安装失败：") + err);
                             st.Status = "failed"; st.Message = LocService.Tr("安装失败：") + err;
                         }
                         StateHasChanged();
@@ -5557,6 +5649,10 @@
                         st.Message = LocService.Tf("发现新版本 {0}（GitHub 源），正在自动更新…", gh.Tag);
                         NotifyCheckProgress();
 
+                        // 与 N 网那条一致：任务行先出现，再干活
+                        task = Center.StartOrRestart($"更新 Mod「{m.Name}」", "update", m.NexusModId);
+                        Center.Report(task, st.Message, 0);
+
                         var ghZip = Path.Combine(StoragePaths.DownloadsDir,
                             "gh-" + m.GitHubRepo.Replace('/', '-') + ".zip");
                         Directory.CreateDirectory(Path.GetDirectoryName(ghZip)!);
@@ -5564,7 +5660,8 @@
                             gh.ZipUrl, ghZip,
                             $"更新 Mod「{m.Name}」",
                             $"正在下载 {m.Name}（GitHub 源）…",
-                            (msg, pct, spd) => { st.Message = msg; NotifyCheckProgress(); });
+                            (msg, pct, spd) => { st.Message = msg; NotifyCheckProgress(); },
+                            task: task);
 
                         // expectedUniqueId 安全锁：多 Mod 共用仓库时防止装错
                         var ghErr = ModSvc.InstallUpdate(Cfg.Current.GamePath, m.Folder, ghZip,
@@ -5572,11 +5669,13 @@
                             expectedUniqueId: string.IsNullOrEmpty(m.UniqueID) ? null : m.UniqueID);
                         if (ghErr is null)
                         {
+                            SettleUpdateTask(task, true, LocService.Tf("已更新到 {0}", gh.Tag));
                             st.Status = "updated";
                             st.Message = null;
                         }
                         else
                         {
+                            SettleUpdateTask(task, false, LocService.Tr("GitHub 更新失败：") + ghErr);
                             st.Status = "failed";
                             st.Message = LocService.Tr("GitHub 更新失败：") + ghErr;
                         }
@@ -5604,6 +5703,7 @@
         catch (OperationCanceledException)
         {
             // v1.1.7：用户在任务中心暂停/取消 —— 不是更新失败
+            SettleUpdateTask(task, false, LocService.Tr("已取消"));
             st.Status = st.Status == "updating" ? "available" : st.Status;
             st.Message = null;
         }
@@ -5612,10 +5712,14 @@
             // v1.08：超时/网络抖动自动重试一次；仍失败才标红并给中文友好提示
             if (!isRetry && IsTransientNetworkError(ex))
             {
+                // 先落成 failed，重试那一跑才能凭 nexusId 把这一行原地重开
+                //（StartOrRestart 只认 failed/paused）—— 否则任务中心里会多出一行。
+                SettleUpdateTask(task, false, LocService.Tr("网络不稳，正在重试…"));
                 await Task.Delay(800);
                 await UpdateOne(m, isRetry: true);
                 return;
             }
+            SettleUpdateTask(task, false, FriendlyUpdateError(ex));
             st.Status = "failed"; st.Message = FriendlyUpdateError(ex);
         }
         StateHasChanged();
@@ -5625,20 +5729,25 @@
     /// Mod 下载也走任务中心（右下角任务胶囊 + /tasks 页），
     /// 和 SMAPI 更新共用同一个下载页面。下载时上报百分比/速度/当前步骤。
     /// v1.1.7：传入任务 CT —— 暂停/取消会真正中断下载；半截包可续传。
+    /// <para>v1.3.6：<paramref name="task"/> 非空时表示调用方<b>已经建好了任务行</b>
+    /// （更新流水线要在取直链之前就把行摆出来），这里只往它上面报进度、<b>不</b>收尾 ——
+    /// 收尾交给调用方，因为后面还有「安装」一步，下载完就标 done 是假完成。</para>
     /// </summary>
     private async Task DownloadWithTask(
         string url, string zipPath, string taskTitle, string startMsg,
-        Action<string, double?, double?>? onTick = null, CancellationToken ct = default)
+        Action<string, double?, double?>? onTick = null, CancellationToken ct = default,
+        TaskItem? task = null)
     {
-        var task = Center.Start(taskTitle, "download");
+        var own = task is null;
+        var t = task ?? Center.Start(taskTitle, "download");
         try
         {
-            Center.Report(task, startMsg, 0, 0);
+            Center.Report(t, startMsg, 0, 0);
             onTick?.Invoke(startMsg, null, null);
             var progress = new Progress<NexusDownloadProgress>(p =>
                 _ = InvokeAsync(() =>
                 {
-                    Center.Report(task, p.Message, p.Percent, p.SpeedMBps);
+                    Center.Report(t, p.Message, p.Percent, p.SpeedMBps);
                     onTick?.Invoke(p.Message, p.Percent, p.SpeedMBps);
                 }));
             // v1.08：GitHub 资源直连失败（国内 443 被拒）自动切换镜像前缀重试；
@@ -5654,10 +5763,11 @@
                         if (candidate != url)
                         {
                             try { System.IO.File.Delete(zipPath); } catch { }
-                            Center.Report(task, LocService.Tr("GitHub 直连失败，切换镜像下载…"), 0, 0);
+                            Center.Report(t, LocService.Tr("GitHub 直连失败，切换镜像下载…"), 0, 0);
                         }
                         await Nexus.DownloadFileAsync(candidate, zipPath, progress, ct);
-                        Center.Finish(task, true, LocService.Tr("下载完成"));
+                        EnsureRealPack(zipPath);
+                        if (own) Center.Finish(t, true, LocService.Tr("下载完成"));
                         return;
                     }
                     catch (Exception ex) when (ex is not OperationCanceledException) { last = ex; }
@@ -5666,19 +5776,49 @@
             }
 
             await Nexus.DownloadFileAsync(url, zipPath, progress, ct);
-            Center.Finish(task, true, LocService.Tr("下载完成"));
+            EnsureRealPack(zipPath);
+            if (own) Center.Finish(t, true, LocService.Tr("下载完成"));
         }
         catch (OperationCanceledException)
         {
-            if (task.Status != "paused")
-                Center.Finish(task, false, LocService.Tr("已取消"));
+            if (own && t.Status != "paused")
+                Center.Finish(t, false, LocService.Tr("已取消"));
             throw;
         }
         catch (Exception ex)
         {
-            Center.Finish(task, false, ex.Message);
+            if (own) Center.Finish(t, false, ex.Message);
             throw;
         }
+    }
+
+    /// <summary>下载落盘后的兜底校验：取链那几层偶尔会把网页静态资源当成直链
+    /// （2026-11-04 04:43 实机：avatars.nexusmods.com 的 100×100 头像被 Chromium 标成
+    /// application/octet-stream，两条更新都下回一张 jpg，最后才报笼统的「压缩包损坏」）。
+    /// 这里按文件头认一次，坏包直接删掉并给出准确原因，别让用户对着「损坏」猜。</summary>
+    private static void EnsureRealPack(string zipPath)
+    {
+        var fmt = ModService.DetectArchiveFormat(zipPath);
+        if (fmt is not ("jpeg" or "gif" or "webp" or "html" or "unknown" or "empty")) return;
+        try { System.IO.File.Delete(zipPath); } catch { }
+        var why = fmt switch
+        {
+            "jpeg" or "gif" or "webp" => LocService.Tr("下载到的是图片而不是压缩包：取到的直链其实是网页上的静态资源"),
+            "html" => LocService.Tr("下载到的是网页而不是压缩包（可能被网络拦截）"),
+            "empty" => LocService.Tr("下载到的文件是空的（连接被中断）"),
+            _ => LocService.Tr("下载到的文件不是可识别的压缩包"),
+        };
+        throw new InvalidOperationException(why + LocService.Tr("，已清理坏包，请重试"));
+    }
+
+    /// <summary>更新任务行的收尾：只在它还在跑的时候写终态 —— 已被用户在任务中心
+    /// 暂停/移除的行不该被我们改回 done（那会把「暂停」冲掉），移除的行更不该再落终态。</summary>
+    private void SettleUpdateTask(TaskItem? t, bool ok, string? msg)
+    {
+        if (t is null) return;
+        if (t.Status != "running") return;
+        if (!Center.Contains(t)) return;
+        Center.Finish(t, ok, string.IsNullOrWhiteSpace(msg) ? null : msg);
     }
 
     /// <summary>

@@ -123,6 +123,10 @@ public sealed partial class ModService
                 Dependencies = deps,
                 OptionalDependencies = optDeps,
                 DependencyMinVersions = depMin,
+                // SMAPI 读的是 MinimumApiVersion（旧清单写作 MinimumApiVersionForSMAPI）。
+                // 低于它的 mod SMAPI 直接跳过，和缺前置同级 —— 界面上要能说出原因。
+                MinApiVersion = (DepString(root, "MinimumApiVersion")
+                                 ?? DepString(root, "MinimumApiVersionForSMAPI"))?.Trim(),
                 ContentPackIds = contentPackHost is not null ? new List<string> { contentPackHost } : new List<string>(),
                 HasManifest = true,
                 Category = category,

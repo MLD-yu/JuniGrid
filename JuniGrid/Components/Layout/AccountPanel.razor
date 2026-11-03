@@ -6,6 +6,7 @@
 @inject SteamService Steam
 @inject UpdateService Updater
 @inject PageRefreshService PageRefresh
+@inject PlayTimeService PlayTime
 @inject NavigationManager Nav
 @inject IJSRuntime JS
 @implements IDisposable
@@ -102,7 +103,88 @@
     </div>
 }
 
+@* 「已经为你启动了 N 次」的赞助提示：第 10 次启动第一次弹，之后每 7 天最多一次。
+   两屏：文案页 → 收款码页（微信/支付宝 + 爱发电），版式参照 React Bits 的 Stepper：
+   磨砂面板、胶囊标签、卡片式二维码、底部左返回右主按钮。
+   弹窗属于 AccountPanel（常驻布局），所以启动后自动跳去日志页也不会把它带走。 *@
+@if (_sponsorLaunchCount > 0)
+{
+    <div class="jg-dlg-overlay">
+        <div class="jg-sponsor-panel" role="dialog" aria-modal="true" aria-label='@Loc.T("支持 JuniGrid")' @onclick:stopPropagation>
+            <div class="jg-sponsor-viewport">
+                @* 离场的那一屏临摹在绝对定位层里淡出：换屏这 150ms 里卡片还有内容可看，
+                   而且它不参与高度计算，弹簧量的始终是新一屏的自然高度。 *@
+                @if (_leavingStep is not null)
+                {
+                    <div class="jg-sponsor-pane jg-sponsor-pane--leaving" aria-hidden="true">
+                        @(_leavingStep switch { 0 => StepMessage, 1 => StepQr, _ => StepForgotQr })
+                    </div>
+                }
+                @* 换屏：@key 让这一屏重新挂载。这一屏先隐身（--waiting），高度弹簧由
+                   OnAfterRender 里的 sponsorMorph 起跑；JS 在弹簧起跑时再加 --in，
+                   保证"框够高了内容才浮现"—— 时序反过来就会在矮框里看到被切的按钮。 *@
+                <div class="jg-sponsor-pane @(_leavingStep is not null ? "jg-sponsor-pane--waiting" : "")" @key="_sponsorStep">
+                    @(_sponsorStep switch { 0 => StepMessage, 1 => StepQr, _ => StepForgotQr })
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
 @code {
+
+    private RenderFragment StepMessage => @<div class="jg-sponsor-stage">
+        <div class="jg-sponsor-kicker">@Loc.F("第 {0} 次启动 · 共 {1} 小时", _sponsorLaunchCount, _sponsorPlayHours)</div>
+        <h3 class="jg-sponsor-heading">@Loc.T("喜欢 JuniGrid 吗？")</h3>
+        <p class="jg-sponsor-copy">
+            @Loc.F("它已经为你启动了 {0} 次游戏。如果还算好用，能不能请作者喝杯咖啡？", _sponsorLaunchCount)
+        </p>
+        <div class="jg-sponsor-actions">
+            <button type="button" class="jg-sponsor-btn ghost" @onclick="DismissSponsor">@Loc.T("这次算了吧")</button>
+            <button type="button" class="jg-sponsor-btn solid" @onclick="ShowSponsorSupport">@Loc.T("支持作者")</button>
+        </div>
+    </div>;
+
+    private RenderFragment StepQr => @<div class="jg-sponsor-stage">
+        <div class="jg-sponsor-tabs">
+            <button type="button" class="jg-sponsor-tab-btn @(_sponsorWechat ? "active" : "")" @onclick="() => SelectQr(true)">@Loc.T("微信")</button>
+            <button type="button" class="jg-sponsor-tab-btn @(!_sponsorWechat ? "active" : "")" @onclick="() => SelectQr(false)">@Loc.T("支付宝")</button>
+        </div>
+        <div class="jg-sponsor-qr-shell @(_qrTick > 0 ? "jg-qr-anim" : "")" @key="_qrTick" data-dir="@(_qrDirection < 0 ? "left" : "right")">
+            <img class="jg-sponsor-qr-img"
+                 src="@(_sponsorWechat ? "assets/sponsor-wechat.jpg" : "assets/sponsor-alipay.jpg")"
+                 alt="@(_sponsorWechat ? Loc.T("微信赞赏码") : Loc.T("支付宝收款码"))" />
+        </div>
+        <p class="jg-sponsor-tip">
+            @Loc.T("请备注 QQ 或者微信号")
+            <span class="jg-help-tip jg-help-tip--right">
+                <span class="jg-help-tip-btn">?</span>
+                <span class="jg-help-tip-bubble">@Loc.T("10元以上可以添加作者微信/QQ 并添加JuniGrid交流群 可抢先体验最新版JuniGrid或者新Mod")</span>
+            </span>
+        </p>
+        <div class="jg-sponsor-divider"></div>
+        <div class="jg-sponsor-or-row">
+            <span>or</span>
+            <button type="button" class="jg-sponsor-afdian" @onclick="OpenAfdian">@Loc.T("去爱发电")</button>
+        </div>
+        <div class="jg-sponsor-actions">
+            <button type="button" class="jg-sponsor-btn ghost" @onclick="DismissSponsor">@Loc.T("关闭")</button>
+            <button type="button" class="jg-sponsor-btn ghost" @onclick="ShowForgotQr">@Loc.T("忘记备注")</button>
+            <button type="button" class="jg-sponsor-btn solid" @onclick="MarkSupported">@Loc.T("已支持")</button>
+        </div>
+    </div>;
+
+    @* 第三屏：扫码付款时忘了写备注 —— 换成加好友二维码，让作者能凭备注把人认回来。 *@
+    private RenderFragment StepForgotQr => @<div class="jg-sponsor-stage">
+        <h3 class="jg-sponsor-heading jg-sponsor-heading--center">@Loc.T("请用微信扫码")</h3>
+        <div class="jg-sponsor-qr-shell">
+            <img class="jg-sponsor-qr-img" src="assets/sponsor-wechat-friend.jpg" alt='@Loc.T("微信二维码")' />
+        </div>
+        <div class="jg-sponsor-actions jg-sponsor-actions--center">
+            <button type="button" class="jg-sponsor-btn ghost" @onclick="BackToQr">@Loc.T("返回")</button>
+            <button type="button" class="jg-sponsor-btn solid" @onclick="DismissSponsor">@Loc.T("关闭")</button>
+        </div>
+    </div>;
 
     private JuniGridConfig _cfg = new();
     private SteamProfile _profile = SteamProfile.None;
@@ -112,6 +194,17 @@
     private bool _showConfirm;
     /// <summary>启动前闸门拦下来时要整段显示的说明（null = 没有待处理的闸门）。</summary>
     private string? _gateText;
+    /// <summary>赞助提示要写的启动次数（0 = 不显示弹窗）。</summary>
+    private int _sponsorLaunchCount;
+    /// <summary>弹窗标题后面带的累计游玩时长（小时，弹出那一刻取一次快照，不再跳动）。</summary>
+    private string _sponsorPlayHours = "0";
+    /// <summary>赞助弹窗当前屏：0 = 文案页，1 = 收款码页。</summary>
+    private int _sponsorStep;
+    private int? _leavingStep;               // 正在淡出的那一屏（绝对定位层，活到弹簧结束）
+    private int _sponsorRenderedStep = -1;   // 上次渲染的屏号：用来判断"这次是换屏还是首开"
+    private bool _sponsorWechat = true;
+    private int _qrTick;                     // 微信/支付宝切换计数：@key 换元素，重启滑入动画
+    private int _qrDirection = 1;            // +1 切到支付宝（从右进），-1 切回微信
     private readonly CancellationTokenSource _cts = new();
 
     private bool _busy => _launching;
@@ -132,12 +225,19 @@
 
         if (string.IsNullOrWhiteSpace(_cfg.GamePath))
         {
-            var detected = Game.DetectGamePath();
-            if (!string.IsNullOrEmpty(detected))
+            // 检测丢后台：同步跑在渲染线程上，碰上没就绪的盘（网络映射盘/拔掉的移动盘）
+            // 会把整个侧栏冻住几十秒。探到再落盘 + 重探版本号。
+            _ = Task.Run(async () =>
             {
-                _cfg.GamePath = detected;
-                Cfg.Save(_cfg);
-            }
+                var detected = await Game.DetectGamePathAsync(_cfg.SteamAppId);
+                if (string.IsNullOrEmpty(detected)) return;
+                await InvokeAsync(() =>
+                {
+                    SaveCfg(c => c.GamePath = detected);
+                    ProbeVersions();
+                    StateHasChanged();
+                });
+            });
         }
 
         _profile = Steam.GetProfile();
@@ -157,6 +257,8 @@
     {
         // 轮询真实游戏进程，让「关闭游戏」按钮对 SMAPI / Steam 官方两种模式都生效
         _ = PollRunningAsync();
+        // 应用长期不关时，7 天的间隔到点也要弹（不依赖「启动游戏」这个动作）
+        _ = SponsorPromptLoopAsync();
     }
 
     public void Dispose()
@@ -174,6 +276,26 @@
             // 启动按钮：光标驱动的 3D 透视倾斜（GSAP quickTo）
             // v1.1.2：hover 像素溶解「点击启动！」遮罩已按需求移除，仅保留随鼠标倾斜
             try { await JS.InvokeVoidAsync("junigridJs.tiltPerspective", "#launch-btn"); } catch { }
+            // 老用户更新后第一次打开就能看到赞助提示（次数早过 10 了），不必等下次启动游戏
+            _ = CheckSponsorPromptAfterStartupAsync();
+        }
+
+        // 赞助弹窗换屏后播"小窗长大窗"的高度弹簧。首开（rendered=-1）不播，交给 CSS 入场。
+        if (_sponsorLaunchCount > 0)
+        {
+            var step = _sponsorStep;
+            var morph = _sponsorRenderedStep >= 0 && _sponsorRenderedStep != step;
+            _sponsorRenderedStep = step;
+            if (morph)
+            {
+                // 先把渲染屏号推进再 await：Blazor 的第二次 render 若闯进来，也不会重复启动
+                try { await JS.InvokeVoidAsync("junigridJs.sponsorMorph"); }
+                catch (Exception ex) { AppLog.Warn("AccountPanel", "换屏弹簧启动失败: " + ex.Message); }
+            }
+        }
+        else
+        {
+            _sponsorRenderedStep = -1;
         }
     }
 
@@ -185,10 +307,21 @@
         // （实测红条：未检测到 SMAPI…）。这类版本一律把默认页归到「官方」。
         if (_cfg.LaunchMode == "smapi" && SmapiUnavailable)
         {
-            _cfg.LaunchMode = "steam";
-            Cfg.Save(_cfg);
+            SaveCfg(c => c.LaunchMode = "steam");
             AppLog.Warn("AccountPanel", $"游戏 {_gameVersion} 无可用 SMAPI，启动模式已自动切到「官方」");
         }
+    }
+
+    /// <summary>在<b>最新</b>配置对象上做修改并落盘。不能直接改 _cfg 再 Cfg.Save(_cfg)：
+    /// _cfg 只是组件初始化时抓的那一次引用，别的写入方 Save 时 Current 会被换成新对象，
+    /// 这时 _cfg 就旧了 —— 再把它整个 Save 回去，会把人家刚落盘的字段一起回滚
+    /// （实测把赞助记账抹回 null → 弹窗重新武装、每次启动都弹，2026-11-03）。</summary>
+    private void SaveCfg(Action<JuniGridConfig> mutate)
+    {
+        var cfg = Cfg.Current;
+        mutate(cfg);
+        _cfg = cfg;
+        Cfg.Save(cfg);
     }
 
     /// <summary>当前游戏版本没有适配的 SMAPI（不是「还没装」，是「装不了」）。</summary>
@@ -242,8 +375,7 @@
             _ = JS.InvokeVoidAsync("junigridJs.toast", SmapiUnavailableTip, "err");
             return;
         }
-        _cfg.LaunchMode = mode;
-        Cfg.Save(_cfg);
+        SaveCfg(c => c.LaunchMode = mode);
     }
 
     private async Task Launch()
@@ -281,9 +413,12 @@
 
             if (result.Success)
             {
-                _cfg.LastLaunchTime = DateTime.Now.ToString("o");
-                _cfg.TotalLaunchCount++;
-                Cfg.Save(_cfg);
+                SaveCfg(c =>
+                {
+                    c.LastLaunchTime = DateTime.Now.ToString("o");
+                    c.TotalLaunchCount++;
+                });
+                _ = MaybeShowSponsorPromptAsync(_cfg.TotalLaunchCount);   // 第 10/100/200/500/1000… 次里程碑 → 弹一次赞助提示
 
                 if (_cfg.LaunchMode == "smapi")
                 {
@@ -430,6 +565,174 @@
     private void DismissConfirm()
     {
         _showConfirm = false;
+    }
+
+    // ── 「已经为你启动了 N 次」的赞助提示 ──
+    // 里程碑（10/100/200/500，之后每 1000 次）必弹；没有里程碑时满 7 天兜底弹一次。
+    // 启动游戏、启动器打开、以及应用长期不关时的定时检查都会走这里。
+    // 先记账再显示 —— 弹窗一出来就算这次提示过了，不会有第二个并发检查再叠一层。
+    private async Task MaybeShowSponsorPromptAsync(int launchCount, int promptDelayMs = 900)
+    {
+        try
+        {
+            // v1.2.12：记账从独立文件读（不跟整机共享的主配置混在一起）——
+            // 主配置那份会被别的 JuniGrid 整份覆盖掉，抹掉「上次弹窗时间」就等于
+            // 把弹窗重新武装，于是变成「每次启动都弹」（实机 2026-11-03）。
+            var state = SponsorPromptState.LoadOrMigrate(Cfg.Current);
+            var now = DateTime.Now;
+            var should = SponsorPrompt.ShouldPrompt(launchCount, state.LastPromptedAt,
+                                                    state.LastMilestone, now, state.Disabled);
+            // 把判定输入与结论都记下来 —— 「为什么这次弹了/没弹」只看代码很难复现，
+            // 而现场最常见的疑问正是这个（每次都弹）。一次启动最多三条，噪音可控。
+            AppLog.Info("Sponsor",
+                $"判定 count={launchCount} at={state.LastPromptedAt?.ToString("yyyy-MM-dd HH:mm:ss") ?? "<null>"} " +
+                $"里程碑={state.LastMilestone} supported={state.SupportedAt?.ToString("yyyy-MM-dd HH:mm:ss") ?? "<null>"} " +
+                $"disabled={state.Disabled} → {(should ? "弹" : "不弹")}");
+            if (!should) return;
+            if (SponsorPrompt.IsMilestone(launchCount) && launchCount > state.LastMilestone)
+                state.LastMilestone = launchCount;
+            state.LastPromptedAt = now;
+            SponsorPromptState.Save(state);
+
+            // 主配置里也留一份（给别的工具/老版本看得见），但它已经不是权威来源了。
+            // SponsorPromptDisabled 这里恒为 false：老数据里的 true 已经在 LoadOrMigrate
+            // 里转成「已支持」并清零，这一步顺手把主配置里那份旧 true 洗掉。
+            var cfg = Cfg.Current;
+            cfg.LastSponsorPromptAt = now;
+            cfg.LastSponsorMilestone = state.LastMilestone;
+            cfg.SponsorPromptDisabled = state.Disabled;
+            Cfg.Save(cfg);
+
+            await ShowSponsorPromptAsync(launchCount, promptDelayMs);
+        }
+        catch (Exception ex)
+        {
+            // 赞助提示永远不许影响启动流程 —— 它挂了最坏也就是这次没弹。
+            AppLog.Warn("AccountPanel", "赞助提示未能显示: " + ex.Message);
+        }
+    }
+
+    /// <summary>把弹窗摆到屏幕上。延迟一拍是为了让「启动中…」先落地 ——
+    /// 弹窗和启动动画抢同一帧的话，用户会以为点了启动没反应。</summary>
+    private async Task ShowSponsorPromptAsync(int launchCount, int delayMs = 900)
+    {
+        // 启动游戏那条路要等 900ms 让「启动中…」先落地；启动器打开这条路直接弹
+        if (delayMs > 0) await Task.Delay(delayMs);
+        await InvokeAsync(() =>
+        {
+            _sponsorLaunchCount = launchCount;
+            // 游玩时长与首页「共 N 小时」同口径（PlayTimeService 全部年份秒数总和）
+            _sponsorPlayHours = PlayTime.TotalSeconds <= 0
+                ? "0" : (PlayTime.TotalSeconds / 3600.0).ToString("0.0");
+            _sponsorStep = 0;
+            _sponsorWechat = true;
+            StateHasChanged();
+        });
+    }
+
+    /// <summary>更新到这个版本后的第一次打开：老用户的启动次数早就过了 10，
+    /// 不用等下次启动游戏 —— 首屏动画落定后补一次检查。</summary>
+    private async Task CheckSponsorPromptAfterStartupAsync()
+    {
+        try
+        {
+            // 首屏落定就查，不再干等 2.5 秒 —— 之前加上启动 900ms 的延迟，用户体感要 4 秒以上
+            await Task.Delay(200, _cts.Token);
+            await MaybeShowSponsorPromptAsync(Cfg.Current.TotalLaunchCount, promptDelayMs: 0);
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { AppLog.Warn("AccountPanel", "启动时检查赞助提示失败: " + ex.Message); }
+    }
+
+    /// <summary>应用长期不关也要按 7 天节奏走 —— 每小时醒一次，到点就弹。</summary>
+    private async Task SponsorPromptLoopAsync()
+    {
+        try
+        {
+            while (!_cts.IsCancellationRequested)
+            {
+                await Task.Delay(TimeSpan.FromHours(1), _cts.Token);
+                await MaybeShowSponsorPromptAsync(Cfg.Current.TotalLaunchCount);
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { AppLog.Warn("AccountPanel", "赞助提示定时检查异常: " + ex.Message); }
+    }
+
+    /// <summary>换屏：先量一下面板当前高度交给 JS 做弹簧，再换屏号。
+    /// 新一屏的入场动画带 165ms 延迟 —— 等弹簧冲过目标高度之后内容才浮现，
+    /// 所以"卡片在长大"的过程中不会有任何内容被裁掉（见 shell.css 的注释）。</summary>
+    private async Task GoToSponsorStepAsync(int next)
+    {
+        if (next == _sponsorStep) return;
+        try { await JS.InvokeVoidAsync("junigridJs.sponsorMeasure"); } catch { }
+        _leavingStep = _sponsorStep;
+        _sponsorStep = next;
+        _ = ClearLeavingStepAsync();
+    }
+
+    private Task ShowSponsorSupport() => GoToSponsorStepAsync(1);
+
+    private Task ShowForgotQr() => GoToSponsorStepAsync(2);
+
+    private Task BackToQr() => GoToSponsorStepAsync(1);
+
+    /// <summary>离场层留到弹簧跑完再摘（它 150ms 就淡透了，留着不挡视线也不吃鼠标）。</summary>
+    private async Task ClearLeavingStepAsync()
+    {
+        try { await Task.Delay(700); } catch { }
+        await InvokeAsync(() =>
+        {
+            _leavingStep = null;
+            StateHasChanged();
+        });
+    }
+
+    /// <summary>切微信/支付宝：换 key 让二维码卡片重新挂载，从而播放滑入+淡入动画。</summary>
+    private void SelectQr(bool wechat)
+    {
+        if (_sponsorWechat == wechat) return;
+        _qrDirection = wechat ? -1 : 1;
+        _sponsorWechat = wechat;
+        _qrTick++;
+    }
+
+    private void DismissSponsor()
+    {
+        _sponsorLaunchCount = 0;
+        _sponsorStep = 0;
+        _leavingStep = null;
+        _sponsorRenderedStep = -1;   // 下次弹出还是"首开"，不播弹簧
+    }
+
+    /// <summary>用户在收款码页点了「已支持」：记下支持时间、致谢并收起弹窗。
+    /// <para>这个按钮<b>不改变弹窗频率</b>：它没法验证用户到底付没付钱（扫码后点一下就算
+    /// 「已支持」），所以只用 SupportedAt 记一笔账，提示节奏对所有人一致 —— 里程碑 + 7 天兜底。
+    /// 将来「已捐赠用户专用无弹窗版」就靠这个字段区分。</para></summary>
+    private void MarkSupported()
+    {
+        try
+        {
+            var state = SponsorPromptState.LoadOrMigrate(Cfg.Current);
+            state.SupportedAt = DateTime.Now;
+            SponsorPromptState.Save(state);
+            AppLog.Info("Sponsor", "用户点了「已支持」→ 已记录支持时间（提示节奏不变，仍 7 天一次）");
+        }
+        catch (Exception ex)
+        {
+            // 记账失败不影响这次交互：最坏是下次按 7 天节奏再弹一次。
+            AppLog.Warn("AccountPanel", "记录「已支持」失败: " + ex.Message);
+        }
+        DismissSponsor();
+        _ = JS.InvokeVoidAsync("junigridJs.toast", Loc.T("谢谢你的支持！"), "ok");
+    }
+
+    /// <summary>爱发电主页用系统浏览器打开 —— WebView2 里 target=_blank 的行为不可靠，
+    /// 不能让它把整个应用导航走。</summary>
+    private void OpenAfdian()
+    {
+        try { MainWindow.OpenExternalUrl("https://ifdian.net/a/JuniGrid?tab=home"); }
+        catch (Exception ex) { AppLog.Warn("AccountPanel", "打开爱发电失败: " + ex.Message); }
     }
 
     // 确认关闭游戏：先关确认框，再真正结束进程。

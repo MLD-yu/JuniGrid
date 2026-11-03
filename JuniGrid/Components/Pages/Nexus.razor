@@ -370,27 +370,6 @@
             </div>
             @* v1.1.6：搜索页下拉遮罩（data-dd=search 与上方两个下拉配对；常驻 DOM 同浏览页防穿透） *@
             <div class="jg-dd-overlay @((_searchSortOpen || _searchDirOpen) ? "open" : "")" data-dd="search" @onclick="CloseAllDd"></div>
-            @if (_exactMod is not null)
-            {
-                var exName = _exactMod.Name;
-                var exPic = _exactMod.PictureUrl;
-                var exVer = _exactMod.Version;
-                <div class="jg-search-exact" @onclick="() => OpenDetail(_exactMod.Id)">
-                    @if (!string.IsNullOrEmpty(exPic))
-                    {
-                        <img class="jg-search-exact-cover" src="@exPic" alt="" />
-                    }
-                    else
-                    {
-                        <div class="jg-search-exact-cover jg-search-exact-fb">@(!string.IsNullOrEmpty(exName) ? exName[..1].ToUpperInvariant() : "#")</div>
-                    }
-                    <div class="jg-search-exact-body">
-                        <div class="jg-search-exact-name">@(!string.IsNullOrEmpty(exName) ? exName : Loc.F("尾号 #{0} 的 Mod", _exactMod.Id))</div>
-                        <div class="jg-search-exact-sub">@Loc.F("尾号 #{0} · 精确匹配", _exactMod.Id)@(string.IsNullOrEmpty(exVer) ? "" : $" · v{exVer}")</div>
-                    </div>
-                    <span class="jg-search-exact-go">@Loc.T("查看 →")</span>
-                </div>
-            }
             @if (_browseLoading)
             {
                 <div class="jg-browse2" style="margin-top:10px">
@@ -438,13 +417,9 @@
             {
                 <div class="jg-note" style="margin-top:10px">@Loc.T("在上方搜索框输入 mod 名或 N 网尾号开始搜索。")</div>
             }
-            else if (_exactMod is null)
-            {
-                <div class="jg-note" style="margin-top:10px">@Loc.F("没有找到与「{0}」相关的 mod，换个关键词或试试 N 网尾号。", _searchTitle)</div>
-            }
             else
             {
-                <div class="jg-note" style="margin-top:10px">@Loc.T("名称没有搜到结果，但上方已按尾号精确匹配到一个 mod。")</div>
+                <div class="jg-note" style="margin-top:10px">@Loc.F("没有找到与「{0}」相关的 mod，换个关键词或试试 N 网尾号。", _searchTitle)</div>
             }
         </section>
     }
@@ -1123,6 +1098,15 @@
         }
         catch { _browse = new(); }
         if (exactTask is not null) { try { _exactMod = await exactTask; } catch { } }
+        // v1.3.7：搜索页不再单独摆「精确匹配」卡（用户要求只留网格）。
+        // 但尾号直查仍然要做 —— 它比关键词搜索准，命中而列表里没有时并进第一格，
+        // 这样「搜 #5787 却因为 API 不给结果而空页」的老问题也不会回来。
+        if (_exactMod is not null && _browse.All(m => m.Id != _exactMod.Id))
+        {
+            _browse.Insert(0, new NexusModListEntry(
+                _exactMod.Id, _exactMod.Name, LocService.Tr("按 N 网尾号精确匹配"),
+                _exactMod.Version, 0, _exactMod.PictureUrl ?? ""));
+        }
         _browseLoading = false;
         StateHasChanged();
     }

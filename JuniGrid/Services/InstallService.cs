@@ -20,10 +20,12 @@ public sealed partial class InstallService
     private readonly UpdateService _updater;
     private readonly GameService _game;
     private readonly PageRefreshService _pageRefresh;
+    private readonly NexusWebDownloadService _webDownload;
 
     public InstallService(ConfigService cfg, NexusService nexus, ModService mods,
         TaskCenterService center, UpdateService updater,
-        GameService game, PageRefreshService pageRefresh)
+        GameService game, PageRefreshService pageRefresh,
+        NexusWebDownloadService webDownload)
     {
         _cfg = cfg;
         _nexus = nexus;
@@ -32,6 +34,7 @@ public sealed partial class InstallService
         _updater = updater;
         _game = game;
         _pageRefresh = pageRefresh;
+        _webDownload = webDownload;
     }
 
     public event Action? OnChanged;
@@ -133,15 +136,48 @@ public sealed partial class InstallService
     /// 「安装」、任务面板的「↻ 重试」、重启后按 NexusId 重新发起），后两个拿不到 worker 的
     /// 返回值 —— 以前打开动作只挂在详情页那一个调用方上，于是任务面板重试时界面写着
     /// 「已改为网页方式」而浏览器一次都没弹（2026-10-07 09:34 实机，mod 20581）。</para>
+    /// <para>v1.2.10：URL 带上 file_id —— 用户点的是哪个文件就落到哪个文件，
+    /// 而不是每次都让他自己在文件列表里重找一遍。</para>
     /// <para><paramref name="open"/> 由调用点给（生产传 <c>UpdateService.OpenUrl</c>），
     /// 为的是这条出口能在不开真浏览器的情况下被验证。</para>
     /// </summary>
-    internal static string PremiumNeedsWebFallback(int modId, Action<string> open)
+    internal static string PremiumNeedsWebFallback(int modId, long fileId, Action<string> open, string? reason = null)
     {
         // Nexus 文件页 —— 免费账号直链被 403 时把用户领到这里点「Mod Manager Download」，
         // nxm 接管链路会自己把包装进 Mods。
-        open($"https://www.nexusmods.com/stardewvalley/mods/{modId}?tab=files");
-        return LocService.Tr("premium：这个 mod 的直链下载需要 Nexus Premium 会员");
+        open($"https://www.nexusmods.com/stardewvalley/mods/{modId}?tab=files&file_id={fileId}");
+        var msg = LocService.Tr("premium：应用内自动下载没成功（已打开文件页，可在页上点 Mod Manager Download）");
+        return string.IsNullOrWhiteSpace(reason) ? msg : msg + "（" + reason + "）";
+    }
+
+    /// <summary>
+    /// 【更新 / 依赖】也要走的一条取链通道：API 直链 → 免费账号 403 时自动转应用内隐藏窗口。
+    /// <para>为什么单独抽出来：一键直装（<see cref="InstallModDirectAsync"/>）里内联了同样的
+    /// 两段逻辑，但「批量更新」「单条更新」「装缺失依赖」这三条路以前各自判断
+    /// <c>NeedsPremium</c> 就直接放弃 —— 于是同一个 mod，点「安装」能在应用内下完，
+    /// 点「更新」却跳外部浏览器，用户看到的是两套行为。</para>
+    /// <para>返回的 <see cref="NexusDownloadResult.NeedsPremium"/> 只有在【两条路都不通】
+    /// 时才为 true，调用方据此决定退不退回打开网页。</para>
+    /// </summary>
+    public async Task<NexusDownloadResult> ResolveDownloadUrlAsync(
+        int modId, long fileId,
+        Action<string, double?, double?>? report = null,
+        CancellationToken ct = default,
+        TaskItem? task = null)
+    {
+        var dl = await _nexus.GetDownloadUrlAsync(modId, fileId, ct, patient: true);
+        if (dl.Url is not null) return dl;
+        if (!dl.NeedsPremium) return dl;   // 网络/其他错误：别去开窗口，原样交给调用方
+
+        report?.Invoke(LocService.Tr("正在通过应用内页面获取下载（不需要操作）…"), null, null);
+        // 应用内取链最长 100 秒（要等一个被节流过的倒计时周期），这期间没有任何进度可报。
+        // 不登记豁免的话，僵尸看门狗 60 秒就会把这条任务判死 ——
+        // 2026-11-04 实测：两条更新都卡在「正在从 Nexus 页面获取下载链接…」被看门狗杀掉。
+        using var longRun = task is null ? null : (IDisposable)_center.BeginLongRunning(task);
+        var auto = await _webDownload.TryGetDirectUrlAsync(modId, fileId, report, ct);
+        return auto.Url is not null
+            ? NexusDownloadResult.Ok(auto.Url)
+            : new NexusDownloadResult(null, auto.Error ?? dl.Error, true);
     }
 
     /// <summary>下载缓存里已经有这个 (mod, 文件) 的完整压缩包了吗？有就返回它的路径。
@@ -166,7 +202,12 @@ public sealed partial class InstallService
     /// 这种情况本方法已经自己打开过文件页了，调用方只负责把话显示出来，别再开一次）。
     /// 进度接入任务中心：右下角出现任务，/tasks 页能看到下载百分比/速度/每步详情。
     /// </summary>
-    public async Task<string?> InstallModDirectAsync(int modId)
+    /// <param name="fileId">指定要装的文件；null = 最新 MAIN（详情页那颗「安装」的老行为）。
+    /// <para>详情页的「文件」列表用它装【指定那一条】：同一个 mod 常常同时挂 CP 主包、
+    /// AT 素材包、旧版本好几个文件，只按「最新 MAIN」挑会让玩家永远装不到自己要的变体
+    /// （实测 mod 1915 就有 CP/AT 两条并行发布）。</para></param>
+    /// <param name="fileLabel">拿不到 files.json 时的兜底显示名（任务标题用）。</param>
+    public async Task<string?> InstallModDirectAsync(int modId, long? fileId = null, string? fileLabel = null)
     {
         var cfg = _cfg.Current;
         if (!NexusService.IsAuthenticated)
@@ -193,12 +234,27 @@ public sealed partial class InstallService
 
             Interlocked.Increment(ref _busyCount);
             string? zipPath = null;   // v1.1.3：取消时清理半截包用（catch 里拿不到 try 内的局部量）
+            // v1.2.10：应用内自动下载（免费账号）的两块状态 —— catch 里要判断
+            // 「这次是从隐藏窗口拿的链接吗」，失败时才好退回打开文件页那条老路。
+            long mainFileId = 0;
+            var usedWebChannel = false;
             try
             {
                 Step(LocService.Tr("正在获取文件信息…"), 2);
-                var file = await _nexus.GetLatestMainFileAsync(modId, patient: true, ct: ct);
+                // 指定文件（详情页文件列表）→ 按 fileId 精确取；否则还是「最新 MAIN」。
+                var file = fileId is long wantFileId
+                    ? await _nexus.GetFileByIdAsync(modId, wantFileId, patient: true, ct: ct)
+                    : await _nexus.GetLatestMainFileAsync(modId, patient: true, ct: ct);
                 ct.ThrowIfCancellationRequested();
+                // files.json 里没有这一条（文件已下架 / 接口抖动）也别直接判死：
+                // 带着 fileId 继续，直链那一步会给出确切原因，比「找不到可下载的文件」有用。
+                if (file is null && fileId is long missingId)
+                    file = new NexusFileInfo(missingId, fileLabel ?? LocService.Tr("所选文件"), "", "");
                 if (file is null) { _center.Finish(task, false, LocService.Tr("找不到可下载的文件")); return LocService.Tr("找不到可下载的文件"); }
+                mainFileId = file.FileId;
+                // 只有 MAIN 才记「已装文件快照」（见下面 RecordInstall 那段的说明）
+                var isMainFile = string.IsNullOrEmpty(file.Category)
+                    || file.Category.Equals("MAIN", StringComparison.OrdinalIgnoreCase);
 
                 var zip = Path.Combine(StoragePaths.DownloadsDir,
                     $"direct-{modId}-{file.FileId}.zip");
@@ -225,8 +281,23 @@ public sealed partial class InstallService
                     ct.ThrowIfCancellationRequested();
                     if (dl.NeedsPremium)
                     {
-                        _center.Finish(task, false, LocService.Tr("需要 Nexus Premium 会员，已改为网页方式"));
-                        return PremiumNeedsWebFallback(modId, UpdateService.OpenUrl);
+                        // v1.2.10：免费账号的直链必然 403。先走应用内的隐藏窗口
+                        // （自动按下网页上那颗 Slow download，把一次性直链取回来），
+                        // 拿不到才退回「打开系统浏览器」的老路 —— 这条通道不改变
+                        // 任何后续逻辑，直链到手后与 Premium 用户走完全相同的下载/安装。
+                        Step(LocService.Tr("正在通过应用内页面获取下载（不需要操作）…"), 6, null);
+                        // 同 ResolveDownloadUrlAsync：取链这段最长 100 秒零进度，登记豁免别让看门狗误杀
+                        using var webRun = _center.BeginLongRunning(task);
+                        var auto = await _webDownload.TryGetDirectUrlAsync(modId, file.FileId,
+                            (msg, pct, spd) => Step(msg, pct, spd), ct);
+                        ct.ThrowIfCancellationRequested();
+                        if (auto.Url is null)
+                        {
+                            _center.Finish(task, false, LocService.Tr("应用内没取到直链，已改为打开网页"));
+                            return PremiumNeedsWebFallback(modId, file.FileId, UpdateService.OpenUrl, auto.Error);
+                        }
+                        usedWebChannel = true;
+                        dl = NexusDownloadResult.Ok(auto.Url);
                     }
                     if (dl.Url is null)
                     { _center.Finish(task, false, LocService.Tr("获取下载地址失败：") + (dl.Error ?? "未知错误")); return LocService.Tr("获取下载地址失败：") + (dl.Error ?? "未知错误"); }
@@ -235,6 +306,24 @@ public sealed partial class InstallService
                         Step(p.Message, p.Percent, p.SpeedMBps));
                     Step(LocService.Tf("正在下载 {0}…", file.Name), 8, 0);
                     await _nexus.DownloadFileAsync(dl.Url, zip, progress, ct);
+                    // 下完先按文件头验一次：取链那几层偶尔会把网页静态资源当直链
+                    // （2026-11-04 04:43 实机：avatars.nexusmods.com 的 100×100 头像被 Chromium
+                    // 标成 application/octet-stream，两条更新都下回一张 jpg，最后报「压缩包损坏」）。
+                    // 在下载落盘这一步就拦下来：删坏包 + 报准确原因，别让用户猜。
+                    var packFmt = ModService.DetectArchiveFormat(zip);
+                    if (packFmt is "jpeg" or "gif" or "webp" or "html" or "unknown" or "empty")
+                    {
+                        try { File.Delete(zip); } catch { }
+                        var why = packFmt switch
+                        {
+                            "jpeg" or "gif" or "webp" => LocService.Tr("下载到的是图片而不是压缩包：取到的直链其实是网页上的静态资源"),
+                            "html" => LocService.Tr("下载到的是网页而不是压缩包（可能被网络拦截）"),
+                            _ => LocService.Tr("下载到的文件不是可识别的压缩包"),
+                        };
+                        var bad = why + LocService.Tr("，已清理坏包，请重试");
+                        _center.Finish(task, false, bad);
+                        return bad;
+                    }
                     if (ct.IsCancellationRequested)   // 下完才发现被移除/暂停 → 别装了
                     {
                         if (MayDiscardHalfPack(task, ct))
@@ -278,11 +367,15 @@ public sealed partial class InstallService
                 // v0.69.0：记录「最后下载日期」（详情页标题下 + 文件页签绿色✓ 用）
                 cfg.ModLastDownload[modId.ToString()] = DateTime.Now.ToString("yyyy-MM-dd");
                 cfg.ModFileLastDownload[file.FileId.ToString()] = DateTime.Now.ToString("yyyy-MM-dd");
+                cfg.ModInstalledFile[modId.ToString()] = file.FileId.ToString();
                 // 记 N 网 MAIN 安装快照（只记账，不动作者的 manifest —— 见 RecordInstall 的说明：
                 // 那个字段的读者是 SMAPI，抄进单段号会让整个 mod 不加载）。
                 // 「N 网文件 1 / 包内 Version 0.0.1」那种永远显示可更新，由 ShouldShowUpdate
                 // 的「单段 vs 多段 = 不同编号体系」那道闸处理，认领则靠 fileId，都不需要改安装物。
-                if (!string.IsNullOrWhiteSpace(modName) || modId > 0)
+                // v1.3.5：从文件列表装的【非 MAIN】文件（CP/AT 素材包、旧版本）不记账 ——
+                // 记了就等于宣称「这个 mod 装的是这份可选文件」，而更新检查拿它跟远程 MAIN
+                // 的 fileId 比，会让这一行永远挂着 ⇧ 更新。
+                if (isMainFile && (!string.IsNullOrWhiteSpace(modName) || modId > 0))
                 {
                     var folderGuess = modName ?? "";
                     // Scan 是磁盘全量扫描，同样别落在 UI 线程
@@ -319,6 +412,15 @@ public sealed partial class InstallService
             }
             catch (Exception ex)
             {
+                // v1.2.10：应用内通道拿回来的直链如果下不动（拦到的是 N 网中间页、
+                // 一次性签名过期、CDN 拒绝无浏览器上下文的请求），别把用户堵在一条
+                // 他自己没法处理的消息上 —— 直接退回「打开文件页」那条老路，
+                // nxm 回流仍然能把包接上。
+                if (usedWebChannel && !ct.IsCancellationRequested && mainFileId > 0)
+                {
+                    _center.Finish(task, false, LocService.Tr("应用内下载失败，已改为网页方式"));
+                    return PremiumNeedsWebFallback(modId, mainFileId, UpdateService.OpenUrl, ex.Message);
+                }
                 _center.Finish(task, false, ex.Message);
                 Notify();
                 return ex.Message;
@@ -334,6 +436,104 @@ public sealed partial class InstallService
 
         _center.RegisterResume(task, ct => Task.Run(() => RunAsync(ct), CancellationToken.None));
         return await Task.Run(() => RunAsync(task.Cts.Token));
+    }
+
+    /// <summary>
+    /// 详情页「文件」列表里的「仅下载」：把选中的那一条存到下载缓存目录，**不装进 Mods**。
+    /// <para>为什么单独一条：有些文件不是独立 mod（散 xnb 素材、旧版本备份、给别的管理器用的
+    /// 补丁），装进去反而多一行垃圾；但用户又确实想拿到文件本身。</para>
+    /// <para>取链与直装完全同一条（Premium 直链 → 免费账号应用内隐藏窗口），下完在资源管理器里定位。</para>
+    /// </summary>
+    public async Task<string?> DownloadFileOnlyAsync(int modId, long fileId, string fileName)
+    {
+        if (!NexusService.IsAuthenticated)
+            return LocService.Tr("还没登录 Nexus —— 先到「Nexus」页登录");
+
+        var safe = SafeFileName(fileName);
+        if (!safe.EndsWith(".zip", StringComparison.OrdinalIgnoreCase)) safe += ".zip";
+        var task = _center.Start($"下载文件 {safe}", "download");
+
+        async Task<string?> RunAsync(CancellationToken ct)
+        {
+            void Step(string msg, double? pct = null, double? speed = null) =>
+                _center.Report(task, msg, pct, speed);
+            Interlocked.Increment(ref _busyCount);
+            try
+            {
+                Step(LocService.Tr("正在获取下载地址…"), 3);
+                var dl = await ResolveDownloadUrlAsync(modId, fileId,
+                    (msg, pct, spd) => Step(msg, pct, spd), ct, task);
+                ct.ThrowIfCancellationRequested();
+                if (dl.Url is null)
+                {
+                    _center.Finish(task, false, dl.NeedsPremium
+                        ? LocService.Tr("应用内没能取到下载链接（可能需要登录 Nexus 网页版）")
+                        : LocService.Tr("获取下载地址失败：") + dl.Error);
+                    return dl.Error;
+                }
+
+                Directory.CreateDirectory(StoragePaths.DownloadsDir);
+                var dest = Path.Combine(StoragePaths.DownloadsDir, safe);
+                // 同名文件不覆盖：加 (2)(3) 后缀，免得用户下了两版旧文件只剩一份
+                dest = UniquifyPath(dest);
+                Step(LocService.Tf("正在下载 {0}…", safe), 8, 0);
+                var progress = new Progress<NexusDownloadProgress>(p => Step(p.Message, p.Percent, p.SpeedMBps));
+                await _nexus.DownloadFileAsync(dl.Url, dest, progress, ct);
+                ct.ThrowIfCancellationRequested();
+
+                _center.Finish(task, true, LocService.Tf("已下载到 {0}", dest));
+                try
+                {
+                    // 落到文件夹并选中该文件（windowsVerbatimArguments 那套在 ProcessStartInfo 里
+                    // 靠参数串自己拼引号，路径带空格也不会断）
+                    System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                    {
+                        FileName = "explorer.exe",
+                        Arguments = $"/select,\"{dest}\"",
+                        UseShellExecute = true,
+                    });
+                }
+                catch { /* 定位失败不影响已下好的文件 */ }
+                return null;
+            }
+            catch (OperationCanceledException)
+            {
+                _center.Finish(task, false, LocService.Tr("已取消"));
+                return "已取消";
+            }
+            catch (Exception ex)
+            {
+                _center.Finish(task, false, ex.Message);
+                return ex.Message;
+            }
+            finally { Interlocked.Decrement(ref _busyCount); }
+        }
+
+        return await Task.Run(() => RunAsync(task.Cts.Token));
+    }
+
+    /// <summary>文件名清洗：去掉 Windows 非法字符和结尾的点/空格（NTFS 会吃掉尾点，
+    /// 之后 File.Exists 就永远找不到自己刚写的那个文件）。</summary>
+    private static string SafeFileName(string? name)
+    {
+        var s = string.IsNullOrWhiteSpace(name) ? "nexus-file" : name.Trim();
+        foreach (var c in Path.GetInvalidFileNameChars()) s = s.Replace(c, '_');
+        s = s.TrimEnd('.', ' ');
+        return s.Length == 0 ? "nexus-file" : s;
+    }
+
+    private static string UniquifyPath(string path)
+    {
+        if (!File.Exists(path)) return path;
+        var dir = Path.GetDirectoryName(path)!;
+        var stem = Path.GetFileNameWithoutExtension(path);
+        var ext = Path.GetExtension(path);
+        for (var i = 2; i < 1000; i++)
+        {
+            var candidate = Path.Combine(dir, $"{stem} ({i}){ext}");
+            if (!File.Exists(candidate)) return candidate;
+        }
+        return path;
     }
 
     /// <summary>SMAPI 在 Nexus 上的 mod ID（nexusmods.com/stardewvalley/mods/2400）。</summary>
@@ -389,6 +589,7 @@ public sealed partial class InstallService
 
             cfg.ModLastDownload[modId.ToString()] = DateTime.Now.ToString("yyyy-MM-dd");
             cfg.ModFileLastDownload[fileId.ToString()] = DateTime.Now.ToString("yyyy-MM-dd");
+            cfg.ModInstalledFile[modId.ToString()] = fileId.ToString();
             _cfg.Save(cfg);
             var done = "安装完成：SMAPI（你选择的版本）";
             _center.Finish(task, true, done);
@@ -489,6 +690,32 @@ public sealed partial class InstallService
 
     public async Task HandleNxmLinkAsync(string link)
     {
+        // ── 第一件事：这条 nxm 是不是我们自己那个隐藏窗口撂出来的？ ──
+        // N 网文件页必须带 &nmm=1 才会渲染下载面板，而那个面板会顺手触发一次 nxm://；
+        // Windows 又把链接转回本进程。旧版不分青红皂白就开一行「下载并安装 X」，
+        // 结果同一个 mod 在任务管理里出现「更新 Mod「X」」+「下载并安装 X」两行
+        // （2026-11-04 用户反馈）。这里先认领：正在等直链的那个窗口就是它主人，
+        // 把解析出来的真直链塞回去即可，不再新建任务。
+        if (TryParseNxm(link, out var pendingMod, out var pendingFile, out var pendingKey, out var pendingExp)
+            && NexusWebDownloadService.HasPending(pendingMod, pendingFile))
+        {
+            try
+            {
+                var hand = await _nexus.GetNxmDownloadUrlAsync(pendingMod, pendingFile, pendingKey, pendingExp);
+                if (NexusWebDownloadService.TryDeliver(pendingMod, pendingFile, hand.Url))
+                {
+                    AppLog.Info("Install", $"nxm 回流已并入正在进行的任务 mod={pendingMod} file={pendingFile}");
+                    Notify();
+                    return;
+                }
+            }
+            catch (Exception ex)
+            {
+                // 认领失败不能把整条回流堵死 —— 落到下面照旧走独立安装
+                AppLog.Warn("Install", "nxm 回流合流失败：" + ex.Message);
+            }
+        }
+
         var task = _center.Start("网页一键安装（Nexus）", "install");
 
         // v1.1.7：整段可重入 —— 暂停后继续重新挂 worker；半截包续传
@@ -603,6 +830,7 @@ public sealed partial class InstallService
                     {
                         cfg.ModLastDownload[modId.ToString()] = DateTime.Now.ToString("yyyy-MM-dd");
                         cfg.ModFileLastDownload[fileId.ToString()] = DateTime.Now.ToString("yyyy-MM-dd");
+                        cfg.ModInstalledFile[modId.ToString()] = fileId.ToString();
                         // 版本号必须一起记：留空 ⇒ 快道（smapi.io 只给版本号、不给 fileId）那条路
                         // 再没有任何判据能认出「这一版我已经装过了」，⇧ 装上就消不掉
                         var nxmVer = (await _nexus.GetFileByIdAsync(modId, fileId, ct: ct))?.Version ?? "";
@@ -748,19 +976,19 @@ public sealed partial class InstallService
                                 m.NexusModId, m.Version ?? "");
 
                     var batch = new List<string>();
+                    // 已装版本表：判「装着但太旧」用（与 installedMap 同一份数据）
+                    var installedVersions = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var kv in installedMap) installedVersions[kv.Key] = kv.Value.Version;
                     foreach (var m in mods)
                     {
-                        foreach (var d in m.Dependencies.Concat(m.ContentPackIds))
+                        // 该装/该换的依赖由 DependencyRules 一处判定 —— 必需依赖缺了就装、太旧也换；
+                        // 可选依赖只在「装着但太旧」时才算（没装是作者允许的状态）。
+                        // 实机 2026-10-29：弹窗按 UI 那份清单列出了 GMCM，而这里只遍历必需依赖，
+                        // 任务跑了个空 —— 点了「开始安装」什么也没发生。
+                        foreach (var dep0 in DependencyRules.DepsToProcess(m, installedVersions))
                         {
-                            var dep = d?.Trim();
+                            var dep = dep0.Trim();
                             if (string.IsNullOrWhiteSpace(dep) || processed.Contains(dep)) continue;
-                            // 「装了」不等于「够用」：版本低于 MinimumVersion 时 SMAPI 照样把依赖方整条 Skipped
-                            // （实测 完美手册 1.0.0 因本机 StardewUI 0.6.1 < 要求的 0.6.4-unofficial-mushymato.0
-                            // 被跳过，而我们旧口径一声不响）→ 与没装同一条出路：去下最新的。
-                            if (installedMap.TryGetValue(dep, out var haveDep)
-                                && !(m.DependencyMinVersions.TryGetValue(dep, out var minVer)
-                                     && VersionUtil.IsOlderThan(haveDep.Version, minVer)))
-                                continue;
                             if (firstRound && allowedFirstRound is not null && !allowedFirstRound.Contains(dep)) continue;
                             // 记下父包要求的那一版（逐字留着，不折成 ≥ 门槛）—— 后面靠它认
                             // 「哪一页的文件表里真有这一版」。
@@ -852,10 +1080,10 @@ public sealed partial class InstallService
                     {
                         if (provider is int provId)
                         {
-                            Step(LocService.Tf("⏭ {0}：免费账户不能 API 直下，已打开有 {1} 那一版的页面",
+                            Step(LocService.Tf("⏭ {0}：应用内没能自动下载，已打开有 {1} 那一版的页面",
                                 dep, string.Join("、", needs)));
                             outcomes.Add(new DependencyRunItem(dep, "manual", providerName, provId,
-                                "已在浏览器打开这一版真正所在的页面 —— 点「Mod Manager Download」，启动器会自动接管下载"));
+                                "已在浏览器打开这一版真正所在的页面 —— 点「Mod Manager Download」，启动器会自动接管下载（应用内通道未取到链接）"));
                             toOpen.Add($"https://www.nexusmods.com/stardewvalley/mods/{provId}");
                             continue;
                         }
@@ -866,11 +1094,11 @@ public sealed partial class InstallService
                             AddUnresolvedOutcome(dep, toOpen, outcomes);
                             continue;
                         }
-                        Step(LocService.Tf("⏭ {0}：免费账户不能 API 直下，已打开网页转手动", dep));
+                        Step(LocService.Tf("⏭ {0}：应用内没能自动下载，已打开网页转手动", dep));
                         outcomes.Add(new DependencyRunItem(dep, "manual", face.Name, face.Id,
                             dep.Equals(ModService.PortraitureFrameworkUid, StringComparison.OrdinalIgnoreCase)
                                 ? "Portraiture 框架需手动下载 —— 点「Mod Manager Download」后启动器自动接管；装完请到立绘页确认素材包"
-                                : "已在浏览器打开此页面 —— 点「Mod Manager Download」，启动器会自动接管下载安装（Nexus 免费账户限制）"));
+                                : "已在浏览器打开此页面 —— 点「Mod Manager Download」，启动器会自动接管下载安装（应用内通道未取到链接）"));
                         toOpen.Add($"https://www.nexusmods.com/stardewvalley/mods/{face.Id}");
                         continue;
                     }
@@ -883,6 +1111,8 @@ public sealed partial class InstallService
                             .Prepend(new NexusModListEntry(firstId, providerName, "", "", 0, ""))
                             .ToList();
                     var searched = false;
+                    // 这一轮搜索有没有真的问出结果：没答上（断网/限流）不能说成"搜不到"
+                    var searchAnswered = false;
                     string? lastErr = null;
                     var ok = false;
                     while (true)
@@ -895,10 +1125,16 @@ public sealed partial class InstallService
                             var file = await _nexus.GetLatestMainFileAsync(c.Id, patient: true, ct: task.Cts.Token);
                             if (file is null) { lastErr = LocService.Tr("找不到可下载的文件"); continue; }
 
-                            var dl = await _nexus.GetDownloadUrlAsync(c.Id, file.FileId, task.Cts.Token, patient: true);
+                            // v1.3.5：免费账号也先走应用内隐藏窗口。以前这里一见 NeedsPremium
+                            // 就把 premiumBlocked 打开 —— 余下每个依赖都转手动、收尾时分批开
+                            // 十几个标签页。同一套机制，「安装」能在应用内下完，「装依赖」却要
+                            // 跳浏览器，用户看到的是两副面孔。
+                            var dl = await ResolveDownloadUrlAsync(c.Id, file.FileId,
+                                (msg, pct, spd) => Step(msg, pct, spd), task.Cts.Token, task);
                             if (dl.NeedsPremium)
                             {
-                                // 换候选也一样 —— 账号级限制：本次余下依赖全部转手动
+                                // 隐藏窗口也没拿到（未登录 / 验证过不去）→ 账号级限制，
+                                // 余下依赖全部转手动，不再逐个去开窗口白等。
                                 premiumBlocked = true;
                                 lastErr = "premium";
                                 break;
@@ -930,6 +1166,7 @@ public sealed partial class InstallService
                                 cfg.DependencyNexusIds[dep] = c.Id;
                                 cfg.ModLastDownload[c.Id.ToString()] = DateTime.Now.ToString("yyyy-MM-dd");
                                 cfg.ModFileLastDownload[file.FileId.ToString()] = DateTime.Now.ToString("yyyy-MM-dd");
+                                cfg.ModInstalledFile[c.Id.ToString()] = file.FileId.ToString();
                                 _cfg.Save(cfg);
                                 outcomes.Add(new DependencyRunItem(dep, "installed", modName ?? c.Name, c.Id,
                                     dep.Equals(ModService.PortraitureFrameworkUid, StringComparison.OrdinalIgnoreCase)
@@ -955,7 +1192,9 @@ public sealed partial class InstallService
                         Step(cands.Count > 0
                             ? LocService.Tf("({0}/{1}) 已知候选不匹配，正在搜索 {2}…", idx, total, dep)
                             : $"({idx}/{total}) 正在搜索 {dep}…");
-                        cands = await SearchDependencyCandidatesAsync(dep);
+                        var srch = await SearchDependencyCandidatesAsync(dep);
+                        cands = srch.Hits;
+                        searchAnswered = srch.Answered;
                         if (cands.Count == 0) break;
                     }
 
@@ -964,11 +1203,11 @@ public sealed partial class InstallService
                 {
                     var face = cands.Count > 0 ? cands[0] : null;
                     outcomes.Add(new DependencyRunItem(dep, "manual", face?.Name, face?.Id,
-                        "已在浏览器打开此页面 —— 点「Mod Manager Download」，启动器会自动接管下载安装（Nexus 免费账户限制）"));
+                        "已在浏览器打开此页面 —— 点「Mod Manager Download」，启动器会自动接管下载安装（应用内通道未取到链接）"));
                     Step(LocService.Tf("⏭ {0}：Nexus 直下需要 Premium，已打开网页转手动", dep));
                     if (face is not null) toOpen.Add($"https://www.nexusmods.com/stardewvalley/mods/{face.Id}");
                 }
-                    else if (searched && cands.Count == 0)
+                    else if (searched && cands.Count == 0 && searchAnswered)
                     {
                         Step(LocService.Tf("✗ {0}：Nexus 搜索不到匹配的 mod，已打开搜索页转人工", dep));
                         AddUnresolvedOutcome(dep, toOpen, outcomes);

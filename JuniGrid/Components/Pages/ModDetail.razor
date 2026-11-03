@@ -74,7 +74,7 @@
                         // 那条按游戏版本选包的通道干的活，不在这里给一个点得动的口子。
                         var disableInstall = _installing || (alreadyInstalled && !HasUpdate);
                     }
-                    <button class="jg-dl4-cta" @onclick="Install" disabled="@disableInstall">
+                    <button class="jg-dl4-cta" @onclick="OpenVersionPicker" disabled="@disableInstall">
                         @installLabel
                         <span class="jg-dl4-cta-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px"><path d="M12 3v12"/><polyline points="7 10 12 15 17 10"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg></span>
                     </button>
@@ -91,6 +91,117 @@
                 @if (_installMsg is not null)
                 {
                     <div class="jg-dl4-msg">@Loc.T(_installMsg)</div>
+                }
+
+                @* ─── 版本选择弹窗：点「安装」先选文件，再下载 ───
+                   上面那颗 CTA 以前直接抓「最新 MAIN」闷头开下 —— 一个 mod 常并行发布
+                   CP 主包 / AT 素材包，玩家要的那条未必是最新那条；而且下错了也看不出来。
+                   现在把选择权交回来：主文件单选（无 MAIN 时退化成「最新文件」一条），
+                   其余全部塞进「历史版本」下拉。 ─── *@
+                @if (_pickOpen)
+                {
+                    <div class="jg-modal-overlay" @onclick="ClosePicker">
+                        <div class="jg-modal jg-pick-modal" @onclick:stopPropagation>
+                            <div class="jg-pick-title">@Loc.T("选择要安装的版本")</div>
+                            <div class="jg-pick-sub">@_mod.Name</div>
+
+                            @if (_filesLoading && _files is null)
+                            {
+                                <div class="jg-shimmer" style="height:46px;border-radius:10px;margin:8px 0"></div>
+                                <div class="jg-shimmer" style="height:46px;border-radius:10px;margin:8px 0"></div>
+                            }
+                            else if (_files is null || _files.Count == 0)
+                            {
+                                <div class="jg-pick-empty">@Loc.T("这个 mod 没有可下载的文件。")</div>
+                            }
+                            else
+                            {
+                                <div class="jg-pick-cap">@PickPrimaryLabel</div>
+                                <div class="jg-pick-list jg-pick-sm">
+                                    @foreach (var f in PickPrimaryFiles)
+                                    {
+                                        <label class="jg-pick-row @(_pickedFileId == f.FileId ? "on" : "")">
+                                            <input type="radio" name="jgPickFile" checked="@(_pickedFileId == f.FileId)"
+                                                   @onchange="() => _pickedFileId = f.FileId" />
+                                            <span class="jg-pick-main">
+                                                <span class="jg-pick-name" title="@f.Name">@f.Name</span>
+                                                <span class="jg-pick-meta">@PickMeta(f)</span>
+                                            </span>
+                                        </label>
+                                    }
+                                </div>
+
+                                @* 可选文件（OPTIONAL）：以前全被塞进「历史版本」下拉，玩家以为这个 mod
+                                   只有主包 + 一堆老版本，AT 素材包/补丁压根看不见。单独一节平铺出来，
+                                   和主文件共用同一个单选组 —— 一次只装一个文件，选了它主文件那条自动取消。 *@
+                                @if (PickOptionalFiles.Count > 0)
+                                {
+                                    <div class="jg-pick-cap">@Loc.T("可选文件")</div>
+                                    <div class="jg-pick-list jg-pick-sm">
+                                        @foreach (var f in PickOptionalFiles)
+                                        {
+                                            <label class="jg-pick-row @(_pickedFileId == f.FileId ? "on" : "")">
+                                                <input type="radio" name="jgPickFile" checked="@(_pickedFileId == f.FileId)"
+                                                       @onchange="() => _pickedFileId = f.FileId" />
+                                                <span class="jg-pick-main">
+                                                    <span class="jg-pick-name" title="@f.Name">@f.Name</span>
+                                                    <span class="jg-pick-meta">@PickMeta(f)</span>
+                                                </span>
+                                            </label>
+                                        }
+                                    </div>
+                                }
+
+                                @if (PickMoreFiles.Count > 0)
+                                {
+                                    var histPicked = PickMoreFiles.FirstOrDefault(f => f.FileId == _pickedFileId);
+                                    <div class="jg-pick-cap">@PickMoreLabel</div>
+                                    @* 原生 &lt;select&gt; 的下拉列表由系统绘制：圆角/字体/配色全都不受主题控制，
+                                       深浅色切换时它永远是那副白底方角长相（用户反馈「这个下拉框不行」）。
+                                       换成站内那套 .jg-sort-dd（mod 管理的排序、存档下拉同款）：
+                                       药丸触发按钮 + 弹性展开的玻璃菜单，颜色全走 token。 *@
+                                    <div class="jg-sort-dd jg-pick-vdd @(_pickVddOpen ? "open" : "")" id="jgPickVdd">
+                                        <button type="button" class="jg-sort-trigger jg-pick-vdd-btn"
+                                                @onclick="TogglePickVdd">
+                                            <span class="jg-pick-vdd-t @(histPicked is null ? "jg-pick-vdd-ph" : "")">
+                                                @(histPicked is null
+                                                    ? PickMorePlaceholder
+                                                    : $"{histPicked.Name} · {(string.IsNullOrWhiteSpace(histPicked.Version) ? Loc.T("无版本号") : "v" + histPicked.Version)}")
+                                            </span>
+                                            <svg class="jg-sort-arrow" width="12" height="12" viewBox="0 0 12 12" fill="none">
+                                                <path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+                                            </svg>
+                                        </button>
+                                        <div class="jg-sort-menu">
+                                            <div class="jg-sort-menu-in">
+                                                @foreach (var hf in PickMoreFiles)
+                                                {
+                                                    var h = hf;
+                                                    <button type="button"
+                                                            class="jg-sort-item @(_pickedFileId == h.FileId ? "active" : "")"
+                                                            @onclick="() => PickHistoryFile(h.FileId)">
+                                                        @h.Name · @(string.IsNullOrWhiteSpace(h.Version) ? Loc.T("无版本号") : "v" + h.Version)
+                                                    </button>
+                                                }
+                                            </div>
+                                        </div>
+                                    </div>
+                                    @* 菜单展开时铺一层透明遮罩：点弹窗里别处就收回。
+                                       必须常驻 DOM 且 z-index 压到菜单下面（全局是 9000，会盖住菜单）。 *@
+                                    <div class="jg-dd-overlay @(_pickVddOpen ? "open" : "")" data-dd="pick"
+                                         @onclick="ClosePickVdd"></div>
+                                }
+                            }
+
+                            <div class="jg-pick-actions">
+                                <button class="jg-pick-btn" @onclick="ClosePicker">@Loc.T("取消")</button>
+                                <button class="jg-pick-btn primary" @onclick="InstallPicked"
+                                        disabled="@(_pickedFileId <= 0 || _pickBusy)">
+                                    @(_pickBusy ? Loc.T("处理中…") : Loc.T("下载并安装"))
+                                </button>
+                            </div>
+                        </div>
+                    </div>
                 }
 
             @* ─── v0.69.5：三项手风琴（多开不互关 / 平滑展开 / 超长内部滚动且标题吸顶）─── *@
@@ -255,6 +366,92 @@
                         </div>
                     </div>
                 </div>
+                @* ─── v1.3.5：04 Files —— 这个 mod 的全部文件（CP 主包 / AT 素材包 / 旧版本 / 杂项），
+                   每一条都能单独安装。顶部的「安装」按钮会先弹版本选择，这里则是「看见某条就直接装」。 ─── *@
+                <div class="jg-acc @(_openAccs.Contains(4) ? "open" : "")" id="jgAcc4">
+                    <div class="jg-acc-inner">
+                        <button class="jg-acc-head" @onclick="ToggleFilesAcc">
+                            <span class="jg-acc-no">04</span><span class="jg-acc-name">Files@(_files is { Count: > 0 } ? $" ({_files.Count})" : "")</span>
+                            <svg class="jg-acc-arrow" width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                        </button>
+                        <div class="jg-acc-body">
+                            @if (_filesLoading)
+                            {
+                                <div class="jg-shimmer" style="height:16px;border-radius:5px;margin:4px 0"></div>
+                                <div class="jg-shimmer" style="height:16px;border-radius:5px;margin:4px 0;width:60%"></div>
+                            }
+                            else if (_filesFailed)
+                            {
+                                <span style="opacity:.65">@Loc.T("文件列表拉取失败，")</span><button class="jg-linklike" @onclick="() => _ = LoadFilesAsync()">@Loc.T("重试")</button>
+                                <span style="opacity:.45"> · </span><button class="jg-linklike" @onclick="OpenPage">@Loc.T("到官网查看")</button>
+                            }
+                            else if (_files is null || _files.Count == 0)
+                            {
+                                <span style="opacity:.6">@Loc.T("这个 mod 没有可下载的文件。")</span>
+                            }
+                            else
+                            {
+                                @foreach (var g in FileGroups())
+                                {
+                                    <div class="jg-file-cat">
+                                        <span>@g.Label</span><span class="jg-file-cat-n">@g.Items.Count</span>
+                                    </div>
+                                    <div class="jg-file-table">
+                                        @foreach (var f in g.Items)
+                                        {
+                                            <div class="jg-file-row">
+                                                <div class="jg-file-main">
+                                                    <span class="jg-file-name" title="@f.Name">@f.Name</span>
+                                                    <span class="jg-file-meta">
+                                                        @(string.IsNullOrWhiteSpace(f.Version) ? Loc.T("无版本号") : "v" + f.Version)
+                                                        · @FormatBytes(f.Size)
+                                                        @if (f.UploadedTs > 0) { <text> · @FileDate(f.UploadedTs)</text> }
+                                                    </span>
+                                                </div>
+                                                <div class="jg-file-actions">
+                                                    @if (ModId != InstallService.SmapiNexusId)
+                                                    {
+                                                        @* 装过的那条按钮直接变「已安装」并禁用 —— 状态挂在按钮上，
+                                                           比在文件名后面挂一枚绿色小标更好扫。 *@
+                                                        if (IsInstalledFile(f.FileId))
+                                                        {
+                                                            <button class="jg-mini-btn jg-file-btn-done" disabled
+                                                                    data-tip='@Loc.T("这个文件已经装进 Mods 了")'>@Loc.T("已安装")</button>
+                                                        }
+                                                        else
+                                                        {
+                                                            <button class="jg-mini-btn jg-file-btn-main"
+                                                                    disabled="@(_fileBusyId is not null)"
+                                                                    data-tip='@Loc.T("解压装进 Mods 目录并登记，装完即可生效")'
+                                                                    aria-label='@Loc.T("安装这个文件到 Mods 目录")'
+                                                                    @onclick="() => InstallFile(f)">
+                                                                @(_fileBusyId == f.FileId ? Loc.T("处理中…") : Loc.T("安装"))
+                                                            </button>
+                                                        }
+                                                    }
+                                                </div>
+                                            </div>
+                                        }
+                                    </div>
+                                }
+                                @if (HiddenFileCount > 0 || _showAllFiles)
+                                {
+                                    <div style="margin-top:10px">
+                                        <button class="jg-file-more" @onclick="() => _showAllFiles = !_showAllFiles">
+                                            @(_showAllFiles
+                                                ? Loc.T("只看主文件与可选文件")
+                                                : Loc.F("显示全部（另有 {0} 个旧版本/杂项）", HiddenFileCount))
+                                        </button>
+                                    </div>
+                                }
+                                @if (_fileMsg is not null)
+                                {
+                                    <div class="jg-dl4-msg" style="margin-top:8px">@_fileMsg</div>
+                                }
+                            }
+                        </div>
+                    </div>
+                </div>
             </div>
             </div>
             <div class="jg-dl4-right">
@@ -404,6 +601,91 @@
     private List<NexusTranslationItem>? _translations;
     private List<NexusChangelog>? _changelogs;
 
+    // ─── v1.3.5：04 Files 文件列表 ───
+    /// <summary>这个 mod 的全部文件（MAIN/OPTIONAL/OLD_VERSION/MISCELLANEOUS）。
+    /// 懒加载：手风琴第一次展开才去拉 files.json —— 详情页首屏不为一个折叠区多付一次请求。</summary>
+    private List<NexusFileInfo>? _files;
+    private bool _filesLoading;
+    private bool _filesFailed;
+    /// <summary>正在处理的那一条（安装/下载中），用于禁用按钮并显示「处理中…」。
+    /// 单条串行：同时点两条会开两个隐藏窗口排队，不如让用户等这一条完。</summary>
+    private long? _fileBusyId;
+    private string? _fileMsg;
+
+    // ─── 版本选择弹窗（顶部「安装」先选文件再下）───
+    private bool _pickOpen;
+    private bool _pickBusy;
+    /// <summary>「历史版本」下拉是否展开（站内 .jg-sort-dd，和 mod 管理的存档/排序下拉同一套）。</summary>
+    private bool _pickVddOpen;
+    /// <summary>弹窗里当前选中的 fileId（主文件单选与历史版本下拉共用这一个状态）。</summary>
+    private long _pickedFileId;
+
+    /// <summary>主文件区：有 MAIN 就全列出来（CP/AT 这种并行发布很常见），一条都没有
+    /// 就退化成「上传时间最新的那一条」—— 有些老 mod 压根没标 MAIN。</summary>
+    private List<NexusFileInfo> PickPrimaryFiles
+    {
+        get
+        {
+            if (_files is null || _files.Count == 0) return new();
+            var mains = _files.Where(f => string.Equals(f.Category, "MAIN", StringComparison.OrdinalIgnoreCase)).ToList();
+            if (mains.Count > 0) return mains;
+            var newest = _files.MaxBy(f => f.UploadedTs);
+            return newest is null ? new() : new List<NexusFileInfo> { newest };
+        }
+    }
+
+    private string PickPrimaryLabel => _files is { Count: > 0 }
+        && _files.Any(f => string.Equals(f.Category, "MAIN", StringComparison.OrdinalIgnoreCase))
+        ? LocService.Tr("主文件")
+        : LocService.Tr("最新文件");
+
+    /// <summary>可选文件 = 除主文件区之外、N 网标成 OPTIONAL 的那些（补丁 / 素材包 / 配置文件）。
+    /// 原先它们和旧版本混在同一个下拉里，弹窗看上去只有「主文件 + 历史版本」两节，
+    /// 玩家根本不知道这个 mod 还有别的包可选。</summary>
+    private List<NexusFileInfo> PickOptionalFiles
+    {
+        get
+        {
+            if (_files is null || _files.Count == 0) return new();
+            var shown = PickPrimaryFiles.Select(f => f.FileId).ToHashSet();
+            return _files.Where(f => !shown.Contains(f.FileId)
+                    && string.Equals(f.Category, "OPTIONAL", StringComparison.OrdinalIgnoreCase))
+                .ToList();
+        }
+    }
+
+    /// <summary>下拉里的「更多文件」= 主文件区 / 可选文件区都没列出的其余全部
+    /// （旧版本 / 更新补丁 / 杂项）。这些要么是几十条历史包，要么是边缘文件，平铺太占地方。</summary>
+    private List<NexusFileInfo> PickMoreFiles
+    {
+        get
+        {
+            if (_files is null || _files.Count == 0) return new();
+            var shown = PickPrimaryFiles.Concat(PickOptionalFiles).Select(f => f.FileId).ToHashSet();
+            return _files.Where(f => !shown.Contains(f.FileId)).ToList();
+        }
+    }
+
+    /// <summary>下拉标题：清一色 OLD_VERSION 就叫「历史版本」，混了补丁/杂项就叫「更多文件」。</summary>
+    private string PickMoreLabel => PickMoreFiles.Count > 0
+        && PickMoreFiles.All(f => string.Equals(f.Category, "OLD_VERSION", StringComparison.OrdinalIgnoreCase))
+            ? LocService.Tr("历史版本")
+            : LocService.Tr("更多文件");
+
+    private string PickMorePlaceholder => PickMoreFiles.Count > 0
+        && PickMoreFiles.All(f => string.Equals(f.Category, "OLD_VERSION", StringComparison.OrdinalIgnoreCase))
+            ? LocService.Tr("选择历史版本")
+            : LocService.Tr("选择文件");
+
+    private string PickMeta(NexusFileInfo f)
+    {
+        var ver = string.IsNullOrWhiteSpace(f.Version) ? LocService.Tr("无版本号") : "v" + f.Version;
+        var size = FormatBytes(f.Size);
+        return f.UploadedTs > 0
+            ? $"{ver} · {size} · {FileDate(f.UploadedTs)}"
+            : $"{ver} · {size}";
+    }
+
     // 本地已装的 mod 全集（用于依赖匹配）
     private IReadOnlyList<ModEntry> _localMods = Array.Empty<ModEntry>();
     /// <summary>v1.1.6：规整后的描述 HTML（取数时算一次；模板直接用，渲染不再重跑正则）。</summary>
@@ -462,6 +744,12 @@
         _requirements = null;
         _translations = null;
         _changelogs = null;
+        _files = null;
+        _filesLoading = false;
+        _filesFailed = false;
+        _showAllFiles = false;
+        _fileBusyId = null;
+        _fileMsg = null;
         _installMsg = null;
 
         if (!NexusService.IsAuthenticated)
@@ -666,7 +954,7 @@
                 // 打开文件页这件事已经在 InstallService.PremiumNeedsWebFallback 里做过了
                 // （那样任务面板的「↻ 重试」和「重新发起」两条路也才会开）—— 这里再开一次
                 // 就是两个标签页。
-                _installMsg = LocService.Tr("这个 mod 需要 Premium 才能直装 —— 已为你打开系统浏览器，点 Mod Manager Download 即可自动安装");
+                _installMsg = LocService.Tr("应用内没能自动取到下载链接（可能未登录 Nexus 网页）—— 已为你打开系统浏览器，点 Mod Manager Download 即可自动安装");
             }
             else if (err is "已取消" or "已暂停")
             {
@@ -685,6 +973,117 @@
         finally
         {
             _installing = false;
+        }
+    }
+
+    /// <summary>顶部「安装」→ 先弹版本选择，不再闷头抓「最新 MAIN」。
+    /// <para>为什么改：一个 mod 经常并行发布 CP 主包 / AT 素材包，两条都是 MAIN，
+    /// 「最新」只差几秒，装错的那条用户看不出来；而旧流程一旦取链失败，用户对着
+    /// 一颗按钮只能反复点，也不知道问题出在文件选择还是下载。</para></summary>
+    private async Task OpenVersionPicker()
+    {
+        if (_mod is null || _pickOpen) return;
+        if (!NexusService.IsAuthenticated)
+        {
+            _installMsg = LocService.Tr("请先在「设置 → Nexus」里填入 API key 才能一键安装");
+            return;
+        }
+        if (!Cfg.Current.EnableOneClickInstall)
+        {
+            // 一键安装关着 → 直接给官网文件页，用户自己在浏览器点
+            MainWindow.OpenNexusOverlay($"https://www.nexusmods.com/stardewvalley/mods/{ModId}?tab=files");
+            return;
+        }
+
+        _pickOpen = true;
+        _pickedFileId = 0;
+        _pickVddOpen = false;   // 上次是带着展开的下拉关掉的，重开时别让它自己弹着
+        StateHasChanged();
+
+        // 复用 04 Files 的懒加载（同一次请求，开过手风琴就不再发）
+        if (_files is null) await LoadFilesAsync();
+
+        var primary = PickPrimaryFiles;
+        _pickedFileId = primary.Count > 0 ? primary[0].FileId
+            : _files is { Count: > 0 } ? _files[0].FileId : 0;
+        StateHasChanged();
+    }
+
+    private void ClosePicker()
+    {
+        if (_pickBusy) return;   // 下载中不让误关
+        if (_pickVddOpen) _ = ClosePickVdd();
+        _pickOpen = false;
+    }
+
+    /// <summary>历史版本下拉：开合走站内 dropdownToggle（GSAP 弹性动画 + 遮罩配对）。</summary>
+    private async Task TogglePickVdd()
+    {
+        _pickVddOpen = !_pickVddOpen;
+        try { await JS.InvokeVoidAsync("junigridJs.dropdownToggle", "#jgPickVdd", _pickVddOpen); } catch { }
+        // 向下展开会掉出弹窗/窗口时整块翻到触发按钮上方（同素材包弹窗那条 fitPkVar）
+        if (_pickVddOpen)
+        {
+            try { await JS.InvokeVoidAsync("junigridJs.fitPickVdd"); } catch { }
+        }
+    }
+
+    private async Task ClosePickVdd()
+    {
+        if (!_pickVddOpen) return;
+        _pickVddOpen = false;
+        try { await JS.InvokeVoidAsync("junigridJs.dropdownToggle", "#jgPickVdd", false); } catch { }
+    }
+
+    /// <summary>下拉里点某条历史/可选文件即以它为准（覆盖上方主文件单选）。
+    /// 想换回主文件就点上面那排单选 —— 那个才是主文件的选择器。</summary>
+    private async Task PickHistoryFile(long fileId)
+    {
+        if (fileId > 0) _pickedFileId = fileId;
+        await ClosePickVdd();
+    }
+
+    /// <summary>弹窗里的「下载并安装」：指定 fileId 走完整安装管线。</summary>
+    private async Task InstallPicked()
+    {
+        if (_pickBusy || _pickedFileId <= 0) return;
+        var f = _files?.FirstOrDefault(x => x.FileId == _pickedFileId);
+        if (f is null) return;
+
+        _pickBusy = true;
+        _installMsg = LocService.Tr("正在下载并安装…（大文件需要一点时间）");
+        StateHasChanged();
+        try
+        {
+            var err = await Installer.InstallModDirectAsync(ModId, f.FileId, f.Name);
+            if (err is null)
+            {
+                _installMsg = null;
+                _scanCache = null;
+                _installedFolder ??= ModSvc.Scan(Cfg.Current.GamePath)
+                    .FirstOrDefault(m => m.NexusModId == ModId)?.Folder;
+                _overlayInstalled = _installedFolder is null
+                    && ModService.OverlayAppliedForMod(Cfg.Current.GamePath, Cfg.Current, ModId);
+                await RefreshSmapiStateAsync(freshRead: true);
+                _pickOpen = false;
+            }
+            else if (err is "已取消" or "已暂停")
+            {
+                _installMsg = err == "已暂停" ? LocService.Tr("任务已暂停，可在任务中心继续") : null;
+            }
+            else
+            {
+                _installMsg = LocService.Tr("安装失败：") + err;
+            }
+        }
+        catch (Exception ex)
+        {
+            _installMsg = LocService.Tr("失败：") + ex.Message;
+        }
+        finally
+        {
+            _pickBusy = false;
+            StateHasChanged();
         }
     }
 
@@ -811,8 +1210,8 @@
                 if (!_depTried.Add(uid)) continue;
                 // 本详情页这个 mod 就是它的父包：先拿官网 Requirements 认（作者手填、带 modId），
                 // 认不出来才降级到全站搜索猜。
-                var info = await Installer.ResolveDependencyDisplayAsync(uid, new[] { ModId });
-                if (info is not null)
+                var res = await Installer.ResolveDependencyDisplayAsync(uid, new[] { ModId });
+                if (res.Status == InstallService.DependencyResolveStatus.Found && res.Info is { } info)
                 {
                     _depDisplay[uid] = info;
                     await InvokeAsync(StateHasChanged);
@@ -872,6 +1271,141 @@
         if (opening) _openAccs.Add(n); else _openAccs.Remove(n);
         _pendingAnimAcc = n; _pendingAnimOpening = opening;   // DOM 更新后在 OnAfterRenderAsync 播 GSAP
     }
+
+    // ══════════════════════════════════════════════════════════════════
+    // v1.3.5：04 Files —— 文件列表（挑文件装 / 只下载）
+    // ══════════════════════════════════════════════════════════════════
+    /// <summary>一组文件（按 N 网类别分）。Label 已本地化。</summary>
+    private sealed record FileGroup(string Label, List<NexusFileInfo> Items);
+
+    /// <summary>旧版本/杂项默认收起 —— 有的 mod 挂着几十个历史文件，全铺开会把
+    /// 真正想装的 CP/AT 两条挤到看不见。</summary>
+    private bool _showAllFiles;
+
+    private void ToggleFilesAcc()
+    {
+        ToggleAcc(4);
+        // 首次展开才拉 —— 失败也不自动重试，交给区里的「重试」按钮
+        if (_openAccs.Contains(4) && _files is null && !_filesLoading) _ = LoadFilesAsync();
+    }
+
+    private async Task LoadFilesAsync()
+    {
+        if (_filesLoading) return;
+        _filesLoading = true;
+        _filesFailed = false;
+        StateHasChanged();
+        try
+        {
+            var list = await NexusApi.GetAllFilesAsync(ModId);
+            if (list is null) { _filesFailed = true; _files = new(); }
+            else _files = list;
+        }
+        catch
+        {
+            _filesFailed = true;
+            _files = new();
+        }
+        finally
+        {
+            _filesLoading = false;
+            StateHasChanged();
+        }
+    }
+
+    /// <summary>按类别分组，空组不显示。顺序由 <c>GetAllFilesAsync</c> 的排序决定，
+    /// 这里只做「连续同类别聚在一起」，不重新排序（保住上传时间倒序）。</summary>
+    private List<FileGroup> FileGroups()
+    {
+        var groups = new List<FileGroup>();
+        if (_files is null) return groups;
+        foreach (var f in _files)
+        {
+            if (!_showAllFiles && IsArchivedCat(f.Category)) continue;
+            var label = FileCatLabel(f.Category);
+            var g = groups.FirstOrDefault(x => x.Label == label);
+            if (g is null) { g = new FileGroup(label, new List<NexusFileInfo>()); groups.Add(g); }
+            g.Items.Add(f);
+        }
+        return groups;
+    }
+
+    /// <summary>旧版本 / 杂项 —— 折叠时跳过。</summary>
+    private static bool IsArchivedCat(string cat) => (cat ?? "").ToUpperInvariant()
+        is "OLD_VERSION" or "MISCELLANEOUS";
+
+    /// <summary>被「显示全部」藏起来的文件数（0 = 不用显示那个开关）。</summary>
+    private int HiddenFileCount => _showAllFiles || _files is null
+        ? 0 : _files.Count(f => IsArchivedCat(f.Category));
+
+    /// <summary>N 网的文件类别名 → 界面文字。CP 主包 / AT 素材包这类区别在【文件名字】里
+    /// （作者自己写的），类别只有 MAIN/OPTIONAL/OLD_VERSION/MISCELLANEOUS 四种，别混为一谈。</summary>
+    private static string FileCatLabel(string cat) => (cat ?? "").ToUpperInvariant() switch
+    {
+        "MAIN" => LocService.Tr("主文件"),
+        "OPTIONAL" => LocService.Tr("可选文件"),
+        "OLD_VERSION" => LocService.Tr("旧版本"),
+        "MISCELLANEOUS" => LocService.Tr("其他"),
+        _ => LocService.Tr("未分类"),
+    };
+
+    private static string FileDate(long unixTs) =>
+        DateTimeOffset.FromUnixTimeSeconds(unixTs).ToLocalTime().ToString("yyyy-MM-dd");
+
+    /// <summary>这一条文件本机装过没有。
+    /// <para><b>第一步先看磁盘</b>：这个 mod 现在必须在本地（Mods 里扫到它，或是 overlay 覆盖式安装）。
+    /// 光看记账会出一个很显眼的错 —— <c>ModFileLastDownload</c> 只增不减，用户在 Mods 里删掉
+    /// 这个 mod 之后，详情页每条文件仍然挂着「已安装」（2026-11-04 用户截图就是这个）。</para>
+    /// <para><b>第二步看 <c>ModInstalledFile</c></b>：一个 mod 常有 CP / AT 好几个包，先装 AT
+    /// 再换 CP，流水账里两条都在，但真正生效的只有最后那条。老数据没这个键 → 回落到流水账。</para></summary>
+    private bool IsInstalledFile(long fileId)
+    {
+        if (_installedFolder is null && !_overlayInstalled) return false;
+
+        var cur = Cfg.Current.ModInstalledFile.GetValueOrDefault(ModId.ToString());
+        if (!string.IsNullOrEmpty(cur)) return cur == fileId.ToString();
+
+        return Cfg.Current.ModFileLastDownload.ContainsKey(fileId.ToString());
+    }
+
+    private async Task InstallFile(NexusFileInfo f)
+    {
+        if (_fileBusyId is not null) return;
+        if (!Cfg.Current.EnableOneClickInstall)
+        {
+            OpenPage();
+            return;
+        }
+        _fileBusyId = f.FileId;
+        _fileMsg = LocService.Tf("正在安装 {0}…", f.Name);
+        StateHasChanged();
+        try
+        {
+            // 指定 fileId —— 装的就是列表里这一条，不是「最新 MAIN」
+            var err = await Installer.InstallModDirectAsync(ModId, f.FileId, f.Name);
+            if (err is null)
+            {
+                _scanCache = null;   // 磁盘变了，本地扫描缓存立即失效
+                _installedFolder ??= ModSvc.Scan(Cfg.Current.GamePath)
+                    .FirstOrDefault(m => m.NexusModId == ModId)?.Folder;
+                _overlayInstalled = _installedFolder is null
+                    && ModService.OverlayAppliedForMod(Cfg.Current.GamePath, Cfg.Current, ModId);
+                _fileMsg = LocService.Tf("已安装 {0}", f.Name);
+                await RefreshSmapiStateAsync(freshRead: true);
+            }
+            else if (err is "已取消" or "已暂停")
+                _fileMsg = err == "已暂停" ? LocService.Tr("任务已暂停，可在任务中心继续") : null;
+            else
+                _fileMsg = LocService.Tr("安装失败：") + err;
+        }
+        catch (Exception ex) { _fileMsg = LocService.Tr("失败：") + ex.Message; }
+        finally
+        {
+            _fileBusyId = null;
+            StateHasChanged();
+        }
+    }
+
     private static void OpenExt(string url) => UpdateService.OpenUrl(url);
 
     /// <summary>把详情富文本里写死的灰色文字颜色改成继承色，避免暗色模式下看不清。</summary>

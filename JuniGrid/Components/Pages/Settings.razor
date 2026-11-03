@@ -171,7 +171,7 @@
             {
                 var accent = a.Key == "system" ? SystemHex : a.Accent;
                 var cur = Cfg.Current.Accent == a.Key;
-                <button class="jg-accent-card @(cur ? "cur" : "")" data-key="@a.Key" @onclick="() => SetAccent(a.Key)">
+                <button class="jg-accent-card @(cur ? "cur" : "")" data-key="@a.Key" @onclick="(e) => SetAccent(a.Key, e)">
                     <span class="jg-accent-mock" style="@($"--mock-accent:{accent}")">
                         <span class="jg-mock-bar"></span>
                         <span class="jg-mock-dot @(cur ? "on" : "")"></span>
@@ -190,7 +190,7 @@
 
         <div style="display:flex;gap:8px;margin-top:8px">
             <button type="button" class="jg-path-btn" @onclick="Pick">@Loc.T("浏览...")</button>
-            <button type="button" class="jg-path-btn" @onclick="AutoDetect">@Loc.T("自动检测")</button>
+            <button type="button" class="jg-path-btn" @onclick="AutoDetect" disabled="@_detecting">@Loc.T("自动检测")</button>
             <button type="button" class="jg-path-btn primary" @onclick="Save">@Loc.T("保存")</button>
         </div>
 
@@ -524,6 +524,16 @@
                     <img class="jg-sponsor-qr"
                          src="@(_sponsorWechat ? "assets/sponsor-wechat.jpg" : "assets/sponsor-alipay.jpg")"
                          alt="@(_sponsorWechat ? Loc.T("微信赞赏码") : Loc.T("支付宝收款码"))" />
+                    @* 备注提示 + 问号说明（与弹窗同一套文案），放在二维码下方 *@
+                    <p class="jg-sponsor-note">
+                        @Loc.T("请备注 QQ 或者微信号")
+                        <span class="jg-help-tip jg-help-tip--right">
+                            <span class="jg-help-tip-btn">?</span>
+                            <span class="jg-help-tip-bubble">@Loc.T("10元以上可以添加作者微信/QQ 并添加JuniGrid交流群 可抢先体验最新版JuniGrid或者新Mod")</span>
+                        </span>
+                    </p>
+                    @* 付完才发现忘了写备注：换成加好友二维码，凭备注把赞助的人认回来 *@
+                    <button type="button" class="jg-sponsor-forgot" @onclick="OpenForgotQr">@Loc.T("忘记备注")</button>
                 </div>
             </div>
         </div>
@@ -554,6 +564,22 @@
             <div class="jg-modal-actions">
                 <button class="jg-path-btn" data-modal-close @onclick="CancelClean">@Loc.T("取消")</button>
                 <button class="jg-path-btn primary" @onclick="DoConfirm">@ConfirmOkLabel</button>
+            </div>
+        </div>
+    </div>
+}
+
+@* 关于页的「忘记备注」：只有一张加好友二维码 + 一个关闭按钮 —— 不参与启动弹窗那套三屏流程 *@
+@if (_showForgotQr)
+{
+    <div class="jg-dlg-overlay" @onclick="CloseForgotQr">
+        <div class="jg-sponsor-panel" role="dialog" aria-modal="true" aria-label='@Loc.T("请用微信扫码")' @onclick:stopPropagation>
+            <h3 class="jg-sponsor-heading jg-sponsor-heading--center">@Loc.T("请用微信扫码")</h3>
+            <div class="jg-sponsor-qr-shell">
+                <img class="jg-sponsor-qr-img" src="assets/sponsor-wechat-friend.jpg" alt='@Loc.T("微信二维码")' />
+            </div>
+            <div class="jg-sponsor-actions jg-sponsor-actions--center">
+                <button type="button" class="jg-sponsor-btn solid" @onclick="CloseForgotQr">@Loc.T("关闭")</button>
             </div>
         </div>
     </div>
@@ -601,24 +627,36 @@
         ("violet",    "紫罗兰", "Violet",    "#7c3aed"),
     };
 
-    private async Task SetAccent(string key)
+    private async Task SetAccent(string key, MouseEventArgs e)
     {
         var c = Cfg.Current;
         if (string.Equals(c.Accent, key, StringComparison.OrdinalIgnoreCase)) return;
         c.Accent = key;
         Cfg.Save(c);
+
+        // 先让选中描边落到新卡片上（下一次渲染批次），再让 JS 拍「旧画面」快照 ——
+        // 否则旧快照里描边还在老卡片，波形铺完的瞬间会跳一下。16ms ≈ 一帧。
+        StateHasChanged();
+        await Task.Delay(16);
+
         try
         {
-            var accentHex = await JS.InvokeAsync<string>("junigridJs.applyAccent", key, SystemHex);
+            // 带点击坐标 ⇒ 圆形从按下去的那一点扩散；JS 侧不支持 View Transitions 时自动退化为瞬间切换
+            var accentHex = await JS.InvokeAsync<string>("junigridJs.applyAccentWave",
+                key, SystemHex, e.ClientX, e.ClientY);
             MainWindow.ApplyAccent(accentHex);
         }
         catch { }
-        StateHasChanged();   // 刷新选中态描边
+        StateHasChanged();   // 兜底刷新选中态描边
     }
     private string _nexusName = "";
     private string? _nexusAvatar;
     private bool   _nexusPremium;
     private bool   _sponsorWechat = true;
+    private bool   _showForgotQr;          // 关于页的「忘记备注」二维码弹窗
+
+    private void OpenForgotQr() => _showForgotQr = true;
+    private void CloseForgotQr() => _showForgotQr = false;
 
     private void NexusLogout()
     {
@@ -1413,24 +1451,39 @@
             : LocService.Tr("已保存游戏目录（未检测到 SMAPI，可通过首页「Steam 官方」启动游玩）"));
     }
 
-    private void AutoDetect()
+    private bool _detecting;
+
+    // 探测整体丢线程池（Game.DetectGamePathAsync）：旧版同步跑在渲染线程上，
+    // 一旦碰上没就绪的盘（网络映射盘/拔掉的移动硬盘）整个界面就冻在那儿。
+    private async Task AutoDetect()
     {
-        var detected = Game.DetectGamePath();
-        if (!string.IsNullOrEmpty(detected))
+        if (_detecting) return;
+        _detecting = true;
+        StateHasChanged();
+        try
         {
-            _gamePath = detected;
-            if (IsValidGamePath(detected))
+            var detected = await Game.DetectGamePathAsync(Cfg.Current.SteamAppId, refresh: true);
+            if (!string.IsNullOrEmpty(detected))
             {
-                SaveGamePath();
+                _gamePath = detected;
+                if (IsValidGamePath(detected))
+                {
+                    SaveGamePath();
+                }
+                else
+                {
+                    _ = JS.InvokeVoidAsync("junigridJs.toast", LocService.Tr("检测到目录，但里面没有 Stardew Valley.exe，请手动选择游戏目录"), "err");
+                }
             }
             else
             {
-                _ = JS.InvokeVoidAsync("junigridJs.toast", LocService.Tr("检测到目录，但里面没有 Stardew Valley.exe，请手动选择游戏目录"), "err");
+                _ = JS.InvokeVoidAsync("junigridJs.toast", LocService.Tr("未自动检测到游戏目录，请点「浏览...」手动选择"), "err");
             }
         }
-        else
+        finally
         {
-            _ = JS.InvokeVoidAsync("junigridJs.toast", LocService.Tr("未自动检测到游戏目录，请点「浏览...」手动选择"), "err");
+            _detecting = false;
+            StateHasChanged();
         }
     }
 

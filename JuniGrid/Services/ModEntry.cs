@@ -14,12 +14,16 @@ public sealed class ModEntry
     public int? NexusModId { get; set; }   // from manifest UpdateKeys "Nexus:<id>"
     public string? GitHubRepo { get; set; }  // from manifest UpdateKeys "GitHub:<owner>/<repo>"（免费直下）
     public List<string> Dependencies { get; set; } = new();  // 本 mod 依赖的 UniqueID（含 ContentPackFor 宿主）
-    /// <summary>manifest 里作者标了 IsRequired=false 的依赖：缺了不影响用，不进「缺少依赖」红字，
-    /// 只在行尾给一条可忽略的浅色提示。</summary>
+    /// <summary>manifest 里作者标了 IsRequired=false 的依赖：缺了不进「缺少依赖」红字（缺了也能用），
+    /// 但装着却低于 MinimumVersion 的照样要让依赖方整条 Skipped —— 版本判定与必需依赖同一套。</summary>
     public List<string> OptionalDependencies { get; set; } = new();
     /// <summary>依赖 UID → manifest 声明的 MinimumVersion（只收写了版本的条目）。
     /// 在 SMAPI 那边「装了但版本低于它」等于没装 —— 依赖方整条被 Skipped。</summary>
     public Dictionary<string, string> DependencyMinVersions { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>manifest 声明的 <c>MinimumApiVersion</c>（SMAPI 版本，不是游戏版本）；
+    /// 本机 SMAPI 低于它时 SMAPI 会把这一条整条跳过（实机 2026-10-29：StardewUI 要 4.5.2，
+    /// 实际跑的是 4.5.1）。空 = manifest 没写，不判。</summary>
+    public string? MinApiVersion { get; set; }
     public List<string> ContentPackIds { get; set; } = new(); // 它作为内容包时依赖的宿主 mod UniqueID（合并进 Dependencies 用于缺失检测）
     public bool HasManifest { get; set; } = true;   // false = 该文件夹没有有效 manifest（用文件夹名兜底）
     /// <summary>v0.45.0：分类标签（仿 PCL2），在列表行简介前显示。代码 Mod / 内容包 / 代码·内容包；都不是则为空。</summary>

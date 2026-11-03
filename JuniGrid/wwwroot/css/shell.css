@@ -246,7 +246,208 @@
     background: linear-gradient(135deg, #4465c4, #2f4bb0);
     color: #fff;
     box-shadow: 0 4px 14px rgba(52, 88, 190, 0.35);
-}.jg-dialog-actions .jg-btn.primary:hover { background: linear-gradient(135deg, #5170d4, #3355b8); }.jg-remark-dialog { text-align: left; }.jg-remark-title { font-size: 15px; font-weight: 700; color: var(--jg-text); margin-bottom: 4px; }.jg-remark-mod { font-size: 12.5px; color: var(--jg-text-3); margin-bottom: 12px; word-break: break-all; }.jg-remark-input {
+}.jg-dialog-actions .jg-btn.primary:hover { background: linear-gradient(135deg, #5170d4, #3355b8); }/* ── 「启动 N 次」赞助弹窗：两屏（文案 / 收款码），版式参照 React Bits Stepper ── */
+.jg-sponsor-panel {
+    position: relative;
+    width: 420px;
+    max-width: calc(100% - 48px);
+    box-sizing: border-box;
+    padding: 28px 26px 22px;
+    border-radius: 24px;
+    background: var(--jg-card);
+    border: 1px solid var(--jg-line);
+    box-shadow: 0 30px 70px -26px rgba(0, 0, 0, 0.55), 0 10px 24px -14px rgba(0, 0, 0, 0.4);
+    animation: jg-sponsor-pop 320ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+@keyframes jg-sponsor-pop {
+    from { opacity: 0; transform: translateY(14px) scale(0.88); }
+    to { opacity: 1; transform: none; }
+}/* 切屏的高度弹簧（"小窗长大窗"）保留，但把新一屏的入场压到弹簧到位之后：
+   弹簧约 150ms 就冲到目标高度（还过冲一点），那时框已经不小于内容，
+   内容再浮现就绝不会出现"按钮被裁掉下半截"。触发时机在 junigrid.ui.js 的 sponsorMorph。
+   —— 入场动画必须由 JS 在弹簧起跑那一刻加类名，不能在渲染时就播：
+      二维码图片解码要几十毫秒，早了就是"矮框里先出现内容"。 */
+.jg-sponsor-viewport {
+    position: relative;
+    overflow: visible;      /* 平时不裁：问号气泡要能探出面板 */
+}
+/* 只管住动画期间：收缩时旧屏比框高，不裁会溢到卡片外面 */
+.jg-sponsor-viewport.jg-sponsor-morph {
+    overflow: clip;
+}
+.jg-sponsor-pane {
+    min-width: 0;
+}
+/* 首开（没有离场层）时自己淡入；换屏时这一屏先隐身，等 JS 来叫 */
+.jg-sponsor-pane:not(.jg-sponsor-pane--waiting) {
+    animation: jg-sponsor-pane-in 240ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+/* 换屏等待期：隐身；万一段 JS 没跑到，900ms 后自动露出，不会留下一张空白卡片 */
+.jg-sponsor-pane--waiting {
+    opacity: 0;
+    animation: jg-sponsor-wait 1ms linear 900ms forwards;
+}
+@keyframes jg-sponsor-wait {
+    to { opacity: 1; }
+}
+/* 离场屏垫在下面淡出：绝对定位，不参与高度计算（淡出动画由 JS 加 inline 触发，
+   避免 Blazor 重渲染把类名冲掉） */
+.jg-sponsor-pane--leaving {
+    position: absolute;
+    top: 0;
+    right: 0;
+    left: 0;
+    pointer-events: none;
+}
+@keyframes jg-sponsor-pane-in {
+    from { opacity: 0; transform: translateX(16px); }
+    to { opacity: 1; transform: none; }
+}
+@keyframes jg-sponsor-pane-out {
+    to { opacity: 0; }
+}.jg-sponsor-panel::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    pointer-events: none;
+}.jg-sponsor-stage {
+    min-width: 0;
+}
+@keyframes jg-sponsor-stage-in {
+    from { opacity: 0; transform: translateX(28px); }
+    to { opacity: 1; transform: none; }
+}.jg-sponsor-kicker {
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    color: var(--jg-text-3);
+}.jg-sponsor-heading {
+    margin: 8px 0 10px;
+    font-size: 20px;
+    line-height: 1.35;
+    font-weight: 800;
+    color: var(--jg-text);
+}/* 第三屏「请用微信扫码」：没有上面的 kicker/tabs，标题自己居中并带一点上边距 */
+.jg-sponsor-heading--center {
+    margin: 4px 0 16px;
+    text-align: center;
+}.jg-sponsor-copy {
+    margin: 0;
+    font-size: 13.5px;
+    line-height: 1.8;
+    color: var(--jg-text-2);
+}.jg-sponsor-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-top: 24px;
+}/* 第三屏只有两个按钮，居中排比两端拉开更像收尾而不是被挤到边上 */
+.jg-sponsor-actions--center {
+    justify-content: center;
+    gap: 14px;
+}.jg-sponsor-btn {
+    height: 40px;
+    padding: 0 18px;
+    border: 0;
+    border-radius: 12px;
+    font: inherit;
+    font-size: 13.5px;
+    font-weight: 650;
+    cursor: pointer;
+    transition: transform 0.16s ease, filter 0.16s ease, background 0.16s ease, color 0.16s ease;
+}.jg-sponsor-btn:active { transform: scale(0.97); }.jg-sponsor-btn.ghost {
+    background: var(--jg-well);
+    color: var(--jg-text-2);
+}.jg-sponsor-btn.ghost:hover { background: var(--jg-hover-strong); color: var(--jg-text); }.jg-sponsor-btn.solid {
+    background: var(--jg-ink);
+    color: var(--jg-on-ink);
+    box-shadow: 0 8px 20px -10px rgba(0, 0, 0, 0.55);
+}.jg-sponsor-btn.solid:hover { filter: brightness(1.08); }.jg-sponsor-tabs {
+    display: flex;
+    justify-content: center;
+    gap: 8px;
+    margin: 2px 0 18px;
+}.jg-sponsor-tab-btn {
+    min-width: 108px;
+    height: 40px;
+    padding: 0 20px;
+    border: 1px solid var(--jg-line-strong);
+    border-radius: 999px;
+    background: transparent;
+    color: var(--jg-text-2);
+    font: inherit;
+    font-size: 13.5px;
+    font-weight: 650;
+    cursor: pointer;
+    transition: background 0.18s ease, color 0.18s ease, border-color 0.18s ease;
+}.jg-sponsor-tab-btn:hover { border-color: var(--jg-line-heavy); }.jg-sponsor-tab-btn.active {
+    background: var(--jg-ink);
+    border-color: var(--jg-outline);
+    color: var(--jg-on-ink);
+}.jg-sponsor-qr-shell {
+    width: 236px;
+    margin: 0 auto;
+    padding: 10px;
+    border: 1px solid rgba(0, 0, 0, 0.06);
+    border-radius: 18px;
+    background: #fff;
+    box-shadow: 0 14px 34px -16px rgba(0, 0, 0, 0.5);
+}.jg-sponsor-qr-shell.jg-qr-anim {
+    animation: jg-qr-in 340ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}.jg-sponsor-qr-shell.jg-qr-anim[data-dir="left"] {
+    animation-name: jg-qr-in-left;
+}
+@keyframes jg-qr-in {
+    from { opacity: 0; transform: translateX(22px); }
+    to { opacity: 1; transform: none; }
+}
+@keyframes jg-qr-in-left {
+    from { opacity: 0; transform: translateX(-22px); }
+    to { opacity: 1; transform: none; }
+}.jg-sponsor-qr-img {
+    display: block;
+    width: 100%;
+    height: auto;
+    border-radius: 10px;
+}.jg-sponsor-tip {
+    margin: 12px 0 0;
+    text-align: center;
+    font-size: 12.5px;
+    color: var(--jg-text-2);
+}.jg-sponsor-tip .jg-help-tip {
+    margin-left: 4px;
+    vertical-align: -3px;
+}.jg-sponsor-divider {
+    height: 1px;
+    margin: 18px 4px 10px;
+    background: var(--jg-line);
+}.jg-sponsor-or-row {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    font-size: 12.5px;
+    color: var(--jg-text-3);
+}.jg-sponsor-afdian {
+    padding: 2px 0;
+    border: 0;
+    background: none;
+    font: inherit;
+    font-size: 12.5px;
+    font-weight: 650;
+    color: var(--jg-text);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+    cursor: pointer;
+}.jg-sponsor-afdian:hover { color: var(--jg-accent); }.jg-sponsor-btn:focus-visible,
+.jg-sponsor-tab-btn:focus-visible,
+.jg-sponsor-afdian:focus-visible {
+    outline: 2px solid var(--jg-text);
+    outline-offset: 2px;
+}.jg-remark-dialog { text-align: left; }.jg-remark-title { font-size: 15px; font-weight: 700; color: var(--jg-text); margin-bottom: 4px; }.jg-remark-mod { font-size: 12.5px; color: var(--jg-text-3); margin-bottom: 12px; word-break: break-all; }.jg-remark-input {
     width: 100%; box-sizing: border-box;
     padding: 9px 12px; border-radius: 9px;
     border: 1px solid var(--jg-line-strong); background: var(--jg-well); color: var(--jg-text);
