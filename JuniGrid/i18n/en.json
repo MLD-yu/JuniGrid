@@ -1174,5 +1174,12 @@
   "已取消删除：{0} 个已删除，其余已还原": "Delete canceled: {0} removed, the rest restored",
   "{0} 个删除失败": "{0} failed to delete",
   "「{0}」里有文件正被占用": "Files in “{0}” are in use",
-  "上一次删除还没结束": "The previous delete hasn't finished yet"
+  "上一次删除还没结束": "The previous delete hasn't finished yet",
+  "上一批删除还在后台进行，请等它结束": "The previous batch is still being deleted in the background — wait for it to finish",
+  "{0} 个 mod": "{0} mods",
+  "「{0}」": "“{0}”",
+  "已放进后台移入回收站：{0}": "Moving to trash in the background: {0}",
+  "已在后台删除：{0}": "Deleting in the background: {0}",
+  "，界面可以继续用": " — you can keep using the app",
+  "删除中…": "Deleting…"
 }

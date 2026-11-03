@@ -678,126 +678,30 @@ html[data-theme="dark"] .jg-newver:hover:not(:disabled) {
 }
 
 /* ══════════════════════════════════════════════════════════════════
-   v1.3.14：删除进度弹窗（motion.dev 那种细条 + 流光）
-   删除以前是同步调用，整块界面会被钉死十几秒；现在搬到了后台线程，
-   前台必须有东西告诉用户在动 —— 否则"没反应"和"卡死"长得一模一样。
-   颜色全部取自主题变量（--jg-ink / --jg-accent），浅色深色都跟着走，
-   不写死任何一个色值。
+   v1.3.15：删除中（后台删除的行状态）
+   v1.3.14 那个删除进度弹窗已经拆掉 —— 弹窗本身还要 90ms 一次跨线程
+   写 DOM，在下载并行时反过来成了新的卡顿源。现在的交互是：点删除，
+   行变灰并标「删除中…」，用户继续干别的，删完 toast 报一句。
+   颜色全部走主题变量，浅色深色都跟着走。
    ══════════════════════════════════════════════════════════════════ */
-.jg-del-overlay { z-index: 99997; }
-
-.jg-del-modal {
-    width: min(400px, 92vw);
-    position: relative;
-    padding: 20px 22px 18px;
+.jg-modrow-deleting {
+    opacity: .45;
+    pointer-events: none;          /* 行本身点不动：别再让用户选中/展开一个正在消失的包 */
+    filter: saturate(.6);
 }
 
-/* 右上角关闭 = 取消。做成贴边的小圆钮，不抢主标题的视觉 */
-.jg-del-x {
-    position: absolute;
-    top: 12px; right: 12px;
-    width: 26px; height: 26px;
-    display: grid; place-items: center;
-    border: none; border-radius: 8px;
-    background: transparent;
-    color: var(--jg-text-3);
-    cursor: pointer;
-    transition: background 140ms ease, color 140ms ease;
-}
-.jg-del-x:hover { background: var(--jg-hover); color: var(--jg-text); }
-
-.jg-del-title {
-    font-size: 15.5px;
-    font-weight: 700;
-    color: var(--jg-text);
-    padding-right: 26px;
-    word-break: break-word;
-}
-.jg-del-msg {
-    margin-top: 6px;
-    font-size: 12.5px;
-    color: var(--jg-text-3);
-    min-height: 18px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+.jg-tag-deleting {
+    /* 比常规 jg-tag 更弱：它不是分类标签，是"这行正在离开列表"的临时记号 */
+    background: color-mix(in srgb, var(--jg-accent) 14%, transparent);
+    color: var(--jg-accent);
+    animation: jg-del-pulse 1.4s ease-in-out infinite;
 }
 
-/* ── 进度条本体 ── */
-.jg-del-bar {
-    position: relative;
-    height: 7px;
-    margin-top: 16px;
-    border-radius: 999px;
-    background: var(--jg-track);
-    overflow: hidden;
-    /* 轨道里那层极淡的内阴影：让填充看起来"嵌进去"而不是贴了张色纸 */
-    box-shadow: inset 0 1px 2px rgba(0, 0, 0, .06);
-}
-
-.jg-del-fill {
-    height: 100%;
-    width: 0;
-    border-radius: inherit;
-    background: linear-gradient(90deg,
-        color-mix(in srgb, var(--jg-accent) 75%, var(--jg-ink)) 0%,
-        var(--jg-ink) 100%);
-    transition: width 220ms cubic-bezier(.22, .61, .36, 1);
-    position: relative;
-    overflow: hidden;
-    will-change: width;
-}
-
-/* 从填充上扫过的高光 —— motion.dev 那条 bar 的"活气"全在这里 */
-.jg-del-fill::after {
-    content: "";
-    position: absolute;
-    inset: 0;
-    background: linear-gradient(100deg,
-        transparent 25%,
-        color-mix(in srgb, var(--jg-on-ink) 45%, transparent) 50%,
-        transparent 75%);
-    transform: translateX(-100%);
-    animation: jg-del-sheen 1.6s ease-in-out infinite;
-}
-
-@keyframes jg-del-sheen {
-    0%   { transform: translateX(-100%); }
-    55%  { transform: translateX(100%); }
-    100% { transform: translateX(100%); }
-}
-
-/* 总量还没统计出来（或正在取消）：跑一条来回滑的短条，表示"在做，但不知道还剩多少" */
-.jg-del-bar.indet .jg-del-fill {
-    width: 38%;
-    transition: none;
-    animation: jg-del-slide 1.25s cubic-bezier(.65, 0, .35, 1) infinite;
-}
-@keyframes jg-del-slide {
-    0%   { transform: translateX(-105%); }
-    100% { transform: translateX(295%); }
-}
-
-.jg-del-foot {
-    display: flex;
-    justify-content: space-between;
-    align-items: baseline;
-    gap: 12px;
-    margin-top: 9px;
-    font-size: 12px;
-    color: var(--jg-text-3);
-    font-variant-numeric: tabular-nums;   /* 数字跳动时宽度不抖 */
-}
-.jg-del-pct { color: var(--jg-text-2); font-weight: 600; }
-
-/* 取消后按钮转成"正在取消…"的灰态，避免连点 */
-.jg-del-modal .jg-pill-ghost[disabled] {
-    opacity: .55;
-    cursor: default;
+@keyframes jg-del-pulse {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: .45; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-    .jg-del-fill { transition-duration: 1ms; }
-    .jg-del-fill::after { animation: none; }
-    .jg-del-bar.indet .jg-del-fill { animation-duration: 2.4s; }
+    .jg-tag-deleting { animation: none; }
 }

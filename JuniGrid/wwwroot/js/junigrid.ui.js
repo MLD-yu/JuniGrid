@@ -989,30 +989,3 @@ window.junigridJs.sponsorMorph = function () {
         requestAnimationFrame(start);
     });
 };
-
-// ══════════════════════════════════════════════════════════════════
-// v1.3.14：删除进度条 —— 直接写 DOM，不走 Blazor 重渲染。
-// mod 列表上千行，删除期间每秒十几次 StateHasChanged 会把整棵组件树
-// diff 一遍，那本身就是卡顿源。这里只动三个节点：填充宽度、说明行、底部字节数。
-// pct 为 null / 负数 → 不确定态（总量还在统计，或正在取消）。
-// ══════════════════════════════════════════════════════════════════
-window.junigridJs = window.junigridJs || {};
-window.junigridJs.delBar = function (pct, msg, foot) {
-    var bar = document.querySelector('.jg-del-bar');
-    if (!bar) return;                       // 弹窗已关
-    var fill = bar.querySelector('.jg-del-fill');
-    var msgEl = document.querySelector('.jg-del-msg');
-    var footEl = document.querySelector('.jg-del-foot-l');
-    var pctEl = document.querySelector('.jg-del-pct');
-
-    var indet = (pct === null || pct === undefined || isNaN(pct) || pct < 0);
-    if (bar.classList.contains('indet') !== indet) bar.classList.toggle('indet', indet);
-
-    if (fill) {
-        // inline width 会盖掉 .indet 那条 CSS，所以不确定态必须清空它
-        fill.style.width = indet ? '' : (Math.max(0, Math.min(100, pct))).toFixed(1) + '%';
-    }
-    if (pctEl) pctEl.textContent = indet ? '' : Math.round(pct) + '%';
-    if (msgEl && typeof msg === 'string') msgEl.textContent = msg;
-    if (footEl && typeof foot === 'string') footEl.textContent = foot;
-};

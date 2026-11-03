@@ -312,13 +312,15 @@ public sealed partial class InstallService
                     // v1.3.13：md5 抽查。只有 N 网 files.json 给了值才比；
                     // 不符先重下一次（仅一次），两次都不符只记警告、不拦安装 ——
                     // 校验是为了少装坏包，不是为了把原本能装的包拦下来。
+                    // v1.3.15：必须走异步版 —— 这里在 await 续体上（渲染线程），
+                    // 同步算一遍几百 MB 的 md5 就是几百毫秒的整界面冻结。
                     var md5Second = DownloadIntegrity.Md5Verdict.Skipped;
-                    if (DownloadIntegrity.CheckMd5(zip, file.Md5) == DownloadIntegrity.Md5Verdict.Mismatch)
+                    if (await DownloadIntegrity.CheckMd5Async(zip, file.Md5, ct) == DownloadIntegrity.Md5Verdict.Mismatch)
                     {
                         Step(LocService.Tr("文件校验值不符，重新下载一次…"), 8, 0);
                         try { File.Delete(zip); } catch { }
                         await _nexus.DownloadFileAsync(dl.Url, zip, progress, ct, dl.Mirrors);
-                        md5Second = DownloadIntegrity.CheckMd5(zip, file.Md5);
+                        md5Second = await DownloadIntegrity.CheckMd5Async(zip, file.Md5, ct);
                     }
 
                     // 下完先按文件头验一次：取链那几层偶尔会把网页静态资源当直链

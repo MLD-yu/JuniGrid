@@ -192,6 +192,45 @@ public class ModDeleteTests
         finally { TryKill(game); }
     }
 
+    /// <summary>
+    /// v1.3.15：<b>调用点必须立刻返回</b>。
+    /// <para>
+    /// 现在的交互是"点删除 → 立刻 toast 一句 → 界面继续用"，没有进度弹窗了。
+    /// 这条契约完全建立在 <see cref="ModDeleteService.DeleteAsync"/> 不在调用线程上
+    /// 干活这一点上：它一旦退化成同步，Blazor 的 <c>@onclick</c> 就会被钉在
+    /// <c>Directory.Move</c> / <c>File.Delete</c> 上 —— 界面照样冻住，只是这次冻在
+    /// 删除而不是下载。
+    /// </para>
+    /// <para>
+    /// 2000 个文件是有意选的量级：整棵树的实际删除在这台机器上要几百毫秒到一秒，
+    /// 与 150ms 的判定线拉得开，不会因为 CI 抖动误报。真正同步的实现等不到这一行。
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task DeleteAsync_Does_Not_Block_The_Caller_Thread()
+    {
+        var game = NewGame();
+        try
+        {
+            var mod = Path.Combine(game, "Mods", "HugeMod");
+            for (var i = 0; i < 2000; i++)
+                WriteFile(Path.Combine(mod, "d" + (i % 40), "f" + i + ".bin"), 64);
+
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var task = ModDeleteService.DeleteAsync(game, ["HugeMod"], toTrash: false,
+                cfg: null, progress: null, CancellationToken.None);
+            var callCost = sw.ElapsedMilliseconds;
+
+            Assert.True(callCost < 150, $"DeleteAsync 的调用点阻塞了 {callCost}ms —— 它必须在后台跑");
+
+            var r = await task;
+            Assert.Equal(1, r.Deleted);
+            Assert.False(r.AnyFailed);
+            Assert.False(Directory.Exists(mod));
+        }
+        finally { TryKill(game); }
+    }
+
     private static void TryKill(string dir)
     {
         try { if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true); } catch { }

@@ -149,6 +149,9 @@ public partial class MainWindow : Window
             SegmentDownloader.EnabledHook = () => configService.Current.SegmentDownload;
             SegmentDownloader.LanesHook = () => configService.Current.SegmentDownloadLanes;
 
+            // v1.3.15：卡顿探针 —— 只在日志里留痕，不影响任何业务
+            StartUiJankProbe();
+
             // v1.2.7：默认缓存落点已从 %TEMP%\JuniGrid 改成安装目录 —— "配置里那一栏空着"的含义
             // 变了，所以必须先把历史默认位置里的东西搬过来，WebView2 才能定地址（它只能在
             // 初始化之前搬）。搬不动的 webview2 会写进 PendingWebView2MoveFrom，下面的待搬链
@@ -536,6 +539,35 @@ public partial class MainWindow : Window
     private bool _dropHooked;
     private IntPtr _dropTargetProp;          // 我们注册后 OLE 写在主窗上的 target 指针
     private System.Windows.Threading.DispatcherTimer? _dropWatch;
+
+    // ---- v1.3.15：UI 卡顿探针 ----
+    // 用户报「下载/删除时卡死」时，肉眼和截图都定位不到是哪一段在占渲染线程。
+    // 这里挂一个 200ms 的 DispatcherTimer：两次回调间隔一旦明显超标，就说明
+    // 这中间有同步活把 UI 线程占住了，直接把 gap 写进日志。
+    // 成本是每秒 5 次空回调（微秒级）；Warn 只进内存缓冲，不同步落盘。
+    private System.Windows.Threading.DispatcherTimer? _jankProbe;
+    private long _jankLastTick;
+    private const int JankTickMs = 200;
+    private const int JankReportMs = 450;    // 超过两拍才算卡，别把 GC 抖动当卡顿
+
+    private void StartUiJankProbe()
+    {
+        if (_jankProbe is not null) return;
+        _jankLastTick = Environment.TickCount64;
+        _jankProbe = new System.Windows.Threading.DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(JankTickMs),
+        };
+        _jankProbe.Tick += (_, _) =>
+        {
+            var now = Environment.TickCount64;
+            var gap = now - _jankLastTick;
+            _jankLastTick = now;
+            if (gap >= JankReportMs)
+                AppLog.Warn("Perf", $"UI 线程被占住 {gap}ms（前一条 Perf/Download 日志就是嫌疑段）");
+        };
+        _jankProbe.Start();
+    }
 
     /// <summary>WebView2 初始化完成后调用：摘掉它的 OLE 拖放目标，换上我们的。</summary>
     private void HookLocalPackDrop(Microsoft.Web.WebView2.Wpf.WebView2CompositionControl webView)
