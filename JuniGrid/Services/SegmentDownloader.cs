@@ -69,7 +69,17 @@ public static class SegmentDownloader
         try { total = await ProbeAsync(http, url, ct).ConfigureAwait(false); }
         catch (OperationCanceledException) { throw; }
         catch { return false; }                       // 探测失败 → 当不支持，别赌
-        if (total < MinTotalBytes) return false;
+        if (total <= 0)
+        {
+            AppLog.Info("Download", $"分片未启用：服务器不支持 Range host={SafeHost(url)}");
+            return false;
+        }
+        if (total < MinTotalBytes)
+        {
+            AppLog.Info("Download", $"分片未启用：文件只有 {ResumableDownload.FormatBytes(total)}，"
+                                    + $"小于 {ResumableDownload.FormatBytes(MinTotalBytes)} host={SafeHost(url)}");
+            return false;
+        }
 
         lanes = (int)Math.Min(lanes, Math.Max(1, total / MinBytesPerLane));
         if (lanes < 2) return false;
@@ -142,6 +152,8 @@ public static class SegmentDownloader
             File.Move(part, destPath, overwrite: true);
             report($"正在下载（{lanes} 线并行）… {ResumableDownload.FormatBytes(total)} / "
                    + ResumableDownload.FormatBytes(total), 100, 0);
+            // 实机排查用：分片到底有没有生效，只有这行日志说得清（签名直链只记 host，不落 key）
+            AppLog.Info("Download", $"分片下载完成：{lanes} 线 {ResumableDownload.FormatBytes(total)} host={SafeHost(url)}");
             return true;
         }
         catch (OperationCanceledException)
@@ -149,12 +161,17 @@ public static class SegmentDownloader
             try { File.Delete(part); } catch { }
             throw;
         }
-        catch
+        catch (Exception ex)
         {
             try { File.Delete(part); } catch { }
+            AppLog.Warn("Download", $"分片放弃，回落单连接：{ex.Message} host={SafeHost(url)}");
             return false;                             // 让调用方走单连接
         }
     }
+
+    /// <summary>日志里只留主机名 —— 直链带一次性 key，整条打进去等于留了个可重放的口令。</summary>
+    private static string SafeHost(string url)
+        => Uri.TryCreate(url, UriKind.Absolute, out var u) ? u.Host : "?";
 
     /// <summary>探一次：服务器认不认 Range、这个文件到底多大。
     /// 用 <c>bytes=0-0</c> 只要 1 字节，比 HEAD 可靠（部分 CDN 不实现 HEAD）。
