@@ -1012,7 +1012,7 @@
                 </div>
                 <div class="jg-modal-actions">
                     <button type="button" class="jg-pill-ghost" @onclick="CancelDeleteTrash">@Loc.T("取消")</button>
-                    <button type="button" class="jg-pill-danger" @onclick="ConfirmDeleteTrash">@Loc.T("永久删除")</button>
+                    <button type="button" class="jg-pill-danger" @onclick="ConfirmDeleteTrashAsync">@Loc.T("永久删除")</button>
                 </div>
             </div>
         </div>
@@ -1316,7 +1316,7 @@
             _pendingRestoreName = conflicting.DisplayName;
             return;
         }
-        DoRestore(picked, overwrite: false);
+        _ = DoRestoreAsync(picked, overwrite: false);
     }
 
     private void CancelRestoreTrash() => _pendingRestore = null;
@@ -1325,19 +1325,25 @@
     {
         var picked = _pendingRestore;
         _pendingRestore = null;
-        if (picked is not null) DoRestore(picked, overwrite: true);
+        if (picked is not null) _ = DoRestoreAsync(picked, overwrite: true);
     }
 
-    private void DoRestore(List<TrashItem> picked, bool overwrite)
+    private async Task DoRestoreAsync(List<TrashItem> picked, bool overwrite)
     {
         var game = Cfg.Current.GamePath;
         if (string.IsNullOrWhiteSpace(game)) return;
-        var failed = 0;
-        foreach (var it in picked)
+        // v1.3.15：还原也是"把整棵目录搬回 Mods"的重活，几个大包就是几秒的
+        // Directory.Move —— 站在渲染线程上同样会冻界面。整段丢线程池。
+        var failed = await Task.Run(() =>
         {
-            var err = TrashService.Restore(game, it, null, overwrite);
-            if (err is not null) { failed++; AppLog.Warn("Trash", err); }
-        }
+            var bad = 0;
+            foreach (var it in picked)
+            {
+                var err = TrashService.Restore(game, it, null, overwrite);
+                if (err is not null) { bad++; AppLog.Warn("Trash", err); }
+            }
+            return bad;
+        });
         if (failed > 0) AppLog.Warn("Trash", $"[还原] {failed} 份失败");
         _trashSelected.Clear();
         LoadTrash();
@@ -1358,14 +1364,16 @@
 
     private void CancelDeleteTrash() => _pendingTrashDelete = null;
 
-    private void ConfirmDeleteTrash()
+    private async Task ConfirmDeleteTrashAsync()
     {
         var picked = _pendingTrashDelete;
         _pendingTrashDelete = null;
         if (picked is null) return;
         var game = Cfg.Current.GamePath;
         if (string.IsNullOrWhiteSpace(game)) return;
-        var failed = TrashService.DeletePermanently(game, picked);
+        // v1.3.15：永久删除回收站里几 GB 的包，同步跑就是整界面钉死。
+        // 弹窗关掉立刻返回，删完刷新列表 —— 与主列表的删除保持同一套体感。
+        var failed = await Task.Run(() => TrashService.DeletePermanently(game, picked));
         if (failed > 0) AppLog.Warn("Trash", $"[永久删除] {failed} 份失败");
         _trashSelected.Clear();
         LoadTrash();
