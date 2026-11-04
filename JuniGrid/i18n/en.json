@@ -1,4 +1,4 @@
-﻿{
+{
   "游戏版本管理": "Game Version Manager",
   "已锁定": "Locked",
   "未锁定": "Unlocked",
@@ -1181,5 +1181,8 @@
   "已放进后台移入回收站：{0}": "Moving to trash in the background: {0}",
   "已在后台删除：{0}": "Deleting in the background: {0}",
   "，界面可以继续用": " — you can keep using the app",
-  "删除中…": "Deleting…"
+  "删除中…": "Deleting…",
+  "正在删除：{0}…": "Deleting {0}…",
+  "正在移入回收站：{0}…": "Moving {0} to the recycle bin…",
+  "下载在后台继续，可在任务中心查看": "The download continues in the background — open the task center to follow it"
 }

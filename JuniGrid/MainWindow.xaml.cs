@@ -557,7 +557,10 @@ public partial class MainWindow : Window
     private System.Windows.Threading.DispatcherTimer? _jankProbe;
     private long _jankLastTick;
     private const int JankTickMs = 200;
-    private const int JankReportMs = 450;    // 超过两拍才算卡，别把 GC 抖动当卡顿
+    // v1.3.18：450 → 300。450 只抓得到"整段冻住"，而用户报的"发木"其实是
+    // 一连串 300~400ms 的小卡，每一拍都够让你在按下按钮的那一下丢掉反馈。
+    // 低到 300 又不会把 GC 抖动当卡顿。
+    private const int JankReportMs = 300;
 
     private void StartUiJankProbe()
     {

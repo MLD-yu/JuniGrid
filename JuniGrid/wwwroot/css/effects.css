@@ -502,3 +502,38 @@
 
 /* v0.55.0：深色模式下 hero 依然深底 */
 
+
+/* ══════════════════════════════════════════════════════════════════
+   v1.3.18：常驻「进行中」胶囊（删除这类后台任务用）
+   与 toast 同落点、同配色（accent 底白字），只多一个圆环：
+   1.5s 一圈、linear、不停顿 —— 取 motion.dev loading bar 例子的节奏。
+   颜色全部走主题令牌，浅色/深色都跟着 accent 走。
+   ══════════════════════════════════════════════════════════════════ */
+.jg-toast-live.jg-busy {
+    display: inline-flex;
+    align-items: center;
+    gap: 9px;
+    pointer-events: none;      /* 它只是状态显示，绝不能拦住下面那一层 */
+}
+
+.jg-busy-spin {
+    width: 15px;
+    height: 15px;
+    flex: 0 0 auto;
+    box-sizing: border-box;
+    border-radius: 50%;
+    /* 圆环用半透明白压 accent 底，转起来那一段是实白 —— 深色浅色两种主题都看得清 */
+    border: 2px solid color-mix(in srgb, currentColor 30%, transparent);
+    border-top-color: currentColor;
+    animation: jg-busy-spin 1.5s linear infinite;
+    will-change: transform;
+}
+
+@keyframes jg-busy-spin {
+    to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    /* 晕动敏感的人不该被一个永远转的圆圈逼着看，放慢到几乎静止 */
+    .jg-busy-spin { animation-duration: 4s; }
+}

@@ -487,6 +487,15 @@ window.junigridJs.tiltPerspective = function (selector, opts) {
             overlay.__modalAllow = true;
             target.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
             overlay.__modalAllow = false;
+            // v1.3.18 兜底：重派发这一击只要被处理器拒了（下载中 return 之类），
+            // 遮罩就带着 .closing 留在 DOM 里 —— 退场动画是 fill:both，opacity 已是 0，
+            // 肉眼看不见，但它 position:fixed 铺满整窗、照样吃指针事件，
+            // 于是整页点什么都没反应（实测 12:50 用户连点遮罩三次都没关掉）。
+            // 这里只掐指针事件，不动节点：真被挡住的时候页面至少还能用。
+            setTimeout(function () {
+                if (document.body.contains(overlay) && overlay.classList.contains("closing"))
+                    overlay.classList.add("jg-modal-stale");
+            }, 400);
         }, OUT_MS);
     }, true);
 })();
@@ -1015,3 +1024,59 @@ window.junigridJs.clickProbe = function () {
         } catch (err) { }
     }, true);
 };
+
+// ══════════════════════════════════════════════════════════════════
+// v1.3.18：常驻「进行中」胶囊。
+// 删除挪到后台之后，界面不再有任何"它还在跑"的痕迹 —— 用户只能等一个
+// 不知道会不会来的 toast。这里补一个：转圈 + 文案，一直挂着，删除真的
+// 结束（成功/失败都算）才收走。
+// 视觉与 toast 同落点同配色（accent 底白字），只多一个 1.5s 一圈的圆环，
+// 节奏照 motion.dev 那个 loading bar 例子取（linear、匀速、不停顿）。
+// ══════════════════════════════════════════════════════════════════
+(function () {
+    var el = null;
+
+    function drop(node) {
+        if (!node) return;
+        if (window.gsap) {
+            gsap.to(node, {
+                y: -10, opacity: 0, duration: 0.22, ease: 'power2.in',
+                onComplete: function () { if (node.parentNode) node.parentNode.removeChild(node); }
+            });
+        } else if (node.parentNode) {
+            node.parentNode.removeChild(node);
+        }
+    }
+
+    window.junigridJs.busyPill = function (msg) {
+        try {
+            if (!el) {
+                el = document.createElement('div');
+                el.className = 'jg-toast-live jg-busy';
+                el.setAttribute('role', 'status');
+                el.setAttribute('aria-live', 'polite');
+
+                var sp = document.createElement('span');
+                sp.className = 'jg-busy-spin';
+
+                var txt = document.createElement('span');
+                txt.className = 'jg-busy-text';
+
+                el.appendChild(sp);
+                el.appendChild(txt);
+                document.body.appendChild(el);
+
+                if (window.gsap) {
+                    gsap.fromTo(el, { y: 12, opacity: 0, scale: 0.96 },
+                        { y: 0, opacity: 1, scale: 1, duration: 0.28, ease: 'back.out(2)' });
+                }
+            }
+            var t = el.querySelector('.jg-busy-text');
+            if (t) t.textContent = msg || '';
+        } catch (e) { /* 胶囊失败不影响删除本身 */ }
+    };
+
+    window.junigridJs.busyPillHide = function () {
+        try { var node = el; el = null; drop(node); } catch (e) { }
+    };
+})();

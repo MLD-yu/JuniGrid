@@ -3559,13 +3559,19 @@
     private void QueueRescan()
     {
         if (_disposed) return;
+        // v1.3.18：安装/下载进行中直接不扫。
+        // 解压是往 Mods 里连写成百上千个文件，watcher 每 120ms 就能凑满一次合并窗口
+        // ⇒ 每一轮都是一次全盘 ModSvc.Scan（磁盘枚举）+ ReindexMods + 整页 StateHasChanged。
+        // 装一个中等大小的包能让这个列表每秒重画好几遍，体感就是"边下边发木"。
+        // 装完 Installer.OnChanged 会补一次完整重扫，所以这里丢掉事件不丢数据。
+        if (Installer.Busy) return;
         if (Interlocked.Exchange(ref _pendingRescan, 1) == 1) return;
         _ = InvokeAsync(async () =>
         {
             try
             {
                 await Task.Delay(120);   // 合并窗口：120ms 内的连续事件只触发一次
-                if (_disposed) return;
+                if (_disposed || Installer.Busy) return;   // 等这 120ms 的工夫可能已经开始装了
                 RescanAndRestate();
             }
             finally { Interlocked.Exchange(ref _pendingRescan, 0); }
@@ -3716,7 +3722,13 @@
                     ("磁盘扫描", ElapsedMs(__t) - __rehome));
                 if (_disposed || DepotDownloaderService.IsApplyInProgress) return;
                 Rescan(scanned);
+                // v1.3.18：整页 diff 也记账。列表上千行时它自己就是一段可观的渲染线程
+                // 占用，[Perf] 只说"被占住 N ms"，不知道是谁占的 —— 这里补上主体。
+                var __t3 = System.Diagnostics.Stopwatch.GetTimestamp();
                 StateHasChanged();
+                var __render = ElapsedMs(__t3);
+                if (__render >= 120)
+                    ModsPerf($"重渲染 {_mods.Count} 项", ("StateHasChanged", __render));
                 if (!_bgRescanQueued) return;
             }
         }
@@ -3959,32 +3971,46 @@
         foreach (var f in folders) _deleting.Add(f);
         StateHasChanged();
 
-        ShowNotice("ok",
-            (toTrash ? LocService.Tf("已放进后台移入回收站：{0}", label)
-                     : LocService.Tf("已在后台删除：{0}", label))
-            + LocService.Tr("，界面可以继续用"));
+        // v1.3.18：原来那句 toast 2.3 秒就没了，删一个几 GB 的包却要十几秒 ——
+        // 用户盯着一个空界面不知道还在不在跑。换成常驻胶囊：圆环一直转、文案写清
+        // 删的是谁，删除真的结束（成功或失败）才收走。
+        _ = JS.InvokeVoidAsync("junigridJs.busyPill",
+            toTrash ? LocService.Tf("正在移入回收站：{0}…", label)
+                    : LocService.Tf("正在删除：{0}…", label));
 
+        var kind = "ok";
+        var msg = "";
         try
         {
             var res = await ModDeleteService.DeleteAsync(
                 Cfg.Current.GamePath, folders, toTrash, Cfg, null, CancellationToken.None);
 
             if (res.AnyFailed)
-                ShowNotice("err", res.FirstError ?? LocService.Tf("{0} 个删除失败", res.Failed));
+            {
+                kind = "err";
+                msg = res.FirstError ?? LocService.Tf("{0} 个删除失败", res.Failed);
+            }
             else
-                ShowNotice("ok", toTrash
+            {
+                msg = toTrash
                     ? LocService.Tf("已移入回收站 {0} 个 mod", res.Deleted)
-                    : LocService.Tf("已删除 {0} 个 mod", res.Deleted));
+                    : LocService.Tf("已删除 {0} 个 mod", res.Deleted);
+            }
         }
         catch (Exception ex)
         {
-            ShowNotice("err", ex.Message);
+            kind = "err";
+            msg = ex.Message;
         }
         finally
         {
             foreach (var f in folders) _deleting.Remove(f);
             Interlocked.Exchange(ref _delRunning, 0);
+            // 先收胶囊。它和结果 toast 是同一个固定落点，同时在场会叠成一坨。
+            try { _ = JS.InvokeVoidAsync("junigridJs.busyPillHide"); } catch { }
         }
+
+        ShowNotice(kind, msg);
 
         ClearSelection();
         RescanAndRestate();

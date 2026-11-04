@@ -185,6 +185,17 @@
     .jg-modal-overlay:not(:has(.jg-ver-modal)),
     .jg-modal:not(.jg-ver-modal),
     .jg-modal-overlay.closing .jg-modal { animation-duration: 1ms; }
+}
+/* v1.3.18：关不掉的遮罩。
+   关闭那一击先由 junigrid.ui.js 演 180ms 退场，再把点击重派发给 Blazor。
+   处理器一旦拒绝（例如下载中不许关），遮罩就以 .closing 停在 DOM 里：
+   opacity 已经是 0，看不见，却仍然 fixed 铺满整窗、照样吃点击 ——
+   "整个页面点什么都没反应"就是这个。JS 会补上这个类，把指针事件掐掉。 */
+.jg-modal-overlay.jg-modal-stale {
+    pointer-events: none !important;
+}
+.jg-modal-overlay.jg-modal-stale > * {
+    pointer-events: none !important;
 }/* v0.2.1：内存管理 —— 摘要条 + 占用小卡 + 滑杆行 */
 .jg-mem-line {
     padding: 9px 12px;

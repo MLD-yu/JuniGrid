@@ -1011,7 +1011,19 @@
 
     private void ClosePicker()
     {
-        if (_pickBusy) return;   // 下载中不让误关
+        // v1.3.18：这里以前是 `if (_pickBusy) return;` —— 下载中不许关弹窗。
+        // 但关闭那一击是先被 junigrid.ui.js 的退场动画拦下的：它给遮罩挂上
+        // .closing（180ms 播完 opacity 已经是 0），再把点击重派发过来。处理器
+        // 一 return，遮罩就永远留在 DOM 里：看不见，却还是 position:fixed
+        // 铺满整窗、照样吃指针事件 —— 表现就是「整个页面点什么都没反应」。
+        // 下载本身早已在任务中心的后台管线里跑，关掉弹窗不会中断它，所以放行。
+        if (_pickBusy)
+        {
+            _pickOpen = false;
+            _ = JS.InvokeVoidAsync("junigridJs.toast",
+                LocService.Tr("下载在后台继续，可在任务中心查看"), "ok");
+            return;
+        }
         if (_pickVddOpen) _ = ClosePickVdd();
         _pickOpen = false;
     }
