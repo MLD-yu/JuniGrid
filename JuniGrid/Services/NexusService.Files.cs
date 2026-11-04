@@ -44,8 +44,12 @@ public sealed partial class NexusService
             var cat = f.TryGetProperty("category_name", out var fc) ? fc.GetString() ?? "" : "";
             var ts = f.TryGetProperty("uploaded_timestamp", out var ft) ? ft.GetInt64() : 0;
             // v1.04.0：主文件大小（字节）—— 详情页统计行「大小」用；缺失按 0 处理（详情页照样显示 0 B）
-            var size = f.TryGetProperty("size", out var fz) && fz.ValueKind == JsonValueKind.Number
-                && fz.TryGetInt64(out var szl) ? szl : 0;
+            // v1.3.x：N 网 files.json 的 size 字段单位是 KB 不是字节（KB 的显示成 B、MB 的显示成 KB，整体缩水 1024 倍）。
+            // 优先读新字段 size_in_bytes（真字节）；老响应只有 size，按 KB × 1024 换算。
+            long size = f.TryGetProperty("size_in_bytes", out var zb) && zb.ValueKind == JsonValueKind.Number
+                && zb.TryGetInt64(out var zbl) ? zbl
+                : f.TryGetProperty("size", out var fz) && fz.ValueKind == JsonValueKind.Number
+                && fz.TryGetInt64(out var szl) ? szl * 1024 : 0;
             // v1.3.13：md5 —— N 网自己算的，下完拿它对一遍。缺/空 → null，校验那一步直接跳过
             var md5 = f.TryGetProperty("md5", out var fm) ? fm.GetString() : null;
             if (string.IsNullOrWhiteSpace(md5) || md5.Length != 32) md5 = null;

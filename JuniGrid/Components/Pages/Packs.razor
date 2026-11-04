@@ -844,24 +844,55 @@
         PackThumbService.Changed += OnThumbsChanged;
         PageRefresh.OnRefresh += OnPageRefresh;
         _dotNetRef = DotNetObjectReference.Create(this);
+        // v1.3.16：原来这里同步干三件扫盘的事（搬老库存 / 回填版本戳 / 清理无主副本目录）。
+        // 第三条 PruneUnreferencedStores 要把整个 asset-packs 走一遍，包多时是秒级起步 ——
+        // 而 OnInitialized 是构造组件的地方，它跑完之前浏览器连骨架屏都画不出来。
+        // 全部挪到 OnAfterRenderAsync 首渲染之后的 Task.Run 里（见那边 PrepareStoreOnDisk），
+        // 顺序不变：先收拾盘上的账，再 Reload。
+    }
+
+    /// <summary>进页第一次要做的盘上家务。只在后台线程调用，绝不可回到渲染线程上跑。</summary>
+    private void PrepareStoreOnDisk()
+    {
+        var gp = GamePath;
+        if (string.IsNullOrWhiteSpace(gp)) return;
         // 老位置（C 盘配置目录）的覆盖库存搬进游戏目录旁的 JuniGrid 文件夹 ——
         // 幂等，只有第一次真搬；搬不动只记日志，界面照常。
-        if (!string.IsNullOrWhiteSpace(GamePath))
+        try { ContentOverrideService.MigrateLegacyStore(gp); } catch { }
+        // 老账没有版本戳 → 先按"原版实际躺在哪一层"补上，界面才分得出哪个包属于哪一版；
+        // 顺手丢掉没有记录引用的副本目录（每次写盘都换新随机 id，历史上攒下过 39 个无主的）。
+        try { ContentOverrideService.BackfillVersions(Cfg, gp); } catch { }
+        try { ContentOverrideService.PruneUnreferencedStores(Cfg, gp); } catch { }
+    }
+
+    /// <summary>
+    /// v1.3.16：账本重读一律走这里 —— <see cref="Reload"/> 里要做的事（账本重建、扫 asset-packs、
+    /// 逐张对象卡算封面源）在包多的机器上是<b>十几秒</b>级的，而它有十个调用点曾经直接站在
+    /// <c>@onclick</c>/<c>await</c> 续体上，也就是 Blazor 的渲染线程。
+    /// <para>实测 2026-11-04 12:33:52 → 12:34:08：进内容包页一次卡住 <b>16094ms</b>，
+    /// 期间连日志都写不出来（[Perf] 探针只挤出一行 16 秒）。</para>
+    /// <para>算完再回渲染线程刷一次，骨架屏/旧内容在算的过程中是能点的。</para>
+    /// </summary>
+    private async Task ReloadAsync()
+    {
+        await Task.Run(() =>
         {
-            try { ContentOverrideService.MigrateLegacyStore(GamePath); } catch { }
-            // 老账没有版本戳 → 先按"原版实际躺在哪一层"补上，界面才分得出哪个包属于哪一版；
-            // 顺手丢掉没有记录引用的副本目录（每次写盘都换新随机 id，历史上攒下过 39 个无主的）。
-            try { ContentOverrideService.BackfillVersions(Cfg, GamePath); } catch { }
-            try { ContentOverrideService.PruneUnreferencedStores(Cfg, GamePath); } catch { }
-        }
-        // 账本重读【不】在这里跑：OnInitialized 同步跑完之前浏览器连骨架屏都画不出来，
-        // 人只会看到整页空白卡住（盖满一个 1554 张表的包时一次 Reload 是秒级）。
-        // 挪到 OnAfterRenderAsync 首渲染之后 —— 先让骨架屏落地，再算账。
+            try { Reload(); }
+            catch (Exception ex) { AppLog.Warn("Packs", "后台重读账本失败：" + ex.Message); }
+        });
+        if (_disposed) return;
+        StateHasChanged();
     }
 
     private void Reload()
     {
+        // v1.3.16：分段计时。这个方法整段跑在调用方的线程上（历史上多数是渲染线程），
+        // 慢到 200ms 以上就把各段耗时写进日志 —— 下次再卡，能直接指到是哪一步吃的秒数。
+        var swAll = System.Diagnostics.Stopwatch.StartNew();
+        long msRebuild = 0, msGroups = 0, msTargets = 0, msAudit = 0, msThumbs = 0;
+
         var gp = GamePath;
+        var swStep = System.Diagnostics.Stopwatch.StartNew();
         // 账上一条没记、盘上却躺着原包 ⇒ 先把账认回来再列。判据（三方对得上才认、对不上就点名）
         // 与"绝不从 Content 抄原版"的纪律见 RebuildFromDisk；正常情况 NeedsRebuild 直接 false。
         if (!string.IsNullOrWhiteSpace(gp))
@@ -876,6 +907,9 @@
             }
             catch (Exception ex) { AppLog.Warn("ContentOverride", "[账本重建] 失败：" + ex.Message); }
         }
+        msRebuild = swStep.ElapsedMilliseconds;
+
+        swStep.Restart();
         _all = string.IsNullOrWhiteSpace(gp)
             ? new List<ContentOverrideService.PackGroup>()
             : ContentOverrideService.Groups(gp, Cfg);
@@ -883,6 +917,9 @@
             ? ""
             : ContentOverrideService.OriginalVersionSegment(gp);
         _groups = _all.Where(VerMatch).ToList();
+        msGroups = swStep.ElapsedMilliseconds;
+
+        swStep.Restart();
         if (string.IsNullOrWhiteSpace(gp))
             _targets = new List<ContentOverrideTargets.TargetGroup>();
         else
@@ -898,6 +935,9 @@
             };
             _targets = ContentOverrideTargets.Build(Cfg, r => ver(r) && shown(r));
         }
+        msTargets = swStep.ElapsedMilliseconds;
+
+        swStep.Restart();
         // 「全部还原」从来不分版本，所以它该不该按得看过滤前的数 ——
         // 只看这一屏的话，别的版本桶里在位的图会让按钮一直灰着。
         _inPlace = _all.Sum(g => g.Items.Count(r => r.Enabled));
@@ -908,11 +948,21 @@
         _strays = string.IsNullOrWhiteSpace(gp)
             ? new List<ContentOverrideService.StrayOverride>()
             : ContentOverrideService.Strays(Cfg, gp);
+        msAudit = swStep.ElapsedMilliseconds;
+
+        swStep.Restart();
         _cardSrc.Clear();
         foreach (var t in _targets)
             _cardSrc[t.Key] = ContentOverrideTargets.CardThumbSource(gp, t);
         // 字体以前在这里被整条跳过（图集是单通道遮罩块，纹理解码解不出 ⇒ 只能摆灰 Aa）。
         // 现在 XnbDecoder.TryDecodeFont 能解，字体卡也走同一条出图的路，解不出才回落文字事实。
+        msThumbs = swStep.ElapsedMilliseconds;
+
+        var total = swAll.ElapsedMilliseconds;
+        if (total >= 200)
+            AppLog.Warn("PacksPerf",
+                $"Reload {total}ms | 账本重建={msRebuild}ms 建组={msGroups}ms 对象卡={msTargets}ms "
+                + $"审计={msAudit}ms 封面源={msThumbs}ms | 包={_all.Count} 卡={_targets.Count}");
     }
 
     /// <summary>进页就把全部对象卡的封面排进后台生成 —— 点开就是热的，不一张张后蹦。</summary>
@@ -961,8 +1011,11 @@
         {
             // 首渲染画的是骨架屏；账本重读放到这里，算完才换成真列表。
             // 放在 OnInitialized 里的话，浏览器在它跑完之前什么都画不出来。
+            // v1.3.16：盘上家务（迁移/回填/清无主目录）也搬进这一段同一批做 —— 见 PrepareStoreOnDisk。
             await Task.Run(() =>
             {
+                try { PrepareStoreOnDisk(); }
+                catch (Exception ex) { AppLog.Warn("Packs", "盘上家务失败：" + ex.Message); }
                 try { Reload(); }
                 catch (Exception ex) { AppLog.Warn("Packs", ex.Message); }
             });
@@ -1021,46 +1074,61 @@
     private async Task RefreshAndRejudgeAsync()
     {
         if (_busy || _disposed) return;
-        _busy = true;
-        Reload();
-        StateHasChanged();
-
-        var gp = GamePath;
-        var slots = string.IsNullOrWhiteSpace(gp)
-            ? new List<(string Key, string PackName, int Skipped)>()
-            : ContentOverrideService.SlotsNeedingRejudge(Cfg);
-        var fixedCount = 0;
-        var failed = new List<string>();
-        if (slots.Count > 0)
-            await Task.Run(() =>
-            {
-                // 单个包失败不中断后面的 —— 一个包的原包备份丢了，不该让另外几个也修不成。
-                foreach (var (slot, name, _) in slots)
-                {
-                    try
-                    {
-                        var r = ContentOverrideService.Rejudge(Cfg, gp, slot);
-                        if (r.Error is null) fixedCount += r.NewlyInstalled;
-                        else failed.Add($"{name}：{r.Error}");
-                    }
-                    catch (Exception ex) { failed.Add($"{name}：{ex.Message}"); }
-                }
-            });
-        if (_disposed) return;
-
-        if (slots.Count > 0)
+        // v1.3.16：闸门必须是【进程级】的，不能只看实例字段。
+        // 导航来回会让同一个页面存在两个组件实例，两边的 _busy 互不相干 ——
+        // 实测 2026-11-04 12:34 每个包都被重判了两遍（Villagers 15.952 / 16.406 同一句日志连着两条），
+        // 而重判是要往游戏本体的 Content 里写字节的：两条流水线同时写同一张图，
+        // 轻则白干一遍，重则一半图按 A 判定、一半按 B 判定。
+        if (Interlocked.CompareExchange(ref _rejudgeRunning, 1, 0) != 0) return;
+        try
         {
-            var openSlot = _open?.Slot;
-            Reload();
-            if (openSlot is not null) _open = _groups.FirstOrDefault(g => g.Slot == openSlot);
+            _busy = true;
+            await ReloadAsync();
+
+            var gp = GamePath;
+            var slots = string.IsNullOrWhiteSpace(gp)
+                ? new List<(string Key, string PackName, int Skipped)>()
+                : ContentOverrideService.SlotsNeedingRejudge(Cfg);
+            var fixedCount = 0;
+            var failed = new List<string>();
+            if (slots.Count > 0)
+                await Task.Run(() =>
+                {
+                    // 单个包失败不中断后面的 —— 一个包的原包备份丢了，不该让另外几个也修不成。
+                    foreach (var (slot, name, _) in slots)
+                    {
+                        try
+                        {
+                            var r = ContentOverrideService.Rejudge(Cfg, gp, slot);
+                            if (r.Error is null) fixedCount += r.NewlyInstalled;
+                            else failed.Add($"{name}：{r.Error}");
+                        }
+                        catch (Exception ex) { failed.Add($"{name}：{ex.Message}"); }
+                    }
+                });
+            if (_disposed) return;
+
+            if (slots.Count > 0)
+            {
+                var openSlot = _open?.Slot;
+                await ReloadAsync();
+                if (openSlot is not null) _open = _groups.FirstOrDefault(g => g.Slot == openSlot);
+            }
+            if (fixedCount > 0 || failed.Count > 0)
+                Toast(failed.Count > 0
+                    ? Loc.F("重新检查完成：新增 {0} 个文件，{1} 个包未能重新检查", fixedCount, failed.Count)
+                    : Loc.F("重新检查完成：新增 {0} 个文件", fixedCount));
         }
-        _busy = false;
-        if (fixedCount > 0 || failed.Count > 0)
-            Toast(failed.Count > 0
-                ? Loc.F("重新检查完成：新增 {0} 个文件，{1} 个包未能重新检查", fixedCount, failed.Count)
-                : Loc.F("重新检查完成：新增 {0} 个文件", fixedCount));
-        StateHasChanged();
+        finally
+        {
+            _busy = false;
+            Interlocked.Exchange(ref _rejudgeRunning, 0);
+            if (!_disposed) StateHasChanged();
+        }
     }
+
+    /// <summary>进程级重判闸门：0 = 没人跑，1 = 有一条流水线正在写 Content。</summary>
+    private static int _rejudgeRunning;
 
     // ───────────────────── 视图切换 / 筛选 / 搜索 ─────────────────────
 
@@ -1070,11 +1138,11 @@
     /// <summary>切版本桶。分类 chips 是渲染期过滤，版本桶是 <c>Reload</c> 里过滤的
     /// （对象视图也要跟着换桶，就得重算一次），所以这里必须重跑 Reload，
     /// 否则点了 chips 列表一动不动。</summary>
-    private void SetVer(string v)
+    private async Task SetVer(string v)
     {
         _ver = v;
         _menuSlot = null;
-        Reload();
+        await ReloadAsync();
     }
 
     /// <summary>一条账属不属于"当前这一版"。版本空白 = 老账且原版在哪一层都查不出来，
@@ -1253,7 +1321,7 @@
         });
     }
 
-    private void PickVariant(string key, string variant)
+    private async Task PickVariant(string key, string variant)
     {
         _tVariantKey = key;
         _tVariant = variant;
@@ -1295,7 +1363,7 @@
         if (err is not null) Toast(err);
         else if (slot is null && applied == 0) { /* 本来就是原版，点了等于没点 —— 不弹成功谎报 */ }
         else Toast(okToast);
-        Reload();
+        await ReloadAsync();
         _openTarget = _targets.FirstOrDefault(x => x.Key == t.Key);
         _busy = false;
         StateHasChanged();
@@ -1376,7 +1444,7 @@
         // 也弹出来（2026-10-10 实测：从对象卡的版本下拉选完颜色，包页面跟着开了）。
         var openSlot = _open?.Slot;
         var openTargetKey = _openTarget?.Key;
-        Reload();
+        await ReloadAsync();
         _open = openSlot is null ? null : _groups.FirstOrDefault(x => x.Slot == openSlot);
         _openTarget = openTargetKey is null ? null : _targets.FirstOrDefault(x => x.Key == openTargetKey);
         _busy = false;
@@ -1488,7 +1556,7 @@
             }
             catch (Exception ex) { Toast(LocService.Tr("操作失败：") + ex.Message); }
         });
-        Reload();
+        await ReloadAsync();
         _open = _groups.FirstOrDefault(g => g.Slot == p.Slot);
         _busy = false;
         StateHasChanged();
@@ -1512,7 +1580,7 @@
         });
         _open = null;
         if (_groups.Count == 0) _cat = "";
-        Reload();
+        await ReloadAsync();
         _busy = false;
         StateHasChanged();
     }
@@ -1533,7 +1601,7 @@
             }
             catch (Exception ex) { Toast(LocService.Tr("还原失败：") + ex.Message); }
         });
-        Reload();
+        await ReloadAsync();
         _openTarget = null;
         _busy = false;
         StateHasChanged();
@@ -1587,7 +1655,7 @@
             }
             if (!changed) continue;
             Cfg.Save(Cfg.Current);
-            Reload();
+            await ReloadAsync();
             await InvokeAsync(StateHasChanged);
         }
     }
@@ -1795,7 +1863,7 @@
         });
         var what = done > 1 ? Loc.F("{0}（{1} 个文件）", r.Asset, done) : r.Asset;
         Toast(err ?? (turnOn ? Loc.F("已盖上：{0}", what) : Loc.F("已还原：{0}", what)));
-        Reload();
+        await ReloadAsync();
         _open = _groups.FirstOrDefault(g => g.Slot == p.Slot);
         _busy = false;
         StateHasChanged();
