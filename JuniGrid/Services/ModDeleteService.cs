@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.IO;
 
 namespace JuniGrid.Services;
@@ -13,39 +14,52 @@ public sealed record DeleteOutcome(
 }
 
 /// <summary>
-/// v1.3.14：可中断、可报进度的删除器。
+/// 可中断、可报进度的删除器。
 /// <para>
 /// <b>为什么要有这个类：</b>原来删除走 <see cref="ModService.Uninstall"/>，那是一个同步方法，
 /// 而它的调用点是 Blazor 的 <c>@onclick</c> —— 于是 <c>Directory.Move</c> +
-/// <c>Directory.Delete(recursive: true)</c> 全在渲染线程上跑。一个几百 MB、上万文件的
-/// 大包能把这台机器上的整个界面钉死十几秒，期间动画停、点击没反应、连关闭按钮都点不动。
+/// <c>Directory.Delete(recursive: true)</c> 全在渲染线程上跑，一删就是十几秒的整界面冻结。
+/// </para>
+/// <para>
+/// <b>v1.3.19 起分两段（这是关键）：</b>
+/// <list type="number">
+/// <item><b>前台（毫秒级）</b>：只把目录 <c>Move</c> 进 <c>.junigrid_trash</c>。同盘改名不碰文件内容，
+/// 一万个文件也是一瞬间 —— 调用方拿到的"已删除"是真的已经不在 Mods 里了。</item>
+/// <item><b>后台（慢，但用户看不见）</b>：真正的逐文件删除交给单线程清理队列。
+/// 实测 <c>File.Delete</c> 在本机会卡在原生调用里（杀软实时扫描），几万个文件要按分钟算；
+/// 把它挡在用户面前，就变成"删完了转圈还在转"。</item>
+/// </list>
 /// </para>
 /// <para>
 /// <b>语义（刻意与 Uninstall 保持一致，不许漂）：</b>
 /// <list type="number">
 /// <item>先在同卷内 <c>Move</c> 到 <c>.junigrid_trash</c>（瞬时改名，保留「占用就失败」的判定）；</item>
-/// <item>勾了「移入回收站」到此为止，一个字节都不删；</item>
-/// <item>没勾则逐个文件删，边删边报进度，随时可取消；</item>
-/// <item><b>取消</b>：立即停手，把还没删的整棵子树<b>移回原位</b>。已经删掉的文件回不来，
-/// 所以文案必须说实话（"已取消，剩余已还原"），不能装作什么都没发生。
-/// 万一移不回去（目标又被占了），就把残留留在回收站并明确告知 —— 东西还在，能手动还原。</item>
-/// <item>全部删完才调 <see cref="ModService.AfterUninstallCleanup"/> 做空壳与覆盖记录清理。</item>
+/// <item>勾了「移入回收站」到此为止，一个字节都不删，也不进清理队列；</item>
+/// <item>没勾则 Move 完就返回成功，目录随即进后台清理队列（逐文件删，失败留残骸并记日志）；</item>
+/// <item>全部搬完才调 <see cref="ModService.AfterUninstallCleanup"/> 做空壳与覆盖记录清理。</item>
 /// </list>
 /// </para>
 /// </summary>
 public static class ModDeleteService
 {
-    /// <summary>进度回调节流：90ms 一次。删除一个上万文件的包时，不节流就是上万次
-    /// <c>InvokeAsync</c> —— 那本身就是另一种卡死。</summary>
-    private const int TickMs = 90;
+    /// <summary>前台搬运阶段是否在进行。watcher 的自动重扫看这个 —— 搬家的那一瞬扫盘，
+    /// 会把半消失的目录当成"新发现"或"已删除"，白跑一轮。</summary>
+    public static volatile bool Busy;
+
+    /// <summary>待清理的回收站目录（Move 完就进来，由一个固定线程慢慢删）。</summary>
+    private static readonly ConcurrentQueue<string> _purgeQueue = new();
+    private static int _purgeWorkerRunning;
+
+    /// <summary>当前队列里还剩多少个待清理目录（给设置页/日志看，不做 UI 阻塞）。</summary>
+    public static int PendingPurgeCount => _purgeQueue.Count;
 
     public static Task<DeleteOutcome> DeleteAsync(
         string gamePath, IReadOnlyList<string> folders, bool toTrash,
         ConfigService? cfg, IProgress<DeleteTick>? progress, CancellationToken ct)
     {
         var snapshot = folders.ToArray();
-        // 整个删除过程都在线程池里跑；取消只靠 ct，不靠 Task 的取消令牌
-        //（否则取消会把 Task 直接判为 Canceled，调用方拿不到"删到哪一步了"）
+        // 整个搬运过程都在线程池里跑；取消只靠 ct，不靠 Task 的取消令牌
+        //（否则取消会把 Task 直接判为 Canceled，调用方拿不到"搬了几条"）
         return Task.Run(() => DeleteCore(gamePath, snapshot, toTrash, cfg, progress, ct), CancellationToken.None);
     }
 
@@ -59,177 +73,130 @@ public static class ModDeleteService
         string? firstError = null;
         var canceled = false;
         var leftInTrash = false;
-        var doneBytes = 0L;
-        var totalBytes = 0L;
 
-        // ── 阶段 1：统计总量 ────────────────────────────────────────────
-        // 不统计的话进度条只能一直停在 0，用户分不清"在删"还是"卡住了"。
-        // 勾了回收站就不用统计 —— 那一步只是改名，快到不需要百分比。
-        if (!toTrash)
+        Busy = true;
+        try
         {
-            progress?.Report(new DeleteTick(LocService.Tr("正在统计文件…"), null, 0, 0));
-            foreach (var f in folders)
+            var i = 0;
+            foreach (var folder in folders)
             {
-                if (ct.IsCancellationRequested) return new(0, 0, true, false, null);   // 一个字节都没动，干净退出
-                var d = ResolveModDir(gamePath, f);
-                if (d is null) continue;
-                totalBytes += MeasureBytes(d, ct);
-            }
-            if (ct.IsCancellationRequested) return new(0, 0, true, false, null);
-        }
+                i++;
+                if (ct.IsCancellationRequested) { canceled = true; break; }
 
-        // ── 阶段 2：逐个搬运 + 删除 ─────────────────────────────────────
-        var i = 0;
-        foreach (var folder in folders)
-        {
-            i++;
-            if (ct.IsCancellationRequested) { canceled = true; break; }
+                var dir = ResolveModDir(gamePath, folder);
+                if (dir is null)
+                {
+                    failed++;
+                    firstError ??= LocService.Tr("找不到 Mod 文件夹");
+                    continue;
+                }
 
-            var dir = ResolveModDir(gamePath, folder);
-            if (dir is null)
-            {
-                failed++;
-                firstError ??= LocService.Tr("找不到 Mod 文件夹");
-                continue;
-            }
+                var name = folder.Contains('/') ? folder.Split('/')[^1] : folder;
+                string staging;
+                try { staging = PlanStaging(gamePath, folder, toTrash); }
+                catch (Exception ex)
+                {
+                    failed++;
+                    firstError ??= ex.Message;
+                    continue;
+                }
 
-            var name = folder.Contains('/') ? folder.Split('/')[^1] : folder;
-            string staging;
-            try { staging = PlanStaging(gamePath, folder, toTrash); }
-            catch (Exception ex)
-            {
-                failed++;
-                firstError ??= ex.Message;
-                continue;
-            }
+                // 唯一的"真实动作"：同盘改名。占用时这里直接抛（文件被别的程序打开着）。
+                try
+                {
+                    Directory.Move(dir, staging);
+                }
+                catch (Exception ex)
+                {
+                    if (Directory.Exists(staging) && !Directory.Exists(dir))
+                        try { Directory.Move(staging, dir); } catch { }
+                    failed++;
+                    firstError ??= ex is IOException or UnauthorizedAccessException
+                        ? LocService.Tf("「{0}」正被占用，请先退出相关程序再删除", folder)
+                        : ex.Message;
+                    continue;
+                }
 
-            try
-            {
-                Directory.Move(dir, staging);   // 同盘瞬时改名，占用时这里直接抛
-            }
-            catch (Exception ex)
-            {
-                if (Directory.Exists(staging) && !Directory.Exists(dir))
-                    try { Directory.Move(staging, dir); } catch { }
-                failed++;
-                firstError ??= ex is IOException or UnauthorizedAccessException
-                    ? LocService.Tf("「{0}」正被占用，请先退出相关程序再删除", folder)
-                    : ex.Message;
-                continue;
-            }
-
-            if (toTrash)
-            {
                 ok++;
                 progress?.Report(new DeleteTick(
-                    LocService.Tf("正在移入回收站 {0}", name),
-                    i * 100.0 / n, doneBytes, totalBytes));
+                    toTrash ? LocService.Tf("正在移入回收站 {0}", name) : LocService.Tf("正在移除 {0}", name),
+                    i * 100.0 / n, 0, 0));
+
+                if (!toTrash)
+                {
+                    // Move 之后就不归前台管了：后台逐文件删，慢多久用户都看不见。
+                    // 清不干净也只是残骸留在回收站（日志有记录），不会回到 Mods。
+                    EnqueuePurge(staging);
+                    leftInTrash = true;
+                }
+
                 ModService.AfterUninstallCleanup(gamePath, folder, cfg);
-                continue;
             }
-
-            // ── 物理删除：边删边报，随时可停 ──
-            var res = DeleteTree(staging, dir, name, totalBytes, i, n, progress, ct, ref doneBytes);
-            if (res.Canceled)
-            {
-                canceled = true;
-                leftInTrash |= res.LeftInTrash;
-                break;                      // 这条没删完，不算成功也不算失败
-            }
-            if (!res.Clean)
-            {
-                failed++;
-                firstError ??= res.Error;
-                leftInTrash = true;         // 残留还在回收站里，别让用户以为删干净了
-                continue;
-            }
-            ok++;
-            ModService.AfterUninstallCleanup(gamePath, folder, cfg);
         }
-
-        if (!canceled && !toTrash)
-            progress?.Report(new DeleteTick(LocService.Tr("正在删除…"), 100, doneBytes, totalBytes));
+        finally
+        {
+            Busy = false;
+        }
 
         return new DeleteOutcome(ok, failed, canceled, leftInTrash, firstError);
     }
 
-    private sealed record TreeResult(bool Clean, bool Canceled, bool LeftInTrash, string? Error);
+    // ══════════════════════════════════════════════════════════════════
+    // 后台清理：单线程、串行、静默。
+    // 为什么不并行：这些删除本身是磁盘+杀软瓶颈，开多线程只会让磁盘更乱、
+    // 还可能与安装解压抢 IO；用户也感知不到快慢，串行最稳。
+    // ══════════════════════════════════════════════════════════════════
 
-    /// <summary>把一个已经搬进回收站的目录删空。返回它是否删干净 / 是否被取消。</summary>
-    private static TreeResult DeleteTree(
-        string staging, string origin, string name,
-        long totalBytes, int index, int count,
-        IProgress<DeleteTick>? progress, CancellationToken ct, ref long doneBytes)
+    /// <summary>把一个已经搬进回收站的目录排队清理。幂等：同一路径不重复入队。</summary>
+    public static void EnqueuePurge(string staging)
     {
-        var lastTick = 0L;
-        string? err = null;
+        if (string.IsNullOrWhiteSpace(staging)) return;
+        _purgeQueue.Enqueue(staging);
+        StartPurgeWorker();
+    }
+
+    private static void StartPurgeWorker()
+    {
+        if (Interlocked.CompareExchange(ref _purgeWorkerRunning, 1, 0) == 1) return;
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                while (_purgeQueue.TryDequeue(out var dir))
+                {
+                    try { PurgeTree(dir); }
+                    catch (Exception ex) { AppLog.Warn("Delete", $"后台清理 {dir} 失败：{ex.Message}"); }
+                }
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _purgeWorkerRunning, 0);
+                // 收尾竞态：刚置 0 的瞬间可能又有新项入队，这里补捞一次
+                if (!_purgeQueue.IsEmpty) StartPurgeWorker();
+            }
+        });
+    }
+
+    /// <summary>真正把目录删空。逐文件删（保留"被占用就跳过"的容忍度），最后清空壳。</summary>
+    private static void PurgeTree(string staging)
+    {
+        if (!Directory.Exists(Lp(staging))) return;
 
         List<string> files;
         try { files = Directory.EnumerateFiles(Lp(staging), "*", SearchOption.AllDirectories).ToList(); }
-        catch (Exception ex) { return new TreeResult(false, false, true, ex.Message); }
+        catch (Exception ex) { AppLog.Warn("Delete", $"枚举 {staging} 失败：{ex.Message}"); return; }
 
+        var stuck = 0;
         foreach (var file in files)
         {
-            if (ct.IsCancellationRequested)
-            {
-                // 停手 + 把剩下的挪回去。已经删掉的回不来 —— 这一点由调用方的文案说明。
-                var moved = TryMoveBack(staging, origin);
-                return new TreeResult(false, true, !moved, err);
-            }
-
-            long len = 0;
-            try { len = new FileInfo(file).Length; } catch { }
-            try
-            {
-                File.Delete(file);
-                doneBytes += len;
-            }
-            catch (Exception ex)
-            {
-                // 单个文件被占用不该让整批停下来：继续删别的，最后统一报
-                err ??= ex is UnauthorizedAccessException or IOException
-                    ? LocService.Tf("「{0}」里有文件正被占用", name)
-                    : ex.Message;
-                continue;
-            }
-
-            var now = Environment.TickCount64;
-            if (now - lastTick >= TickMs)
-            {
-                lastTick = now;
-                var inner = totalBytes > 0 ? Math.Min(1.0, (double)doneBytes / totalBytes) : 0;
-                var overall = Math.Min(99.5, (index - 1 + inner) * 100.0 / count);
-                progress?.Report(new DeleteTick(
-                    LocService.Tf("正在删除 {0}", name), overall, doneBytes, totalBytes));
-            }
+            try { File.Delete(file); }
+            catch { stuck++; }   // 单个文件被占用不影响其余的，最后统一报一次
         }
 
-        // 文件都清了，剩下的是空目录壳 —— 这时整棵递归删是毫秒级，不用再分批
         try { Directory.Delete(Lp(staging), recursive: true); }
         catch (Exception ex)
         {
-            err ??= ex is UnauthorizedAccessException or IOException
-                ? LocService.Tf("「{0}」里有文件正被占用", name)
-                : ex.Message;
-            return new TreeResult(false, false, true, err);
-        }
-
-        return new TreeResult(err is null, false, err is not null, err);
-    }
-
-    /// <summary>取消时把还没删的子树搬回原处。成功才算"干净取消"。</summary>
-    private static bool TryMoveBack(string staging, string origin)
-    {
-        try
-        {
-            if (!Directory.Exists(staging)) return true;             // 已经空了，等于没东西要还
-            if (!Directory.Exists(origin)) { Directory.Move(staging, origin); return true; }
-            return false;                                            // 原位竟被占了：留在回收站
-        }
-        catch (Exception ex)
-        {
-            AppLog.Warn("Delete", $"取消删除时无法把 {staging} 移回 {origin}：{ex.Message}");
-            return false;
+            AppLog.Warn("Delete", $"清理 {Path.GetFileName(staging)} 未完成（{stuck} 个文件被占用）：{ex.Message}");
         }
     }
 
@@ -273,21 +240,54 @@ public static class ModDeleteService
         return single;
     }
 
-    /// <summary>目录里所有文件的字节总和（用于进度分母）。枚举失败就当 0 —— 进度条退回不确定态，
-    /// 但删除照常进行。</summary>
-    private static long MeasureBytes(string dir, CancellationToken ct)
+    /// <summary>启动时回收上一次会话没删完的残骸。
+    /// <para>
+    /// 只认 <c>toTrash: false</c> 的落点命名 <c>&lt;名字&gt;_&lt;8 位 hex&gt;</c>（见
+    /// <see cref="PlanStaging"/>）。用户主动"移入回收站"的条目是
+    /// <c>&lt;名字&gt;_&lt;yyyyMMdd_HHmmss&gt;</c> —— 那些是用户的东西，绝不能碰。
+    /// 另外跳过 10 分钟内刚建的：可能是本次会话正在删的那一个。
+    /// </para>
+    /// </summary>
+    public static void PurgeOrphanedStaging(string gamePath)
     {
-        long sum = 0;
+        if (string.IsNullOrWhiteSpace(gamePath)) return;
+        string trash;
         try
         {
-            foreach (var f in Directory.EnumerateFiles(Lp(dir), "*", SearchOption.AllDirectories))
-            {
-                if (ct.IsCancellationRequested) break;
-                try { sum += new FileInfo(f).Length; } catch { }
-            }
+            trash = StoragePaths.GameTrashDir(gamePath);
+            if (!Directory.Exists(trash)) return;
         }
-        catch { }
-        return sum;
+        catch (Exception ex)
+        {
+            AppLog.Warn("Delete", "回收残留待删目录：定位回收站失败：" + ex.Message);
+            return;
+        }
+
+        var cutoff = DateTime.UtcNow.AddMinutes(-10);
+        var queued = 0;
+        foreach (var dir in Directory.GetDirectories(trash))
+        {
+            if (!IsOnePassStagingName(Path.GetFileName(dir))) continue;
+            try { if (Directory.GetCreationTimeUtc(dir) > cutoff) continue; } catch { }
+            EnqueuePurge(dir);
+            queued++;
+        }
+        if (queued > 0)
+            AppLog.Info("Delete", $"回收上次会话遗留的待删目录 {queued} 个（后台清理）");
+    }
+
+    /// <summary>目录名是否是一次性删除落点：以 <c>_</c> + 8 位十六进制结尾。</summary>
+    private static bool IsOnePassStagingName(string name)
+    {
+        // 至少要有 "x_" + 8 位
+        if (name.Length < 10 || name[^9] != '_') return false;
+        for (var i = name.Length - 8; i < name.Length; i++)
+        {
+            var c = name[i];
+            var hex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+            if (!hex) return false;
+        }
+        return true;
     }
 
     /// <summary>加长路径前缀 —— 有的 mod 里嵌着层层嵌套的素材目录，裸路径会撞 260 上限。</summary>

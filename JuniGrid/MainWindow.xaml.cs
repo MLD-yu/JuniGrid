@@ -335,6 +335,16 @@ public partial class MainWindow : Window
             // 下载/安装临时目录超过 24 小时自动清掉（启动后立刻一遍，之后每小时一遍）
             provider.GetRequiredService<StorageService>().StartDownloadAutoClean();
 
+            // v1.3.19：回收上一次会话没删完的残骸。
+            // 删除现在只把目录改名进 .junigrid_trash，逐文件清理在后台队列里做 ——
+            // 应用被强杀/崩溃时那批文件会留在原地白占空间（实测一次就 268MB）。
+            // 这里把「一次性 guid 命名」的目录重新排进清理队列。
+            // ⚠ 只认 toTrash=false 的落点命名（<名字>_<8位hex>）；用户主动移进回收站的
+            // 是 <名字>_<yyyyMMdd_HHmmss>，绝不能被这里扫到。
+            var bootGamePath = configService.Current.GamePath;
+            if (!string.IsNullOrWhiteSpace(bootGamePath))
+                _ = Task.Run(() => ModDeleteService.PurgeOrphanedStaging(bootGamePath));
+
             // v1.0.2：启动后台检查一次应用新版本（不阻塞 UI，失败静默）
             // v1.7.x：同一次调用里认出「更新已落地」（旧安装包缓存被清掉），顺手硬删旧肖像页
             // 遗留在各版本 Mods 里的覆盖包 —— 页面已经没了，留着会被 CP 继续加载。

@@ -52,9 +52,16 @@ public class ModDeleteTests
             Assert.Equal(1, r.Deleted);
             Assert.False(r.AnyFailed);
             Assert.False(r.Canceled);
+            // v1.3.19：返回时只保证"已经不在 Mods 里" —— 同盘改名是瞬时的
             Assert.False(Directory.Exists(mod));
-            // 彻底删除路径的 staging 用一次性的 guid 名字，删完必须不剩
+            // 逐文件清理交给了后台队列（被杀软拖慢时可能几十秒），这里允许它慢慢来：
+            // 断言的是"最终不残留"，不是"调用返回时就删干净"。
             var trash = StoragePaths.GameTrashDir(game);
+            var deadline = DateTime.UtcNow.AddSeconds(10);
+            while (Directory.Exists(trash)
+                   && Directory.GetFileSystemEntries(trash).Length > 0
+                   && DateTime.UtcNow < deadline)
+                await Task.Delay(50);
             if (Directory.Exists(trash))
                 Assert.Empty(Directory.GetFileSystemEntries(trash));
         }
@@ -105,7 +112,7 @@ public class ModDeleteTests
     }
 
     [Fact]
-    public async Task Cancel_During_Counting_Touches_Nothing()
+    public async Task Cancel_Before_Start_Touches_Nothing()
     {
         var game = NewGame();
         try
@@ -114,15 +121,13 @@ public class ModDeleteTests
             for (var i = 0; i < 200; i++)
                 WriteFile(Path.Combine(mod, "f" + i + ".bin"), 512);
 
+            // v1.3.19：删除只剩"同盘改名"一个真实动作，所以可取消的窗口就是
+            // "还没开始搬"。开跑前就取消 → 必须原样退回，一个字节都不动。
             using var cts = new CancellationTokenSource();
-            // 第一次回调就是「正在统计文件…」—— 此时取消，必须原样退回
-            var progress = new InlineProgress(t =>
-            {
-                if (t.Percent is null) cts.Cancel();
-            });
+            cts.Cancel();
 
             var r = await ModDeleteService.DeleteAsync(game, ["BigMod"], toTrash: false,
-                cfg: null, progress: progress, ct: cts.Token);
+                cfg: null, progress: null, ct: cts.Token);
 
             Assert.True(r.Canceled);
             Assert.Equal(0, r.Deleted);
@@ -132,7 +137,7 @@ public class ModDeleteTests
     }
 
     [Fact]
-    public async Task Progress_Reports_Byte_Total_Before_Deleting()
+    public async Task Progress_Reports_Each_Target()
     {
         var game = NewGame();
         try
@@ -147,10 +152,48 @@ public class ModDeleteTests
             await ModDeleteService.DeleteAsync(game, ["Sized"], toTrash: false,
                 cfg: null, progress: progress, ct: CancellationToken.None);
 
+            // v1.3.19：不再做字节统计（那是一次全盘枚举，正是删除"开跑前"最贵的部分）。
+            // 现在每个目标搬完报一条，进度直接按条数走。
             Assert.NotEmpty(seen);
-            // 统计阶段必须先把分母报出来，进度条才不会一直停在 0
-            Assert.Contains(seen, t => t.Percent is null);
-            Assert.Contains(seen, t => t.TotalBytes == 3000);
+            Assert.Contains(seen, t => t.Percent == 100);
+            Assert.Contains(seen, t => t.Message.Contains("Sized"));
+        }
+        finally { TryKill(game); }
+    }
+
+    [Fact]
+    public async Task Orphan_Purge_Only_Reclaims_OnePass_Staging_Names()
+    {
+        var game = NewGame();
+        try
+        {
+            var trash = StoragePaths.GameTrashDir(game);
+            Directory.CreateDirectory(trash);
+
+            // 上次被强杀留下的"一次性删除"落点：<名字>_<8位hex>
+            var orphan = Path.Combine(trash, "PelipperTown.Mod_a467ef09");
+            WriteFile(Path.Combine(orphan, "manifest.json"), 64);
+            WriteFile(Path.Combine(orphan, "assets", "a.png"), 128);
+
+            // 用户主动移进回收站的那条：<名字>_<yyyyMMdd_HHmmss> —— 绝不能碰
+            var kept = Path.Combine(trash, "BetterStardewValley_20261104_042110");
+            WriteFile(Path.Combine(kept, "manifest.json"), 64);
+
+            // 判据里还有"10 分钟内刚建的不动"，这里把创建时间推到一小时前
+            var old = DateTime.UtcNow.AddHours(-1);
+            Directory.SetCreationTimeUtc(orphan, old);
+            Directory.SetCreationTimeUtc(kept, old);
+
+            ModDeleteService.PurgeOrphanedStaging(game);
+
+            // 后台清理是队列，等它跑完
+            var deadline = DateTime.UtcNow.AddSeconds(10);
+            while (Directory.Exists(orphan) && DateTime.UtcNow < deadline)
+                await Task.Delay(50);
+
+            Assert.False(Directory.Exists(orphan));
+            Assert.True(Directory.Exists(kept), "用户移入回收站的条目被误删了");
+            Assert.True(File.Exists(Path.Combine(kept, "manifest.json")));
         }
         finally { TryKill(game); }
     }

@@ -1065,6 +1065,7 @@ window.junigridJs.clickProbe = function () {
                 el.appendChild(sp);
                 el.appendChild(txt);
                 document.body.appendChild(el);
+                shownAt = Date.now();
 
                 if (window.gsap) {
                     gsap.fromTo(el, { y: 12, opacity: 0, scale: 0.96 },
@@ -1076,7 +1077,19 @@ window.junigridJs.clickProbe = function () {
         } catch (e) { /* 胶囊失败不影响删除本身 */ }
     };
 
+    var shownAt = 0;
+
     window.junigridJs.busyPillHide = function () {
-        try { var node = el; el = null; drop(node); } catch (e) { }
+        try {
+            var node = el;
+            if (!node) return;
+            el = null;
+            // 删除现在只搬目录、毫秒级就返回 —— 胶囊可能刚亮就被收走，闪一下比不亮更糟。
+            // 至少让它站满 420ms，人眼才认得出"刚刚在做一件事，而且做完了"。
+            var age = Date.now() - shownAt;
+            var wait = Math.max(0, 420 - age);
+            if (wait > 0) setTimeout(function () { drop(node); }, wait);
+            else drop(node);
+        } catch (e) { }
     };
 })();

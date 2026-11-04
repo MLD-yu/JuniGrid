@@ -3564,14 +3564,14 @@
         // ⇒ 每一轮都是一次全盘 ModSvc.Scan（磁盘枚举）+ ReindexMods + 整页 StateHasChanged。
         // 装一个中等大小的包能让这个列表每秒重画好几遍，体感就是"边下边发木"。
         // 装完 Installer.OnChanged 会补一次完整重扫，所以这里丢掉事件不丢数据。
-        if (Installer.Busy) return;
+        if (Installer.Busy || ModDeleteService.Busy) return;
         if (Interlocked.Exchange(ref _pendingRescan, 1) == 1) return;
         _ = InvokeAsync(async () =>
         {
             try
             {
                 await Task.Delay(120);   // 合并窗口：120ms 内的连续事件只触发一次
-                if (_disposed || Installer.Busy) return;   // 等这 120ms 的工夫可能已经开始装了
+                if (_disposed || Installer.Busy || ModDeleteService.Busy) return;   // 等这 120ms 的工夫可能已经开始装/删了
                 RescanAndRestate();
             }
             finally { Interlocked.Exchange(ref _pendingRescan, 0); }
@@ -3695,6 +3695,8 @@
         // 同时动 Mods（实测改名重试全失败，报的就是 Mods 里 .junigrid_trash 被占用）。
         // 切换结束时本来就会刷一次本页，这里丢掉请求不丢数据。
         if (DepotDownloaderService.IsApplyInProgress) return;
+        // v1.3.19：删除正在搬目录时不扫 —— 半消失的目录会被当成"新发现"再建一行。
+        if (ModDeleteService.Busy) return;
         if (_bgRescanRunning) { _bgRescanQueued = true; return; }
         _bgRescanRunning = true;
         try
