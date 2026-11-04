@@ -360,7 +360,7 @@
         @* ★★ 吸顶工具条：滚动时这排按钮（刷新/打开文件夹/全选/搜索）固定在顶部，随时可用。
            信息行已挪到标题下的副标题，这里只剩按钮。 *@
         <div class="jg-trash-sticky">
-            <button class="jg-pill-ghost" style="padding:7px 14px;font-size:12.5px" @onclick="LoadTrash">@Loc.T("刷新")</button>
+            <button class="jg-pill-ghost" style="padding:7px 14px;font-size:12.5px" @onclick="() => LoadTrash(forceRefresh: true)">@Loc.T("刷新")</button>
             @if (_trashItems.Count > 0)
             {
                 var allSel = _trashSelected.Count >= _trashItems.Count;
@@ -368,10 +368,17 @@
                     @(allSel ? Loc.T("取消全选") : Loc.T("全选"))
                 </button>
             }
-            @if (_trashSelected.Count > 0)
+            @if (_trashSelected.Count > 0 || _trashDeleting)
             {
-                <button class="jg-pill-dark" style="padding:7px 16px;font-size:12.5px" @onclick="AskRestoreTrash">@Loc.F("还原所选（{0}）", _trashSelected.Count)</button>
-                <button class="jg-pill-danger" style="padding:7px 16px;font-size:12.5px" @onclick="AskDeleteTrash">@Loc.F("永久删除所选（{0}）", _trashSelected.Count)</button>
+                <button class="jg-pill-dark" style="padding:7px 16px;font-size:12.5px" disabled="@_trashDeleting" @onclick="AskRestoreTrash">@Loc.F("还原所选（{0}）", _trashSelected.Count)</button>
+                @* v1.3.32：删除期间按钮就地变成进度条 —— 分钟级的删除必须看得见在动 *@
+                <button class="jg-pill-danger" style="padding:7px 16px;font-size:12.5px" disabled="@_trashDeleting"
+                        title='@(_trashDeleting ? Loc.F("正在删除 {0}：{1}/{2} 个文件", _trashDeleteCurrent, _trashDeleteFilesDone, _trashDeleteFilesTotal) : null)'
+                        @onclick="AskDeleteTrash">
+                    @(_trashDeleting
+                        ? Loc.F("正在删除…（{0}/{1} · {2}%）", _trashDeleteDone, _trashDeleteTotal, TrashDeletePercent)
+                        : Loc.F("永久删除所选（{0}）", _trashSelected.Count))
+                </button>
             }
             @* ★★ 搜索并进这一行：回收站视图下整条 .jg-mods-toolbar 不渲染了（它空着会撑出一大条空白），
                但搜索还得留着 —— .jg-search-x 自带 margin-left:auto，会自动贴到最右。 *@
@@ -405,19 +412,23 @@
         }
         else if (_trashItems.Count == 0)
         {
-            @* 空态插画：与 mod 列表那套共用 .jg-pk-empty-art 样式（线条 + 透明度层次），
-               画一个回收站桶 + 回收箭头 —— 比纯文字美观，也一眼看出这是回收站。 *@
+            @* 空态插画：与 mod 列表那套共用 .jg-pk-empty-art 样式（尺寸/主题色由 CSS 给）。
+               v1.3.32：按「清空回收站」图标的轮廓重画成线条版 —— 原图是实心填充（fill），
+               笔画粗细是路径几何本身，改不细；线条版才能用 stroke-width 控制，
+               也才跟界面其余空态插画（同样是细线）风格一致。 *@
             <div class="jg-pk-empty jg-mods-empty">
-                <svg class="jg-pk-empty-art" viewBox="0 0 200 160" fill="none" aria-hidden="true">
-                    @* 桶身：高 > 宽，接近正方构图，避免"扁扁的" *@
-                    <path d="M52 56h96l-7 82a9 9 0 0 1-9 8H68a9 9 0 0 1-9-8Z" stroke="currentColor" stroke-width="3" opacity=".9"/>
-                    <path d="M44 56h112" stroke="currentColor" stroke-width="3" stroke-linecap="round" opacity=".9"/>
-                    <path d="M42 46h116" stroke="currentColor" stroke-width="3" stroke-linecap="round" opacity=".4"/>
-                    <path d="M72 46v-4a9 9 0 0 1 9-9h38a9 9 0 0 1 9 9v4" stroke="currentColor" stroke-width="3" opacity=".26"/>
-                    <path d="M76 72v42M100 72v42M124 72v42" stroke="currentColor" stroke-width="3" stroke-linecap="round" opacity=".16"/>
-                    @* 回收箭头（右上）+ 闪星，回收站语义 *@
-                    <path d="M156 28a18 18 0 1 0 4 14" stroke="currentColor" stroke-width="3" stroke-linecap="round" opacity=".55"/>
-                    <path d="m164 22 3 7 7 3-7 3-3 7-3-7-7-3 7-3Z" fill="currentColor" opacity=".7"/>
+                <svg class="jg-pk-empty-art" viewBox="0 0 1024 1024" fill="none" aria-hidden="true">
+                    @* 提手 *@
+                    <path d="M388 250v-82a44 44 0 0 1 44-44h160a44 44 0 0 1 44 44v82"
+                          stroke="currentColor" stroke-width="26" stroke-linecap="round" stroke-linejoin="round"/>
+                    @* 桶口横杆 *@
+                    <path d="M150 250h724" stroke="currentColor" stroke-width="26" stroke-linecap="round"/>
+                    @* 桶身（上宽下窄 + 圆角底） *@
+                    <path d="M214 250l44 622a56 56 0 0 0 56 52h396a56 56 0 0 0 56-52l44-622"
+                          stroke="currentColor" stroke-width="26" stroke-linecap="round" stroke-linejoin="round"/>
+                    @* 叉号 *@
+                    <path d="M412 452l200 200M612 452l-200 200"
+                          stroke="currentColor" stroke-width="26" stroke-linecap="round"/>
                 </svg>
                 <div class="jg-pk-empty-title">@Loc.T("回收站是空的")</div>
             </div>
@@ -493,14 +504,14 @@
                                 </div>
                                 <div class="jg-modrow-end" @onclick:stopPropagation>
                                     <button class="jg-rowbtn" data-tip='@Loc.T("还原这一份")' aria-label='@Loc.T("还原这一份")'
-                                            @onclick="() => AskRestoreOne(it)">
+                                            disabled="@_trashDeleting" @onclick="() => AskRestoreOne(it)">
                                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
                                              stroke-linecap="round" stroke-linejoin="round" style="width:15px;height:15px">
                                             <path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/>
                                         </svg>
                                     </button>
                                     <button class="jg-rowbtn danger" data-tip='@Loc.T("永久删除这一份")' aria-label='@Loc.T("永久删除这一份")'
-                                            @onclick="() => AskDeleteOne(it)">
+                                            disabled="@_trashDeleting" @onclick="() => AskDeleteOne(it)">
                                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
                                              stroke-linecap="round" stroke-linejoin="round" style="width:15px;height:15px">
                                             <path d="M3 6h18"/><path d="M8 6V4h8v2"/>
@@ -535,7 +546,7 @@
         </div>
     }
     <div class="jg-modrows" style="@(_initialLoading || _showTrash ? "display:none" : "")">
-        @foreach (var group in Groups)
+        @foreach (var group in RenderedGroups())
         {
             var bundle = group.Key != "";
             var open = !bundle || GroupOpen(group.Key);
@@ -1161,6 +1172,7 @@
 
     private bool _showTrash;
     private bool _trashLoaded;
+    private bool _trashLoading;
     private bool _viewSwitched;         // 刚切过 Mod 管理/回收站：OnAfterRender 里落滑块 + 播页面入场
     private bool _trashEnterPending;    // 切到回收站时列表还在后台读，等回填完成再播入场
     private int _trashCount;
@@ -1171,6 +1183,20 @@
     private List<TrashItem>? _pendingRestore;
     private string _pendingRestoreName = "";
     private List<TrashItem>? _pendingTrashDelete;
+
+    /// <summary>v1.3.32：永久删除正在执行 —— 按钮禁用 + 显示进度，并防重入。
+    /// <para>为什么要这三样：几百 MB 的包删起来是分钟级（实测 15 份 531MB 删了 3 分钟还没完），
+    /// 旧版点完确认弹窗立刻消失、列表一动不动，用户以为没反应就继续点，
+    /// 于是又开一条线程删同一批目录，两条线程互相卡住（实测卡死 3 分钟以上）。</para></summary>
+    private bool _trashDeleting;
+    private int _trashDeleteDone;
+    private int _trashDeleteTotal;
+    private string _trashDeleteCurrent = "";
+    private int _trashDeleteFilesDone;
+    private int _trashDeleteFilesTotal;
+    private int TrashDeletePercent => _trashDeleteFilesTotal > 0
+        ? Math.Clamp((int)((long)_trashDeleteFilesDone * 100 / _trashDeleteFilesTotal), 0, 100)
+        : (_trashDeleteTotal > 0 ? Math.Clamp(_trashDeleteDone * 100 / _trashDeleteTotal, 0, 100) : 0);
 
     /// <summary>同一 mod 的几份历史快照归成一行。</summary>
     private sealed record TrashGroup(string Name, List<TrashItem> Items);
@@ -1218,6 +1244,7 @@
         _showTrash = !_showTrash;
         if (_showTrash)
         {
+            // 每次切入都快速校验目录签名；未变化时 TrashService 直接回内存缓存，不递归扫文件。
             LoadTrash();
             // 回收站是与「全部/已启用/…」并列的一个视图，不是叠加筛选 ——
             // 进去就把筛选复位，否则 chips 会出现两个同时高亮（用户实测 2026-10-20）。
@@ -1236,10 +1263,15 @@
 
     /// <summary>列回收站。Measure 要遍历几千个文件读大小和 manifest —— 放后台线程跑，
     /// 否则切到回收站那一刻 UI 线程被 IO 堵住，页面卡一下（用户实测 2026-10-20）。</summary>
-    private void LoadTrash()
+    private void LoadTrash(bool forceRefresh = false)
     {
-        _trashLoaded = false;
-        StateHasChanged();
+        if (_trashLoading) return;
+        _trashLoading = true;
+        if (!_trashLoaded || forceRefresh)
+        {
+            _trashLoaded = false;
+            StateHasChanged();
+        }
 
         var game = Cfg.Current.GamePath;
         _ = Task.Run(() =>
@@ -1249,7 +1281,7 @@
             {
                 items = string.IsNullOrWhiteSpace(game)
                     ? new List<TrashItem>()
-                    : TrashService.List(game);
+                    : TrashService.List(game, forceRefresh);
             }
             catch (Exception ex)
             {
@@ -1271,6 +1303,7 @@
                 var alive = items.Select(x => x.FolderName).ToHashSet();
                 _trashSelected.RemoveWhere(f => !alive.Contains(f));
                 _trashLoaded = true;
+                _trashLoading = false;
                 StateHasChanged();
                 // v1.5.5：回收站行是异步回填的，OnAfterRender 的绑定时序不可靠 ——
                 // 回填后显式绑定一次滚动入场观察器，和 mod 列表同一套效果（用户实测 2026-10-20）
@@ -1346,7 +1379,7 @@
         });
         if (failed > 0) AppLog.Warn("Trash", $"[还原] {failed} 份失败");
         _trashSelected.Clear();
-        LoadTrash();
+        LoadTrash(forceRefresh: true);
         RefreshAfterTrashChange();
     }
 
@@ -1359,6 +1392,7 @@
 
     private void AskDeleteTrash(List<TrashItem> picked)
     {
+        if (_trashDeleting) return;          // 删除进行中：再点只会叠第二条线程
         if (picked.Count > 0) _pendingTrashDelete = picked;
     }
 
@@ -1368,15 +1402,52 @@
     {
         var picked = _pendingTrashDelete;
         _pendingTrashDelete = null;
-        if (picked is null) return;
+        if (picked is null || _trashDeleting) return;
         var game = Cfg.Current.GamePath;
         if (string.IsNullOrWhiteSpace(game)) return;
+
         // v1.3.15：永久删除回收站里几 GB 的包，同步跑就是整界面钉死。
-        // 弹窗关掉立刻返回，删完刷新列表 —— 与主列表的删除保持同一套体感。
-        var failed = await Task.Run(() => TrashService.DeletePermanently(game, picked));
+        // v1.3.32：删得慢不是问题，没反馈才是 —— 按钮变成「正在删除…（3/15）」并禁用，
+        // 列表在删完后才刷新（中途刷会把正在删的行画回来）。
+        _trashDeleting = true;
+        _trashDeleteDone = 0;
+        _trashDeleteTotal = picked.Count;
+        _trashDeleteCurrent = picked[0].DisplayName;
+        _trashDeleteFilesDone = 0;
+        _trashDeleteFilesTotal = picked.Sum(x => Math.Max(0, x.FileCount));
+        StateHasChanged();
+        _ = JS.InvokeVoidAsync("junigridJs.toast", LocService.Tf("正在永久删除 {0} 份快照…", picked.Count));
+
+        var failed = 0;
+        try
+        {
+            failed = await Task.Run(() => TrashService.DeletePermanently(game, picked, progress =>
+                _ = InvokeAsync(() =>
+                {
+                    _trashDeleteDone = progress.ItemsDone;
+                    _trashDeleteTotal = progress.ItemsTotal;
+                    _trashDeleteCurrent = progress.CurrentFolder;
+                    _trashDeleteFilesDone = progress.FilesDone;
+                    _trashDeleteFilesTotal = progress.FilesTotal;
+                    StateHasChanged();
+                })));
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warn("Trash", "永久删除异常: " + ex.Message);
+        }
+        finally
+        {
+            _trashDeleting = false;
+        }
+
         if (failed > 0) AppLog.Warn("Trash", $"[永久删除] {failed} 份失败");
         _trashSelected.Clear();
-        LoadTrash();
+        LoadTrash(forceRefresh: true);
+        _ = JS.InvokeVoidAsync("junigridJs.toast", failed > 0
+            ? LocService.Tf("已删除 {0} 份快照，{1} 份失败", picked.Count - failed, failed)
+            : LocService.Tf("已永久删除 {0} 份快照", picked.Count));
+        StateHasChanged();
     }
 
     /// <summary>还原会改 Mods 目录 —— 重扫一遍，回到列表时状态是新的。</summary>
@@ -1774,7 +1845,7 @@
         var __t = System.Diagnostics.Stopwatch.GetTimestamp();
         var scanned = await Task.Run(() =>
         {
-            try { ModSvc.CleanupDuplicateCopies(Cfg.Current.GamePath); }
+            try { ModSvc.CleanupDuplicateCopiesIfChanged(Cfg.Current.GamePath); }
             catch (Exception ex) { AppLog.Warn("Mods", "多副本清理失败: " + ex.Message); }
             return ModSvc.Scan(Cfg.Current.GamePath);
         });
@@ -2086,9 +2157,8 @@
     /// <summary>筛选项的悬停解释：只有容易被误读的那条需要。</summary>
     private string? FilterTip(string key) => key switch
     {
-        "broken" => Loc.T("SMAPI 兼容性清单给的维护状态（需非官方版 / 有替代版 / 已失效 / 已过期 / 作者弃养），不代表当前版本用不了 —— 能不能用看游戏启动日志"),
-        // 光看标签会以为这里只有"没装"的；版本过旧那批同样让依赖方跑不起来，得说清
-        "missing" => Loc.T("没装、装了但版本低于 manifest 要求、以及要求的 SMAPI 版本高于本机的，都算 —— 后果一样：这一条整条不加载"),
+        "broken" => Loc.T("SMAPI 兼容性清单给的维护状态（需非官方版 / 有替代版 / 已失效 / 已过期 / 作者弃养）"),
+        // 「缺依赖」不再给提示：那句子太长，横在筛选条上方挡视线，标签本身已经说清了
         _ => null,
     };
 
@@ -2556,6 +2626,26 @@
     // v0.36.0：mod 列表 AnimatedList 滚动效果（进入视口 scale/opacity + 顶底渐变）
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
+        // v1.3.29 渐进渲染：这一帧只画了前 _renderLimit 行 → 放一帧让浏览器先画出来，
+        // 再把额度翻倍补下一批。放在方法最前：它必须每帧都被判到，不能排在下面那些
+        // JS 调用（placeViewThumb / 滚动恢复）后面被顺延。
+        // 判据只用「额度 < 总行数」：拿 _renderShown 比额度会卡住 —— 组头计数与实际 DOM
+        // 行数存在 1 行的边界差，实测补到第二批（119 对额度 120）就再也不动了。
+        if (!_renderMorePending && !_initialLoading && !_showTrash
+            && _renderLimit > 0 && _renderLimit < _renderTotalRows)
+        {
+            _renderMorePending = true;
+            _renderLimit = Math.Min(_renderTotalRows, Math.Max(_renderLimit * 2, _renderLimit + 80));
+            _renderShown = 0;   // 让下一帧重新统计
+            try { await Task.Delay(16); } catch { }
+            _renderMorePending = false;
+            if (_disposed) return;
+            StateHasChanged();
+            // 本帧的活已经排给下一次渲染了；下面的视图滑块/滚动恢复等下一帧再跑，
+            // 免得同一件事在一次补画里连做两遍。
+            return;
+        }
+
         // 视图开关：首帧落位；切换时让滑块像顶导航一样滑过去。
         // 只给列表播入场（不碰整页，避免切换时整页闪）；回收站列表异步回填，等它出现再播。
         try
@@ -3097,11 +3187,24 @@
     private bool CanBatchUpdate(ModEntry m)
         => (m.NexusModId is not null || m.GitHubRepo is not null) && IsUpdatable(m);
 
-    /// <summary>按最外层文件夹分组（根目录直接受让的 mod 为 "" 组），再排成界面上的行序。</summary>
+    /// <summary>按最外层文件夹分组（根目录直接受让的 mod 为 "" 组），再排成界面上的行序。
+    /// <para>v1.3.29：结果带缓存。这个 getter 每次渲染都会被访问一次，里面是「分组 + 两次排序 +
+    /// 每行再算一遍缺失依赖」的全量 LINQ —— 187 个 mod 一帧就能造出上千个临时对象。实测切页
+    /// 时 UI 线程被占住 344ms，其中这部分是纯重复劳动（一次渲染周期内输入根本没变）。
+    /// 键取「数据引用 + 已装 UID 集合引用 + 筛选/搜索/排序」：重扫会换掉前两个的实例，
+    /// 用户改筛选会换掉后三个，都能正确失效。</para></summary>
     private IReadOnlyList<ModGroup> Groups
     {
         get
         {
+            if (_groupsCache is not null
+                && ReferenceEquals(_groupsKeyMods, _mods)
+                && ReferenceEquals(_groupsKeyUids, _installedUids)
+                && _groupsKeyFilter == _filter
+                && _groupsKeySearch == SearchText
+                && _groupsKeySort == _sortMode)
+                return _groupsCache;
+
             var installed = InstalledUids;
             var units = OrderRows(FilteredMods, _sortMode);
             foreach (var u in units)
@@ -3111,8 +3214,80 @@
                     .Where(d => !string.IsNullOrWhiteSpace(d) && !installed.Contains(d))
                     .Distinct(StringComparer.OrdinalIgnoreCase)
                     .ToList();
+
+            _groupsCache = units;
+            _groupsKeyMods = _mods;
+            _groupsKeyUids = _installedUids;
+            _groupsKeyFilter = _filter;
+            _groupsKeySearch = SearchText;
+            _groupsKeySort = _sortMode;
+            // 列表内容变了 ⇒ 从头开始渐进渲染（否则换了筛选还按上一批的行数一次画光）
+            _renderLimit = FirstRenderRows;
             return units;
         }
+    }
+
+    private IReadOnlyList<ModGroup>? _groupsCache;
+    private IReadOnlyList<ModEntry>? _groupsKeyMods;
+    private HashSet<string>? _groupsKeyUids;
+    private string? _groupsKeyFilter;
+    private string? _groupsKeySearch;
+    private string? _groupsKeySort;
+
+    // ── v1.3.29 渐进渲染 ──────────────────────────────────────────────
+    // 实测（2026-11-04）：切到 Mods 页 UI 线程被占 344ms，而把列表用搜索框滤成 0 行后
+    // 同样切一次「一条卡顿记录都没有」，重扫索引照跑 91ms —— 说明卡的是「行数 × 每行 DOM」，
+    // 而不是任何一段业务代码。200 行一次性塞进 DOM，Blazor 的 RenderTreeDiff + 序列化都在
+    // UI 线程同步跑完，界面就定在那儿。
+    // 处理办法：首帧只画 40 行（几乎瞬间），剩下的在后续几帧里翻倍补齐（40→80→160→200）。
+    // 总渲染量略增（重复 diff 已画过的行），但每帧占用降到几十毫秒，界面全程可交互。
+    /// <summary>首帧渲染的行数。</summary>
+    private const int FirstRenderRows = 40;
+    /// <summary>本帧最多渲染多少行；0 = 不分批（全画）。由 Groups 缓存失效重置。</summary>
+    private int _renderLimit = FirstRenderRows;
+    /// <summary>上一帧实际画出了多少行（含捆绑包组头）。</summary>
+    private int _renderShown;
+    /// <summary>整个列表一共有多少行（含组头）。</summary>
+    private int _renderTotalRows;
+    /// <summary>已经排了一次补画，防止 OnAfterRenderAsync 重入。</summary>
+    private bool _renderMorePending;
+
+    /// <summary>本次渲染要画的组。分批时把最后一组按剩余额度切断（组头也算一行，
+    /// 否则会出现"额度用完但组头全画出来"的一排空组）。</summary>
+    private IReadOnlyList<ModGroup> RenderedGroups()
+    {
+        var all = Groups;
+        var total = 0;
+        foreach (var g in all) total += g.Items.Count + (g.Key.Length > 0 ? 1 : 0);
+        _renderTotalRows = total;
+
+        if (_renderLimit <= 0 || total <= _renderLimit)
+        {
+            _renderShown = total;
+            return all;
+        }
+
+        var picked = new List<ModGroup>(Math.Min(all.Count, 64));
+        var shown = 0;
+        foreach (var g in all)
+        {
+            var head = g.Key.Length > 0 ? 1 : 0;
+            if (shown + head >= _renderLimit) break;
+            var room = _renderLimit - shown - head;
+            if (room <= 0) break;
+            if (room >= g.Items.Count)
+            {
+                picked.Add(g);
+                shown += g.Items.Count + head;
+            }
+            else
+            {
+                picked.Add(new ModGroup { Key = g.Key, Items = g.Items.Take(room).ToList(), Missing = g.Missing });
+                shown += room + head;
+            }
+        }
+        _renderShown = shown;
+        return picked;
     }
 
     private static string GroupKeyOf(ModEntry m)
@@ -3424,40 +3599,47 @@
     /// 重新扫描 + 强制全量重查更新（无视 60 分钟 TTL）。</summary>
     private void OnPageRefresh(string key)
     {
-        if (key != "mods" || _disposed) return;
+        if (key != "mods" || _disposed
+            || Interlocked.Exchange(ref _pageRefreshInProgress, 1) != 0) return;
         _ = InvokeAsync(async () =>
         {
-            _initialLoading = true;
-            StateHasChanged();
-            // v1.1.6：手动刷新也要做多副本清理（preScanned 路径会跳过 Rescan 里的清理）
-            var scanned = await Task.Run(() =>
+            try
             {
-                try { ModSvc.CleanupDuplicateCopies(Cfg.Current.GamePath); }
-                catch (Exception ex) { AppLog.Warn("Mods", "多副本清理失败: " + ex.Message); }
-                return ModSvc.Scan(Cfg.Current.GamePath);
-            });
-            if (_disposed) return;
-            Rescan(scanned);
-            _initialLoading = false;
-            await CheckUpdates(force: true);
-            // v1.08：刷新同时重新探测 SMAPI（安装/升级后 exe 已变，静态缓存是旧版本）
-            // 并强制重查远端新版 —— 此前刷新永远拿 5 分钟缓存，看不到刚装好的新状态。
-            // v1.3.4：freshRead —— 绕开 Windows 版本资源缓存（覆盖安装后立即读拿旧值）。
-            _smapiVersion = Game.ProbeSmapiVersion(Cfg.Current.GamePath, freshRead: true);
-            _svSmapiPath = Cfg.Current.GamePath;
-            _svSmapiVersionCache = _smapiVersion;
-            _smapiIcon = Game.GetSmapiIconDataUri(Cfg.Current.GamePath);
-            // v1.1.8：旧版游戏必须查对应 tag，不能刷成 latest 4.x
-            _smapiUpdate = SmapNeedsOld
-                ? await Updater.CheckSmapiForGameAsync(_smapiVersion, _gameVer, force: true)
-                : await Updater.CheckSmapiAsync(_smapiVersion, force: true);
-            StateHasChanged();
-            // vNext：手动刷新 = 从头看起 —— 归顶并把 0 写进滚动存档，
-            // 否则刷新后不滚动就离开，下次回来会恢复到刷新前的旧位置
-            try { await JS.InvokeVoidAsync("junigridJs.setScroll", ".jg-main", 0); } catch { }
-            try { await JS.InvokeVoidAsync("junigridJs.saveScrollKey", "modslist", 0, false); } catch { }
+                _initialLoading = true;
+                StateHasChanged();
+                // v1.1.6：手动刷新也要做多副本清理（preScanned 路径会跳过 Rescan 里的清理）
+                var scanned = await Task.Run(() =>
+                {
+                    try { ModSvc.CleanupDuplicateCopiesIfChanged(Cfg.Current.GamePath, force: true); }
+                    catch (Exception ex) { AppLog.Warn("Mods", "多副本清理失败: " + ex.Message); }
+                    return ModSvc.Scan(Cfg.Current.GamePath);
+                });
+                if (_disposed) return;
+                Rescan(scanned);
+                _initialLoading = false;
+                await CheckUpdates(force: true);
+                // v1.08：刷新同时重新探测 SMAPI（安装/升级后 exe 已变，静态缓存是旧版本）
+                // 并强制重查远端新版 —— 此前刷新永远拿 5 分钟缓存，看不到刚装好的新状态。
+                // v1.3.4：freshRead —— 绕开 Windows 版本资源缓存（覆盖安装后立即读拿旧值）。
+                _smapiVersion = Game.ProbeSmapiVersion(Cfg.Current.GamePath, freshRead: true);
+                _svSmapiPath = Cfg.Current.GamePath;
+                _svSmapiVersionCache = _smapiVersion;
+                _smapiIcon = Game.GetSmapiIconDataUri(Cfg.Current.GamePath);
+                // v1.1.8：旧版游戏必须查对应 tag，不能刷成 latest 4.x
+                _smapiUpdate = SmapNeedsOld
+                    ? await Updater.CheckSmapiForGameAsync(_smapiVersion, _gameVer, force: true)
+                    : await Updater.CheckSmapiAsync(_smapiVersion, force: true);
+                StateHasChanged();
+                // vNext：手动刷新 = 从头看起 —— 归顶并把 0 写进滚动存档，
+                // 否则刷新后不滚动就离开，下次回来会恢复到刷新前的旧位置
+                try { await JS.InvokeVoidAsync("junigridJs.setScroll", ".jg-main", 0); } catch { }
+                try { await JS.InvokeVoidAsync("junigridJs.saveScrollKey", "modslist", 0, false); } catch { }
+            }
+            finally { Volatile.Write(ref _pageRefreshInProgress, 0); }
         });
     }
+
+    private int _pageRefreshInProgress;
 
     // v0.72.8：释放 FileSystemWatcher —— 旧版只解绑 Installer，watcher 从不销毁。
     // 每次离开 /mods 再回来就叠一个新 watcher，N 次往返 = N 个 watcher 同时监听 Mods/，
@@ -3595,7 +3777,7 @@
                     // v1.1.6：preScanned 路径跳过 Rescan 内的清理 → 这里补做
                     var scanned = await Task.Run(() =>
                     {
-                        try { ModSvc.CleanupDuplicateCopies(Cfg.Current.GamePath); }
+                        try { ModSvc.CleanupDuplicateCopiesIfChanged(Cfg.Current.GamePath); }
                         catch (Exception ex) { AppLog.Warn("Mods", "多副本清理失败: " + ex.Message); }
                         return ModSvc.Scan(Cfg.Current.GamePath);
                     });
@@ -3619,7 +3801,7 @@
             // v1.1.6：preScanned 路径跳过 Rescan 内的清理 → 这里补做
             var scanned = await Task.Run(() =>
             {
-                try { ModSvc.CleanupDuplicateCopies(Cfg.Current.GamePath); }
+                try { ModSvc.CleanupDuplicateCopiesIfChanged(Cfg.Current.GamePath); }
                 catch (Exception ex) { AppLog.Warn("Mods", "多副本清理失败: " + ex.Message); }
                 return ModSvc.Scan(Cfg.Current.GamePath);
             });
@@ -3710,7 +3892,7 @@
                 double __cleanup = 0, __rehome = 0;
                 var scanned = await Task.Run(() =>
                 {
-                    try { ModSvc.CleanupDuplicateCopies(Cfg.Current.GamePath); }
+        try { ModSvc.CleanupDuplicateCopiesIfChanged(Cfg.Current.GamePath); }
                     catch (Exception ex) { AppLog.Warn("Mods", "多副本清理失败: " + ex.Message); }
                     __cleanup = ElapsedMs(__t);
                     // 孤儿区自动归位：判得出唯一归属才搬，判不出的一律留在收件箱；全程只移动不删除
@@ -3749,7 +3931,7 @@
         double __cleanupMs = 0, __scanMs = 0;
         if (preScanned is null)
         {
-            try { ModSvc.CleanupDuplicateCopies(Cfg.Current.GamePath); }
+            try { ModSvc.CleanupDuplicateCopiesIfChanged(Cfg.Current.GamePath); }
             catch (Exception __ex) { AppLog.Warn("Mods", "多副本清理失败: " + __ex.Message); }
             __cleanupMs = ElapsedMs(__t);
             var __t2 = System.Diagnostics.Stopwatch.GetTimestamp();
@@ -3775,6 +3957,12 @@
 
     private void ReindexMods()
     {
+        // 细分计时：这一步实机曾出现 2,809ms（186 项 mod），把启动后首帧钉死 3 秒。
+        // v1.3.29：阈值从 300ms 降到 50ms —— 实测切页时它稳定占 157ms，正好卡在阈值下面
+        // 一个字都不写，导致「438ms 无可归因段」查不出是谁。降到 50ms 才能看到 4 段分解。
+        // 同时压一个 PerfScope 标记，让 UI 卡顿探针能直接把它指出来。
+        using var __perf = JuniGrid.Services.PerfScope.Enter("Mods/建索引");
+        var __rsw = System.Diagnostics.Stopwatch.StartNew();
         _rowsLoaded = true;
         _modsByFolder = new Dictionary<string, ModEntry>(_mods.Count, StringComparer.OrdinalIgnoreCase);
         foreach (var m in _mods) _modsByFolder[m.Folder] = m;
@@ -3793,6 +3981,7 @@
         // 捆绑包里不单独成行的子包：SMAPI 照样加载，所以依赖它不算缺（Enabled 那份进已装集合）；
         // 顶层被禁用时子包一起算禁用 —— 它们是「依赖被禁用」，不是「缺依赖」。
         // 子包没有条目也就没有版本号，版本判据对它们一律不指控（见 VersionUtil.IsOlderThan）。
+        var __rA = __rsw.ElapsedMilliseconds;
         var hidden = ModSvc.HiddenChildUids;
         _installedUids.UnionWith(hidden.Enabled);
         _installedUids.UnionWith(hidden.Disabled);
@@ -3800,6 +3989,7 @@
         // v1.2.5：缺失依赖缓存随重扫一并失效（依赖列表与 UID 集合都只在重扫时变化）
         _missingDepsCache.Clear();
         _staleDepsCache.Clear();
+        var __rB = __rsw.ElapsedMilliseconds;
         // 覆盖型包（汉化补丁）的健康度随重扫刷新。绝大多数人一条都没有 → 先短路，
         // 别为了空表去哈希文件。
         _overlayHealth = Cfg.Current.Overlays.Count > 0
@@ -3807,11 +3997,16 @@
             : new ModService.OverlayReport(new(), new());
         // 缺失依赖的展示名后台解析，列表行才显示得出"是哪个 mod"而不是裸 UID。
         // 只在出现还没问出结果的 UID 时才真发请求（见 _depNameNoMatch），重扫不会反复打网络。
+        var __rC = __rsw.ElapsedMilliseconds;
         var missingAll = TotalMissingUids;
         if (missingAll.Count > 0) _ = GuardedFireAndForget(ResolveDepNamesAsync(missingAll), "依赖名解析");
         // 「版本不够」那批：后台认一次"哪一页真有要求的那一版"（每个依赖每轮最多 2 次文件表查询，
         // 认过就缓存）。不这么做，这一行的链接只能退回本机那份来自的页 —— 那一页给不出要求的版本。
         if (StaleNeedsByUid().Count > 0) _ = GuardedFireAndForget(ResolveStaleDepProvidersAsync(), "依赖溯源");
+        var __rD = __rsw.ElapsedMilliseconds;
+        if (__rD > 50)
+            AppLog.Warn("ModsPerf",
+                $"[索引] 基础={__rA}ms 子包={__rB - __rA}ms 覆盖健康={__rC - __rB}ms 缺依赖={__rD - __rC}ms 合计={__rD}ms");
     }
 
     /// <summary>v1.2.4：返回列表的快照与重扫结果是否一致（文件夹/启禁/版本/N网ID）。
@@ -4013,6 +4208,12 @@
         }
 
         ShowNotice(kind, msg);
+
+        if (toTrash)
+        {
+            TrashService.Invalidate(Cfg.Current.GamePath);
+            _trashLoaded = false;
+        }
 
         ClearSelection();
         RescanAndRestate();
@@ -5543,21 +5744,21 @@
         => ex is TaskCanceledException or OperationCanceledException or HttpRequestException
            || ex.Message?.Contains("HttpClient.Timeout", StringComparison.Ordinal) == true;
 
+    /// <summary>v1.3.31：下载段闸门 —— 「取直链 + 下载落盘」限 3 路并行，安装段不占名额。
+    /// <para>旧版整条 UpdateOne 都压在一个 SemaphoreSlim(3) 下：安装是全局串行
+    /// （InstallService._installGate），有人卡在安装队列就占着另外两路的下载名额，
+    /// 批量更新「看起来卡住」就是这么来的（2026-11-04 第二批计划第 2 条）。现在检查段由
+    /// 网络层 ApiGate=2 硬顶、下载段由此门限 3、安装段出门再进 InstallService._installGate
+    /// 排队 —— 三层各管各的（v1.3.32：安装段真的进锁了，不是只打标记）。</para></summary>
+    private static readonly NexusDownloadSlotGate UpdateDownloadGate = new(3);
+
     private async Task RunUpdatePipeline(List<ModEntry> targets)
     {
         StateHasChanged();
 
-        // AUP 二审：更新流水线 16 → 3；网络层 ApiGate=2 仍是硬顶
-        // v1.3.6：免费账号也用 3 —— 隐藏窗口从「全局唯一」改成了 3 个的池子
-        //（NexusWebDownloadService.PoolSize），排队的瓶颈没了，再限制成 1
-        // 只会让批量更新一个一个等。再多也没意义：N 网对免费账号本来就限速。
-        var semaphore = new SemaphoreSlim(3);
-        await Task.WhenAll(targets.Select(async m =>
-        {
-            await semaphore.WaitAsync();
-            try { await UpdateOne(m); }
-            finally { semaphore.Release(); }
-        }));
+        // v1.3.31：不再整体压 SemaphoreSlim(3) —— 并发分层交给 UpdateDownloadGate（下载段）
+        // 与 InstallService._installGate（安装段）；见 UpdateDownloadGate 注释。
+        await Task.WhenAll(targets.Select(m => UpdateOne(m)));
 
         if (_coversDirty)
         {
@@ -5663,62 +5864,127 @@
                         task = Center.StartOrRestart($"更新 Mod「{m.Name}」", "update", m.NexusModId);
                         Center.Report(task, st.Message, 0);
 
-                        // v1.3.5：免费账号不再直接标 premium 收工 —— 先走应用内隐藏窗口
-                        // （自动按网页上那颗 Slow download 拿一次性直链），两条路都不通才回落。
-                        // 以前这里只判 NeedsPremium 就 return，于是「安装」能在应用内下完、
-                        // 「更新」却跳外部浏览器，同一个 mod 两套行为。
-                        var dl = await Installer.ResolveDownloadUrlAsync(
-                            m.NexusModId!.Value, file.FileId,
-                            (msg, _, _) =>
-                            {
-                                st.Message = msg;
-                                Center.Report(task!, msg);
-                                NotifyCheckProgress();
-                            },
-                            CancellationToken.None,
-                            task);
-                        if (dl.NeedsPremium)
+                        // v1.3.31：跨通道缓存复用先于取链 —— direct-/nxm-/dep-/mod- 四种落盘名
+                        // 认文件身份（NexusDownloadCache），任一份完整包在手就不再下第二遍，
+                        // 否则「重试又重下一遍」（第二批计划第 3 条）。
+                        var cached = NexusDownloadCache.FindReusable(
+                            StoragePaths.DownloadsDir, m.NexusModId!.Value, file.FileId);
+                        string? zip = cached;
+                        if (cached is not null)
                         {
-                            // 别再写「需要 Premium」了：这条分支现在的真实含义是
-                            // 「API 拿不到 + 应用内隐藏窗口也没拿到」，报 Premium 只会让人
-                            // 以为得充会员，而实际原因就在 dl.Error 里（登录墙 / 页面没交文件…）。
-                            SettleUpdateTask(task, false,
-                                LocService.Tr("应用内没取到直链：")
-                                + (string.IsNullOrWhiteSpace(dl.Error) ? LocService.Tr("未知原因") : dl.Error)
-                                + LocService.Tr("（已改为打开网页）"));
-                            st.Status = "premium";
-                            st.Message = null;   // 极简：只在版本号后加紫色 ⇧ new 标签，不再显示黄色说明
-                            StateHasChanged(); return;
-                        }
-                        if (dl.Url is null)
-                        {
-                            SettleUpdateTask(task, false,
-                                LocService.Tr("获取下载地址失败：") + dl.Error);
-                            st.Status = "failed"; st.Message = LocService.Tr("获取下载地址失败：") + dl.Error;
-                            StateHasChanged(); return;
+                            // 缓存命中 = 包已经完整躺在本地 → 记进任务行，装失败时「手动解压」才有得可解
+                            task.ArchivePath = cached;
+                            st.Message = LocService.Tf("用本机已下载的包安装 {0}…", m.Name);
+                            Center.Report(task, st.Message, 60);
+                            NotifyCheckProgress();
                         }
 
-                        var zip = Path.Combine(StoragePaths.DownloadsDir,
-                            $"mod-{m.NexusModId}-{file.FileId}.zip");
-                        Directory.CreateDirectory(Path.GetDirectoryName(zip)!);
-                        await DownloadWithTask(
-                            dl.Url, zip,
-                            $"更新 Mod「{m.Name}」",
-                            $"正在下载 {m.Name}…",
-                            (msg, pct, spd) => { st.Message = msg; NotifyCheckProgress(); },
-                            task: task, mirrors: dl.Mirrors, expectedMd5: file.Md5);
+                        if (zip is null)
+                        {
+                            // ── 下载段（取直链 + 落盘）：UpdateDownloadGate 限 3 路 ──
+                            Center.Report(task, LocService.Tr("排队等待下载通道…"), 0);
+                            bool entered;
+                            using (Center.BeginLongRunning(task!))   // 排队不报进度，豁免僵尸看门狗
+                                // v1.3.32：排队等待必须接任务令牌 —— 不接的话「暂停」对排在门外的
+                                // 更新毫无作用（照旧占位、照旧开跑），与 DownloadWithTask 的
+                                // 「传入任务 CT」注释相悖。
+                                entered = await UpdateDownloadGate.WaitAsync(task, null, task!.Cts.Token);
+                            try
+                            {
+                                // v1.3.5：免费账号不再直接标 premium 收工 —— 先走应用内隐藏窗口
+                                // （自动按网页上那颗 Slow download 拿一次性直链），两条路都不通才回落。
+                                // 以前这里只判 NeedsPremium 就 return，于是「安装」能在应用内下完、
+                                // 「更新」却跳外部浏览器，同一个 mod 两套行为。
+                                var dl = await Installer.ResolveDownloadUrlAsync(
+                                    m.NexusModId!.Value, file.FileId,
+                                    (msg, _, _) =>
+                                    {
+                                        st.Message = msg;
+                                        Center.Report(task!, msg);
+                                        NotifyCheckProgress();
+                                    },
+                                    // 取链是下载段的一部分（隐藏窗口最长 100 秒零进度）——
+                                    // 必须接任务令牌，否则「暂停」对这一段毫无作用。
+                                    task!.Cts.Token,
+                                    task);
+                                if (dl.NeedsPremium)
+                                {
+                                    // 别再写「需要 Premium」了：这条分支现在的真实含义是
+                                    // 「API 拿不到 + 应用内隐藏窗口也没拿到」，报 Premium 只会让人
+                                    // 以为得充会员，而实际原因就在 dl.Error 里（登录墙 / 页面没交文件…）。
+                                    SettleUpdateTask(task, false,
+                                        LocService.Tr("应用内没取到直链：")
+                                        + (string.IsNullOrWhiteSpace(dl.Error) ? LocService.Tr("未知原因") : dl.Error)
+                                        + LocService.Tr("（已改为打开网页）"));
+                                    st.Status = "premium";
+                                    st.Message = null;   // 极简：只在版本号后加紫色 ⇧ new 标签，不再显示黄色说明
+                                    StateHasChanged(); return;
+                                }
+                                if (dl.Url is null)
+                                {
+                                    SettleUpdateTask(task, false,
+                                        LocService.Tr("获取下载地址失败：") + dl.Error);
+                                    st.Status = "failed"; st.Message = LocService.Tr("获取下载地址失败：") + dl.Error;
+                                    StateHasChanged(); return;
+                                }
+
+                                zip = Path.Combine(StoragePaths.DownloadsDir,
+                                    $"mod-{m.NexusModId}-{file.FileId}.zip");
+                                Directory.CreateDirectory(Path.GetDirectoryName(zip)!);
+                                await DownloadWithTask(
+                                    dl.Url, zip,
+                                    $"更新 Mod「{m.Name}」",
+                                    $"正在下载 {m.Name}…",
+                                    (msg, pct, spd) => { st.Message = msg; NotifyCheckProgress(); },
+                                    ct: task!.Cts.Token, task: task, mirrors: dl.Mirrors, expectedMd5: file.Md5);
+                            }
+                            finally
+                            {
+                                if (entered) UpdateDownloadGate.Release();
+                            }
+
+                            // v1.3.32：包已完整落地才记 ArchivePath —— 它是「这颗『手动解压』按钮能不能给」
+                            // 的唯一判据（下载半路失败的行不能给，否则解出来是坏包）。
+                            if (File.Exists(zip)) task.ArchivePath = zip;
+                        }
 
                         // v1.3.15：InstallUpdate 是同步重活（解压 + 肖像校验 + 转包 + 目录改名），
                         // 几十秒起步。它站在 await 续体上 = Blazor 渲染线程上 —— 下载刚走到
                         // 100% 界面就整块冻住，用户看到的就是「下载时卡死」。必须丢线程池。
+                        // v1.3.31：安装段在下载闸门之外排队（不再占下载名额）；Installing +
+                        // BeginLongRunning：行上显示「安装中」，且几十秒不报进度不会被僵尸看门狗误杀。
                         var updGameDir = Cfg.Current.GamePath;
                         string? err;
                         string? newVer;
-                        (err, newVer) = await Task.Run(() =>
+                        using (Center.BeginLongRunning(task!))
                         {
-                            var e = ModSvc.InstallUpdate(updGameDir, m.Folder, zip, out var nv);
-                            return (e, nv);
-                        });
+                            task!.Installing = true;
+                            try
+                            {
+                                // v1.3.32：安装段「出门再排」要真排队 —— 不占下载闸门的名额，
+                                // 但写入 Mods 的互斥（同名目录/回收站 staging/解压覆盖）由全局
+                                // 安装闸门统一裁决，与直装通道共用同一把锁（见 _installGate 注释）。
+                                // v1.3.31 拆闸时这里只打了 Installing + BeginLongRunning 两个标记，
+                                // 实际没进锁 —— 批量更新时 N 个安装段会真正并发跑（3 下载 + N 安装），
+                                // 回收站 staging 互相撞名、同名目录互相踩，正是第二批计划
+                                // 「要单独给安装留一个槽」要堵的口子。
+                                await InstallService.EnterInstallGateAsync(
+                                    (msg, p, s) => Center.Report(task, msg, p, s), 100, task.Cts.Token);
+                                try
+                                {
+                                    (err, newVer) = await Task.Run(() =>
+                                    {
+                                        var e = ModSvc.InstallUpdate(updGameDir, m.Folder, zip!, out var nv);
+                                        return (e, nv);
+                                    });
+                                }
+                                finally
+                                {
+                                    InstallService.ExitInstallGate();
+                                }
+                            }
+                            finally { task.Installing = false; }
+                        }
                         if (err is null)
                         {
                             SettleUpdateTask(task, true, LocService.Tf("已更新到 {0}", newVer ?? remoteVer ?? ""));
@@ -5776,21 +6042,50 @@
                         var ghZip = Path.Combine(StoragePaths.DownloadsDir,
                             "gh-" + m.GitHubRepo.Replace('/', '-') + ".zip");
                         Directory.CreateDirectory(Path.GetDirectoryName(ghZip)!);
-                        await DownloadWithTask(
-                            gh.ZipUrl, ghZip,
-                            $"更新 Mod「{m.Name}」",
-                            $"正在下载 {m.Name}（GitHub 源）…",
-                            (msg, pct, spd) => { st.Message = msg; NotifyCheckProgress(); },
-                            task: task);
+                        // v1.3.31：GitHub 下载段同样进闸门（gh- 落盘名按仓库命名、没有 fileId，
+                        // 不参与跨通道缓存）
+                        bool ghEntered;
+                        using (Center.BeginLongRunning(task!))
+                            ghEntered = await UpdateDownloadGate.WaitAsync(task, null, task!.Cts.Token);
+                        try
+                        {
+                            await DownloadWithTask(
+                                gh.ZipUrl, ghZip,
+                                $"更新 Mod「{m.Name}」",
+                                $"正在下载 {m.Name}（GitHub 源）…",
+                                (msg, pct, spd) => { st.Message = msg; NotifyCheckProgress(); },
+                                ct: task!.Cts.Token, task: task);
+                        }
+                        finally
+                        {
+                            if (ghEntered) UpdateDownloadGate.Release();
+                        }
+                        if (File.Exists(ghZip)) task.ArchivePath = ghZip;   // v1.3.32：包完整落地才记（同 N 网那条）
 
                         // expectedUniqueId 安全锁：多 Mod 共用仓库时防止装错
                         // v1.3.15：与 N 网那条同因 —— 同步解压不能站在渲染线程上
                         var ghGameDir = Cfg.Current.GamePath;
                         var ghExpect = string.IsNullOrEmpty(m.UniqueID) ? null : m.UniqueID;
                         var ghNewVer = (string?)null;
-                        var ghErr = await Task.Run(() =>
-                            ModSvc.InstallUpdate(ghGameDir, m.Folder, ghZip,
-                                out ghNewVer, expectedUniqueId: ghExpect));
+                        string? ghErr;
+                        using (Center.BeginLongRunning(task!))
+                        {
+                            task!.Installing = true;
+                            try
+                            {
+                                // v1.3.32：与 N 网安装段同款 —— 全局安装闸门，别和别的安装并发写 Mods
+                                await InstallService.EnterInstallGateAsync(
+                                    (msg, p, s) => Center.Report(task, msg, p, s), 100, task.Cts.Token);
+                                try
+                                {
+                                    ghErr = await Task.Run(() =>
+                                        ModSvc.InstallUpdate(ghGameDir, m.Folder, ghZip,
+                                            out ghNewVer, expectedUniqueId: ghExpect));
+                                }
+                                finally { InstallService.ExitInstallGate(); }
+                            }
+                            finally { task.Installing = false; }
+                        }
                         if (ghErr is null)
                         {
                             SettleUpdateTask(task, true, LocService.Tf("已更新到 {0}", gh.Tag));
@@ -5867,6 +6162,9 @@
     {
         var own = task is null;
         var t = task ?? Center.Start(taskTitle, "download");
+        // v1.3.32：从这一行起才有字节进度 —— 行首状态切「下载中」，百分比/速度开始是真的。
+        // 取链、开隐藏窗口那些「准备中」的步骤在调用本方法之前，报的是阶段刻度不是进度。
+        t.Downloading = true;
         try
         {
             Center.Report(t, startMsg, 0, 0);
@@ -5895,7 +6193,10 @@
                                 try { System.IO.File.Delete(zipPath); } catch { }
                                 Center.Report(t, LocService.Tr("GitHub 直连失败，切换镜像下载…"), 0, 0);
                             }
-                            await Nexus.DownloadFileAsync(candidate, zipPath, progress, ct);
+                            if (!Center.SetPartialDownloadPath(t, zipPath))
+                                throw new OperationCanceledException("任务已移除", ct);
+                            await Nexus.DownloadFileAsync(candidate, zipPath, progress, ct,
+                                preservePartialOnCancellation: () => !InstallService.MayDiscardHalfPack(t, ct));
                             EnsureRealPack(zipPath);
                             return;
                         }
@@ -5904,11 +6205,15 @@
                     throw last!;
                 }
 
-                await Nexus.DownloadFileAsync(url, zipPath, progress, ct, mirrors);
+                if (!Center.SetPartialDownloadPath(t, zipPath))
+                    throw new OperationCanceledException("任务已移除", ct);
+                await Nexus.DownloadFileAsync(url, zipPath, progress, ct, mirrors,
+                    expectedMd5, () => !InstallService.MayDiscardHalfPack(t, ct));
                 EnsureRealPack(zipPath);
             }
 
             await FetchAsync();
+            Center.SetPartialDownloadPath(t, null);
 
             // v1.3.13：md5 只做「可疑就重下一次」，不做拦截 —— 见 DownloadIntegrity 的注释
             // v1.3.14：必须走异步版。这里在 UI 线程的续体上，同步算 md5 会把界面直接冻住。
@@ -5935,6 +6240,11 @@
         {
             if (own) Center.Finish(t, false, ex.Message);
             throw;
+        }
+        finally
+        {
+            // 下载段到此为止（含失败/取消）：后面的安装段没有字节进度，别让行上挂着「下载中」
+            t.Downloading = false;
         }
     }
 

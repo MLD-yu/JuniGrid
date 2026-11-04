@@ -1,4 +1,6 @@
 using System.Security.Cryptography;
+using System.Net;
+using System.Net.Http.Headers;
 using System.Text.Json;
 using JuniGrid.Services;
 
@@ -189,5 +191,26 @@ public class InstallerIntegrityTests
         Assert.Throws<IOException>(() => ResumableDownload.EnsureComplete(99, 100));
         ResumableDownload.EnsureComplete(100, 100);   // 刚好齐 → 放行
         ResumableDownload.EnsureComplete(50, 0);      // 服务器没给 Content-Length → 无从判断，放行给哈希兜底
+    }
+
+    [Fact]
+    public void ResumeRequiresServerRangeToStartAtTheSavedOffset()
+    {
+        Assert.True(ResumableDownload.ResumeRangeMatches(100,
+            HttpStatusCode.PartialContent, new ContentRangeHeaderValue(100, 199, 500)));
+        Assert.False(ResumableDownload.ResumeRangeMatches(100,
+            HttpStatusCode.PartialContent, new ContentRangeHeaderValue(0, 99, 500)));
+        Assert.False(ResumableDownload.ResumeRangeMatches(100,
+            HttpStatusCode.OK, new ContentRangeHeaderValue(100, 199, 500)));
+    }
+
+    [Fact]
+    public void RangeNotSatisfiableMeansCompleteOnlyWhenLengthsMatch()
+    {
+        Assert.True(ResumableDownload.IsCompleteAfterRangeRejected(500,
+            new ContentRangeHeaderValue(500)));
+        Assert.False(ResumableDownload.IsCompleteAfterRangeRejected(600,
+            new ContentRangeHeaderValue(500)));
+        Assert.False(ResumableDownload.IsCompleteAfterRangeRejected(500, null));
     }
 }

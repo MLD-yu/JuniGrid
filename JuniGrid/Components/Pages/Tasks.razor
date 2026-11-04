@@ -2,7 +2,9 @@
 @page "/tasks"
 @inject TaskCenterService Center
 @inject VersionDownloadService VerDl
+@inject NexusWebDownloadService NexusWebDl
 @inject InstallService Installer
+@inject ConfigService Cfg
 @inject IJSRuntime JS
 @implements IDisposable
 
@@ -20,13 +22,13 @@
             <div style="margin-top:16px;font-size:13px;opacity:.7;">@Loc.T("下载速度")</div>
             <div style="font-size:22px;font-weight:600;color:var(--jg-text)">@(Center.TotalSpeedKnown ? Center.TotalSpeedMBps.ToString("F2") + " M/s" : "—")</div>
             <div style="margin-top:16px;font-size:13px;opacity:.7;">@Loc.T("剩余任务")</div>
-            <div style="font-size:22px;font-weight:600;color:var(--jg-text)">@Center.RunningCount</div>
+            <div style="font-size:22px;font-weight:600;color:var(--jg-text)">@Center.ActiveCount</div>
             <div style="margin-top:24px;display:flex;flex-direction:column;gap:8px;">
                 <button class="jg-tasks-clear" @onclick="ResumeAll"
                         data-tip='@Loc.T("继续所有已暂停的任务（历史版本会从头重下）")'
                         disabled="@(!HasPaused)">@Loc.T("全部继续")</button>
                 <button class="jg-tasks-clear" @onclick="PauseAll"
-                        data-tip='@Loc.T("暂停所有进行中的任务（含排队中的）")'
+                        data-tip='@Loc.T("暂停进行中的下载（含排队下载；安装阶段不可暂停）")'
                         disabled="@(!HasRunning)">@Loc.T("全部暂停")</button>
                 <button class="jg-tasks-clear" @onclick="AskClear"
                         data-tip='@Loc.T("删除当前筛选下的所有任务记录，正在跑的会一起取消")'
@@ -35,24 +37,10 @@
         </aside>
         <section style="flex:1;min-width:0;">
             <h1 style="margin-top:0;">@Loc.T("任务管理")</h1>
-            @* ─── 筛选导航：第一个胶囊 = 任务类型（点本体一键回「全部」，点小箭头才弹下拉）
-                   + 状态胶囊 进行中/成功/失败 ─── *@
+            @* ─── 筛选导航：全部 / 进行中 / 成功 / 失败 ───
+               v1.3.33：左侧那颗「任务类型」下拉（全部 / Mod 下载）删掉了 —— 类型维度实际只有一个
+               选项能用（cleanup 早就被 RebuildVisible 无条件滤掉），留着只是让人多点一次。 *@
             <div class="jg-tfilters">
-                <div class="jg-sort-dd jg-tf-kind @(_filter == "all" ? "active" : "")" id="jgKindFilter">
-                    <span class="jg-tf-label" @onclick="KindPillClick" title='@Loc.T("点击回到该类型的全部任务")'>@KindLabel(_kind)</span>
-                    <span class="jg-tf-caret" @onclick="ToggleKindMenu" title='@Loc.T("选择任务类型")'>
-                        <svg class="jg-sort-arrow" width="12" height="12" viewBox="0 0 12 12" fill="none">
-                            <path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-                        </svg>
-                    </span>
-                    <div class="jg-sort-menu">
-                        @foreach (var k in Kinds)
-                        {
-                            <button type="button" class="jg-sort-item @(_kind == k.Key ? "active" : "")"
-                                    @onclick="() => SelectKind(k.Key)">@Loc.T(k.Label)</button>
-                        }
-                    </div>
-                </div>
                 @foreach (var f in Filters)
                 {
                     var key = f.Key;
@@ -86,6 +74,23 @@
                             {
                                 <button class="jg-rowbtn" @onclick="() => Retry(t)" title='@Loc.T("重试")'>↻</button>
                             }
+                            @if (CanManualExtract(t))
+                            {
+                                @* v1.3.32：只在【安装失败】时给这颗按钮 —— 包已经完整下到本地，只是装不进去，
+                                   手动解出来丢进 Mods 才有意义。下载段失败（半截包 / 干脆没下完）不给：
+                                   磁盘上连一个完整的整合包都没有，按下去只会得到「压缩包损坏」。
+                                   判据是任务行上的 ArchivePath（下载段在完整性校验通过后才写它）。*@
+                                @* v1.3.32：文字按钮改成图标按钮 —— 「解压」两个字在方形 .jg-rowbtn 里会被挤成
+                                   两行（截图实测），与同排 ⏸ ▶ ↻ × 也不统一。图标 fill 用 currentColor，
+                                   颜色跟 .jg-rowbtn svg 的 --jg-text-2 走。 *@
+                                <button class="jg-rowbtn" @onclick="() => ManualExtract(t)"
+                                        title='@Loc.T("手动解压")' aria-label='@Loc.T("手动解压")'>
+                                    <svg viewBox="0 0 1024 1024" style="width:15px;height:15px" fill="currentColor" aria-hidden="true">
+                                        <path d="M921.81 298.35a48.58 48.58 0 0 0-7.46-5.7L688.87 158.8c-7.84-4.71-17.33-5.22-21.09-5.22H348c-3.82 0-13.52 0.53-21.42 5.42L109.83 292.53l-0.19 0.12a48.23 48.23 0 0 0-7.44 5.69 27.16 27.16 0 0 0-17.88 25.48v502.52a27.17 27.17 0 0 0 27.14 27.14h801.07a27.09 27.09 0 0 0 27.14-27V323.82a27.16 27.16 0 0 0-17.86-25.47zM350.3 206.21h315.32L818 296.68H203.45zM887 800.84H137V349.32h750z"/>
+                                        <path d="M671.63 573.94l-38.97-35.39-94.34 103.87V411.99h-52.64v230.43l-94.34-103.87-38.97 35.39L512 749.68l159.63-175.74z"/>
+                                    </svg>
+                                </button>
+                            }
                             @if (t.Status is "running" or "paused")
                             {
                                 <button class="jg-rowbtn" @onclick="() => Remove(t)" title='@Loc.T("取消")'>×</button>
@@ -96,7 +101,7 @@
                             }
                         </div>
                         <div style="margin-top:6px;font-size:12px;display:flex;align-items:center;gap:6px;">
-                            <span style="opacity:.7;">@(RowState(t)) · @t.Percent.ToString("F0")% @(RowExtra(t)) · @StartedAt(t)</span>
+                            <span style="opacity:.7;">@RowState(t)@ProgressText(t)@RowExtra(t) · @StartedAt(t)</span>
                             @if (log.Count > 0)
                             {
                                 @* ─── 数字进度后边的下拉按钮：展开该任务的下载信息 ─── *@
@@ -107,8 +112,18 @@
                                 </button>
                             }
                         </div>
-                        <div style="height:6px;background:var(--jg-track);border-radius:3px;margin-top:6px;">
-                            <div style="height:100%;border-radius:3px;background:@(t.Status=="failed"?"#e11d48":"var(--jg-ink)");width:@(t.Percent)%"></div>
+                        @* v1.3.32：进度条只认「下载中」的字节进度。准备段 / 安装段没有可量化的进度，
+                           给一条来回滑动的不定条（表示在做事的，但没法说还剩多少），而不是一条
+                           停在某个假百分比的实心条。 *@
+                        <div style="height:6px;background:var(--jg-track);border-radius:3px;margin-top:6px;overflow:hidden;">
+                            @if (IsActivityOnly(t))
+                            {
+                                <div class="jg-taskbar-indet"></div>
+                            }
+                            else
+                            {
+                                <div style="height:100%;border-radius:3px;background:@(t.Status=="failed"?"#e11d48":"var(--jg-ink)");width:@(BarPercent(t))%"></div>
+                            }
                         </div>
 
                         @* ─── 下载信息下拉面板（GSAP easeReverse 弹性展开；进度噪声行不进入）───
@@ -222,17 +237,36 @@
     {
         RebuildVisible();
         Center.OnChanged += Refresh;
+        // 最小化期间不重绘（见 AppUiState），还原时补一次
+        Services.AppUiState.VisibilityChanged += OnWindowVisibilityChanged;
 
         // 「已运行 X 秒」是渲染时拿 DateTime.Now 现算的，本身没有任何事件推动它 ——
         // 只有任务状态变化（Center.OnChanged）才会重绘，于是这个数字会僵在最后一次变化的那一刻：
         // 界面上写着「已运行 30 秒」，过了两分钟还是 30 秒，看着像卡死。
         // 这里补一个走秒器：只在有 running 任务时才干活，全静止就空转（不重建、不重绘）。
+        // v1.3.20：每秒只重绘，不再每秒重建列表。RebuildVisible 要 Snapshot 一遍
+        // （每条任务连日志一起深拷贝），而这一步只为了让「已运行 X 秒」走一格 ——
+        // 渲染时那个数字本来就是现算的，重绘就够。实机 2026-11-04 13:53：五条任务
+        // （一条在装 Pelipper Town）时每秒一次 RebuildVisible，界面每秒被占 300-1000ms，
+        // 「全部删除」按下去像卡死。列表本身仍由 OnChanged（状态变化）+ 每 5 秒对账。
         _tick = new Timer(_ =>
         {
-            if (!HasRunning) return;
+            // 没有在跑的任务、也没有攒下的通知 → 空转。_dirty 必须算在条件里：
+            // Refresh 在节流窗口内会只置脏不重建，那一刻可能正好是最后一条通知。
+            if (!Services.AppUiState.WindowVisible) return;
+            if (!HasRunning && !_dirty) return;
             _ = InvokeAsync(() =>
             {
-                try { RebuildVisible(); StateHasChanged(); } catch { }
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                try
+                {
+                    if (_dirty || --_syncTick <= 0) { _dirty = false; _syncTick = 5; RebuildVisible(); }
+                    StateHasChanged();
+                }
+                catch { }
+                var ms = sw.ElapsedMilliseconds;
+                if (ms > 60)
+                    Services.AppLog.Warn("TasksPerf", $"走秒重绘 {ms}ms · 行数={_visible.Count} · 展开={_openDrops.Count}");
             });
         }, null, 1000, 1000);
     }
@@ -240,13 +274,47 @@
     public void Dispose()
     {
         Center.OnChanged -= Refresh;
+        Services.AppUiState.VisibilityChanged -= OnWindowVisibilityChanged;
         _tick?.Dispose();
         _tick = null;
     }
 
     /// <summary>走秒器（见 OnInitialized）。Dispose 时停掉，避免页面切走后还在空跑。</summary>
     private Timer? _tick;
-    private void Refresh() => InvokeAsync(() => { RebuildVisible(); StateHasChanged(); });
+    /// <summary>走秒器里距离下一次重建列表还剩几拍（每 5 拍重建一次，见 OnInitialized）。</summary>
+    private int _syncTick = 5;
+    /// <summary>任务变更通知。
+    /// <para>安装/下载期间 Report（解压进度、下载心跳）每 400ms 左右就来一次，每次全量重建
+    /// （Snapshot + 逐条拷日志 + 整表 diff）会把 UI 线程占住 —— 用户体感就是"安装时卡卡的"。
+    /// 这里做 350ms 节流：窗口内只置脏，真正重建交给走秒器补，最终状态不会漏。</para></summary>
+    private void Refresh()
+    {
+        _ = InvokeAsync(() =>
+        {
+            // 窗口最小化时 WebView2 收不到渲染批次，StateHasChanged 会把 UI 线程挂住
+            // （实测 150 秒）。这里只记脏，还原时由 OnWindowVisibilityChanged 补画。
+            if (!Services.AppUiState.WindowVisible) { _dirty = true; return; }
+            var now = Environment.TickCount64;
+            if (now - _lastRebuildTick < 350) { _dirty = true; return; }
+            _lastRebuildTick = now;
+            _dirty = false;
+            RebuildVisible();
+            StateHasChanged();
+        });
+    }
+
+    private void OnWindowVisibilityChanged()
+    {
+        if (!Services.AppUiState.WindowVisible) return;
+        // 还原窗口：把最小化期间攒下的变化一次性补上
+        _lastRebuildTick = 0;
+        Refresh();
+    }
+
+    /// <summary>距上次真正重建列表的时间戳（见 Refresh 节流）。</summary>
+    private long _lastRebuildTick;
+    /// <summary>节流窗口内被跳过的通知 —— 走秒器看到它就补一次重建。</summary>
+    private bool _dirty;
 
     private void RebuildVisible()
     {
@@ -258,8 +326,6 @@
         // 新任务已经不登记（TaskCenterService.Start(..., silent:true)），这里再兜一道：
         // 升级前落盘的历史 cleanup 行也不该继续占着任务管理。
         q = q.Where(t => t.Kind != "cleanup");
-        // 类型维度：Mod 下载 = 下载/安装/更新
-        if (_kind == "mod") q = q.Where(t => t.Kind != "cleanup");
         // 状态维度
         q = _filter switch
         {
@@ -271,21 +337,13 @@
         _visible = q.Select(t => (t, Center.CopyLog(t))).ToList();
     }
 
-    // ─── 筛选导航：状态胶囊 × 任务类型下拉 ───
-    // 类型胶囊本体点击 = 一键回「全部」；只有小箭头才弹下拉 —— 保证任何时候一下就能回全部
+    // ─── 筛选导航：状态胶囊（全部 / 进行中 / 成功 / 失败）───
+    // v1.3.33：类型下拉（全部 / Mod 下载）已删 —— 见 markup 处的说明。
     private static readonly (string Key, string Label)[] Filters =
     {
-        ("running", "进行中"), ("done", "成功"), ("failed", "失败")
-    };
-    private static readonly (string Key, string Label)[] Kinds =
-    {
-        ("all", "全部"), ("mod", "Mod 下载")
+        ("all", "全部"), ("running", "进行中"), ("done", "成功"), ("failed", "失败")
     };
     private string _filter = "all";   // 状态维度：all / running / done / failed
-    private string _kind = "all";     // 类型维度：all / mod
-
-    private string KindLabel(string key) =>
-        Loc.T(Kinds.FirstOrDefault(k => k.Key == key).Label ?? "全部");
 
     private void SetFilter(string key)
     {
@@ -294,35 +352,9 @@
         StateHasChanged();
     }
 
-    /// <summary>点类型胶囊本体：只把状态筛选拉回「全部」，类型保持胶囊上显示的那个 ——
-    /// 显示「Mod 下载」就回 Mod 下载视图；要清掉类型选择用下拉菜单里的「全部」。</summary>
-    private void KindPillClick()
-    {
-        _filter = "all";
-        RebuildVisible();
-        StateHasChanged();
-    }
-
-    private async Task ToggleKindMenu()
-    {
-        try { await JS.InvokeVoidAsync("junigridJs.logsFilterToggle", "#jgKindFilter"); } catch { }
-    }
-
-    private async Task SelectKind(string key)
-    {
-        _kind = key;
-        RebuildVisible();
-        StateHasChanged();
-        try { await JS.InvokeVoidAsync("junigridJs.logsFilterClose", "#jgKindFilter"); } catch { }
-    }
-
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        if (firstRender)
-        {
-            // 下拉外点关闭 + 箭头动画绑定（复用日志页同款组件）
-            try { await JS.InvokeVoidAsync("junigridJs.logsFilterInit", "#jgKindFilter"); } catch { }
-        }
+        // v1.3.33：类型下拉已删，原先给它挂的「外点关闭 + 箭头动画」初始化一并不再需要。
         // v1.1.3：给展开着的任务时间线挂观察器 —— 检测「像素方块→对勾」的切换并播放变形动画
         foreach (var id in _openDrops)
         {
@@ -392,6 +424,127 @@
     }
 
     private void Pause(TaskItem t) => Center.Pause(t);
+
+    private async Task ManualExtract(TaskItem sourceTask)
+    {
+        // v1.3.32：这条任务自己就知道压缩包在哪（ArchivePath 由下载段记下并落盘），
+        // 所以「解压」只该问一句「解压到哪儿」—— 不该再让人从磁盘里把刚下的包找一遍。
+        // 只有包确实不在了（缓存被清 / 换过缓存目录）才退化成让用户自己挑文件。
+        var owner = System.Windows.Application.Current?.MainWindow;
+        string? archivePath = null;
+        var known = sourceTask.ArchivePath;
+        // 任务行记着的那个包，必须是【能打开】的才算数 —— 半截包（暂停/取消留下的）同样满足
+        // 「文件存在且不为空」，直接拿去解只会报「压缩包损坏」。
+        if (!string.IsNullOrWhiteSpace(known) && File.Exists(known) && ModService.ArchiveReadable(known))
+        {
+            archivePath = known;
+        }
+        else if (sourceTask.NexusId is int mid && NexusDownloadCache.NewestForMod(mid) is { } cached)
+        {
+            // 老任务（ArchivePath 这个字段还没有的年代创建的）只知道 NexusId：
+            // 按文件名里的 modId 去下载缓存里找最新的一份完整包，仍然不让用户自己翻文件。
+            archivePath = cached;
+        }
+
+        if (archivePath is null)
+        {
+            var file = new Microsoft.Win32.OpenFileDialog
+            {
+                Title = Loc.T("没找到这次下载的压缩包，请手动选择"),
+                Filter = Loc.T("Mod 压缩包") + "|*.zip;*.7z;*.rar|" + Loc.T("所有文件") + "|*.*",
+                CheckFileExists = true,
+                DefaultExt = ".zip",
+            };
+            if (Directory.Exists(StoragePaths.DownloadsDir))
+                file.InitialDirectory = StoragePaths.DownloadsDir;
+
+            bool? picked;
+            try { picked = owner is null ? file.ShowDialog() : file.ShowDialog(owner); }
+            catch (Exception ex)
+            {
+                await JS.InvokeVoidAsync("junigridJs.toast", Loc.T("打开文件选择框失败") + ": " + ex.Message, "err");
+                return;
+            }
+            if (picked != true) return;
+            archivePath = file.FileName;
+        }
+
+        var folder = new Microsoft.Win32.OpenFolderDialog
+        {
+            Title = Loc.T("选择解压目标文件夹"),
+            Multiselect = false,
+        };
+        // 默认落在游戏 Mods 目录 —— 手动解压的目的通常就是把包装回去
+        var modsDir = Path.Combine(Cfg.Current.GamePath ?? "", "Mods");
+        if (Directory.Exists(modsDir)) folder.InitialDirectory = modsDir;
+        bool? folderPicked;
+        try { folderPicked = owner is null ? folder.ShowDialog() : folder.ShowDialog(owner); }
+        catch (Exception ex)
+        {
+            await JS.InvokeVoidAsync("junigridJs.toast", Loc.T("打开文件夹选择框失败") + ": " + ex.Message, "err");
+            return;
+        }
+        if (folderPicked != true) return;
+
+        var destination = ManualExtractDestination(folder.FolderName, archivePath, sourceTask.Title);
+        var task = Center.Start(Loc.T("手动解压 ") + Path.GetFileName(archivePath), "extract");
+        task.ArchivePath = archivePath;
+        var created = false;
+        try
+        {
+            if (Directory.Exists(destination)) throw new IOException(Loc.T("目标解压文件夹已存在，请重新选择"));
+            Directory.CreateDirectory(destination);
+            created = true;
+            Center.Report(task, Loc.T("正在解压到 ") + destination, 0);
+            await Task.Run(() => ModService.ExtractArchiveToDirectory(archivePath, destination,
+                task.Cts.Token, (done, total) => Center.Report(task,
+                    Loc.T("正在解压文件…") + $" {done}/{total}", total == 0 ? 0 : done * 100.0 / total)));
+            task.Cts.Token.ThrowIfCancellationRequested();
+            Center.Finish(task, true, Loc.T("解压完成：") + destination);
+            await JS.InvokeVoidAsync("junigridJs.toast", Loc.T("已解压到 ") + destination);
+        }
+        catch (OperationCanceledException)
+        {
+            if (created) try { Directory.Delete(destination, true); } catch { }
+            if (Center.Contains(task)) Center.Finish(task, false, Loc.T("解压已取消"));
+        }
+        catch (Exception ex)
+        {
+            if (created) try { Directory.Delete(destination, true); } catch { }
+            if (Center.Contains(task)) Center.Finish(task, false, Loc.T("手动解压失败：") + ex.Message);
+        }
+    }
+
+    /// <summary>从任务标题里剥出 mod 名，认不出返回 null（调用方回落到文件名）。
+    /// <para>标题的三种拼法：<c>下载并安装 {name}</c> / <c>更新 Mod「{name}」</c> / <c>手动解压 {file}</c>。</para></summary>
+    private static string? ModNameFromTitle(string? title)
+    {
+        if (string.IsNullOrWhiteSpace(title)) return null;
+        var t = title.Trim();
+        const string installPrefix = "下载并安装 ";
+        const string updatePrefix = "更新 Mod「";
+        const string extractPrefix = "手动解压 ";
+        if (t.StartsWith(installPrefix, StringComparison.Ordinal)) t = t[installPrefix.Length..];
+        else if (t.StartsWith(extractPrefix, StringComparison.Ordinal)) t = t[extractPrefix.Length..];
+        else if (t.StartsWith(updatePrefix, StringComparison.Ordinal) && t.EndsWith("」", StringComparison.Ordinal))
+            t = t[updatePrefix.Length..^1];
+        t = t.Trim();
+        return string.IsNullOrWhiteSpace(t) ? null : t;
+    }
+
+    /// <summary>解压出来的文件夹用 mod 名，不用缓存里的落盘名。
+    /// <para>缓存文件名是 <c>direct-50344-189733.zip</c> —— 那串号是「哪个通道、哪个 mod、哪个文件」，
+    /// 对人没有意义（实测解压出 <c>direct-50344-189733 (解压 14622190)</c>，谁也不知道这是哪个 mod）。
+    /// 任务标题里本来就有 mod 名，剥掉前缀就是它。</para></summary>
+    private static string ManualExtractDestination(string root, string archivePath, string? taskTitle)
+    {
+        var name = ModNameFromTitle(taskTitle) ?? Path.GetFileNameWithoutExtension(archivePath);
+        foreach (var invalid in Path.GetInvalidFileNameChars()) name = name.Replace(invalid, '_');
+        name = string.IsNullOrWhiteSpace(name) ? "Mod" : name.Trim().TrimEnd('.');
+        var suffix = Guid.NewGuid().ToString("N")[..8];
+        return Path.Combine(root, $"{name} (解压 {suffix})");
+    }
+
     private void Retry(TaskItem t)
     {
         // 本次运行里真跑过的 → 原地重挂 worker 重跑
@@ -436,24 +589,61 @@
     private void AskClear() => _confirmClear = true;
     private void CancelConfirm() => _confirmClear = false;
 
-    /// <summary>行首状态字：版本下载在排队等 Steam 会话时，磁盘上什么都没发生，
-    /// 写「运行中」是骗人的 → 写「等待中」。</summary>
+    /// <summary>运行中的任务分成三段：<b>准备中</b>（取文件信息 / 取直链 / 开 N 网隐藏窗口）、
+    /// <b>下载中</b>（真的在搬字节）、<b>安装中</b>（解压 + 搬进 Mods）。
+    /// <para>v1.3.32：以前只有「安装中 / 等待中 / 运行中」三种，准备段和下载段都叫「运行中」，
+    /// 配上旁边那个百分比（准备段报的 2%/5%/6% 是阶段刻度，不是进度）就成了
+    /// 「还在开网页，却写着 6%」—— 实测截图里就是这么显示的。现在三段分清楚，
+    /// 百分比只在「下载中」出现，见 <see cref="TaskRowRules.Describe"/>。</para>
+    /// <para>v1.3.31：排队口径统一到 <c>TaskItem.Queued</c>（三处闸门排队时都置位），
+    /// 服务级 IsQueued 留作兜底，两边取或。</para></summary>
     private string RowState(TaskItem t) => t.Status switch
     {
-        "running" when VerDl.IsQueued(t) => "等待中",
-        "running" => "运行中",
-        "paused" => "已暂停",
-        "done" => "已完成",
-        _ => "失败",
+        "running" => RowView(t).Stage switch
+        {
+            TaskRowRules.Stage.Install => LocService.Tr("安装中"),
+            TaskRowRules.Stage.Queued => LocService.Tr("等待中"),
+            TaskRowRules.Stage.Download => LocService.Tr("下载中"),
+            _ => LocService.Tr("准备中"),
+        },
+        "paused" => LocService.Tr("已暂停"),
+        "done" => LocService.Tr("已完成"),
+        _ => LocService.Tr("失败"),
     };
+
+    /// <summary>这一行的呈现规则（阶段 / 要不要百分比 / 画不定条还是实心条）——
+    /// 判断全在 <see cref="TaskRowRules"/> 里，这里只把服务级排队兜底喂进去。</summary>
+    private TaskRowRules.View RowView(TaskItem t)
+        => TaskRowRules.Describe(t, VerDl.IsQueued(t) || NexusWebDl.IsQueued(t));
+
+    /// <summary>百分比文字。只有下载段（以及停在某个位置的暂停行）才有 —— 准备段/安装段
+    /// 那里的数字要么是阶段刻度，要么是下载跑完后的残值，都不是「还剩多少」。</summary>
+    private string ProgressText(TaskItem t)
+    {
+        var v = RowView(t);
+        return v.ShowPercent ? $" · {t.Percent:F0}%" : "";
+    }
+
+    /// <summary>实心进度条的长度。见 <see cref="TaskRowRules.Describe"/>。</summary>
+    private double BarPercent(TaskItem t) => RowView(t).BarPercent;
+
+    /// <summary>画不定条（准备中 / 排队中 / 安装中）：在做事，但拿不出「还剩多少」。</summary>
+    private bool IsActivityOnly(TaskItem t) => RowView(t).IndeterminateBar;
+
+    /// <summary>「手动解压」只在【安装失败】时给 —— 判据见 <see cref="TaskRowRules.CanManualExtract"/>：
+    /// 任务行自带 <c>ArchivePath</c> 且文件还在，或者下载缓存里还有这个 mod 的一份可打开的完整包。
+    /// 后者不是多余的兜底：老任务行没有 ArchivePath 字段，只认字段会把它藏掉（2026-11-04 实测）。</summary>
+    private static bool CanManualExtract(TaskItem t)
+        => TaskRowRules.CanManualExtract(t, File.Exists, NexusDownloadCache.NewestForMod);
 
     /// <summary>状态后面的第二个数：报过速度的（走启动器下载的 mod）显示速度；
     /// 版本下载没有速度可报（DepotDownloader 不输出字节数）→ 显示跑了多久，
     /// 至少能看出它是不是在动。排队中的两个都不显示 —— 那一路什么都没发生。</summary>
     private string RowExtra(TaskItem t)
     {
-        if (t.Status != "running" || VerDl.IsQueued(t)) return "";
-        return t.SpeedReported ? $"· {t.SpeedMBps:F2} M/s" : $"· 已运行 {Elapsed(t.RunFrom)}";
+        // 安装段没有速度这回事（网络早停了），别把上一帧的下载速度挂在那儿
+        if (t.Status != "running" || t.Installing || t.Queued || VerDl.IsQueued(t) || NexusWebDl.IsQueued(t)) return "";
+        return t.SpeedReported ? $" · {t.SpeedMBps:F2} M/s" : $" · 已运行 {Elapsed(t.RunFrom)}";
     }
 
     /// <summary>这一行什么时候开始的。任务长存（重启也留着），没有开始时间就没法

@@ -7,6 +7,7 @@
 @inject SteamService Steam
 @inject NexusService NexusApi
 @inject NexusOAuthService OAuth
+@inject NexusWebDownloadService NexusWeb
 @inject NavigationManager Nav
 @inject IJSRuntime JS
 @inject StorageService Storage
@@ -80,6 +81,15 @@
                 {
                     <button class="jg-nexus-login-btn" @onclick='() => Nav.NavigateTo("/nexus?login=1")'>@Loc.T("登录")</button>
                 }
+            </div>
+            <div style="display:flex;align-items:center;gap:10px;padding-top:8px;border-top:1px solid var(--jg-border,#e5e7eb);">
+                <img src="assets/nav/nexus.svg" alt="Nexus 网页" style="width:36px;height:36px;border-radius:50%;object-fit:cover;" />
+                <div style="flex:1">
+                    <div style="font-weight:600;display:flex;align-items:center;gap:6px;">@Loc.T("内置 Nexus 网页") · @(_nexusWebName ?? Loc.T("账号状态未检查"))</div>
+                    <div style="font-size:12px;opacity:.65">@Loc.T("用于应用内下载；与上方 JuniGrid Nexus 账号独立")</div>
+                </div>
+                <button class="jg-nexus-login-btn" @onclick="OpenNexusWebLogin">@Loc.T("登录 / 切换")</button>
+                <button class="jg-nexus-logout-btn" @onclick="LogoutNexusWeb">@Loc.T("退出网页账号")</button>
             </div>
         </div>
     </div>
@@ -244,16 +254,6 @@
                             <span class="jg-help-tip-bubble">@Loc.T("此功能仅 Nexus Mods Premium 用户可用")<br />@Loc.T("当 mod 管理页面有 mod 需要更新时，系统会自动为您更新")</span>
                         </span>
                     }
-                </span>
-                <span class="jg-switch"><span class="jg-switch-knob"></span></span>
-            </div>
-            <div class="jg-switch-row @(_segmentAccel ? "on" : "")" @onclick="ToggleSegmentAccel">
-                <span style="display:flex;align-items:center;gap:8px">
-                    <span>@Loc.T("分片加速下载")</span>
-                    <span class="jg-help-tip">
-                        <span class="jg-help-tip-btn">?</span>
-                        <span class="jg-help-tip-bubble">@Loc.T("同一个文件同时开几条连接下载，CDN 通常按连接限速，所以能明显变快。")<br />@Loc.T("实验功能：只在服务器支持断点分片、且文件大于 4MB 时启用；任何一片失败都会自动退回单连接，最坏等于没开。")</span>
-                    </span>
                 </span>
                 <span class="jg-switch"><span class="jg-switch-knob"></span></span>
             </div>
@@ -662,6 +662,7 @@
     private string _nexusName = "";
     private string? _nexusAvatar;
     private bool   _nexusPremium;
+    private string? _nexusWebName;
     private bool   _sponsorWechat = true;
     private bool   _showForgotQr;          // 关于页的「忘记备注」二维码弹窗
 
@@ -673,6 +674,24 @@
         OAuth.Logout();   // 清空 OAuth2 令牌、已挂载的 Bearer 以及缓存的账号字段
         _nexusName = ""; _nexusAvatar = null; _nexusPremium = false;
         _ = JS.InvokeVoidAsync("junigridJs.toast", LocService.Tr("已退出 Nexus 登录"));
+        StateHasChanged();
+    }
+
+    private void OpenNexusWebLogin() => _ = NexusWeb.OpenAccountWindowAsync();
+
+    private async Task LogoutNexusWeb()
+    {
+        try
+        {
+            await NexusWeb.LogoutWebAccountAsync();
+            _nexusWebName = LocService.Tr("未登录");
+            _ = JS.InvokeVoidAsync("junigridJs.toast", LocService.Tr("已退出内置 Nexus 网页账号"));
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warn("NexusWeb", "退出内置网页账号失败：" + ex.Message);
+            _ = JS.InvokeVoidAsync("junigridJs.toast", LocService.Tr("无法退出网页账号，请先关闭内置 Nexus 窗口"), "err");
+        }
         StateHasChanged();
     }
 
@@ -845,6 +864,7 @@
         _steam = Steam.GetProfile();
         var cfg = Cfg.Current;
         _nexusName = cfg.NexusUserName;
+        _nexusWebName = NexusWeb.AccountName ?? LocService.Tr("点击登录 / 切换以查看网页账号");
         _nexusPremium = cfg.NexusIsPremium;
         // v1.08.2：只信 image/* 的缓存 —— 旧版本曾把 profile_url（网页链接）的下载结果当头像缓存，
         // data:text/html 之类坏数据每次进页都命中，头像自然「对不上」
@@ -926,22 +946,6 @@
     private bool _showAdult;
 
     private bool _showTaskDock;
-
-    // ─── v1.3.13：分片加速下载（实验）───
-    private bool _segmentAccel;
-
-    private void ToggleSegmentAccel()
-    {
-        _segmentAccel = !_segmentAccel;
-        var cfg = Cfg.Current;
-        cfg.SegmentDownload = _segmentAccel;
-        Cfg.Save(cfg);
-        // 切换即时生效：下载层每次下载前现读配置（见 MainWindow 里挂的 EnabledHook）
-        _ = JS.InvokeVoidAsync("junigridJs.toast", _segmentAccel
-            ? LocService.Tr("已开启分片加速 —— 下一个下载会同时开多条连接（不支持时会自动退回单连接）")
-            : LocService.Tr("已关闭分片加速 —— 恢复单连接下载"));
-        StateHasChanged();
-    }
 
     private void ToggleTaskDock()
     {
@@ -1243,15 +1247,23 @@
     {
         get
         {
+            var hasPausedCheckpoint = Center.Snapshot().Any(t => t.Status == "paused"
+                && !string.IsNullOrWhiteSpace(t.PartialDownloadPath));
             if (_confirmCleanAll)
             {
                 var n = _cats.Count(x => x.Cleanable && x.Id != "vercache");
-                return Loc.T("将逐个清理全部可清理缓存（不含游戏版本缓存 —— 每个版本的去留在版本管理里单独决定）。\n\n")
-                     + Loc.T("正在使用的文件会自动跳过；游戏卸载回收站清空后无法恢复。");
+                var message = Loc.T("将逐个清理全部可清理缓存（不含游戏版本缓存 —— 每个版本的去留在版本管理里单独决定）。\n\n")
+                    + Loc.T("正在使用的文件会自动跳过；游戏卸载回收站清空后无法恢复。");
+                if (hasPausedCheckpoint)
+                    message += "\n\n" + Loc.T("下载缓存也会清理暂停任务的断点；之后继续这些任务时需要重新下载。");
+                return message;
             }
             var c = _cats.FirstOrDefault(x => x.Id == _pendingCleanId);
             if (c is null) return Loc.T("确定清理吗？");
-            return Loc.F("将清理「{0}」。\n\n{1}\n\n正在使用的文件会自动跳过。", Loc.T(c.Name), Loc.T(c.Tip));
+            var pausedDownloadNote = c.Id == "downloads" && hasPausedCheckpoint
+                ? "\n\n" + Loc.T("暂停任务的下载断点也会删除；之后继续这些任务时需要重新下载。")
+                : "";
+            return Loc.F("将清理「{0}」。\n\n{1}\n\n正在使用的文件会自动跳过。", Loc.T(c.Name), Loc.T(c.Tip)) + pausedDownloadNote;
         }
     }
 
@@ -1375,7 +1387,6 @@
         }
         _showAdult = Cfg.Current.ShowAdultContent;
         _showTaskDock = Cfg.Current.ShowTaskDock;
-        _segmentAccel = Cfg.Current.SegmentDownload;
 
         // v0.2.1：内存管理 —— 订阅快照推送（5s 一次），离开页面时 Dispose 退订
         Mem.OnSnapshot += OnMemSnap;

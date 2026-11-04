@@ -255,7 +255,24 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
     border: 1px solid var(--jg-line-strong); border-radius: 10px;
 }/* v1.07：展开稳态由 class 保证（gsap 动画结束后清内联样式，状态归 CSS 管，
    下载中频繁重渲染也不会把已展开的面板打回隐藏） */
-.jg-taskdrop-menu.open { visibility: visible; opacity: 1; height: auto; }/* ─── v1.1.3：任务详情时间线（像素方块→对勾）─── */
+.jg-taskdrop-menu.open { visibility: visible; opacity: 1; height: auto; }/* ─── v1.3.32：任务行进度条 · 不定态（准备中 / 安装中 / 排队中）───
+   只有「下载中」有可量化的字节进度。准备段（取文件信息、取直链、开 N 网隐藏窗口）
+   和安装段（解压 + 搬进 Mods）都报不出「还剩多少」，以前那条实心条只能停在
+   一个假数字上（实测截图：还在开网页就写着 6%）。这里给一条来回滑动的小方块，
+   表示「在做事，但没法量化」—— 比静止的空槽有信息量，也不像假进度那样骗人。 */
+.jg-taskbar-indet { position: relative; height: 100%; width: 100%; overflow: hidden; }
+.jg-taskbar-indet::after {
+    content: ""; position: absolute; top: 0; bottom: 0; width: 36%;
+    border-radius: 3px; background: var(--jg-ink); opacity: .45;
+    animation: jg-taskbar-slide 1.15s ease-in-out infinite;
+}
+@keyframes jg-taskbar-slide {
+    from { transform: translateX(-110%); }
+    to   { transform: translateX(310%); }
+}
+@media (prefers-reduced-motion: reduce) {
+    .jg-taskbar-indet::after { animation: none; width: 100%; opacity: .18; }
+}/* ─── v1.1.3：任务详情时间线（像素方块→对勾）─── */
 .jg-tl { padding: 10px 14px 12px; }.jg-tl-empty { padding: 6px 2px; font-size: 12px; color: var(--jg-text-3); }.jg-tl-row {
     display: flex; align-items: center; gap: 12px;
     font-size: 12.5px; color: var(--jg-text); min-height: 30px; word-break: break-word;
@@ -346,6 +363,27 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
 }.jg-page-enter > *:nth-child(1) { animation-delay: 20ms; }.jg-page-enter > *:nth-child(2) { animation-delay: 40ms; }.jg-page-enter > *:nth-child(3) { animation-delay: 60ms; }.jg-page-enter > *:nth-child(4) { animation-delay: 80ms; }.jg-page-enter > *:nth-child(5) { animation-delay: 100ms; }.jg-page-enter > *:nth-child(6) { animation-delay: 120ms; }
 @keyframes jg-child-in {from { opacity: 0; transform: translateY(10px); }to   { opacity: 1; transform: translateY(0); }
 }/* ── v0.32.0：Mod 管理工具条（chips + 排序下拉 + 展开式搜索） ── */
+/* 重页面已经需要时间完成首轮布局；缩短整页 stagger，避免点击导航后内容迟迟才完全可见。 */
+.jg-main.jg-page-enter > .jg-page {
+    animation-duration: 140ms;
+    animation-delay: 0ms;
+}
+.jg-main.jg-page-enter > .jg-page.jg-nexus-scope {
+    animation-duration: 140ms;
+    animation-delay: 0ms;
+}
+.jg-main.jg-page-enter > .jg-page > * {
+    animation-duration: 140ms;
+    animation-delay: 0ms;
+}
+/* Nexus 重列表只绘制进入滚动视口的卡片。Mod 行包含需要溢出行框的行尾菜单，
+   不能启用 content-visibility（其 paint containment 会把「更多操作」菜单裁掉）。 */
+.jg-nexus-scope .jg-modcard2,
+.jg-nexus-scope .jg-trend-big,
+.jg-nexus-scope .jg-trend-sm {
+    content-visibility: auto;
+    contain-intrinsic-size: auto 76px;
+}
 /* 视图开关：沿用顶导航的磨砂底 + 白色滑块（.jg-topnav 的同一套视觉语言） */
 .jg-viewtabs {
     position: relative;

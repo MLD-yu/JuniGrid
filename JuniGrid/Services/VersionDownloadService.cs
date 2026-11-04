@@ -87,8 +87,8 @@ public sealed class VersionDownloadService
                 // 排队：同一账号只能一路 Steam 会话，闸只在最底层持有，这里照 Queued 标状态
                 var progress = new Progress<DepotDownloaderService.Progress>(p =>
                 {
-                    if (p.Queued == true) _queued.TryAdd(task.Id, 0);
-                    else if (p.Queued == false) _queued.TryRemove(task.Id, out _);
+                    if (p.Queued == true) { _queued.TryAdd(task.Id, 0); task.Queued = true; }
+                    else if (p.Queued == false) { _queued.TryRemove(task.Id, out _); task.Queued = false; }
                     _center.Report(task, p.State, p.Percent);
                 });
 
@@ -99,6 +99,8 @@ public sealed class VersionDownloadService
                 // 两个事件之间可能几分钟不报任何一行（收本体、写入几 GB 都在做重活）。
                 // 不豁免的话，正在正常下载+切换版本的任务会被看门狗误判成"工人已死"。
                 using var longRun = _center.BeginLongRunning(task);
+                // v1.3.32：进入下载段 —— 行首状态从「准备中」切「下载中」，百分比与速度才出现
+                task.Downloading = true;
                 await _depot.QrDownloadAndApplyAsync(
                     cfg.GamePath, cfg.SteamAppId, "413151",
                     manifestId, versionLabel,
@@ -150,7 +152,7 @@ public sealed class VersionDownloadService
             {
                 _center.Finish(task, false, ex.Message);
             }
-            finally { _queued.TryRemove(task.Id, out _); }   // 别让行上留着「等待中」
+            finally { _queued.TryRemove(task.Id, out _); task.Downloading = false; }   // 别让行上留着「等待中」/「下载中」
         };
 
         _resume[task.Id] = work;

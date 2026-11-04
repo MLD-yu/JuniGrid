@@ -102,9 +102,30 @@ public sealed partial class ModService
         return hits == 1 ? found : null;
     }
 
+    // v1.3.29：覆盖健康检查要对磁盘上的宿主文件算 SHA256，而覆盖目标多半是 Data/ 下的
+    // 大文件（几百 MB 量级）。实测每次重扫这一项固定吃掉 90~140ms —— 内容一个字都没变，
+    // 却把整个文件重新读一遍再哈希，还占一整块大缓冲。
+    // 现在按「修改时间 + 大小」记住结果：文件没动就直接复用；覆盖包换上去会改 mtime，
+    // 缓存自然失效，不需要任何显式的清理钩子。
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (long Ticks, long Size, string Hash)> ShaCache
+        = new(StringComparer.OrdinalIgnoreCase);
+
     private static string Sha256Of(string file)
     {
-        try { return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(file))); }
+        try
+        {
+            var fi = new FileInfo(file);
+            if (!fi.Exists) return "";
+            if (ShaCache.TryGetValue(fi.FullName, out var hit)
+                && hit.Ticks == fi.LastWriteTimeUtc.Ticks && hit.Size == fi.Length)
+                return hit.Hash;
+            // 流式算：不再 ReadAllBytes 把整个文件搬进内存
+            string hash;
+            using (var fs = File.OpenRead(file))
+                hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(fs));
+            ShaCache[fi.FullName] = (fi.LastWriteTimeUtc.Ticks, fi.Length, hash);
+            return hash;
+        }
         catch { return ""; }
     }
 

@@ -11,6 +11,8 @@
 @inject PageRefreshService PageRefresh
 
 <div class="jg-page jg-nexus-scope">
+    @* v1.3.30 渐进渲染：本帧的卡片预算，三个网格按出现顺序消费（见 CardBudget 注释） *@
+    @{ _buildTicks = System.Diagnostics.Stopwatch.GetTimestamp(); var cardBudget = new CardBudget(_cardLimit); }
     @* ─── v1.06.2：页头两段式 —— 左（logo + 搜索岛）flex:1 / 右（登录/头像）flex:1。
          搜索岛恢复 v1.05.4 之前的形态：放大镜按钮紧跟 logo，点击输入框向右展开（GSAP back.out）；
          不再常驻展开（class 不再固定 open，展开/收起由 searchIslandInit 驱动）。─── *@
@@ -227,7 +229,7 @@
             else if (_homeMods.Count > 0)
             {
                 <div class="jg-browse2" style="margin-top:10px">
-                    @foreach (var mod in _homeMods)
+                    @foreach (var mod in cardBudget.Take(_homeMods))
                     {
                         <NexusModCard Mod="mod" Installed="_installedIds.Contains(mod.Id)" OnOpen="OpenDetail" />
                     }
@@ -298,7 +300,7 @@
             else if (_authorMods.Count > 0)
             {
                 <div class="jg-browse2 jg-featured-grid">
-                    @foreach (var mod in _authorMods)
+                    @foreach (var mod in cardBudget.Take(_authorMods))
                     {
                         <NexusModCard Mod="mod" Installed="_installedIds.Contains(mod.Id)" OnOpen="OpenDetail" />
                     }
@@ -340,11 +342,11 @@
                             <div class="jg-sort-menu-in">
                                 <button type="button" class="jg-sort-item @(_searchSort == "new" ? "active" : "")"
                                         disabled="@_browseLoading" @onclick='() => SetSearchSort("new")'>
-                                    @((MarkupString)TabIcon("new"))New
+                                    @((MarkupString)TabIcon("new"))@Loc.T("最新")
                                 </button>
                                 <button type="button" class="jg-sort-item @(_searchSort == "downloads" ? "active" : "")"
                                         disabled="@_browseLoading" @onclick='() => SetSearchSort("downloads")'>
-                                    @((MarkupString)TabIcon("downloads"))Downloads
+                                    @((MarkupString)TabIcon("downloads"))@Loc.T("下载量")
                                 </button>
                             </div>
                         </div>
@@ -382,7 +384,7 @@
             else if (_browse.Count > 0)
             {
                 <div class="jg-browse2" style="margin-top:10px">
-                    @foreach (var mod in _browse)
+                    @foreach (var mod in cardBudget.Take(_browse))
                     {
                         <NexusModCard Mod="mod" Installed="_installedIds.Contains(mod.Id)" OnOpen="OpenDetail" />
                     }
@@ -516,7 +518,7 @@
             else
             {
                 <div class="jg-browse2" style="margin-top:10px">
-                    @foreach (var mod in _browse)
+                    @foreach (var mod in cardBudget.Take(_browse))
                     {
                         <NexusModCard Mod="mod" Installed="_installedIds.Contains(mod.Id)" OnOpen="OpenDetail" />
                     }
@@ -562,6 +564,10 @@
         </section>
     }
 
+    @* v1.3.30：本帧卡片账目 —— Taken=画出来的，Skipped=额度不够被截掉的，二者之和恒等于
+       本视图全部卡片数（与上一帧额度无关），所以拿它当补画的上限是稳的。 *@
+    @{ _cardTotalNow = cardBudget.Taken + cardBudget.Skipped;
+       _buildMs = System.Diagnostics.Stopwatch.GetElapsedTime(_buildTicks).TotalMilliseconds; }
 </div>
 
 @* ── 登录对话框（OAuth2 官网授权 → 授权等待 → Pixel Reveal 成功卡片）── *@
@@ -815,11 +821,11 @@
     // ─── v1.1.6：搜索页排序（New/Downloads）+ 正序/倒序，独立于浏览页状态 ───
     // 语义与官网一致：New 的正序(DESC)=最新在前、倒序(ASC)=最旧在前；
     // Downloads 的正序(DESC)=下载最多在前、倒序(ASC)=下载最少在前。
-    private string _searchSort = "new";
+    private string _searchSort = "downloads";   // 默认按下载量排（用户 2026-11-04 要求）
     private string _searchDirection = "DESC";
     private bool _searchSortOpen;
     private bool _searchDirOpen;
-    private string SearchSortLabel => _searchSort == "downloads" ? "Downloads" : "New";
+    private string SearchSortLabel => Loc.T(_searchSort == "downloads" ? "下载量" : "最新");
 
     private async Task SetSearchSort(string kind)
     {
@@ -903,6 +909,38 @@
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
+        // v1.3.30 测量结论（2026-11-04 实测，写在这里免得后人再猜一次）：
+        //   切到本页 ★首帧整段 = 13～16ms，其中「建树」0.1ms（首次冷启 156ms / 3.3ms）。
+        //   也就是说 Nexus 页的渲染从来不是瓶颈 —— 之前记在它头上的 391ms，
+        //   实际是「切到 Mods 页」的成本被 navPerf 的顺序切片记错了归属。
+        // 留下首帧这一条就够：以后谁再怀疑本页，看一眼就知道是几毫秒级的事。
+        if (!_frameLogged && _cardTotalNow > 0)
+            AppLog.Info("NexusPerf",
+                $"★首帧 视图={_viewMode} 卡片={_cardTotalNow} 建树={_buildMs:F1}ms 整段={_initElapsedMs()}ms");
+        _frameLogged = true;
+
+        // ── v1.3.30 渐进渲染：分批补齐 ──
+        // 判据只用「额度 < 本帧总卡数」，不看"已经画了几张"。Mods 页踩过的坑：拿已画数量
+        // 比额度会因计数口径差（组头算不算一行）永远差 1，补到一半就再也不动了。
+        // 放在方法最前 —— 补画是"这一帧必须发生"的事，不能排到下面那次 JS 调用后面被顺延。
+        if (!_renderMorePending && _cardLimit > 0 && _cardLimit < _cardTotalNow)
+        {
+            _renderMorePending = true;
+            var before = _cardLimit;
+            _cardLimit = Math.Min(_cardTotalNow, Math.Max(_cardLimit * 2, _cardLimit + 12));
+            try { await Task.Delay(16); } catch { }
+            _renderMorePending = false;
+            if (_nexusDisposed) return;
+            AppLog.Info("NexusPerf", $"[渐进渲染] {before} → {_cardLimit} / 共 {_cardTotalNow} 张");
+            StateHasChanged();
+            // 本帧的活交给下一次渲染了，下面的视图初始化留到补齐完再跑
+            return;
+        }
+
+        if (firstRender && _cardTotalNow > 0)
+            AppLog.Info("NexusPerf",
+                $"[首帧] 视图={_viewMode} 卡片={_cardTotalNow} 额度={_cardLimit} 建树+渲染={_initElapsedMs()}ms");
+
         // v1.2.6：这三段以前各打一次 JS（且不看 firstRender，每次渲染都串行打）⇒ 进一次页
         // 六轮渲染 = 18 次 IPC，全压在首屏时间窗里。合并成一次；三个 init 在 JS 侧都有幂等护栏。
         try
@@ -933,8 +971,60 @@
     private string AuthorAvatar =>
         _authorMods.FirstOrDefault(m => !string.IsNullOrEmpty(m.UploaderAvatar))?.UploaderAvatar ?? "";
 
+    // ── v1.3.30 渐进渲染 ──────────────────────────────────────────────
+    // 实测（2026-11-04 用户实机）：切到 Nexus 页 UI 线程被占 391ms，日志里一路「无可归因段、
+    // GC 0ms ⇒ 非 GC」—— 慢在 Blazor 把整棵渲染树 diff + 序列化成 IPC 消息这一段，它在
+    // UI 线程同步跑、又不经过任何业务方法，所以探针既抓不到标记、GC 也撇得清。
+    // Mods 页同源改造（344ms → 首行 48～65ms）已验证：把「一帧塞满整页」拆成几帧，
+    // 每帧只塞一小撮，界面全程能响应，剩下的在 16ms 后自动补齐。
+    // 首帧 12 张 ≈ 一屏可见量（网格 3 列 × 4 行）；后续每帧翻倍（12→24→48→全量）。
+    private const int FirstCards = 12;
+    /// <summary>本帧允许渲染的卡片总数；0 = 不分批。进页 / 换视图时重置为 <see cref="FirstCards"/>。</summary>
+    private int _cardLimit = FirstCards;
+    /// <summary>本帧的卡片账目：画出来的 + 因额度被截掉的 = 本视图总卡数（渲染时由 markup 回填）。</summary>
+    private int _cardTotalNow;
+    /// <summary>已经排过一次补画，防止 OnAfterRenderAsync 重入。</summary>
+    private bool _renderMorePending;
+    /// <summary>进页时刻（OnInitializedAsync 开头），用于量「建树 + 首帧渲染」到底花了多久。</summary>
+    private long _initTicks;
+    private long _buildTicks;      // markup 开始执行的时刻
+    private double _buildMs;       // markup 执行完（= 渲染树建好）花了多久
+    private bool _frameLogged;     // 首个渲染帧已记过一次「整段」耗时
+    private long _initElapsedMs()
+        => _initTicks == 0 ? -1 : (long)System.Diagnostics.Stopwatch.GetElapsedTime(_initTicks).TotalMilliseconds;
+
+    /// <summary>一帧内的卡片预算。各网格按 markup 顺序调用 <see cref="Take{T}"/> 领取，
+    /// 领完就返回空 —— 于是越靠下的板块越晚出现，正好和"用户先看上面"的顺序一致。</summary>
+    private sealed class CardBudget
+    {
+        private int _left;
+        public CardBudget(int limit) => _left = limit < 0 ? 0 : limit;
+        /// <summary>本帧已画出的卡片数。</summary>
+        public int Taken { get; private set; }
+        /// <summary>本帧因额度不足被截掉的卡片数。</summary>
+        public int Skipped { get; private set; }
+
+        public IEnumerable<T> Take<T>(IReadOnlyList<T> src)
+        {
+            var n = Math.Min(_left, src.Count);
+            for (var i = 0; i < n; i++) yield return src[i];
+            Taken += n;
+            Skipped += src.Count - n;
+            _left -= n;
+        }
+    }
+
+    /// <summary>视图/数据变了 ⇒ 从首帧小额度重新开始分批。</summary>
+    private void ResetCardLimit()
+    {
+        _cardLimit = FirstCards;
+        _cardTotalNow = 0;
+        _renderMorePending = false;
+    }
+
     private async Task LoadHomeAsync()
     {
+        ResetCardLimit();   // 刷新/首载 = 重新分批
         _homeLoading = true;
         _authorLoading = true;
         _authorFailed = false;
@@ -971,6 +1061,7 @@
     {
         if (_homeTab == key || _homeLoading) return;
         _homeTab = key;
+        ResetCardLimit();   // 换 tab = 换一批卡片，从首帧小额度重来
         _homeLoading = true;
         StateHasChanged();
         try
@@ -987,6 +1078,7 @@
     private async Task EnterBrowse(string kind)
     {
         _viewMode = "browse";
+        ResetCardLimit();
         // v0.96.0：对照官网默认时段 —— Trending 官网默认 7 天（?timeRange=7）；其他 tab 全部时间
         _timeRange = kind == "trending" ? "week" : "all";
         // v1.06.8：视图切换（URL 不变，滚动容器共享）→ 滚动归零，浏览页从顶部开始
@@ -1005,6 +1097,7 @@
     private void BackToHome()
     {
         _viewMode = "home";
+        ResetCardLimit();
         _searchText = "";
     }
 
@@ -1074,7 +1167,8 @@
         PushSearchHistory(q);
         _searchTitle = q;   // v1.05.0：标题/提示只在回车提交后更新
         _viewMode = "search";
-        _searchSort = "new";
+        ResetCardLimit();
+        _searchSort = "downloads";
         _searchDirection = "DESC";
         _page = 1;
         _timeRange = "all";
@@ -1088,6 +1182,7 @@
     {
         var q = _searchTitle;
         if (string.IsNullOrEmpty(q)) return;
+        ResetCardLimit();   // 搜索结果 = 换整页卡片
         _browseLoading = true;
         StateHasChanged();
         var exactTask = withExact && q.All(char.IsDigit) ? NexusApi.GetModAsync(int.Parse(q)) : null;
@@ -1115,6 +1210,7 @@
     private void BackFromSearch()
     {
         _viewMode = "home";
+        ResetCardLimit();
         _searchText = "";
         _searchTitle = "";
         _exactMod = null;
@@ -1145,26 +1241,36 @@
 
     private void OnPageRefresh(string key)
     {
-        if (key != "nexus") return;
+        if (key != "nexus" || _nexusDisposed
+            || Interlocked.Exchange(ref _pageRefreshInProgress, 1) != 0) return;
         // 点导航栏那个「刷新」= 用户明确要新数据：先作废 10 分钟响应缓存，否则下面几条链
         // 全部命中缓存，看起来"点了没反应"。自动进页不经过这里，仍然吃缓存（0 请求）。
-        NexusService.ClearResponseCache();
         _ = InvokeAsync(async () =>
         {
-            // vNext：手动刷新 = 从头看起 —— 归顶并把 0 写进滚动存档（前进导航回来
-            // 会按存档恢复位置，不写的话会恢复到刷新前的旧位置）
-            try { await JS.InvokeVoidAsync("junigridJs.setScroll", ".jg-main", 0); } catch { }
-            try { await JS.InvokeVoidAsync("junigridJs.saveCurrentUrlScroll", 0); } catch { }
-            if (_viewMode == "search") await RunSearchAsync();
-            else if (_viewMode == "browse") await LoadCurrentPageAsync();
-            else await LoadHomeAsync();
+            try
+            {
+                NexusService.ClearResponseCache();
+                // vNext：手动刷新 = 从头看起 —— 归顶并把 0 写进滚动存档（前进导航回来
+                // 会按存档恢复位置，不写的话会恢复到刷新前的旧位置）
+                try { await JS.InvokeVoidAsync("junigridJs.setScroll", ".jg-main", 0); } catch { }
+                try { await JS.InvokeVoidAsync("junigridJs.saveCurrentUrlScroll", 0); } catch { }
+                if (_viewMode == "search") await RunSearchAsync();
+                else if (_viewMode == "browse") await LoadCurrentPageAsync();
+                else await LoadHomeAsync();
+            }
+            finally { Volatile.Write(ref _pageRefreshInProgress, 0); }
         });
     }
 
     private bool _nexusDisposed;
+    private int _pageRefreshInProgress;
 
 protected override async Task OnInitializedAsync()
     {
+        // v1.3.30：进页 = 重新开始分批，并记下时刻用于量首帧渲染成本
+        _initTicks = System.Diagnostics.Stopwatch.GetTimestamp();
+        _frameLogged = false;
+        ResetCardLimit();
         // v0.75.0：不再 400ms 强制关闭首屏加载态 —— 全程保持 Shimmer 微光骨架，
         // 直到用户信息 + 首屏榜单真正加载完才撤下。未登录也照常加载（榜单走 GraphQL 匿名可用）。
         // 设置页「登录」胶囊跳转过来（/nexus?login=1）：未登录时直接弹出登录对话框
@@ -1369,6 +1475,7 @@ protected override async Task OnInitializedAsync()
     /// v1.04.0：带上正序/倒序方向；分类与自定义时间参数已随功能移除。</summary>
     private async Task LoadCurrentPageAsync()
     {
+        ResetCardLimit();   // 翻页/换筛选 = 换整页卡片
         _browseLoading = true;
         StateHasChanged();
         try

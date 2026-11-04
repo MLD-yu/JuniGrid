@@ -74,6 +74,187 @@ public class TaskRestartIdentityTests
     }
 
     [Fact]
+    public void InstallStageCannotBePaused()
+    {
+        var task = new TaskItem { Kind = "install" };
+        Assert.True(task.CanPause);
+        task.Installing = true;
+        Assert.False(task.CanPause);
+        task.Installing = false;
+        Assert.True(task.CanPause);
+    }
+
+    [Fact]
+    public async Task RemovingPausedTask_CleansItsSegmentState()
+    {
+        var center = NewCenterThatNeverWritesDisk();
+        var root = Path.Combine(Path.GetTempPath(), "jg-task-segments-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var destination = Path.Combine(root, "nxm-11-22.zip");
+        var part = destination + ".seg";
+        File.WriteAllText(part, "partial");
+        File.WriteAllText(part + ".state", "state");
+        File.WriteAllText(part + ".state.tmp", "temp");
+        var task = center.Start("下载测试包", "install");
+        Assert.True(center.SetPartialDownloadPath(task, destination));
+        center.Pause(task);
+
+        center.Remove(task);
+        var removed = SpinWait.SpinUntil(() => !File.Exists(part) && !File.Exists(part + ".state"),
+            TimeSpan.FromSeconds(3));
+
+        Assert.True(removed, "removing a paused row should asynchronously release the segment allocation");
+        Assert.False(File.Exists(part + ".state.tmp"));
+        Assert.Null(task.PartialDownloadPath);
+        try { Directory.Delete(root, recursive: true); } catch { }
+    }
+
+    [Fact]
+    public async Task RemovingPausedTask_AlsoDeletesSingleStreamPartialZip()
+    {
+        var center = NewCenterThatNeverWritesDisk();
+        var root = Path.Combine(Path.GetTempPath(), "jg-task-single-stream-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var destination = Path.Combine(root, "nxm-11-22.zip");
+        File.WriteAllText(destination, "partial zip bytes");
+        var task = center.Start("下载测试包", "install");
+        Assert.True(center.SetPartialDownloadPath(task, destination));
+        center.Pause(task);
+
+        center.Remove(task);
+
+        Assert.True(SpinWait.SpinUntil(() => !File.Exists(destination), TimeSpan.FromSeconds(3)),
+            "removing a paused single-stream download should delete its partial destination zip");
+        try { Directory.Delete(root, recursive: true); } catch { }
+    }
+
+    [Fact]
+    public async Task RemovingFailedTask_PreservesItsCompletedArchive()
+    {
+        var center = NewCenterThatNeverWritesDisk();
+        var root = Path.Combine(Path.GetTempPath(), "jg-task-failed-archive-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var destination = Path.Combine(root, "nxm-11-22.zip");
+        File.WriteAllText(destination, "complete archive");
+        var task = center.Start("下载测试包", "install");
+        Assert.True(center.SetPartialDownloadPath(task, destination));
+        center.Finish(task, false, "安装失败");
+
+        center.Remove(task);
+        await Task.Delay(100);
+
+        Assert.True(File.Exists(destination), "failed install rows may still need the downloaded archive for manual extraction");
+        try { Directory.Delete(root, recursive: true); } catch { }
+    }
+
+    [Fact]
+    public async Task RemovingOneTask_LeavesSharedPathForAnotherTask()
+    {
+        var center = NewCenterThatNeverWritesDisk();
+        var root = Path.Combine(Path.GetTempPath(), "jg-task-shared-segments-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var destination = Path.Combine(root, "direct-11-22.zip");
+        var part = destination + ".seg";
+        File.WriteAllText(part, "partial");
+        File.WriteAllText(part + ".state", "state");
+        var first = center.Start("第一次", "install");
+        var second = center.Start("第二次", "install");
+        Assert.True(center.SetPartialDownloadPath(first, destination));
+        Assert.True(center.SetPartialDownloadPath(second, destination));
+
+        center.Remove(first);
+        await Task.Delay(100);
+        Assert.True(File.Exists(part), "cleanup must not delete data still referenced by another task");
+
+        center.Remove(second);
+        Assert.True(SpinWait.SpinUntil(() => !File.Exists(part), TimeSpan.FromSeconds(3)));
+        try { Directory.Delete(root, recursive: true); } catch { }
+    }
+
+    [Fact]
+    public async Task ClearingPausedRows_CleansTheirSegmentArtifacts()
+    {
+        var center = NewCenterThatNeverWritesDisk();
+        var root = Path.Combine(Path.GetTempPath(), "jg-task-clear-segments-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var destination = Path.Combine(root, "dep-11-22.zip");
+        var part = destination + ".seg";
+        File.WriteAllText(part, "partial");
+        File.WriteAllText(part + ".state", "state");
+        var task = center.Start("暂停的依赖", "install");
+        center.SetPartialDownloadPath(task, destination);
+        center.Pause(task);
+
+        center.ClearMatching(t => t.Id == task.Id);
+
+        Assert.True(SpinWait.SpinUntil(() => !File.Exists(part), TimeSpan.FromSeconds(3)));
+        Assert.False(File.Exists(part + ".state"));
+        try { Directory.Delete(root, recursive: true); } catch { }
+    }
+
+    [Fact]
+    public void ResumingAPausedDownloadGoesBackToPreparing()
+    {
+        // 实机 2026-11-05 00:56 抓到的：暂停后 Downloading 留在 true（取消路径没清），
+        // 点「继续」后要先重取一次直链（十几秒），这期间行首仍写「下载中 · 6%」，
+        // 而那个 6 是 Step("…应用内页面…", 6) 的阶段刻度 —— 假进度就这样复辟了。
+        var center = NewCenterThatNeverWritesDisk();
+        var task = center.Start("下载并安装 测试", "install");
+        task.Downloading = true;
+        task.Percent = 42;
+        center.Pause(task);
+        task.Downloading = true;      // 模拟取消路径没清干净的那一版
+        center.ResumeMark(task);      // 点「继续」
+
+        Assert.False(task.Downloading);
+        Assert.Equal(TaskRowRules.Stage.Prepare, TaskRowRules.StageOf(task));
+        Assert.False(TaskRowRules.Describe(task).ShowPercent);
+        Assert.True(TaskRowRules.Describe(task).IndeterminateBar);
+    }
+
+    [Fact]
+    public void ClearingPausedRows_AlsoDeletesSingleStreamPartialZip()
+    {
+        // 批量清理走的是 ClearMatching：它先把 Status 改成 "removed" 再判断「是不是暂停行」，
+        // 顺序颠倒过一次 —— 判断恒为 false，单流留下的半截 .zip 就永远删不掉
+        //（单条移除那条路是对的，所以当时只测单条没暴露）。
+        var center = NewCenterThatNeverWritesDisk();
+        var root = Path.Combine(Path.GetTempPath(), "jg-task-clear-single-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var destination = Path.Combine(root, "direct-33-44.zip");
+        File.WriteAllText(destination, "partial zip bytes");
+        var task = center.Start("暂停的单流下载", "install");
+        Assert.True(center.SetPartialDownloadPath(task, destination));
+        center.Pause(task);
+
+        center.ClearMatching(t => t.Id == task.Id);
+
+        Assert.True(SpinWait.SpinUntil(() => !File.Exists(destination), TimeSpan.FromSeconds(3)),
+            "批量清理暂停行时，单流下载的半截包也该一起删掉");
+        try { Directory.Delete(root, recursive: true); } catch { }
+    }
+
+    [Fact]
+    public async Task ClearingFailedRows_PreservesTheirCompletedArchive()
+    {
+        // 失败行可能还要靠这份归档「手动解压」—— 批量清理不能顺手删掉它
+        var center = NewCenterThatNeverWritesDisk();
+        var root = Path.Combine(Path.GetTempPath(), "jg-task-clear-failed-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var destination = Path.Combine(root, "direct-55-66.zip");
+        File.WriteAllText(destination, "complete archive");
+        var task = center.Start("失败的安装", "install");
+        Assert.True(center.SetPartialDownloadPath(task, destination));
+        center.Finish(task, success: false, finalMsg: "安装失败");
+
+        center.ClearMatching(t => t.Id == task.Id);
+        await Task.Delay(300);   // 给异步清理一点时间：它不该动这个文件
+
+        Assert.True(File.Exists(destination), "失败行的完整包得留着，手动解压还要用");
+        try { Directory.Delete(root, recursive: true); } catch { }
+    }
+
+    [Fact]
     public void DoneRow_IsHistory_ASecondRunGetsItsOwnRow()
     {
         var c = NewCenterThatNeverWritesDisk();
@@ -115,8 +296,12 @@ public class TaskRestartIdentityTests
 
     // ─────────────── ① 开始时间 ───────────────
 
+    // 语义在 v1.3.24 改过：以前「开始时间」是这一行第一次出现的时刻，重开/继续都不动它。
+    // 但界面上那一格写的是「开始 hh:mm:ss」，用户拿它当本次开始时间 —— 13:01 创建、
+    // 14:33 重试的行仍显示「开始 13:01:29」，看着就是时钟错了。现在它跟着这一遍走。
+
     [Fact]
-    public void Restart_KeepsStartedAt_MovesTheRunClock()
+    public void Restart_MovesStartedAt_ToThisAttempt()
     {
         var c = NewCenterThatNeverWritesDisk();
         int id = Id("clock");
@@ -128,13 +313,13 @@ public class TaskRestartIdentityTests
 
         c.Restart(row);
 
-        Assert.Equal(thatNight, row.StartedAt);                     // 「开始时间」不许被重开改写
+        Assert.True(row.StartedAt > thatNight, "「开始」该换成这一遍的时刻");
         Assert.True(row.RunFrom > thatNight, "「已运行」该从这次重开算起");
         c.ClearMatching(t => t.NexusId == id);
     }
 
     [Fact]
-    public void Resume_KeepsStartedAt_Too()
+    public void Resume_MovesStartedAt_Too()
     {
         var c = NewCenterThatNeverWritesDisk();
         int id = Id("resume");
@@ -144,7 +329,7 @@ public class TaskRestartIdentityTests
         c.Pause(row);
         c.ResumeMark(row);
 
-        Assert.Equal(thatNight, row.StartedAt);
+        Assert.True(row.StartedAt > thatNight);
         Assert.True(row.RunFrom > thatNight);
         c.ClearMatching(t => t.NexusId == id);
     }

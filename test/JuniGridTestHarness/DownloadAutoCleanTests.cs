@@ -67,6 +67,59 @@ public class DownloadAutoCleanTests : IDisposable
     }
 
     [Fact]
+    public void AutoClean_ProtectsPausedDownloadAndItsSegmentSidecars()
+    {
+        var destination = MakeFile("direct-11-22.zip", 48);
+        var segment = MakeFile("direct-11-22.zip.seg", 48);
+        var state = MakeFile("direct-11-22.zip.seg.state", 48);
+        var orphan = MakeFile("orphan.zip.seg", 48);
+
+        Assert.Equal(1, StorageService.PruneStaleEntries(_dir, Cutoff,
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase) { destination }));
+
+        Assert.True(File.Exists(destination));
+        Assert.True(File.Exists(segment));
+        Assert.True(File.Exists(state));
+        Assert.False(File.Exists(orphan));
+    }
+
+    [Fact]
+    public void PartialDownloadProtection_ExpiresAfterSevenDays()
+    {
+        var oldPath = MakeFile("old.zip", 8 * 24);
+        MakeFile("old.zip.seg", 8 * 24);
+        MakeFile("old.zip.seg.state", 8 * 24);
+        var recentPath = MakeFile("recent.zip", 6 * 24);
+        MakeFile("recent.zip.seg", 6 * 24);
+        MakeFile("recent.zip.seg.state", 6 * 24);
+        var tasks = new[]
+        {
+            new TaskItem { PartialDownloadPath = oldPath, Status = "paused" },
+            new TaskItem { PartialDownloadPath = recentPath, Status = "paused" }
+        };
+
+        var protectedPaths = StorageService.GetFreshPartialDownloadPaths(tasks, _now);
+
+        Assert.DoesNotContain(oldPath, protectedPaths);
+        Assert.Contains(recentPath, protectedPaths);
+    }
+
+    [Fact]
+    public void ExpiredPausedDownloadAndSidecars_ArePruned()
+    {
+        var destination = MakeFile("expired.zip", 8 * 24);
+        var segment = MakeFile("expired.zip.seg", 8 * 24);
+        var state = MakeFile("expired.zip.seg.state", 8 * 24);
+        var protectedPaths = StorageService.GetFreshPartialDownloadPaths(
+            new[] { new TaskItem { PartialDownloadPath = destination, Status = "paused" } }, _now);
+
+        Assert.Equal(3, StorageService.PruneStaleEntries(_dir, Cutoff, protectedPaths));
+        Assert.False(File.Exists(destination));
+        Assert.False(File.Exists(segment));
+        Assert.False(File.Exists(state));
+    }
+
+    [Fact]
     public void MissingDir_IsNoOp()
         => Assert.Equal(0, StorageService.PruneStaleEntries(Path.Combine(_dir, "nope"), Cutoff));
 }

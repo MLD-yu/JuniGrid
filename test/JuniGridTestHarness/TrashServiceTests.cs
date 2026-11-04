@@ -264,4 +264,22 @@ public class TrashServiceTests : IDisposable
         Assert.Equal(0, TrashService.DeletePermanently(_game, items));
         Assert.Empty(TrashService.List(_game));
     }
+
+    [Fact]
+    public void BatchDelete_ReportsProgressWhileDeletingFirstSnapshot()
+    {
+        var root = Path.Combine(TrashDir, "ManyFiles_20261016_120000");
+        Directory.CreateDirectory(root);
+        for (var i = 0; i < 160; i++)
+            File.WriteAllText(Path.Combine(root, $"{i:D3}.txt"), "file");
+        var item = Assert.Single(TrashService.List(_game, forceRefresh: true));
+        var progress = new List<TrashDeleteProgress>();
+
+        Assert.Equal(0, TrashService.DeletePermanently(_game, new[] { item }, progress.Add));
+
+        Assert.Contains(progress, p => p.ItemsDone == 0 && p.FilesDone > 0);
+        Assert.Equal(160, progress[^1].FilesDone);
+        Assert.Equal(1, progress[^1].ItemsDone);
+        Assert.False(Directory.Exists(root));
+    }
 }

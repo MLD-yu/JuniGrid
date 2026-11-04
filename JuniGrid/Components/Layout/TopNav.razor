@@ -62,6 +62,9 @@
     }
 
     private bool _navDirty = true;
+    private long _lastRefreshClickAt;
+    private string? _lastRefreshClickKey;
+    private const long RefreshClickDebounceMs = 800;
 
     // v1.06.7：只有点击「当前已停留页面」的图标（mods/packs/nexus）才发刷新信号，
     // 页面订阅后重新扫描/拉取/检查更新；从其它页点图标 = 正常导航（组件重建自然加载，
@@ -71,6 +74,14 @@
         if (item.Href is not ("mods" or "packs" or "nexus")) return;
         var path = Nav.ToAbsoluteUri(Nav.Uri).AbsolutePath.TrimEnd('/');
         if (path.EndsWith(item.Href, StringComparison.OrdinalIgnoreCase))
+        {
+            // 连点当前页会重复启动全盘扫描或 Nexus 多路请求；短时间内合并为一次刷新。
+            var now = Environment.TickCount64;
+            if (_lastRefreshClickKey == item.Href
+                && now - _lastRefreshClickAt < RefreshClickDebounceMs) return;
+            _lastRefreshClickKey = item.Href;
+            _lastRefreshClickAt = now;
             PageRefresh.Request(item.Href);
+        }
     }
 }

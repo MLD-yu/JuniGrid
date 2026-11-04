@@ -139,6 +139,9 @@ public sealed class TaskCenterService
     /// </summary>
     internal bool IsZombie(TaskItem t, DateTime cutoff)
         => t.Status == "running"
+        && !t.Queued                    // v1.3.32：排队中的行什么都没开始跑，永远不是僵尸。
+                                        // 之前只靠调用点包 BeginLongRunning 豁免，漏一处就误杀；
+                                        // 排队口径下放任务行之后这里应当硬免疫（文档原话「queued 天然免疫」）。
         && !t.Cts.IsCancellationRequested
         && !_longRunning.Contains(t.Id)          // 长作业段自我豁免（见 BeginLongRunning）
         && (!_lastProgress.TryGetValue(t.Id, out var last) || last < cutoff);
@@ -156,6 +159,7 @@ public sealed class TaskCenterService
                 foreach (var t in list)
                 {
                     t.Status = RestoreStatus(t.Kind, t.Status);
+                    NormalizeTimes(t);
                     Items.Add(t);
                 }
                 if (list.Count > 0)
@@ -173,6 +177,7 @@ public sealed class TaskCenterService
                     foreach (var t in list)
                     {
                         t.Status = RestoreStatus(t.Kind, t.Status);
+                        NormalizeTimes(t);
                         Items.Add(t);
                     }
                     AppLog.Warn("TaskCenter", $"tasks.json 缺失，已从 .bak 恢复 {list.Count} 条任务");
@@ -199,6 +204,7 @@ public sealed class TaskCenterService
                         foreach (var t in list)
                         {
                             t.Status = RestoreStatus(t.Kind, t.Status);
+                            NormalizeTimes(t);
                             Items.Add(t);
                         }
                         AppLog.Warn("TaskCenter", "已从 .bak 恢复任务列表");
@@ -223,6 +229,20 @@ public sealed class TaskCenterService
         => savedStatus != "running" ? savedStatus
          : kind == "gameversion" ? "paused" : "failed";
 
+    /// <summary>把恢复出来的时间字段补成能直接显示的值。
+    /// <para>旧版 tasks.json 里根本没有 StartedAt 这一格（字段是后来加的），反序列化后是
+    /// <c>0001-01-01</c>，界面就会照着写「开始 0001-01-01 00:00:00」。看板上给不了真相，
+    /// 但至少别给一个明显是错的年份 —— 用任务落盘文件的最后写入时间兜底，
+    /// 它大致等于「这一行最后一次有动静的时刻」。</para></summary>
+    private static void NormalizeTimes(TaskItem t)
+    {
+        if (t.StartedAt.Year >= 2000) return;
+        DateTime fallback;
+        try { fallback = File.GetLastWriteTime(PersistPath); } catch { fallback = DateTime.Now; }
+        if (fallback.Year < 2000) fallback = DateTime.Now;
+        t.StartedAt = fallback;
+    }
+
     /// <summary>进度回报非常频繁，落盘用 800ms 防抖：静默 800ms 后才真正写盘。</summary>
     private void RequestSave() => _saveTimer.Change(800, Timeout.Infinite);
 
@@ -230,39 +250,48 @@ public sealed class TaskCenterService
     {
         try
         {
-            // v1.1.2：锁内序列化 —— 之前浅拷贝快照后锁外序列化，下载线程同时追加 t.Log
-            // 会撞出「集合已修改」把该次落盘整个丢掉；tasks.json 很小（≤几百 KB）且 800ms
-            // 防抖才写一次，锁内完成拷贝+写盘的代价可忽略
+            // v1.1.2：序列化必须在锁内 —— 之前浅拷贝快照后锁外序列化，下载线程同时追加 t.Log
+            // 会撞出「集合已修改」把该次落盘整个丢掉。这一步是纯内存，快。
+            int count;
+            string json;
             lock (_lock)
             {
-                var snapshot = Items.ToList();
-                // 防呆：内存空、磁盘上还有任务 → 不许用 [] 盖掉（与 playtime 同款）
-                if (snapshot.Count == 0 && File.Exists(PersistPath))
+                count = Items.Count;
+                json = JsonSerializer.Serialize(Items);
+            }
+
+            // 防呆：内存空、磁盘上还有任务 → 不许用 [] 盖掉（与 playtime 同款）。
+            // 读盘放在锁外：这也是文件 IO，没理由占着那把 UI 线程要用的锁。
+            if (count == 0 && File.Exists(PersistPath))
+            {
+                try
+                {
+                    var onDisk = JsonSerializer.Deserialize<List<TaskItem>>(File.ReadAllText(PersistPath));
+                    if (onDisk is { Count: > 0 })
+                    {
+                        AppLog.Warn("TaskCenter", "拒绝用空列表覆盖 tasks.json（磁盘上仍有 " + onDisk.Count + " 条）");
+                        return;
+                    }
+                }
+                catch
                 {
                     try
                     {
-                        var onDisk = JsonSerializer.Deserialize<List<TaskItem>>(File.ReadAllText(PersistPath));
-                        if (onDisk is { Count: > 0 })
+                        if (new FileInfo(PersistPath).Length > 4)
                         {
-                            AppLog.Warn("TaskCenter", "拒绝用空列表覆盖 tasks.json（磁盘上仍有 " + onDisk.Count + " 条）");
+                            AppLog.Warn("TaskCenter", "tasks.json 暂不可读且非空，拒绝用空列表覆盖");
                             return;
                         }
                     }
-                    catch
-                    {
-                        try
-                        {
-                            if (new FileInfo(PersistPath).Length > 4)
-                            {
-                                AppLog.Warn("TaskCenter", "tasks.json 暂不可读且非空，拒绝用空列表覆盖");
-                                return;
-                            }
-                        }
-                        catch { }
-                    }
+                    catch { }
                 }
-                AtomicFile.WriteAllText(PersistPath, JsonSerializer.Serialize(snapshot));
             }
+
+            // ⚠ 写盘【必须】在锁外。UI 线程渲染时每帧都要 Snapshot()（同一把锁），
+            // 而写文件会被 Defender / 另一个实例短暂占用：AtomicFile 内部重试 5 次、
+            // 每次 10ms×attempt，失败还要抛 IOException —— 这段时长全落在锁内的话，
+            // 界面就跟着一起冻。实机 2026-11-04 14:26 出现过 "Access to the path is denied"。
+            AtomicFile.WriteAllText(PersistPath, json);
         }
         catch (Exception ex) { AppLog.Warn("TaskCenter", "任务落盘失败: " + ex.Message); }
     }
@@ -330,7 +359,10 @@ public sealed class TaskCenterService
 
     /// <summary>把一行重开成「正在跑的这一遍」：进度归零、日志清空、换新的 CTS。
     /// 日志必须清 —— 旧那一遍的六个步骤留着，同一条任务的详情就每重开一次翻一倍。
-    /// 「开始时间」不动：这一行第一次出现是哪会儿，就是哪会儿。</summary>
+    /// <para>v1.3.24：<b>开始时间改成这一遍的时刻</b>。原来刻意不动（「这行第一次出现是哪会儿」），
+    /// 但界面上那一行写的是「开始 hh:mm:ss」，用户拿它当「这次什么时候开始的」——
+    /// 13:01 创建、14:33 重试的行仍显示「开始 13:01:29」，看着就像时钟错了。
+    /// 历史流水账的用途由日志里的时间戳承担，这一格只该回答「这一遍跑了多久」。</para></summary>
     public void Restart(TaskItem t, string? newTitle = null, int? nexusId = null)
     {
         t.ResetCts();
@@ -345,7 +377,12 @@ public sealed class TaskCenterService
         t.Status = "running";
         t.Percent = 0;
         t.SpeedMBps = 0;
+        t.SpeedReported = false;   // 上一遍的速度别挂在「准备中」的行上（v1.3.32）
         t.LastLine = null;
+        t.Installing = false;         // 上一遍停在「安装中」，这一遍还没走到那步
+        t.Downloading = false;        // 同上：这一遍从「准备中」重新开始
+        t.Queued = false;             // 上一遍排着队被重启 —— 这一遍从头再来，先摘排队标记
+        t.StartedAt = DateTime.Now;   // 「开始」= 这一遍开始的时刻（见方法注释）
         t.RunFrom = DateTime.Now;
         OnChanged?.Invoke();
         RequestSave();
@@ -366,7 +403,7 @@ public sealed class TaskCenterService
             if (last is not null
                 && (last == stamped
                     // 同一条心跳（下载进度）：覆盖上一行，别把 200 条上限刷满
-                    || (IsDownloadHeartbeat(line) && IsDownloadHeartbeat(last))
+                    || (IsProgressHeartbeat(line) && IsProgressHeartbeat(last))
                     // 同一步在重试循环里报了很多次（实测一次失败下载刷了 5 行
                     // 「Steam 授权成功，正在完成…」）：剥掉时间戳后同文就只留最新一条
                     || StripStamp(last) == line
@@ -392,6 +429,16 @@ public sealed class TaskCenterService
     /// <summary>带时间戳的日志行是否是下载心跳行（Report 写入时已加 "[HH:mm:ss] " 前缀）。</summary>
     private static bool IsDownloadHeartbeat(string logLine) =>
         StripStamp(logLine).StartsWith("正在下载…", StringComparison.Ordinal);
+
+    /// <summary>会高频重复刷新的进度行：下载心跳 + 解压进度。
+    /// 这一类在日志里只保留最新一条 —— 否则一次大包安装光解压就能刷掉十来行，
+    /// 把「正在安装到 Mods…」这类真正的阶段记录挤到 200 条上限之外。</summary>
+    private static bool IsProgressHeartbeat(string logLine)
+    {
+        var body = StripStamp(logLine);
+        return body.StartsWith("正在下载…", StringComparison.Ordinal)
+            || body.StartsWith("正在解压安装包…", StringComparison.Ordinal);
+    }
 
     /// <summary>去掉行首 "[HH:mm:ss] " 时间戳，拿到正文。</summary>
     private static string StripStamp(string logLine)
@@ -434,13 +481,62 @@ public sealed class TaskCenterService
     /// 供各 worker 的异常收尾判断用：有些失败路径必须先确认行还在，才敢调 Finish。</summary>
     public bool Contains(TaskItem t) { lock (_lock) return Items.Contains(t); }
 
+    /// <summary>记录当前不完整下载的目标，以便自动清理避开可续传任务。</summary>
+    public bool SetPartialDownloadPath(TaskItem t, string? path)
+    {
+        lock (_lock)
+        {
+            if (!Items.Contains(t)) return false;
+            t.PartialDownloadPath = path;
+        }
+        RequestSave();
+        return true;
+    }
+
+    private bool IsPartialPathReferenced(string path)
+    {
+        string full;
+        try { full = Path.GetFullPath(path); } catch { return false; }
+        lock (_lock)
+        {
+            foreach (var task in Items)
+            {
+                if (string.IsNullOrWhiteSpace(task.PartialDownloadPath)) continue;
+                try
+                {
+                    if (string.Equals(Path.GetFullPath(task.PartialDownloadPath), full,
+                            StringComparison.OrdinalIgnoreCase)) return true;
+                }
+                catch { }
+            }
+            return false;
+        }
+    }
+
+    private void QueuePartialCleanup(string? path, bool deleteDestination = false)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return;
+        _ = SegmentDownloader.CleanupPartialArtifactsAsync(path, () => IsPartialPathReferenced(path), deleteDestination);
+    }
+
     public void Remove(TaskItem t)
     {
-        lock (_lock) { Items.Remove(t); _lastProgress.Remove(t.Id); }
+        string? partialPath;
+        bool deleteDestination;
+        lock (_lock)
+        {
+            Items.Remove(t);
+            _lastProgress.Remove(t.Id);
+            deleteDestination = t.Status == "paused";
+            t.Status = "removed";
+            partialPath = t.PartialDownloadPath;
+            t.PartialDownloadPath = null;
+        }
         // v1.1.3：移除 = 同步取消后台下载/安装 —— 之前只删条目，管线继续跑完，
         // mod 照样出现在 Mod 管理页（下载一半移除还会"复活"）。
         try { t.Cts.Cancel(); } catch { }
         UnregisterResume(t);
+        QueuePartialCleanup(partialPath, deleteDestination);
         OnChanged?.Invoke();
         RequestSave();
     }
@@ -449,31 +545,49 @@ public sealed class TaskCenterService
     public void ClearMatching(Func<TaskItem, bool> match)
     {
         List<TaskItem>? removed = null;
+        var partialPaths = new List<(string Path, bool DeleteDestination)>();
         lock (_lock)
         {
             for (int i = Items.Count - 1; i >= 0; i--)
                 if (match(Items[i]))
                 {
-                    (removed ??= new()).Add(Items[i]);
+                    var item = Items[i];
+                    (removed ??= new()).Add(item);
+                    // ⚠ 必须在改 Status 之前取：改成 "removed" 之后这行恒为 false，
+                    // 单流下载留下的半截 .zip 就永远删不掉（批量清理这条路曾因此整条失效）。
+                    if (!string.IsNullOrWhiteSpace(item.PartialDownloadPath))
+                        partialPaths.Add((item.PartialDownloadPath, item.Status == "paused"));
+                    item.Status = "removed";
+                    item.PartialDownloadPath = null;
                     Items.RemoveAt(i);
                 }
         }
-        // v1.1.3：批量清理也取消还在跑的，避免"清了任务还继续装"
+        // 批量清理也取消所有被移除的 worker（包括暂停状态下尚未完全退出的），
+        // 避免"清了任务还继续装"。
         if (removed is not null)
             foreach (var k in removed)
             {
-                if (k.Status == "running")
-                    try { k.Cts.Cancel(); } catch { }
+                try { k.Cts.Cancel(); } catch { }
                 // 每个被删掉的条目都回收 worker：失败任务现在也留着一份（给「重试」用），
                 // 只回收 running 的话这些会永久留在字典里。
                 UnregisterResume(k);
                 _lastProgress.Remove(k.Id);
             }
+        foreach (var (path, deleteDestination) in partialPaths) QueuePartialCleanup(path, deleteDestination);
         OnChanged?.Invoke();
         RequestSave();
     }
 
-    public int RunningCount { get { lock (_lock) return Items.Count(t => t.Status == "running"); } }
+    /// <summary>真正开工的任务数（不含排队中的）—— 「N 个任务进行中」用这个口径，
+    /// 排队里的任务什么都没发生，算进「进行中」是骗人。</summary>
+    public int RunningCount { get { lock (_lock) return Items.Count(t => t.Status == "running" && !t.Queued); } }
+
+    /// <summary>活着的任务数（含排队中的）—— 悬浮球显隐、清理互斥用这个口径：
+    /// 排队里的任务也是活儿，不能让清理在它们开工前把下载目录扫掉。</summary>
+    public int ActiveCount { get { lock (_lock) return Items.Count(t => t.Status == "running"); } }
+
+    /// <summary>正在排队等名额的任务数（RunningCount 的补集，仅限 running 行）。</summary>
+    public int QueuedCount { get { lock (_lock) return Items.Count(t => t.Status == "running" && t.Queued); } }
 
     /// <summary>v1.1.7：重挂 worker 的注册表（进程内；落盘恢复的任务没有 worker，继续/重试都会失败）。
     /// 失败的任务也留着这份 worker —— 「重试」走的就是「继续」那条重挂路径，
@@ -489,7 +603,7 @@ public sealed class TaskCenterService
     /// <summary>暂停运行中的任务（worker 通过 Cts 感知；状态改为 paused）。</summary>
     public void Pause(TaskItem t)
     {
-        if (t.Status != "running") return;
+        if (t.Status != "running" || !t.CanPause) return;
         t.Status = "paused";
         t.SpeedMBps = 0;
         try { t.Cts.Cancel(); } catch { }
@@ -502,7 +616,13 @@ public sealed class TaskCenterService
         if (t.Status != "paused") return;
         t.ResetCts();
         t.Status = "running";
-        t.RunFrom = DateTime.Now;     // 「已运行」从这次继续算起，别把停机的那段也计进去
+        // 上一遍停在下载段的一半，这一遍要先重新取链（签名 URL 是一次性的）——
+        // 在真正搬字节之前，行首该回到「准备中」。不清的话暂停时残留的「下载中」
+        // 会让准备段继续显示百分比（那是阶段刻度），等于假进度复辟。
+        t.Downloading = false;
+        // 「已运行」「开始」都从这次继续算起，别把停机的那段也计进去
+        t.StartedAt = DateTime.Now;
+        t.RunFrom = DateTime.Now;
         Report(t, LocService.Tr("继续中…"), t.Percent, control: true);
     }
 
@@ -541,7 +661,9 @@ public sealed class TaskCenterService
         {
             lock (_lock)
             {
-                var running = Items.Where(t => t.Status == "running").ToList();
+                // 排队中的任务不进平均：它报的百分比是排队前的残值（重试复用的行可能是上一遍的
+                // 80%），混进来会让总进度条倒退/虚高。只算真正在动的。
+                var running = Items.Where(t => t.Status == "running" && !t.Queued).ToList();
                 if (running.Count > 0) return running.Average(t => t.Percent);
 
                 // 没有运行中任务但还有已完成/失败的记录时，仍显示最上面那个任务
@@ -553,13 +675,13 @@ public sealed class TaskCenterService
     }
     public double TotalSpeedMBps
     {
-        get { lock (_lock) return Items.Where(t => t.Status == "running").Sum(t => t.SpeedMBps); }
+        get { lock (_lock) return Items.Where(t => t.Status == "running" && !t.Queued).Sum(t => t.SpeedMBps); }
     }
 
     /// <summary>跑着的任务里有没有谁真报过速度 —— 一个都没有时界面不许显示 0.00 M/s。</summary>
     public bool TotalSpeedKnown
     {
-        get { lock (_lock) return Items.Any(t => t.Status == "running" && t.SpeedReported); }
+        get { lock (_lock) return Items.Any(t => t.Status == "running" && !t.Queued && t.SpeedReported); }
     }
 }
 
@@ -581,14 +703,50 @@ public sealed class TaskItem
     [JsonIgnore]
     public bool SpeedReported { get; set; }
 
+    /// <summary>下载已结束、正在往磁盘里写（解压 → 探针 → 搬进 Mods）。
+    /// 这一段没有任何字节进度，行首状态据此写「安装中」而不是「运行中」——
+    /// 后者配上满格进度条自相矛盾，用户也分不清到底还在不在下载。不落盘：
+    /// 恢复出来的行一律是暂停态，再跑起来必然重走安装段、届时自然置位。</summary>
+    [JsonIgnore]
+    public bool Installing { get; set; }
+
+    /// <summary>下载段正在真搬字节 —— 与「准备段」（取文件信息 / 取直链 / 开 N 网隐藏窗口）区分开。
+    /// <para>v1.3.32：行首状态据 <see cref="Queued"/> / 本属性 / <see cref="Installing"/> 分成
+    /// 「等待中 / 准备中 / 下载中 / 安装中」四段，并且<b>只有下载段显示百分比</b>。原因很实在：
+    /// 准备段报的那几个数（2% / 5% / 6% / 8%）是「走到第几步」的刻度，不是进度 ——
+    /// 实测截图里任务卡在「正在应用内打开 Nexus 文件页…」却写着「6% · 已运行 15 秒」，
+    /// 看起来像已经下了一截。安装段也没有字节进度（解压是另一套计时）。
+    /// 与 <see cref="Installing"/> 同款：运行时标志，不落盘。</para></summary>
+    [JsonIgnore]
+    public bool Downloading { get; set; }
+
+    /// <summary>这条任务正在某个闸门/队列里排队等名额（磁盘/网络上什么都没发生）。
+    /// <para>v1.3.31：排队口径下放任务行 —— 三处闸门（更新流水线下载段、Nexus 隐藏窗口、
+    /// Steam 会话）排队期间都置 true，RowState 据此显示「等待中」，RunningCount/TotalPercent
+    /// 据此把它排除。运行时标志，落盘后恢复的任务不再是 running，标记自然失效
+    /// —— 与 <see cref="Installing"/> 同款，不落盘（否则重启后任务行带着一个
+    /// 谁也不消费的 true 值进 JSON，徒增噪音）。</para></summary>
+    [JsonIgnore]
+    public bool Queued { get; set; }
+
     /// <summary>v1.1.7：可暂停 = 下载/安装/更新/游戏版本；缓存清理等短任务不可暂停。</summary>
     [JsonIgnore]
-    public bool CanPause => Kind is "download" or "install" or "update" or "gameversion";
+    public bool CanPause => !Installing && (Kind is "download" or "install" or "update" or "gameversion");
+
+    /// <summary>完整下载包的位置。失败后可从任务页选“手动解压”；落盘以便应用重启后仍可找回。</summary>
+    public string? ArchivePath { get; set; }
+
+    /// <summary>当前下载目标。暂停时保留其分片供续传；移除任务时清理对应的孤儿分片。</summary>
+    public string? PartialDownloadPath { get; set; }
     public string? LastLine { get; set; }
     // v1.06.7：必须有 setter —— 只读集合属性反序列化时不被填充，重启恢复的任务会丢光日志
     public List<string> Log { get; set; } = new();
 
-    /// <summary>这一行第一次出现的时刻，界面上的「开始时间」。继续/重试/重开都不动它。</summary>
+    /// <summary>界面上的「开始时间」= <b>这一遍</b>开跑的时刻。Start 新建时置上，
+    /// 继续 / 重试 / 重开各刷新一次（见 Restart、ResumeMark）。
+    /// <para>原来这里是「这一行第一次出现的时刻，继续/重试/重开都不动它」，但界面上写的是
+    /// 「开始 hh:mm:ss」，用户拿它当本次开始时间 —— 13:01 创建、14:33 重试的行仍显示
+    /// 「开始 13:01:29」，看起来就像时钟坏了。第一遍的痕迹由 Log 里的时间戳保留。</para></summary>
     public DateTime StartedAt { get; set; }
 
     /// <summary>本次运行的起点 —— 「已运行」按它算，Start / 继续 / 重开各刷新一次。

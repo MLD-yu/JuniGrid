@@ -174,10 +174,27 @@ public sealed partial class InstallService
         // 不登记豁免的话，僵尸看门狗 60 秒就会把这条任务判死 ——
         // 2026-11-04 实测：两条更新都卡在「正在从 Nexus 页面获取下载链接…」被看门狗杀掉。
         using var longRun = task is null ? null : (IDisposable)_center.BeginLongRunning(task);
-        var auto = await _webDownload.TryGetDirectUrlAsync(modId, fileId, report, ct);
+        var auto = await _webDownload.TryGetDirectUrlAsync(modId, fileId, report, ct, task);
         return auto.Url is not null
-            ? NexusDownloadResult.Ok(auto.Url)
+            ? NexusDownloadResult.Ok(auto.Url, auto.Mirrors)
             : new NexusDownloadResult(null, auto.Error ?? dl.Error, true);
+    }
+
+    /// <summary>校验值只是加固项：元数据接口偶发失败时不能阻断本来可用的下载。</summary>
+    private async Task<string?> ExpectedMd5Async(int modId, long fileId, CancellationToken ct)
+    {
+        try { return (await _nexus.GetFileByIdAsync(modId, fileId, patient: true, ct))?.Md5; }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            AppLog.Warn("Download", $"读取 Nexus MD5 失败 mod={modId} file={fileId}: {ex.Message}");
+            return null;
+        }
+    }
+
+    private void TrackPartialDownload(TaskItem task, string? path, CancellationToken ct)
+    {
+        if (!_center.SetPartialDownloadPath(task, path) && path is not null)
+            throw new OperationCanceledException("任务已移除", ct);
     }
 
     /// <summary>下载缓存里已经有这个 (mod, 文件) 的完整压缩包了吗？有就返回它的路径。
@@ -187,14 +204,7 @@ public sealed partial class InstallService
     /// 直装通道 —— 只看 <c>direct-</c> 那一个名字就永远等不到本机已有的那份，而免费账号的
     /// API 直链必然 403，这条任务就再也重试不动了。</para></summary>
     private static string? CachedPack(int modId, long fileId)
-    {
-        foreach (var prefix in new[] { "direct", "nxm", "dep" })
-        {
-            var p = Path.Combine(StoragePaths.DownloadsDir, $"{prefix}-{modId}-{fileId}.zip");
-            if (ModService.ArchiveReadable(p)) return p;
-        }
-        return null;
-    }
+        => NexusDownloadCache.FindReusable(StoragePaths.DownloadsDir, modId, fileId);
 
     /// <summary>
     /// 一键直装：后台下载并安装指定 mod 的最新 MAIN 文件。
@@ -269,8 +279,16 @@ public sealed partial class InstallService
                 // 复用时刻意不改 zipPath：那是"移除任务时清掉半截包"的目标，本机已有的完整包不该被它删掉。
                 var pack = zip;
                 var cached = CachedPack(modId, file.FileId);
+                if (cached is not null
+                    && await DownloadIntegrity.CheckMd5Async(cached, file.Md5, ct) == DownloadIntegrity.Md5Verdict.Mismatch)
+                {
+                    AppLog.Warn("Download", $"缓存 MD5 不符，丢弃后重新下载 mod={modId} file={file.FileId}");
+                    try { File.Delete(cached); } catch { }
+                    cached = null;
+                }
                 if (cached is not null)
                 {
+                    TrackPartialDownload(task, null, ct);
                     pack = cached;
                     Step(LocService.Tf("正在安装（用本机已下载的 {0}）…", file.Name), 8);
                 }
@@ -291,7 +309,7 @@ public sealed partial class InstallService
                         // 同 ResolveDownloadUrlAsync：取链这段最长 100 秒零进度，登记豁免别让看门狗误杀
                         using var webRun = _center.BeginLongRunning(task);
                         var auto = await _webDownload.TryGetDirectUrlAsync(modId, file.FileId,
-                            (msg, pct, spd) => Step(msg, pct, spd), ct);
+                            (msg, pct, spd) => Step(msg, pct, spd), ct, task);
                         ct.ThrowIfCancellationRequested();
                         if (auto.Url is null)
                         {
@@ -299,29 +317,21 @@ public sealed partial class InstallService
                             return PremiumNeedsWebFallback(modId, file.FileId, UpdateService.OpenUrl, auto.Error);
                         }
                         usedWebChannel = true;
-                        dl = NexusDownloadResult.Ok(auto.Url);
+                        dl = NexusDownloadResult.Ok(auto.Url, auto.Mirrors);
                     }
                     if (dl.Url is null)
                     { _center.Finish(task, false, LocService.Tr("获取下载地址失败：") + (dl.Error ?? "未知错误")); return LocService.Tr("获取下载地址失败：") + (dl.Error ?? "未知错误"); }
 
                     var progress = new Progress<NexusDownloadProgress>(p =>
                         Step(p.Message, p.Percent, p.SpeedMBps));
+                    // v1.3.32：进下载段 —— 行首状态从「准备中」切「下载中」，
+                    // 百分比与速度从这一行开始才是真的（准备段那几个 2/5/6 是阶段刻度）。
+                    task.Downloading = true;
                     Step(LocService.Tf("正在下载 {0}…", file.Name), 8, 0);
-                    await _nexus.DownloadFileAsync(dl.Url, zip, progress, ct, dl.Mirrors);
-
-                    // v1.3.13：md5 抽查。只有 N 网 files.json 给了值才比；
-                    // 不符先重下一次（仅一次），两次都不符只记警告、不拦安装 ——
-                    // 校验是为了少装坏包，不是为了把原本能装的包拦下来。
-                    // v1.3.15：必须走异步版 —— 这里在 await 续体上（渲染线程），
-                    // 同步算一遍几百 MB 的 md5 就是几百毫秒的整界面冻结。
-                    var md5Second = DownloadIntegrity.Md5Verdict.Skipped;
-                    if (await DownloadIntegrity.CheckMd5Async(zip, file.Md5, ct) == DownloadIntegrity.Md5Verdict.Mismatch)
-                    {
-                        Step(LocService.Tr("文件校验值不符，重新下载一次…"), 8, 0);
-                        try { File.Delete(zip); } catch { }
-                        await _nexus.DownloadFileAsync(dl.Url, zip, progress, ct, dl.Mirrors);
-                        md5Second = await DownloadIntegrity.CheckMd5Async(zip, file.Md5, ct);
-                    }
+                    TrackPartialDownload(task, zip, ct);
+                    await _nexus.DownloadFileAsync(dl.Url, zip, progress, ct, dl.Mirrors, file.Md5,
+                        preservePartialOnCancellation: () => !MayDiscardHalfPack(task, ct));
+                    TrackPartialDownload(task, null, ct);
 
                     // 下完先按文件头验一次：取链那几层偶尔会把网页静态资源当直链
                     // （2026-11-04 04:43 实机：avatars.nexusmods.com 的 100×100 头像被 Chromium
@@ -341,8 +351,6 @@ public sealed partial class InstallService
                         _center.Finish(task, false, bad);
                         return bad;
                     }
-                    if (md5Second == DownloadIntegrity.Md5Verdict.Mismatch)
-                        Step(LocService.Tr("注意：文件与 Nexus 记录的 md5 不一致（可能官方重打包过），继续安装"), null, null);
                     if (ct.IsCancellationRequested)   // 下完才发现被移除/暂停 → 别装了
                     {
                         if (MayDiscardHalfPack(task, ct))
@@ -350,6 +358,11 @@ public sealed partial class InstallService
                         throw new OperationCanceledException(ct);
                     }
                 }
+
+                // Keep the completed package attached to the task so a failed automatic install
+                // can offer manual extraction without downloading the archive again.
+                task.ArchivePath = pack;
+                task.Downloading = false;   // 下载段结束：后面没有字节进度了（v1.3.32）
 
                 // v1.3.4：安装段 —— 写入 Mods 全局串行（下载阶段已完成，多任务在此依次写入）
                 // v1.1.8：InstallNew 是同步重活（解压/肖像校验/CP 转换，实测可达 50s+）。
@@ -362,18 +375,24 @@ public sealed partial class InstallService
                 // 合集包会到几分钟，加上等_lock 和后续 Scan，这期间一行进度都不报。
                 // 不登记豁免的话，僵尸看门狗（60s 宽限）会把正在正常安装的任务误杀。
                 using var longRun = _center.BeginLongRunning(task);
-                await EnterInstallGateAsync(Step, 95, ct);
+                // 下载已完成后立即切入安装阶段，连等待 Mods 写入锁也不再显示“暂停”。
+                task.Installing = true;
+                await EnterInstallGateAsync(Step, 100, ct);
                 try
                 {
                     ct.ThrowIfCancellationRequested();
-                    Step(LocService.Tr("正在安装到 Mods…"), 95);
+                    // 下载已经跑完了 → 进度直接满格、状态切「安装中」。
+                    // 这一段（解压 + 探针 + 落盘）没有任何字节进度可报，卡在 95% 只会让人
+                    // 以为还差 5% 没下完，一直盯着一个不动的数字等（2026-11-04 用户反馈）。
+                    Step(LocService.Tr("正在安装到 Mods…"), 100);
                     // v1.6.5：Portraiture 素材包（无 manifest+PNG）在 ModService 内直接转换成
                     // CP 肖像包，不再依赖/安装 Portraiture 框架。包名用任务标题（可能被翻译
                     // 服务机翻，仅作目录名/展示，无碍功能）。
                     var packReqs = await PackRequirementsIfManifestlessAsync(pack, modId);
                     err = await Task.Run(() => _mods.InstallNew(cfg.GamePath, pack, out modName, modId,
                         portraiturePackName: taskTitle, cfg: _cfg, installNotes: notes,
-                        packRequirements: packReqs), ct);
+                        packRequirements: packReqs,
+                        progress: msg => _center.Report(task, msg), ct: ct), ct);
                 }
                 finally { ExitInstallGate(); }
                 // 被「继续」取代的那一跑到此为止：它可能真把包装进去了，但行状态、记账、
@@ -446,6 +465,8 @@ public sealed partial class InstallService
             }
             finally
             {
+                task.Installing = false;
+                task.Downloading = false;   // v1.3.37：暂停/取消也要摘掉「下载中」——否则「继续」的准备段会被当成正在下载
                 Interlocked.Decrement(ref _busyCount);
                 // 失败不摘 worker —— 「重试」要用它，条目在 Remove 时回收
                 if (task.Status == "done")
@@ -496,8 +517,14 @@ public sealed partial class InstallService
                 // 同名文件不覆盖：加 (2)(3) 后缀，免得用户下了两版旧文件只剩一份
                 dest = UniquifyPath(dest);
                 Step(LocService.Tf("正在下载 {0}…", safe), 8, 0);
+                task.Downloading = true;   // v1.3.32：进下载段
                 var progress = new Progress<NexusDownloadProgress>(p => Step(p.Message, p.Percent, p.SpeedMBps));
-                await _nexus.DownloadFileAsync(dl.Url, dest, progress, ct, dl.Mirrors);
+                var expectedMd5 = await ExpectedMd5Async(modId, fileId, ct);
+                TrackPartialDownload(task, dest, ct);
+                await _nexus.DownloadFileAsync(dl.Url, dest, progress, ct, dl.Mirrors, expectedMd5,
+                    preservePartialOnCancellation: () => !MayDiscardHalfPack(task, ct));
+                TrackPartialDownload(task, null, ct);
+                task.Downloading = false;  // v1.3.32：下载段结束
                 ct.ThrowIfCancellationRequested();
 
                 _center.Finish(task, true, LocService.Tf("已下载到 {0}", dest));
@@ -525,7 +552,7 @@ public sealed partial class InstallService
                 _center.Finish(task, false, ex.Message);
                 return ex.Message;
             }
-            finally { Interlocked.Decrement(ref _busyCount); }
+            finally { task.Downloading = false; Interlocked.Decrement(ref _busyCount); }
         }
 
         return await Task.Run(() => RunAsync(task.Cts.Token));
@@ -577,6 +604,12 @@ public sealed partial class InstallService
         {
             Step(LocService.Tf("正在获取下载地址（SMAPI 文件 #{0}）…", fileId), 8, null);
             var dl = await _nexus.GetNxmDownloadUrlAsync(modId, fileId, key, exp);
+            if (dl.Url is null)
+            {
+                var refreshed = await ResolveDownloadUrlAsync(modId, fileId,
+                    (msg, pct, speed) => Step(msg, pct, speed), ct, task);
+                if (refreshed.Url is not null) dl = refreshed;
+            }
             ct.ThrowIfCancellationRequested();
             if (dl.Url is null)
             {
@@ -590,8 +623,13 @@ public sealed partial class InstallService
             Directory.CreateDirectory(Path.GetDirectoryName(zipPath)!);
             var dlProgress = new Progress<NexusDownloadProgress>(
                 p => Step(p.Message, p.Percent, p.SpeedMBps));
+            task.Downloading = true;    // v1.3.32：进下载段
             Step(LocService.Tr("正在下载 SMAPI 安装器（你选择的版本）…"), 10, 0);
-            await _nexus.DownloadFileAsync(dl.Url, zipPath, dlProgress, ct, dl.Mirrors);
+            var expectedMd5 = await ExpectedMd5Async(modId, fileId, ct);
+            TrackPartialDownload(task, zipPath, ct);
+            await _nexus.DownloadFileAsync(dl.Url, zipPath, dlProgress, ct, dl.Mirrors, expectedMd5,
+                preservePartialOnCancellation: () => !MayDiscardHalfPack(task, ct));
+            TrackPartialDownload(task, null, ct);
             if (ct.IsCancellationRequested)
             {
                 if (MayDiscardHalfPack(task, ct))
@@ -599,10 +637,16 @@ public sealed partial class InstallService
                 throw new OperationCanceledException(ct);
             }
 
+            task.ArchivePath = zipPath;
+            task.Downloading = false;   // v1.3.32：下载段结束
             Step(LocService.Tr("正在静默安装 SMAPI…"), 90, null);
             var progress = new Progress<UpdateService.InstallProgress>(
                 p => Step(p.Message, p.Percent, p.SpeedMBps));
-            var err = await _updater.InstallSmapiZipAsync(zipPath, cfg.GamePath, progress);
+            task.Installing = true;
+            await EnterInstallGateAsync(Step, 90, ct);
+            string? err;
+            try { err = await _updater.InstallSmapiZipAsync(zipPath, cfg.GamePath, progress); }
+            finally { ExitInstallGate(); task.Installing = false; }
             if (err is not null)
             { _center.Finish(task, false, err); Notify(); return; }
 
@@ -625,6 +669,7 @@ public sealed partial class InstallService
             _center.Finish(task, false, ex.Message);
             Notify();
         }
+        finally { task.Installing = false; task.Downloading = false; }
     }
 
     /// <summary>
@@ -696,6 +741,7 @@ public sealed partial class InstallService
             }
             finally
             {
+                task.Downloading = false;   // v1.3.37：暂停/取消也要摘掉「下载中」——否则「继续」的准备段会被当成正在下载
                 Interlocked.Decrement(ref _busyCount);
                 // 失败不摘 worker —— 「重试」要用它，条目在 Remove 时回收
                 if (task.Status == "done")
@@ -721,7 +767,7 @@ public sealed partial class InstallService
             try
             {
                 var hand = await _nexus.GetNxmDownloadUrlAsync(pendingMod, pendingFile, pendingKey, pendingExp);
-                if (NexusWebDownloadService.TryDeliver(pendingMod, pendingFile, hand.Url))
+                if (NexusWebDownloadService.TryDeliver(pendingMod, pendingFile, hand.Url, hand.Mirrors))
                 {
                     AppLog.Info("Install", $"nxm 回流已并入正在进行的任务 mod={pendingMod} file={pendingFile}");
                     Notify();
@@ -785,32 +831,63 @@ public sealed partial class InstallService
                     return;
                 }
 
-                Step(LocService.Tf("正在获取下载地址（Mod #{0}）…", modId), 8);
-                // download_link.json 必须带认证头 —— 现为 OAuth Bearer（SendApiAsync 默认挂）；
-                // 另附 nxm 链接里的一次性 key/expires 作 query 参数。二者缺一 → 401。
-                var dl = await _nexus.GetNxmDownloadUrlAsync(modId, fileId, key, exp);
+                var expectedMd5 = await ExpectedMd5Async(modId, fileId, ct);
+                var cached = CachedPack(modId, fileId);
+                if (cached is not null
+                    && await DownloadIntegrity.CheckMd5Async(cached, expectedMd5, ct) == DownloadIntegrity.Md5Verdict.Mismatch)
+                {
+                    AppLog.Warn("Download", $"缓存 MD5 不符，丢弃后重新下载 mod={modId} file={fileId}");
+                    try { File.Delete(cached); } catch { }
+                    cached = null;
+                }
+                var zip = cached ?? Path.Combine(StoragePaths.DownloadsDir, $"nxm-{modId}-{fileId}.zip");
+                if (cached is null)
+                {
+                    zipPath = zip; // 只有这次新下载的路径可在取消时作为半截包清理目标
+                    Directory.CreateDirectory(Path.GetDirectoryName(zip)!);
+                    Step(LocService.Tf("正在获取下载地址（Mod #{0}）…", modId), 8);
+                    // download_link.json 必须带认证头（OAuth Bearer）和 NXM 一次性 key/expires。
+                    var dl = await _nexus.GetNxmDownloadUrlAsync(modId, fileId, key, exp);
+                    if (dl.Url is null)
+                    {
+                        // 暂停后原 nxm key/expiry 可能已过期。重新走常规取链；免费账号会
+                        // 自动用隐藏网页重新取一次新凭证，再从本地半截包的字节偏移续传。
+                        var refreshed = await ResolveDownloadUrlAsync(modId, fileId,
+                            (msg, pct, spd) => Step(msg, pct, spd), ct, task);
+                        if (refreshed.Url is not null) dl = refreshed;
+                    }
+                    ct.ThrowIfCancellationRequested();
+                    if (dl.Url is null)
+                    {
+                        _center.Finish(task, false, dl.Error ?? LocService.Tr("获取下载地址失败"));
+                        Notify();
+                        return;
+                    }
+
+                    var progress = new Progress<NexusDownloadProgress>(p =>
+                        Step(p.Message, p.Percent, p.SpeedMBps));
+                    task.Downloading = true;   // v1.3.32：进下载段
+                    Step(LocService.Tr("正在下载…"), 12, 0);
+                    TrackPartialDownload(task, zip, ct);
+                    await _nexus.DownloadFileAsync(dl.Url, zip, progress, ct, dl.Mirrors, expectedMd5,
+                        preservePartialOnCancellation: () => !MayDiscardHalfPack(task, ct));
+                    TrackPartialDownload(task, null, ct);
+                    if (ct.IsCancellationRequested)   // 下完才发现被移除/暂停 → 别装了
+                    {
+                        if (MayDiscardHalfPack(task, ct))
+                        { try { File.Delete(zip); } catch { } }
+                        throw new OperationCanceledException(ct);
+                    }
+                }
+                else
+                {
+                    TrackPartialDownload(task, null, ct);
+                    Step(LocService.Tf("正在安装（使用本机已下载文件 {0}）…", Path.GetFileName(cached)), 12);
+                }
                 ct.ThrowIfCancellationRequested();
-                if (dl.Url is null)
-                {
-                    _center.Finish(task, false, dl.Error ?? LocService.Tr("获取下载地址失败"));
-                    Notify();
-                    return;
-                }
 
-                var zip = Path.Combine(StoragePaths.DownloadsDir, $"nxm-{modId}-{fileId}.zip");
-                zipPath = zip;
-                Directory.CreateDirectory(Path.GetDirectoryName(zip)!);
-
-                var progress = new Progress<NexusDownloadProgress>(p =>
-                    Step(p.Message, p.Percent, p.SpeedMBps));
-                Step(LocService.Tr("正在下载…"), 12, 0);
-                await _nexus.DownloadFileAsync(dl.Url, zip, progress, ct, dl.Mirrors);
-                if (ct.IsCancellationRequested)   // 下完才发现被移除/暂停 → 别装了
-                {
-                    if (MayDiscardHalfPack(task, ct))
-                    { try { File.Delete(zip); } catch { } }
-                    throw new OperationCanceledException(ct);
-                }
+                task.ArchivePath = zip;
+                task.Downloading = false;   // v1.3.32：下载段结束（包已完整落地）
 
                 // v1.3.4：安装段 —— 写入 Mods 全局串行
                 string? nxmErr;
@@ -818,18 +895,22 @@ public sealed partial class InstallService
                 var nxmNotes = new List<string>();
                 // 同直装：等锁 + InstallNew + 后续 Scan 整段不报进度，豁免看门狗
                 using var nxmLongRun = _center.BeginLongRunning(task);
-                await EnterInstallGateAsync(Step, 95, ct);
+                // 令牌/压缩包已准备好；等待写入锁也属于安装阶段，暂停入口在此关闭。
+                task.Installing = true;
+                await EnterInstallGateAsync(Step, 100, ct);
                 try
                 {
                     ct.ThrowIfCancellationRequested();
-                    Step(LocService.Tr("正在安装到 Mods…"), 95);
+                    // 同直装：下载完成即满格 + 「安装中」
+                    Step(LocService.Tr("正在安装到 Mods…"), 100);
                     var nxmTitle = task.Title.StartsWith("下载并安装 ") ? task.Title["下载并安装 ".Length..] : null;
                     // v1.6.5：Portraiture 素材包直接转换成 CP 肖像包（不再装框架）
                     // v1.1.8：同直装路径，InstallNew 丢线程池，避免冻住 UI
                     var nxmPackReqs = await PackRequirementsIfManifestlessAsync(zip, modId);
                     nxmErr = await Task.Run(() => _mods.InstallNew(cfg.GamePath, zip, out modName, modId,
                         portraiturePackName: nxmTitle, cfg: _cfg, installNotes: nxmNotes,
-                        packRequirements: nxmPackReqs), ct);
+                        packRequirements: nxmPackReqs,
+                        progress: msg => _center.Report(task, msg), ct: ct), ct);
                 }
                 finally { ExitInstallGate(); }
                 if (IsStaleRun(task, ct)) return;   // 行归当前那一跑写
@@ -887,6 +968,8 @@ public sealed partial class InstallService
             }
             finally
             {
+                task.Installing = false;
+                task.Downloading = false;   // v1.3.37：暂停/取消也要摘掉「下载中」——否则「继续」的准备段会被当成正在下载
                 Interlocked.Decrement(ref _busyCount);
                 // 失败不摘 worker —— 「重试」要用它，条目在 Remove 时回收
                 if (task.Status == "done")
@@ -954,11 +1037,11 @@ public sealed partial class InstallService
 
         var task = _center.Start(
             onlyUids is null ? "一键安装缺失依赖" : $"安装缺失依赖（{onlyUids.Count} 项）", "install");
-        var runCt = task.Cts.Token;   // 进门时领的身份牌，收尾时用它判「这一跑还在位吗」（见 IsStaleRun）
+        async Task<string?> RunAsync(CancellationToken ct)
+        {
+        var runCt = ct;   // 这一跑的令牌；继续会换新令牌，旧 worker 不得再碰共享文件
         void Step(string msg, double? pct = null, double? speed = null) => _center.Report(task, msg, pct, speed);
 
-        // v1.3.4：批量装依赖全程持安装锁（逐项下载+写入都是完整的安装会话），
-        // 与其它 mod 安装互斥排队。
         Interlocked.Increment(ref _busyCount);
         var outcomes = new List<DependencyRunItem>();
         var toOpen = new List<string>();   // v1.2.2：需手动的依赖页面，结束时批量在浏览器打开
@@ -973,16 +1056,13 @@ public sealed partial class InstallService
         string? zipPath = null;
         try
         {
-            await EnterInstallGateAsync(Step, 2, runCt);
-            try
-            {
                 // onlyUids 只约束首轮（用户指定的那批）；装上的依赖自己又缺的传递依赖照样跟进
                 var allowedFirstRound = onlyUids is null ? null : new HashSet<string>(onlyUids, StringComparer.OrdinalIgnoreCase);
                 var firstRound = true;
 
                 while (true)
                 {
-                    task.Cts.Token.ThrowIfCancellationRequested();
+                    ct.ThrowIfCancellationRequested();
                     // 每轮重扫磁盘 —— 上一轮装上的依赖可能自带新的缺失依赖（传递闭包）
                     var mods = _mods.Scan(cfg.GamePath);
                     // 已装 UID → 名字/N网id/版本。版本这一列是给下面的「够不够新」判据用的。
@@ -1037,7 +1117,7 @@ public sealed partial class InstallService
 
                 foreach (var dep in batch)
                 {
-                    task.Cts.Token.ThrowIfCancellationRequested();
+                    ct.ThrowIfCancellationRequested();
                     processed.Add(dep);
                     var idx = processed.Count;
                     Step(LocService.Tf("({0}/{1}) 正在处理 {2}…", idx, total, dep), Math.Round(idx * 90.0 / (total + 1), 1));
@@ -1139,35 +1219,59 @@ public sealed partial class InstallService
                         // ③ 逐候选：下载 → 校验 UniqueID → 安装（每批最多试 3 个，免费限速下省带宽）
                         foreach (var c in cands.Take(3))
                         {
-                            task.Cts.Token.ThrowIfCancellationRequested();
+                            ct.ThrowIfCancellationRequested();
                             Step(LocService.Tf("({0}/{1}) 正在获取 {2} 的文件信息…", idx, total, c.Name));
-                            var file = await _nexus.GetLatestMainFileAsync(c.Id, patient: true, ct: task.Cts.Token);
+                            var file = await _nexus.GetLatestMainFileAsync(c.Id, patient: true, ct: ct);
                             if (file is null) { lastErr = LocService.Tr("找不到可下载的文件"); continue; }
 
-                            // v1.3.5：免费账号也先走应用内隐藏窗口。以前这里一见 NeedsPremium
-                            // 就把 premiumBlocked 打开 —— 余下每个依赖都转手动、收尾时分批开
-                            // 十几个标签页。同一套机制，「安装」能在应用内下完，「装依赖」却要
-                            // 跳浏览器，用户看到的是两副面孔。
-                            var dl = await ResolveDownloadUrlAsync(c.Id, file.FileId,
-                                (msg, pct, spd) => Step(msg, pct, spd), task.Cts.Token, task);
-                            if (dl.NeedsPremium)
+                            var cached = CachedPack(c.Id, file.FileId);
+                            if (cached is not null
+                                && await DownloadIntegrity.CheckMd5Async(cached, file.Md5, ct)
+                                    == DownloadIntegrity.Md5Verdict.Mismatch)
                             {
-                                // 隐藏窗口也没拿到（未登录 / 验证过不去）→ 账号级限制，
-                                // 余下依赖全部转手动，不再逐个去开窗口白等。
-                                premiumBlocked = true;
-                                lastErr = "premium";
-                                break;
+                                AppLog.Warn("Download", $"依赖缓存 MD5 不符，丢弃后重新下载 mod={c.Id} file={file.FileId}");
+                                try { File.Delete(cached); } catch { }
+                                cached = null;
                             }
-                            if (dl.Url is null) { lastErr = dl.Error ?? "获取下载地址失败"; continue; }
+                            NexusDownloadResult? dl = null;
+                            if (cached is null)
+                            {
+                                // 免费账号先走应用内隐藏窗口；两条路都失败才转手动。
+                                dl = await ResolveDownloadUrlAsync(c.Id, file.FileId,
+                                    (msg, pct, spd) => Step(msg, pct, spd), ct, task);
+                                if (dl.NeedsPremium)
+                                {
+                                    premiumBlocked = true;
+                                    lastErr = "premium";
+                                    break;
+                                }
+                                if (dl.Url is null) { lastErr = dl.Error ?? "获取下载地址失败"; continue; }
+                            }
 
-                            zipPath = Path.Combine(StoragePaths.DownloadsDir, $"dep-{c.Id}-{file.FileId}.zip");
+                            zipPath = cached ?? Path.Combine(StoragePaths.DownloadsDir, $"dep-{c.Id}-{file.FileId}.zip");
                             Directory.CreateDirectory(Path.GetDirectoryName(zipPath)!);
                             try
                             {
-                                var progress = new Progress<NexusDownloadProgress>(p => Step(p.Message, p.Percent, p.SpeedMBps));
-                                Step(LocService.Tf("({0}/{1}) 正在下载 {2}…", idx, total, c.Name), null, 0);
-                                await _nexus.DownloadFileAsync(dl.Url, zipPath, progress, task.Cts.Token, dl.Mirrors);
-                                if (task.Cts.IsCancellationRequested)
+                                if (cached is null)
+                                {
+                                    var progress = new Progress<NexusDownloadProgress>(p => Step(p.Message, p.Percent, p.SpeedMBps));
+                                    Step(LocService.Tf("({0}/{1}) 正在下载 {2}…", idx, total, c.Name), null, 0);
+                                    // v1.3.32：依赖是「下一个装一个」，每一轮各自进出下载段 ——
+                                    // 行首在「下载中 / 安装中」之间来回切，比一直挂「准备中」诚实
+                                    task.Downloading = true;
+                                    TrackPartialDownload(task, zipPath, ct);
+                                    await _nexus.DownloadFileAsync(dl!.Url!, zipPath, progress,
+                                        ct, dl.Mirrors, file.Md5,
+                                        preservePartialOnCancellation: () => !MayDiscardHalfPack(task, ct));
+                                    TrackPartialDownload(task, null, ct);
+                                    task.Downloading = false;
+                                }
+                                else
+                                {
+                                    TrackPartialDownload(task, null, ct);
+                                    Step(LocService.Tf("({0}/{1}) 使用本机已下载的 {2}…", idx, total, c.Name));
+                                }
+                                if (ct.IsCancellationRequested)
                                     return task.Status == "paused" ? "已暂停" : "已取消";
 
                                 Step(LocService.Tf("({0}/{1}) 正在安装 {2}…", idx, total, c.Name), Math.Round(idx * 95.0 / (total + 1), 1));
@@ -1175,8 +1279,20 @@ public sealed partial class InstallService
                                 // 解压 + 肖像校验 + CP 转换，期间不报任何进度 ⇒ 豁免看门狗，
                                 // 否则装大包时会被误判成"工人已死"（实测这段可达 50s+）。
                                 using var depLongRun = _center.BeginLongRunning(task);
-                                var err = await Task.Run(() => _mods.InstallNew(cfg.GamePath, zipPath, out modName, c.Id,
-                                    requireUniqueId: dep, cfg: _cfg), task.Cts.Token);
+                                task.Installing = true;
+                                await EnterInstallGateAsync(Step, Math.Round(idx * 95.0 / (total + 1), 1), ct);
+                                string? err;
+                                try
+                                {
+                                    ct.ThrowIfCancellationRequested();
+                                    err = await Task.Run(() => _mods.InstallNew(cfg.GamePath, zipPath, out modName, c.Id,
+                                        requireUniqueId: dep, cfg: _cfg), ct);
+                                }
+                                finally
+                                {
+                                    ExitInstallGate();
+                                    task.Installing = false;
+                                }
                                 if (err == ModService.UidMismatchError)
                                 { lastErr = LocService.Tf("候选「{0}」不含 {1}，换下一个", c.Name, dep); continue; }
                                 if (err is not null) { lastErr = err; continue; }
@@ -1200,8 +1316,13 @@ public sealed partial class InstallService
                             }
                             finally
                             {
-                                // 半截包/装完的 zip 都不留（下载可续传缓存的意义不大，依赖包普遍很小）
-                                try { if (zipPath is not null && File.Exists(zipPath)) File.Delete(zipPath); } catch { }
+                                // 成功下载的 dep 包保留给重试复用；仅删除不完整/损坏的缓存。
+                                try
+                                {
+                                    if (cached is null && zipPath is not null && File.Exists(zipPath)
+                                        && !ModService.ArchiveReadable(zipPath)) File.Delete(zipPath);
+                                }
+                                catch { }
                                 zipPath = null;
                             }
                         }
@@ -1274,12 +1395,11 @@ public sealed partial class InstallService
                     || o.Uid.Equals(ModService.PortraitureFrameworkUid, StringComparison.OrdinalIgnoreCase)))
                 NotifyPortraits();
             return null;
-            }
-            finally { ExitInstallGate(); }
         }
         catch (OperationCanceledException ex)
         {
-            try { if (zipPath is not null && File.Exists(zipPath)) File.Delete(zipPath); } catch { }
+            if (MayDiscardHalfPack(task, ct))
+                try { if (zipPath is not null && File.Exists(zipPath)) File.Delete(zipPath); } catch { }
             return FinishIfTimeout(task, ex, runCt)
                 ?? (task.Status == "paused" ? "已暂停" : "已取消");
         }
@@ -1290,8 +1410,14 @@ public sealed partial class InstallService
         }
         finally
         {
+            task.Installing = false;
             Interlocked.Decrement(ref _busyCount);
+            if (task.Status == "done") _center.UnregisterResume(task);
         }
+        }
+
+        _center.RegisterResume(task, token => Task.Run(() => RunAsync(token), CancellationToken.None));
+        return await Task.Run(() => RunAsync(task.Cts.Token), CancellationToken.None);
     }
 
     /// <summary>确认弹窗的展示信息：UID → (mod 名, Nexus modId, 封面)。

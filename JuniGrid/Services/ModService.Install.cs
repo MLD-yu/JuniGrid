@@ -16,13 +16,30 @@ public sealed partial class ModService
 
     public string? InstallNew(string gamePath, string zipPath, out string? modName, int? nexusModId = null,
         string? requireUniqueId = null, string? portraiturePackName = null, ConfigService? cfg = null,
-        List<string>? installNotes = null, IReadOnlyList<NexusRequirement>? packRequirements = null)
+        List<string>? installNotes = null, IReadOnlyList<NexusRequirement>? packRequirements = null,
+        Action<string>? progress = null, CancellationToken ct = default)
     {
         modName = null;
         string? temp = null;
+        // 分段计时：这一整段在界面上只有一个「安装中」，出了"装得慢"的反馈时
+        // 没有数就分不清慢在解压、探针还是落盘（见 [InstallPerf] 日志）。
+        var perf = System.Diagnostics.Stopwatch.StartNew();
+        var perfMark = 0L;
+        void Mark(string stage)
+        {
+            var now = perf.ElapsedMilliseconds;
+            AppLog.Info("InstallPerf", $"{stage} {now - perfMark}ms（累计 {now}ms）· {Path.GetFileName(zipPath)}");
+            perfMark = now;
+        }
         try
         {
-            var manifest = ExtractToTemp(zipPath, "mod-install-", out temp);
+            progress?.Invoke(LocService.Tr("正在解压安装包…"));
+            var manifest = ExtractToTemp(zipPath, "mod-install-", out temp, ct,
+                // 大包解压 10 秒上下：进度写进当前步骤行，别让它一直停在「正在解压安装包…」
+                (done, total) => progress?.Invoke(total <= 0
+                    ? LocService.Tr("正在解压安装包…")
+                    : LocService.Tf("正在解压安装包… {0}%（{1}/{2}）", done * 100 / total, done, total)));
+            Mark("解压");
             if (manifest is null)
             {
                 // 依赖直装（带 requireUniqueId）的候选包没有 manifest，就是"这个包不是我们要的那个 mod"，
@@ -48,6 +65,7 @@ public sealed partial class ModService
                 // 15 张图全在它的 assets/ 下有同名文件 —— 这是整条链里最强的一条证据，
                 // 却被 Maps/fall_beach 在原版里也存在这件事压过去，转成了假 CP 包（03:29 重装修复后复现）。
                 // 现在顺序是：先问"这是不是谁的覆盖包"，答案是才落盘；不是才轮到转换。
+                progress?.Invoke(LocService.Tr("正在检查安装内容…"));
                 var declaredOvPlan = ProbeOverlayForDeclaredHost(gamePath, temp!, packRequirements);
                 OverlayFail ofail = OverlayFail.NoHostInPack;
                 string hostGuess = "";
@@ -132,6 +150,7 @@ public sealed partial class ModService
                     return LocService.Tr("这个压缩包没有 manifest.json，且当前流程无法为覆盖安装留下还原记录，已放弃安装。");
                 return OverlayRefusal(ofail, gamePath, hostGuess, SoleHostCandidate(packRequirements));
             }
+            Mark("覆盖探针");
             var modRoot = ResolveModRoot(temp, out var allManifests);
             var isBundle = allManifests.Length > 1;
 
@@ -300,6 +319,8 @@ public sealed partial class ModService
 
             try
             {
+                progress?.Invoke(LocService.Tr("正在写入 Mods…"));
+                Mark("判重与备份");
                 if (modRoot == temp)
                     CopyDirectoryContents(temp, dest);   // files at zip root — copy into named folder
                 else
@@ -313,14 +334,23 @@ public sealed partial class ModService
                 if (stagedDisabled is not null) RestoreStaged(stagedDisabled, destDisabled);
                 throw;
             }
+            Mark("落盘");
 
             TryDelete(temp);
+            Mark("清临时目录");
             // v1.1.2：把安装来源（Nexus modId）写进安装根的边车文件。SVE 这类包的 manifest
             // 会把 UpdateKeys 留成无效占位 "Nexus:???"，扫描侧凭 manifest 拿不到 ID，
             // 「已安装」识别与更新检查就断了 —— 边车兜底；重装/更新时随目录被新版覆盖。
             if (nexusModId is int nid)
                 WriteNexusIdSidecar(dest, nid);
             return null;
+        }
+        catch (OperationCanceledException)
+        {
+            // 取消要原样穿透：任务被删/暂停时 InstallService 靠这个类型决定
+            // 「半截包是留着续传还是当垃圾清掉」，包成一句"安装失败：操作已取消"会走错分支。
+            if (temp is not null) TryDelete(temp);
+            throw;
         }
         catch (Exception ex)
         {

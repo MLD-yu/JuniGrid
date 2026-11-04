@@ -108,6 +108,16 @@ public sealed class ConfigService
         }
         SyncAdultFilter();
         SyncStoragePaths();
+        // v1.3.32：分片加速内置常开 —— 设置页的开关已移除，而老配置里几乎都存着当年默认写下的
+        // false（甚至用户手动关过的），不纠正就等于「UI 没了但功能还是关的」。这里统一拉平。
+        // v1.3.36：保留一条【藏起来的】排障逃生口（见 SegmentAccelerationEnabled）。
+        // 它不是产品功能，界面上一律不体现；存在的唯一理由是「坏了要能先关掉对比」。
+        var segment = SegmentAccelerationEnabled(
+            Environment.GetEnvironmentVariable(SegmentDownloadEnvVar));
+        Current.SegmentDownload = segment;
+        if (!segment)
+            AppLog.Warn("Config",
+                $"分片加速已被环境变量 {SegmentDownloadEnvVar} 关闭 —— 本次下载全部走单连接（排障模式）");
         // v1.2.12：把「这次是从哪儿载入的、赞助记账是什么」记一条 —— 弹窗反复出现的现场
         // 往往就发生在"载入的值已经不是预期值"的那一刻（另一个副本把盘上的账抹了）。
         AppLog.Info("Config",
@@ -163,6 +173,27 @@ public sealed class ConfigService
                 && JsonSerializer.Deserialize<JuniGridConfig>(File.ReadAllText(ConfigPath), JsonOpts) is not null;
         }
         catch { return false; }
+    }
+
+    /// <summary>分片加速的排障逃生口：环境变量的名字。</summary>
+    internal const string SegmentDownloadEnvVar = "JUNIGRID_SEGMENT_DOWNLOAD";
+
+    /// <summary>分片加速要不要开。默认<b>开</b>，只有显式给出「关」的值才关。
+    /// <para>这条口子<b>不是用户选项</b>（设置页没有开关，代码也从不提示它存在），
+    /// 存在的唯一理由是排障：分片是「同一个文件同时开几条连接」，3 个任务并行 × 4 车道
+    /// 就是 12 条连接 —— CDN 按连接限速/封顶时，现象是「每个包都在慢慢失败」，
+    /// 自动回落（单片失败 → 转单连接）救不了这种全局性限流；代理链路（TUN / fake-ip）
+    /// 对多连接支持不好时也一样。这两种情况最省事的第一步都是「先关掉分片再试一次」。</para>
+    /// <para>用法：<c>set JUNIGRID_SEGMENT_DOWNLOAD=0</c> 后启动应用（见 <see cref="Load"/>）。
+    /// 认的值：0 / false / off / no（不分大小写，忽略首尾空格）；空或其它任何值都当作开。</para></summary>
+    internal static bool SegmentAccelerationEnabled(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return true;
+        var v = raw.Trim();
+        return !(v == "0"
+                 || v.Equals("false", StringComparison.OrdinalIgnoreCase)
+                 || v.Equals("off", StringComparison.OrdinalIgnoreCase)
+                 || v.Equals("no", StringComparison.OrdinalIgnoreCase));
     }
 
     /// <summary>把「显示成人内容」单一开关同步到 NexusService 的静态查询开关
@@ -596,12 +627,13 @@ public sealed class JuniGridConfig
     /// <summary>v0.2.2：任务管理悬浮窗常驻开关。开启常驻显示；关闭后仅在下载任务运行时显示。</summary>
     public bool ShowTaskDock { get; set; } = false;
 
-    /// <summary>v1.3.13：分片加速下载（实验性，默认关）。
-    /// <para>打开后，同一个文件会开 <see cref="SegmentDownloadLanes"/> 条 Range 连接并行拉 —— CDN 往往
+    /// <summary>v1.3.32：分片加速已内置常开，不再是用户可见的开关（设置页那行已移除）。
+    /// <para>行为：同一个文件开 <see cref="SegmentDownloadLanes"/> 条 Range 连接并行拉 —— CDN 往往
     /// 「每个连接各给一份配额」，所以能实打实快几倍。只在服务器明确支持 Range、文件 &gt; 4MB、
-    /// 且目标是新文件时才启用；任何一片失败整体回落到单连接，最坏情况等于没开。</para>
-    /// <para>默认关的理由：多连接对 CDN 友不友善各家不同，先让用户自己试。</para></summary>
-    public bool SegmentDownload { get; set; } = false;
+    /// 且目标是新文件时才启用；任何一片失败整体回落到单连接。</para>
+    /// <para>字段保留只为兼容：老配置里普遍存着当年默认写下的 <c>false</c>，
+    /// <see cref="Load"/> 会统一纠正为 <c>true</c>。UI 没了就没有别的入口能关它。</para></summary>
+    public bool SegmentDownload { get; set; } = true;
 
     /// <summary>v1.3.13：分片车道数（1~6）。1 = 等价于不分片。</summary>
     public int SegmentDownloadLanes { get; set; } = 4;

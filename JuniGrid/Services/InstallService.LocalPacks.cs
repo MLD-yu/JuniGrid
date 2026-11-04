@@ -90,14 +90,16 @@ public sealed partial class InstallService
                 void Step(string msg, double? pct = null, double? speed = null) =>
                     _center.Report(task, msg, pct, speed);
 
-                Step(LocService.Tr("正在安装到 Mods…"), 5);
+                // 本地包没有下载段：一上手就是"装"，进度直接满格 + 「安装中」（同 Nexus 直装）
+                task.Installing = true;
+                Step(LocService.Tr("正在安装到 Mods…"), 100);
 
                 // InstallNew 是同步重活（解压 / 肖像校验 / CP 转换，实测可达 50s+）。
                 // 豁免覆盖【等锁 + 解压 + 扫描】整段，否则僵尸看门狗（60s 宽限）会把
                 // 正在正常安装的任务误杀。
                 using var longRun = _center.BeginLongRunning(task);
                 string? err;
-                await EnterInstallGateAsync(Step, 50, CancellationToken.None);
+                await EnterInstallGateAsync(Step, 100, CancellationToken.None);
                 try
                 {
                     // cfg: _cfg 必须传 —— 不传就走"记不了账宁可不装"那条分支，
@@ -110,9 +112,11 @@ public sealed partial class InstallService
                         nexusModId: null,
                         portraiturePackName: packName,
                         cfg: _cfg,
-                        installNotes: notes));
+                        installNotes: notes,
+                        progress: msg => _center.Report(task, msg),
+                        ct: CancellationToken.None));
                 }
-                finally { ExitInstallGate(); }
+                finally { ExitInstallGate(); task.Installing = false; }
 
                 if (err is null)
                 {

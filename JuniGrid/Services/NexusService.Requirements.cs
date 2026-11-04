@@ -1,3 +1,4 @@
+using System.IO;
 using System.Net.Http;
 using System.Text.Json;
 
@@ -342,22 +343,42 @@ public sealed partial class NexusService
     /// </summary>
     public async Task DownloadFileAsync(string url, string destPath,
         IProgress<NexusDownloadProgress>? progress, CancellationToken ct = default,
-        IReadOnlyList<string>? mirrors = null)
+        IReadOnlyList<string>? mirrors = null, string? expectedMd5 = null,
+        Func<bool>? preservePartialOnCancellation = null)
     {
         void Report(string msg, double? pct, double? spd)
             => progress?.Report(new NexusDownloadProgress(msg, pct ?? 0, spd));
 
-        if (SegmentDownloader.Enabled)
+        async Task DownloadCoreAsync()
         {
-            // 分片只在全新文件上做（目标已存在 = 续传场景，洞补不了）。
-            // TryRunAsync 内部把"不支持/太小/某片失败"一律收敛成 false，这里不额外判断。
-            if (await SegmentDownloader.TryRunAsync(DownloadHttp, url, destPath,
-                    SegmentDownloader.Lanes, Report, ct).ConfigureAwait(false))
-                return;
+            if (SegmentDownloader.Enabled)
+            {
+                // 分片只在全新文件上做（目标已存在 = 续传场景，洞补不了）。
+                // TryRunAsync 内部把"不支持/太小/某片失败"一律收敛成 false，这里不额外判断。
+                if (await SegmentDownloader.TryRunAsync(DownloadHttp, url, destPath,
+                        SegmentDownloader.Lanes, Report, ct, expectedMd5,
+                        preservePartialOnCancellation).ConfigureAwait(false))
+                    return;
+            }
+
+            await ResumableDownload.RunAsync(DownloadHttp, url, destPath, Report,
+                ct: ct, fallbackUrls: mirrors).ConfigureAwait(false);
         }
 
-        await ResumableDownload.RunAsync(DownloadHttp, url, destPath, Report,
-            ct: ct, fallbackUrls: mirrors).ConfigureAwait(false);
+        await DownloadCoreAsync().ConfigureAwait(false);
+
+        // 一个文件的 MD5 统一在下载器边界校验，避免直装、nxm、依赖、更新等调用点漏接。
+        // 首次不符只重下一次；第二次仍不符只警告，兼容 Nexus 官方重打包但未更新 MD5 的文件。
+        if (await DownloadIntegrity.CheckMd5Async(destPath, expectedMd5, ct).ConfigureAwait(false)
+            != DownloadIntegrity.Md5Verdict.Mismatch)
+            return;
+
+        Report("文件校验值不符，重新下载一次…", 0, 0);
+        try { File.Delete(destPath); } catch { }
+        await DownloadCoreAsync().ConfigureAwait(false);
+        if (await DownloadIntegrity.CheckMd5Async(destPath, expectedMd5, ct).ConfigureAwait(false)
+            == DownloadIntegrity.Md5Verdict.Mismatch)
+            Report("注意：文件与 Nexus 记录的 MD5 不一致（可能官方重打包过），继续使用", 100, 0);
     }
 
     // v1.1.6：私有 FormatBytes 副本已删（无任何调用者）—— 统一用 ResumableDownload.FormatBytes。

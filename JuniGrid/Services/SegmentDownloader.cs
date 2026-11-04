@@ -1,183 +1,395 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.IO;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
+using System.Text.Json;
 
 namespace JuniGrid.Services;
 
-/// <summary>
-/// v1.3.13：多连接分片下载（**实验性，默认关闭**）。
-/// <para>
-/// 为什么要有它：现有的 <see cref="ResumableDownload"/> 是单连接流式 —— 一条 TCP 跑满就到顶。
-/// N 网免费账号实测单流 ~1MB/s，而 CDN 那侧常常是「每个连接各给一份配额」，
-/// 于是同一个文件开 3~4 条 Range 并发能实打实快几倍。
-/// </para>
-/// <para>
-/// 为什么默认关：多连接对 CDN 是不是友善、会不会吃 429，各家不一样。所以这一版的做法是
-/// <b>先探一次、再做</b>：只有服务器明确回 <c>206 + Content-Range</c>（说明支持 Range）、
-/// 文件够大（&gt; 4MB）、且用户在设置里主动打开时才分片；任何一片出错整体放弃、
-/// 删掉半截文件、回落到单连接从头下 —— 最坏情况等于今天，不会更差。
-/// </para>
-/// <para>
-/// 只在「目标文件不存在」时启用：分片各写各的区间，和单连接的「从头续写」语义不兼容，
-/// 续传/暂停恢复一律交给 <see cref="ResumableDownload"/>。
-/// </para>
-/// </summary>
+/// <summary>多连接 Range 下载器。分片状态可在用户暂停后续跑；普通失败会清场并回落单连接。</summary>
 public static class SegmentDownloader
 {
-    /// <summary>小于这个大小分片没意义（握手开销比省下的时间还多）。</summary>
     private const long MinTotalBytes = 4L * 1024 * 1024;
-
-    /// <summary>每片至少这么大，否则把 4 条车道挤成 20 个碎请求。</summary>
     private const long MinBytesPerLane = 512L * 1024;
-
-    /// <summary>车道数上限。再多只会把 CDN 惹毛。</summary>
+    private const long CheckpointBytes = 1024L * 1024;
     private const int MaxLanes = 6;
+    private const int LaneAttempts = 4;
+    private static readonly ConcurrentDictionary<string, SemaphoreSlim> PathGates = new(StringComparer.OrdinalIgnoreCase);
 
-    /// <summary>设置项由启动处挂进来（NexusService 是静态类，不能反依赖 DI 的 ConfigService）。
-    /// 没挂 = 永远关闭，行为与 v1.3.12 完全一致。</summary>
     public static Func<bool>? EnabledHook;
-
     public static bool Enabled => EnabledHook?.Invoke() == true;
-
-    /// <summary>车道数（用户可在设置里 1~6 选；1 = 等于不分片）。</summary>
     public static Func<int>? LanesHook;
+    public static int Lanes => Math.Clamp(LanesHook?.Invoke() ?? 4, 1, MaxLanes);
 
-    public static int Lanes
-    {
-        get
-        {
-            var n = LanesHook?.Invoke() ?? 4;
-            return Math.Clamp(n, 1, MaxLanes);
-        }
-    }
+    private sealed record ProbeInfo(long Total, string? ETag, DateTimeOffset? LastModified);
+    private sealed record ResumeState(int Version, long Total, int Lanes, string? ETag,
+        string? ExpectedMd5,
+        DateTimeOffset? LastModified, long[] Cursors);
 
-    /// <summary>试着用分片下完整个文件。
-    /// <returns>true = 文件已经完整落在 <paramref name="destPath"/>；
-    /// false = 这条路没走通（不支持 Range / 文件太小 / 某片挂了），调用方请回落到单连接。
-    /// 取消会原样抛 <see cref="OperationCanceledException"/>，不吞。</returns>
-    /// </summary>
+    /// <returns>true when the complete file is at destPath; false when caller should use single-stream fallback.</returns>
     public static async Task<bool> TryRunAsync(HttpClient http, string url, string destPath,
-        int lanes, Action<string, double?, double?> report, CancellationToken ct = default)
+        int lanes, Action<string, double?, double?> report, CancellationToken ct = default,
+        string? expectedMd5 = null, Func<bool>? preservePartialOnCancellation = null)
     {
         if (lanes < 2) return false;
-        // 已有目标文件 = 续传/覆盖场景，分片的洞补不了，交给单连接
-        if (File.Exists(destPath)) return false;
-
-        long total;
-        try { total = await ProbeAsync(http, url, ct).ConfigureAwait(false); }
-        catch (OperationCanceledException) { throw; }
-        catch { return false; }                       // 探测失败 → 当不支持，别赌
-        if (total <= 0)
-        {
-            AppLog.Info("Download", $"分片未启用：服务器不支持 Range host={SafeHost(url)}");
-            return false;
-        }
-        if (total < MinTotalBytes)
-        {
-            AppLog.Info("Download", $"分片未启用：文件只有 {ResumableDownload.FormatBytes(total)}，"
-                                    + $"小于 {ResumableDownload.FormatBytes(MinTotalBytes)} host={SafeHost(url)}");
-            return false;
-        }
-
-        lanes = (int)Math.Min(lanes, Math.Max(1, total / MinBytesPerLane));
-        if (lanes < 2) return false;
-
-        var part = destPath + ".seg";
-        var dir = Path.GetDirectoryName(destPath);
-        if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
-        try { File.Delete(part); } catch { }
-
+        lanes = Math.Clamp(lanes, 2, MaxLanes);
+        var fullPath = Path.GetFullPath(destPath);
+        var pathGate = PathGates.GetOrAdd(fullPath, static _ => new SemaphoreSlim(1, 1));
+        await pathGate.WaitAsync(ct).ConfigureAwait(false);
+        string? partialDataPath = null;
+        string? checkpointPath = null;
         try
         {
-            using (var pre = new FileStream(part, FileMode.Create, FileAccess.Write,
-                       FileShare.ReadWrite, 81920, useAsync: true))
-                pre.SetLength(total);                 // 预分配：各车道才能直接 Seek 写自己的区间
+            if (File.Exists(destPath)) return false;
+
+            ProbeInfo probe;
+            try { probe = await ProbeAsync(http, url, ct).ConfigureAwait(false); }
+            catch (OperationCanceledException) { throw; }
+            catch { return false; }
+            if (probe.Total < MinTotalBytes)
+            {
+                if (probe.Total > 0)
+                    AppLog.Info("Download", $"分片未启用：文件只有 {ResumableDownload.FormatBytes(probe.Total)}，小于 {ResumableDownload.FormatBytes(MinTotalBytes)} host={SafeHost(url)}");
+                return false;
+            }
+
+            lanes = (int)Math.Min(lanes, Math.Max(1, probe.Total / MinBytesPerLane));
+            if (lanes < 2) return false;
+
+            var part = partialDataPath = destPath + ".seg";
+            var statePath = checkpointPath = part + ".state";
+            var dir = Path.GetDirectoryName(destPath);
+            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+
+            var starts = new long[lanes];
+            var ends = new long[lanes];
+            BuildRanges(probe.Total, lanes, starts, ends);
+
+            ResumeState? state = null;
+            if (File.Exists(part) || File.Exists(statePath))
+            {
+                state = TryReadState(statePath);
+                if (!IsCompatible(state, probe, lanes, starts, ends, expectedMd5)
+                    || !File.Exists(part)
+                    || new FileInfo(part).Length != probe.Total)
+                {
+                    DeletePartial(part, statePath);
+                    state = null;
+                }
+            }
+
+            if (state is null)
+            {
+                using (var pre = new FileStream(part, FileMode.Create, FileAccess.Write,
+                           FileShare.ReadWrite, 81920, useAsync: true))
+                {
+                    pre.SetLength(probe.Total);
+                    await pre.FlushAsync(ct).ConfigureAwait(false);
+                }
+                state = new ResumeState(1, probe.Total, lanes, probe.ETag, NormalizeMd5(expectedMd5),
+                    probe.LastModified, starts.ToArray());
+                SaveState(statePath, state);
+            }
+
+            var checkpoint = new Checkpoint(statePath, state);
+            var alreadyDone = 0L;
+            for (var i = 0; i < lanes; i++) alreadyDone += checkpoint.Cursors[i] - starts[i];
+            if (alreadyDone > 0)
+                report($"正在下载（{lanes} 线并行）… {ResumableDownload.FormatBytes(alreadyDone)} / {ResumableDownload.FormatBytes(probe.Total)}",
+                    Math.Min(100.0, alreadyDone * 100.0 / probe.Total), 0);
+
+            if (Enumerable.Range(0, lanes).All(i => checkpoint.Cursors[i] > ends[i]))
+            {
+                if (await DownloadIntegrity.CheckMd5Async(part, expectedMd5, ct).ConfigureAwait(false)
+                    == DownloadIntegrity.Md5Verdict.Mismatch)
+                {
+                    DeletePartial(part, statePath);
+                    return false;
+                }
+                File.Move(part, destPath, overwrite: true);
+                TryDelete(statePath);
+                return true;
+            }
 
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            long done = 0;
-            var gate = new object();
+            long done = alreadyDone;
+            var progressGate = new object();
             var clock = Stopwatch.StartNew();
             var lastAt = TimeSpan.Zero;
-            long lastBytes = 0;
+            long lastBytes = alreadyDone;
 
             void OnBytes(long add)
             {
                 long snapshot;
                 TimeSpan now;
-                lock (gate)
+                lock (progressGate)
                 {
                     done += add;
                     snapshot = done;
                     now = clock.Elapsed;
-                    // 1 秒节流（与单连接同口径）：每 80KB 刷一次会把 UI 线程刷爆
-                    if (now - lastAt < TimeSpan.FromSeconds(1) && snapshot != total) return;
+                    if (now - lastAt < TimeSpan.FromSeconds(1) && snapshot != probe.Total) return;
                     lastAt = now;
                 }
                 var speed = (snapshot - lastBytes) / Math.Max(now.TotalSeconds, 0.001) / 1024.0 / 1024.0;
                 lastBytes = snapshot;
-                var pct = Math.Min(100.0, snapshot * 100.0 / total);
-                report($"正在下载（{lanes} 线并行）… {ResumableDownload.FormatBytes(snapshot)} / "
-                       + ResumableDownload.FormatBytes(total), pct, speed);
+                var pct = Math.Min(100.0, snapshot * 100.0 / probe.Total);
+                report($"正在下载（{lanes} 线并行）… {ResumableDownload.FormatBytes(snapshot)} / {ResumableDownload.FormatBytes(probe.Total)}", pct, speed);
             }
 
-            var seg = total / lanes;
             var tasks = new List<Task>(lanes);
             for (var i = 0; i < lanes; i++)
             {
-                var from = i * seg;
-                var to = i == lanes - 1 ? total - 1 : (i + 1) * seg - 1;
-                tasks.Add(LaneAsync(http, url, part, from, to, OnBytes, linked.Token));
+                var lane = i;
+                tasks.Add(LaneAsync(http, url, part, probe, starts[lane], ends[lane], lane,
+                    checkpoint, OnBytes, linked.Token));
             }
 
-            try
-            {
-                await Task.WhenAll(tasks).ConfigureAwait(false);
-            }
+            try { await Task.WhenAll(tasks).ConfigureAwait(false); }
             catch
             {
-                // 一片挂 = 整体放弃。先掐掉还在跑的兄弟，再清场
                 try { linked.Cancel(); } catch { }
-                try { File.Delete(part); } catch { }
+                // User pause is the only cancellation path that retains the range data.
+                // A failed lane, timeout, task removal or replaced worker cleans it before fallback.
+                if (!ct.IsCancellationRequested || !ShouldPreserve(preservePartialOnCancellation))
+                    DeletePartial(part, statePath);
                 throw;
             }
 
-            if (new FileInfo(part).Length != total)
+            if (!Enumerable.Range(0, lanes).All(i => checkpoint.Cursors[i] > ends[i]))
             {
-                try { File.Delete(part); } catch { }
+                DeletePartial(part, statePath);
+                return false;
+            }
+            if (await DownloadIntegrity.CheckMd5Async(part, expectedMd5, ct).ConfigureAwait(false)
+                == DownloadIntegrity.Md5Verdict.Mismatch)
+            {
+                DeletePartial(part, statePath);
                 return false;
             }
 
             File.Move(part, destPath, overwrite: true);
-            report($"正在下载（{lanes} 线并行）… {ResumableDownload.FormatBytes(total)} / "
-                   + ResumableDownload.FormatBytes(total), 100, 0);
-            // 实机排查用：分片到底有没有生效，只有这行日志说得清（签名直链只记 host，不落 key）
-            AppLog.Info("Download", $"分片下载完成：{lanes} 线 {ResumableDownload.FormatBytes(total)} host={SafeHost(url)}");
+            TryDelete(statePath);
+            report($"正在下载（{lanes} 线并行）… {ResumableDownload.FormatBytes(probe.Total)} / {ResumableDownload.FormatBytes(probe.Total)}", 100, 0);
+            AppLog.Info("Download", $"分片下载完成：{lanes} 线 {ResumableDownload.FormatBytes(probe.Total)} host={SafeHost(url)}");
             return true;
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            if (partialDataPath is not null && checkpointPath is not null)
+                DeletePartial(partialDataPath, checkpointPath);
+            return false; // HttpClient timeout is a failed acceleration attempt, not user pause.
         }
         catch (OperationCanceledException)
         {
-            try { File.Delete(part); } catch { }
+            if (!ShouldPreserve(preservePartialOnCancellation)
+                && partialDataPath is not null && checkpointPath is not null)
+                DeletePartial(partialDataPath, checkpointPath);
             throw;
         }
         catch (Exception ex)
         {
-            try { File.Delete(part); } catch { }
+            if (partialDataPath is not null && checkpointPath is not null)
+                DeletePartial(partialDataPath, checkpointPath);
             AppLog.Warn("Download", $"分片放弃，回落单连接：{ex.Message} host={SafeHost(url)}");
-            return false;                             // 让调用方走单连接
+            return false;
+        }
+        finally { pathGate.Release(); }
+    }
+
+    private sealed class Checkpoint
+    {
+        private readonly string _path;
+        private readonly object _sync = new();
+        private readonly long[] _cursors;
+        private readonly ResumeState _template;
+        public long[] Cursors => _cursors;
+
+        public Checkpoint(string path, ResumeState state)
+        { _path = path; _template = state; _cursors = state.Cursors.ToArray(); }
+
+        public long GetCursor(int lane) { lock (_sync) return _cursors[lane]; }
+
+        public void Commit(int lane, long cursor)
+        {
+            lock (_sync)
+            {
+                if (cursor <= _cursors[lane]) return;
+                _cursors[lane] = cursor;
+                SaveState(_path, _template with { Cursors = _cursors.ToArray() });
+            }
         }
     }
 
-    /// <summary>日志里只留主机名 —— 直链带一次性 key，整条打进去等于留了个可重放的口令。</summary>
+    private static void BuildRanges(long total, int lanes, long[] starts, long[] ends)
+    {
+        var segment = total / lanes;
+        for (var i = 0; i < lanes; i++)
+        {
+            starts[i] = i * segment;
+            ends[i] = i == lanes - 1 ? total - 1 : (i + 1) * segment - 1;
+        }
+    }
+
+    private static bool IsCompatible(ResumeState? state, ProbeInfo probe, int lanes,
+        long[] starts, long[] ends, string? expectedMd5)
+    {
+        if (state is null || state.Version != 1 || state.Total != probe.Total || state.Lanes != lanes
+            || state.Cursors.Length != lanes) return false;
+        if (!string.Equals(state.ExpectedMd5, NormalizeMd5(expectedMd5), StringComparison.OrdinalIgnoreCase)) return false;
+        if (state.ETag is not null && !string.Equals(state.ETag, probe.ETag, StringComparison.Ordinal)) return false;
+        if (state.LastModified is not null && state.LastModified != probe.LastModified) return false;
+        for (var i = 0; i < lanes; i++)
+            if (state.Cursors[i] < starts[i] || state.Cursors[i] > ends[i] + 1) return false;
+        return true;
+    }
+
+    private static string? NormalizeMd5(string? value)
+        => string.IsNullOrWhiteSpace(value) ? null : value.Trim().ToUpperInvariant();
+
+    private static ResumeState? TryReadState(string path)
+    {
+        try { return JsonSerializer.Deserialize<ResumeState>(File.ReadAllText(path)); }
+        catch { return null; }
+    }
+
+    private static void SaveState(string path, ResumeState state)
+    {
+        var temp = path + ".tmp";
+        File.WriteAllText(temp, JsonSerializer.Serialize(state));
+        File.Move(temp, path, overwrite: true);
+    }
+
+    private static void DeletePartial(string part, string state)
+    { TryDelete(part); TryDelete(state); TryDelete(state + ".tmp"); }
+
+    /// <summary>安全清理某个下载目标遗留的分片数据。与下载共用路径闸，避免删到新一轮正在续写的文件。</summary>
+    public static async Task CleanupPartialArtifactsAsync(string destPath, Func<bool>? preserveIfReferenced = null,
+        bool deleteDestination = false)
+    {
+        if (string.IsNullOrWhiteSpace(destPath)) return;
+        string fullPath;
+        try { fullPath = Path.GetFullPath(destPath); }
+        catch { return; }
+        var pathGate = PathGates.GetOrAdd(fullPath, static _ => new SemaphoreSlim(1, 1));
+        await pathGate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            if (ShouldPreserve(preserveIfReferenced)) return;
+            DeletePartial(fullPath + ".seg", fullPath + ".seg.state");
+            if (deleteDestination)
+            {
+                // 单流下载直接写目标 zip，不受分片路径闸保护。移除暂停任务后等取消中的
+                // FileStream 关闭再删；若路径已被另一个任务认领，每次重试前都重新检查引用。
+                for (var attempt = 0; attempt < 30; attempt++)
+                {
+                    if (ShouldPreserve(preserveIfReferenced)) return;
+                    try { File.Delete(fullPath); return; }
+                    catch (IOException) when (attempt < 29)
+                    { await Task.Delay(100).ConfigureAwait(false); }
+                    catch (UnauthorizedAccessException) when (attempt < 29)
+                    { await Task.Delay(100).ConfigureAwait(false); }
+                }
+                AppLog.Warn("Download", "清理暂停任务半截包失败（文件仍被占用）: " + fullPath);
+            }
+        }
+        catch (Exception ex) { AppLog.Warn("Download", "清理孤儿分片失败: " + ex.Message); }
+        finally { pathGate.Release(); }
+    }
+
+    private static void TryDelete(string path)
+    { try { File.Delete(path); } catch { } }
+
+    private static bool ShouldPreserve(Func<bool>? predicate)
+    { try { return predicate?.Invoke() == true; } catch { return false; } }
+
+    private static async Task LaneAsync(HttpClient http, string url, string path, ProbeInfo probe,
+        long from, long to, int lane, Checkpoint checkpoint, Action<long> onBytes, CancellationToken ct)
+    {
+        var cursor = checkpoint.GetCursor(lane);
+        for (var attempt = 1; cursor <= to; attempt++)
+        {
+            try
+            {
+                cursor = await DownloadRangeOnceAsync(http, url, path, probe, cursor, to,
+                    lane, checkpoint, onBytes, ct).ConfigureAwait(false);
+                if (cursor <= to) throw new IOException($"分片没下完（{cursor}/{to + 1}）");
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception) when (attempt < LaneAttempts)
+            {
+                cursor = checkpoint.GetCursor(lane); // 未提交的数据允许覆盖，绝不跳过未落盘字节
+                await Task.Delay(TimeSpan.FromMilliseconds(400 * attempt), ct).ConfigureAwait(false);
+            }
+        }
+    }
+
+    private static async Task<long> DownloadRangeOnceAsync(HttpClient http, string url, string path,
+        ProbeInfo probe, long cursor, long laneEnd, int lane, Checkpoint checkpoint,
+        Action<long> onBytes, CancellationToken ct)
+    {
+        FileStream? dst = null;
+        var committed = checkpoint.GetCursor(lane);
+        try
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Get, url);
+            req.Headers.Range = new RangeHeaderValue(cursor, laneEnd);
+            using var res = await http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
+            if (res.StatusCode != HttpStatusCode.PartialContent)
+                throw new HttpRequestException($"HTTP {(int)res.StatusCode}（Range 不受支持）");
+            var range = res.Content.Headers.ContentRange;
+            if (range?.From != cursor || range.To is null || range.To > laneEnd || range.Length != probe.Total)
+                throw new InvalidDataException("CDN 返回的 Content-Range 与分片状态不匹配");
+            if (probe.ETag is not null && !string.Equals(res.Headers.ETag?.ToString(), probe.ETag, StringComparison.Ordinal))
+                throw new InvalidDataException("CDN 文件 ETag 已变化");
+            if (probe.LastModified is not null && res.Content.Headers.LastModified != probe.LastModified)
+                throw new InvalidDataException("CDN 文件修改时间已变化");
+
+            var responseEnd = range.To.Value;
+            await using var src = await res.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
+            dst = new FileStream(path, FileMode.Open, FileAccess.Write, FileShare.ReadWrite, 81920, useAsync: true);
+            dst.Seek(cursor, SeekOrigin.Begin);
+            var buffer = new byte[81920];
+            while (cursor <= responseEnd)
+            {
+                var want = (int)Math.Min(buffer.Length, responseEnd - cursor + 1);
+                var read = await src.ReadAsync(buffer.AsMemory(0, want), ct).ConfigureAwait(false);
+                if (read == 0) break;
+                await dst.WriteAsync(buffer.AsMemory(0, read), ct).ConfigureAwait(false);
+                cursor += read;
+                onBytes(read);
+                if (cursor - committed >= CheckpointBytes)
+                {
+                    await dst.FlushAsync(CancellationToken.None).ConfigureAwait(false);
+                    checkpoint.Commit(lane, cursor);
+                    committed = cursor;
+                }
+            }
+            if (cursor != responseEnd + 1) throw new IOException($"分片没下完（{cursor}/{responseEnd + 1}）");
+            await dst.FlushAsync(CancellationToken.None).ConfigureAwait(false);
+            checkpoint.Commit(lane, cursor);
+            return cursor;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            if (dst is not null)
+            {
+                await dst.FlushAsync(CancellationToken.None).ConfigureAwait(false);
+                checkpoint.Commit(lane, cursor);
+            }
+            throw;
+        }
+        finally
+        {
+            if (dst is not null) await dst.DisposeAsync().ConfigureAwait(false);
+        }
+    }
+
     private static string SafeHost(string url)
         => Uri.TryCreate(url, UriKind.Absolute, out var u) ? u.Host : "?";
 
-    /// <summary>探一次：服务器认不认 Range、这个文件到底多大。
-    /// 用 <c>bytes=0-0</c> 只要 1 字节，比 HEAD 可靠（部分 CDN 不实现 HEAD）。
-    /// <para>自带 20 秒上限：下载客户端整体 30 分钟超时，一个不吭声的节点会把探测挂在那儿
-    /// 半小时 —— 探测本来就只是"试试看"，超时一律当"不支持"，立刻回落到单连接。</para></summary>
-    private static async Task<long> ProbeAsync(HttpClient http, string url, CancellationToken ct)
+    private static async Task<ProbeInfo> ProbeAsync(HttpClient http, string url, CancellationToken ct)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(TimeSpan.FromSeconds(20));
@@ -185,63 +397,14 @@ public static class SegmentDownloader
         {
             using var req = new HttpRequestMessage(HttpMethod.Get, url);
             req.Headers.Range = new RangeHeaderValue(0, 0);
-            using var res = await http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, timeout.Token)
-                .ConfigureAwait(false);
-            if (res.StatusCode != HttpStatusCode.PartialContent) return -1;
+            using var res = await http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, timeout.Token).ConfigureAwait(false);
+            if (res.StatusCode != HttpStatusCode.PartialContent) return new ProbeInfo(-1, null, null);
             var len = res.Content.Headers.ContentRange?.Length;
-            return len is > 0 ? len.Value : -1;
+            return len is > 0
+                ? new ProbeInfo(len.Value, res.Headers.ETag?.ToString(), res.Content.Headers.LastModified)
+                : new ProbeInfo(-1, null, null);
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
-        {
-            return -1;                                // 探测超时 ≠ 用户取消
-        }
-    }
-
-    /// <summary>一条车道：把 [from, to] 这段字节写到 <paramref name="path"/> 对应偏移。
-    /// 中途断线在本车道内自愈（最多 <see cref="LaneAttempts"/> 次，每次从 cursor 继续），
-    /// 不劳烦整个任务重启。</summary>
-    private const int LaneAttempts = 4;
-
-    private static async Task LaneAsync(HttpClient http, string url, string path,
-        long from, long to, Action<long> onBytes, CancellationToken ct)
-    {
-        var cursor = from;
-        for (var attempt = 1; ; attempt++)
-        {
-            try
-            {
-                using var req = new HttpRequestMessage(HttpMethod.Get, url);
-                req.Headers.Range = new RangeHeaderValue(cursor, to);
-                using var res = await http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct)
-                    .ConfigureAwait(false);
-                if (res.StatusCode is not (HttpStatusCode.PartialContent or HttpStatusCode.OK))
-                    throw new HttpRequestException($"HTTP {(int)res.StatusCode}");
-                // 服务器忽略 Range 回 200 时不能照写（那是整个文件，写进去会错位）
-                if (res.StatusCode == HttpStatusCode.OK) throw new InvalidOperationException("服务器忽略了 Range");
-
-                await using var src = await res.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
-                await using var dst = new FileStream(path, FileMode.Open, FileAccess.Write,
-                    FileShare.ReadWrite, 81920, useAsync: true);
-                dst.Seek(cursor, SeekOrigin.Begin);
-
-                var buffer = new byte[81920];
-                while (cursor <= to)
-                {
-                    var want = (int)Math.Min(buffer.Length, to - cursor + 1);
-                    var read = await src.ReadAsync(buffer.AsMemory(0, want), ct).ConfigureAwait(false);
-                    if (read == 0) break;
-                    await dst.WriteAsync(buffer.AsMemory(0, read), ct).ConfigureAwait(false);
-                    cursor += read;
-                    onBytes(read);
-                }
-                if (cursor > to) return;              // 这片齐了
-                throw new IOException($"分片没下完（{cursor}/{to + 1}）");
-            }
-            catch (OperationCanceledException) { throw; }
-            catch (Exception) when (attempt < LaneAttempts)
-            {
-                await Task.Delay(TimeSpan.FromMilliseconds(400 * attempt), ct).ConfigureAwait(false);
-            }
-        }
+        { return new ProbeInfo(-1, null, null); }
     }
 }

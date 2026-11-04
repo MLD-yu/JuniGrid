@@ -13,18 +13,23 @@
    由 taskDockMorph 驱动宽高/内边距过渡）；来任务时再 morph 回胶囊，下载态展示不变。
    v0.2.2：设置页「打开任务管理悬浮窗」关闭时常驻隐藏，仅下载任务运行时显示；
    悬浮窗可拖动（makeTaskDockDraggable，拖动超过 5px 吞掉本次点击）。 *@
-@if (Cfg.Current.ShowTaskDock || Center.RunningCount > 0)
+@* v1.3.31：显隐/形态用 ActiveCount（含排队中）—— 排队里的任务也是活儿，球不能消失；
+   「N 个任务进行中」的 N 用 RunningCount（不含排队），排队的单列「M 个排队中」。 *@
+@if (Cfg.Current.ShowTaskDock || Center.ActiveCount > 0)
 {
-    <button class="jg-taskdock @(Center.RunningCount > 0 ? "running" : "") @(_done ? "done" : "")" @onclick="Go" @oncontextmenu="HideFromMenu" @oncontextmenu:preventDefault title='@Loc.T("下载/安装任务（左键打开任务中心，右键隐藏悬浮窗）")'>
-    @if (Center.RunningCount > 0)
+    @* v1.3.23：提示走全局 data-tip（.jg-cursor-tip 胶囊，跟随鼠标），不再用原生 title ——
+       原生提示是灰底方角，跟界面其余部分完全不搭，而且固定 1 秒后才出。 *@
+    <button class="jg-taskdock @(Center.ActiveCount > 0 ? "running" : "") @(_done ? "done" : "")" @onclick="Go" @oncontextmenu="HideFromMenu" @oncontextmenu:preventDefault data-tip='@Loc.T("下载/安装任务（左键打开任务中心，右键隐藏悬浮窗）")'>
+    @if (Center.ActiveCount > 0)
     {
         <div class="jg-taskdock-fill" style="@($"width:{Center.TotalPercent:0}%")"></div>
     }
     <div class="jg-taskdock-body">
-        <div class="jg-taskdock-title">@(Center.RunningCount > 0
+        <div class="jg-taskdock-title">@(Center.ActiveCount > 0
             ? Loc.F("{0} 个任务进行中", Center.RunningCount)
+              + (Center.QueuedCount > 0 ? " · " + Loc.F("{0} 个排队中", Center.QueuedCount) : "")
             : Center.Items.Count > 0 ? "" : Loc.T("暂无任务"))</div>
-        @if (Center.RunningCount > 0)
+        @if (Center.ActiveCount > 0)
         {
             <div class="jg-taskdock-sub">@Center.TotalPercent.ToString("F0")% · @(Center.TotalSpeedKnown ? Center.TotalSpeedMBps.ToString("F1") + " M/s" : "—")</div>
         }
@@ -42,6 +47,7 @@
     protected override void OnInitialized()
     {
         Center.OnChanged += Refresh;
+        Services.AppUiState.VisibilityChanged += OnWindowVisibilityChanged;
         Center.OnFinished += OnTaskFinished;
         ConfigService.Saved += Refresh;   // 设置页切换「打开任务管理悬浮窗」时即时显隐
     }
@@ -58,7 +64,7 @@
 
         // 胶囊 ↔ 圆 morph（gsap smooth-morph 同款）：状态翻转时交给 gsap 时间线过渡；
         // 首次落位直接瞬时置态，不做动画
-        var done = Center.RunningCount == 0 && Center.Items.Count > 0;
+        var done = Center.ActiveCount == 0 && Center.Items.Count > 0;
         if (!_morphReady)
         {
             _morphReady = true;
@@ -78,12 +84,24 @@
     public void Dispose()
     {
         Center.OnChanged -= Refresh;
+        Services.AppUiState.VisibilityChanged -= OnWindowVisibilityChanged;
         Center.OnFinished -= OnTaskFinished;
         ConfigService.Saved -= Refresh;
     }
 
-    // OnChanged 可能从后台下载线程触发，必须 InvokeAsync 回 UI 线程
-    private void Refresh() => InvokeAsync(StateHasChanged);
+    // OnChanged 可能从后台下载线程触发，必须 InvokeAsync 回 UI 线程。
+    // 窗口最小化时直接不画：WebView2 已 Collapsed，StateHasChanged 会挂在渲染批次上
+    // （实测 150 秒），而悬浮窗在最小化期间本来就看不见。
+    private void Refresh()
+    {
+        if (!Services.AppUiState.WindowVisible) return;
+        InvokeAsync(StateHasChanged);
+    }
+
+    private void OnWindowVisibilityChanged()
+    {
+        if (Services.AppUiState.WindowVisible) InvokeAsync(StateHasChanged);
+    }
 
     // 单个下载/安装任务落定 → 置顶主窗；失败再补一条红色 toast（成功已有任务舱对号 + 各页摘要，不叠 toast）
     private void OnTaskFinished(TaskItem t, bool success)
@@ -110,11 +128,11 @@
     }
 
     // v1.1.4：右键悬浮窗 = 隐藏 + 同步关闭设置里的「打开任务管理悬浮窗」开关（落盘）。
-    // 任务运行中右键无效 —— 那时球本就因任务常驻（渲染条件 ShowTaskDock || RunningCount>0），
+    // 任务运行中右键无效 —— 那时球本就因任务常驻（渲染条件 ShowTaskDock || ActiveCount>0），
     // 关了开关球也不会消失，徒增「点了没反应」的困惑，干脆不响应。
     private void HideFromMenu()
     {
-        if (Center.RunningCount > 0) return;
+        if (Center.ActiveCount > 0) return;
         var cfg = Cfg.Current;
         cfg.ShowTaskDock = false;
         Cfg.Save(cfg);   // Saved 事件 → 本组件 Refresh 即时消失；设置页订阅同步开关 UI

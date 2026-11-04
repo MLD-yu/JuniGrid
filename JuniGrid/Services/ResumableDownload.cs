@@ -51,8 +51,17 @@ public static class ResumableDownload
                 // v1.1.7：本地已有完整文件时服务器回 416 —— 视为下载已完成，直接进入安装段
                 if (res.StatusCode == HttpStatusCode.RequestedRangeNotSatisfiable && written > 0)
                 {
-                    report($"已下载完成（{FormatBytes(written)}）", 100, 0);
-                    return;
+                    if (IsCompleteAfterRangeRejected(written, res.Content.Headers.ContentRange))
+                    {
+                        report($"已下载完成（{FormatBytes(written)}）", 100, 0);
+                        return;
+                    }
+
+                    // A stale/oversized partial file is not a completed download. Restart from
+                    // byte zero instead of handing a possibly corrupt archive to installation.
+                    written = 0;
+                    totalBytes = 0;
+                    throw new RestartDownloadFromZeroException("服务器拒绝续传，但本地文件长度与远端文件不一致；从头重新下载");
                 }
                 // v1.1.2：4xx（除 408 请求超时 / 429 限流）是永久性错误 —— 404 链接失效、403 无权限，
                 // 重试满 5 次只是白等 15 秒+，立即把失败交给任务中心
@@ -69,6 +78,14 @@ public static class ResumableDownload
                     throw new InvalidOperationException($"候选源返回的是网页而非文件（{ctype}）");
 
                 // 206 = 续传成功接着写；200 = 服务器不给断点（或全新下载）→ 从头写
+                if (written > 0 && res.StatusCode == HttpStatusCode.PartialContent
+                    && !ResumeRangeMatches(written, res.StatusCode, res.Content.Headers.ContentRange))
+                {
+                    written = 0;
+                    totalBytes = 0;
+                    throw new RestartDownloadFromZeroException("服务器返回的续传区间与本地断点不一致；从头重新下载");
+                }
+
                 var resumed = written > 0 && res.StatusCode == HttpStatusCode.PartialContent;
                 if (!resumed)
                 {
@@ -127,16 +144,26 @@ public static class ResumableDownload
                 EnsureComplete(written, totalBytes);
                 return;
             }
-            catch (Exception ex) when (attempt < MaxAttempts
-                && ex is not OperationCanceledException
-                && ex is not PermanentDownloadException)
+            catch (Exception ex) when (ex is RestartDownloadFromZeroException
+                || (ex is not OperationCanceledException
+                    && (candIndex < candidates.Count - 1
+                        || (attempt < MaxAttempts && ex is not PermanentDownloadException))))
             {
-                var pct = totalBytes > 0 ? Math.Min(99.0, written * 100.0 / totalBytes) : 0.0;
-                if (written == 0 && candIndex < candidates.Count - 1)
+                if (ex is RestartDownloadFromZeroException)
                 {
-                    // 一个字节都没下到（连接不通）→ 立刻换镜像，不等重试耗尽
+                    report(ex.Message, 0, 0);
+                    continue;
+                }
+                var pct = totalBytes > 0 ? Math.Min(99.0, written * 100.0 / totalBytes) : 0.0;
+                if (candIndex < candidates.Count - 1)
+                {
+                    // 当前 CDN 失败就切下一个；已有字节时带着 Range 在新节点接着下。
+                    // 4xx 也走这里（只要还有候选），避免某个坏节点让其它可用节点没机会。
                     candIndex++;
-                    report($"直连失败，切换镜像下载（{candIndex}/{candidates.Count - 1}）…", 0, 0);
+                    attempt = 0; // 每个候选源独立享有重试额度
+                    report(written == 0
+                        ? $"直连失败，切换镜像下载（{candIndex}/{candidates.Count - 1}）…"
+                        : $"当前 CDN 中断，切换镜像并从 {FormatBytes(written)} 处续传…", pct, 0);
                     await Task.Delay(TimeSpan.FromMilliseconds(500), ct);
                 }
                 else
@@ -158,8 +185,19 @@ public static class ResumableDownload
             throw new IOException($"下载不完整（{written}/{totalBytes} 字节）");
     }
 
+    internal static bool ResumeRangeMatches(long requestedOffset, HttpStatusCode status,
+        ContentRangeHeaderValue? range)
+        => requestedOffset >= 0 && status == HttpStatusCode.PartialContent
+           && string.Equals(range?.Unit, "bytes", StringComparison.OrdinalIgnoreCase)
+           && range?.From == requestedOffset;
+
+    internal static bool IsCompleteAfterRangeRejected(long existingBytes, ContentRangeHeaderValue? range)
+        => existingBytes > 0 && range?.Unit == "bytes" && range.Length == existingBytes;
+
     /// <summary>v1.1.2：4xx 等永久性下载错误 —— 重试没有意义，立即失败（由任务中心显示原因）</summary>
     public sealed class PermanentDownloadException(string message) : Exception(message);
+
+    private sealed class RestartDownloadFromZeroException(string message) : IOException(message);
 
     public static string FormatBytes(long bytes)
     {

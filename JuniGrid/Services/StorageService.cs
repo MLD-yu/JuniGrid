@@ -44,6 +44,8 @@ public sealed partial class StorageService
 
     /// <summary>下载/安装临时文件的保留时长：超过这么久没动过就自动清掉。</summary>
     internal static readonly TimeSpan DownloadsRetention = TimeSpan.FromHours(24);
+    /// <summary>暂停任务的断点最多额外保留 7 天；超过期限后继续任务会重新下载。</summary>
+    internal static readonly TimeSpan PartialDownloadRetention = TimeSpan.FromDays(7);
 
     public bool IsComputing(string id) { lock (_gate) return _computing.Contains(id); }
     public long GetSize(string id) { lock (_gate) return _sizes.TryGetValue(id, out var v) ? v : -1; }
@@ -71,7 +73,7 @@ public sealed partial class StorageService
             StoragePaths.DownloadsDir,
             new[] { StoragePaths.DownloadsDir }, new[] { StoragePaths.DownloadsDir },
             Cleanable: true, Movable: true,
-            Tip: "从 Nexus 或 GitHub 下载 mod 时的压缩包和解压中间产物 安装完成后就没用了 超过 24 小时没动过的会自动清掉 有任务进行中时不会动 也可随时手动清理"));
+            Tip: "从 Nexus 或 GitHub 下载 mod 时的压缩包和解压中间产物。超过 24 小时未使用的文件会自动清理；任务仍引用的未完成下载（包括暂停任务）会保留。也可手动清理。"));
 
         // v1.6.12：缓存根上的历史遗留 _smapi-install.dat（早期解压 install.dat 落下的）
         // 必须挂在本项下，否则 G3 审计会把它钉成「看不见就删不掉」的无主条目。
@@ -315,7 +317,7 @@ public sealed partial class StorageService
     {
         var c = GetCategories().FirstOrDefault(x => x.Id == id);
         if (c is null || !c.Cleanable) return Task.FromResult("这一项不可清理");
-        if ((c.Id == "downloads" || c.Id == "smapi") && _center.RunningCount > 0)
+        if ((c.Id == "downloads" || c.Id == "smapi") && _center.ActiveCount > 0)
             return Task.FromResult("有下载/安装任务进行中，结束后再清理");
         if (c.Id == "selfupdate" && SelfUpdateService.CacheBusy)
             return Task.FromResult("自更新安装包正在下载，结束后再清理");
@@ -323,7 +325,7 @@ public sealed partial class StorageService
     }
 
     /// <summary>自动清理的常驻循环：启动后立刻跑一遍，之后每小时一遍。
-    /// 删的是「上次写入早于 24 小时」的条目 —— 正在写的东西时间戳一直是新的。</summary>
+    /// 普通条目上次写入超过 24 小时就清理；任务引用的下载断点最多保护 7 天。</summary>
     public void StartDownloadAutoClean()
     {
         _ = Task.Run(async () =>
@@ -338,11 +340,13 @@ public sealed partial class StorageService
     }
 
     /// <summary>扫一遍下载/安装临时目录，删掉超过 24 小时没动过的文件和临时目录，返回删掉的条目数。
-    /// 有下载/安装任务进行中时整轮跳过 —— 那里可能有正在写的半截包。</summary>
+    /// 暂停任务引用的断点额外保留最多 7 天。有下载/安装任务进行中时整轮跳过 —— 那里可能有正在写的半截包。</summary>
     public int AutoCleanDownloads()
     {
-        if (_center.RunningCount > 0) return 0;
-        var n = PruneStaleEntries(StoragePaths.DownloadsDir, DateTime.UtcNow - DownloadsRetention);
+        if (_center.ActiveCount > 0) return 0;
+        var protectedPaths = GetFreshPartialDownloadPaths(_center.Snapshot(), DateTime.UtcNow);
+        var n = PruneStaleEntries(StoragePaths.DownloadsDir,
+            DateTime.UtcNow - DownloadsRetention, protectedPaths);
         if (n > 0)
         {
             AppLog.Warn("Storage", $"下载/安装临时自动清理：删掉 {n} 个超过 24 小时的条目");
@@ -352,10 +356,33 @@ public sealed partial class StorageService
         return n;
     }
 
+    internal static HashSet<string> GetFreshPartialDownloadPaths(IEnumerable<TaskItem> tasks, DateTime nowUtc)
+    {
+        var protectedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var cutoff = nowUtc - PartialDownloadRetention;
+        foreach (var task in tasks)
+        {
+            if (string.IsNullOrWhiteSpace(task.PartialDownloadPath)) continue;
+            try
+            {
+                var path = Path.GetFullPath(task.PartialDownloadPath);
+                var newestWrite = DateTime.MinValue;
+                foreach (var artifact in new[] { path, path + ".seg", path + ".seg.state", path + ".seg.state.tmp" })
+                    try { if (File.Exists(artifact)) newestWrite = Max(newestWrite, File.GetLastWriteTimeUtc(artifact)); } catch { }
+                if (newestWrite >= cutoff) protectedPaths.Add(path);
+            }
+            catch { }
+        }
+        return protectedPaths;
+    }
+
+    private static DateTime Max(DateTime a, DateTime b) => a >= b ? a : b;
+
     /// <summary>删掉 <paramref name="dir"/> 下最后写入早于 <paramref name="cutoffUtc"/> 的一级条目。
     /// 目录要连里面的文件一起看：只要还有一份文件比闸门新就整目录留着（目录项时间不反映
     /// 深层文件的改动）。占用中/读不动的一律跳过 —— 自动清理不许误删还在用的东西。</summary>
-    internal static int PruneStaleEntries(string dir, DateTime cutoffUtc)
+    internal static int PruneStaleEntries(string dir, DateTime cutoffUtc,
+        IReadOnlySet<string>? protectedPaths = null)
     {
         string[] entries;
         try
@@ -370,6 +397,7 @@ public sealed partial class StorageService
         {
             try
             {
+                if (IsProtectedDownloadEntry(entry, protectedPaths)) continue;
                 var isDir = Directory.Exists(entry);
                 if (isDir ? !IsDirStale(entry, cutoffUtc) : File.GetLastWriteTimeUtc(entry) >= cutoffUtc) continue;
                 if (isDir) Directory.Delete(entry, recursive: true);
@@ -379,6 +407,26 @@ public sealed partial class StorageService
             catch { }
         }
         return removed;
+    }
+
+    private static bool IsProtectedDownloadEntry(string entry, IReadOnlySet<string>? protectedPaths)
+    {
+        if (protectedPaths is null || protectedPaths.Count == 0) return false;
+        string full;
+        try { full = Path.GetFullPath(entry); } catch { return false; }
+        foreach (var path in protectedPaths)
+        {
+            if (string.Equals(full, path, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(full, path + ".seg", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(full, path + ".seg.state", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(full, path + ".seg.state.tmp", StringComparison.OrdinalIgnoreCase))
+                return true;
+            // A directory containing a tracked download must also stay intact.
+            var prefix = full.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                + Path.DirectorySeparatorChar;
+            if (path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) return true;
+        }
+        return false;
     }
 
     private static bool IsDirStale(string dir, DateTime cutoffUtc)
@@ -447,7 +495,7 @@ public sealed partial class StorageService
         var root = StoragePaths.DepotStagingDir;
         var dirs = k.Folders.Select(f => Path.Combine(root, f)).Where(Directory.Exists).ToArray();
         if (dirs.Length == 0) return Task.FromResult("这里已经很干净了");
-        if (_center.RunningCount > 0) return Task.FromResult("有下载/安装任务进行中，结束后再清理");
+        if (_center.ActiveCount > 0) return Task.FromResult("有下载/安装任务进行中，结束后再清理");
         if (!k.Danger) return RunClean("vercache", k.Name, dirs);
 
         var gamePath = _cfg.Current.GamePath;

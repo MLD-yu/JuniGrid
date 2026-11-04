@@ -47,3 +47,11 @@ test-harness/*.txt
 
 # 拆文件前的整份备份（与上面 _revert-backup-*/ 同一类，只留本地）
 _backup-*/
+
+# 并行 AI 构建/测试产生的临时目录（Codex 工作树、扫描探针）
+.codex-build/
+.codex-testbuild/
+.testtmp/
+
+# WPF 标记编译第二遍落下的临时工程文件
+*_wpftmp.csproj

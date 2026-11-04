@@ -111,6 +111,90 @@ public class SegmentDownloadTests : IDisposable
         Assert.Equal(new byte[] { 1, 2, 3 }, await File.ReadAllBytesAsync(dest));
     }
 
+    [Fact]
+    public async Task Pause_PreservesLaneCursors_AndResumeRequestsOnlyRemainingRanges()
+    {
+        var body = MakeBody(20 * 1024 * 1024);
+        using var server = new FakeCdn(body, supportRange: true, chunkDelayMs: 20);
+        using var pause = new CancellationTokenSource();
+        using var http = new HttpClient();
+        var dest = Path.Combine(_dir, "paused-pack.zip");
+        var expectedMd5 = Convert.ToHexString(System.Security.Cryptography.MD5.HashData(body));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => SegmentDownloader.TryRunAsync(
+            http, server.Url + "/file.zip", dest, lanes: 4,
+            (_, pct, _) => { if (pct is > 0) pause.Cancel(); }, pause.Token,
+            expectedMd5, preservePartialOnCancellation: () => true));
+
+        var part = dest + ".seg";
+        var statePath = part + ".state";
+        Assert.True(File.Exists(part));
+        Assert.True(File.Exists(statePath));
+        long[] cursors;
+        using (var stateDoc = System.Text.Json.JsonDocument.Parse(await File.ReadAllTextAsync(statePath)))
+            cursors = stateDoc.RootElement.GetProperty("Cursors").EnumerateArray().Select(x => x.GetInt64()).ToArray();
+        var segmentLength = body.Length / cursors.Length;
+        Assert.True(cursors.Select((cursor, i) => cursor - (long)i * segmentLength).Sum() > 0,
+            "at least one lane should have a durable checkpoint before cancellation");
+
+        server.ClearRanges();
+        var resumed = await SegmentDownloader.TryRunAsync(http, server.Url + "/file.zip", dest,
+            lanes: 4, (_, _, _) => { }, expectedMd5: expectedMd5);
+
+        Assert.True(resumed);
+        Assert.Equal(body, await File.ReadAllBytesAsync(dest));
+        var resumedRanges = server.Ranges.Where(x => !(x.From == 0 && x.To == 0)).ToArray();
+        for (var i = 0; i < cursors.Length; i++)
+        {
+            var end = i == cursors.Length - 1 ? body.Length - 1 : (i + 1) * segmentLength - 1;
+            var laneStart = (long)i * segmentLength;
+            if (cursors[i] <= end)
+                Assert.Contains(resumedRanges, r => r.From == cursors[i] && r.To == end);
+            else
+                Assert.True(cursors[i] > laneStart);
+        }
+        Assert.False(File.Exists(part));
+        Assert.False(File.Exists(statePath));
+    }
+
+    [Fact]
+    public async Task CorruptResumeState_IsDiscardedAndStartsFresh()
+    {
+        var body = MakeBody(5 * 1024 * 1024);
+        using var server = new FakeCdn(body, supportRange: true);
+        var dest = Path.Combine(_dir, "corrupt-state.zip");
+        var part = dest + ".seg";
+        await File.WriteAllBytesAsync(part, new byte[body.Length]);
+        await File.WriteAllTextAsync(part + ".state", "not valid json");
+
+        var ok = await SegmentDownloader.TryRunAsync(
+            new HttpClient(), server.Url + "/file.zip", dest, lanes: 4, (_, _, _) => { });
+
+        Assert.True(ok);
+        Assert.Equal(body, await File.ReadAllBytesAsync(dest));
+        var ranges = server.Ranges.Where(x => !(x.From == 0 && x.To == 0)).ToArray();
+        Assert.Contains(ranges, x => x.From == 0);
+        Assert.False(File.Exists(part + ".state"));
+    }
+
+    [Fact]
+    public async Task CancellationWithoutPausePolicy_CleansPartialSegmentState()
+    {
+        var body = MakeBody(20 * 1024 * 1024);
+        using var server = new FakeCdn(body, supportRange: true, chunkDelayMs: 20);
+        using var cancel = new CancellationTokenSource();
+        using var http = new HttpClient();
+        var dest = Path.Combine(_dir, "cancelled-pack.zip");
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => SegmentDownloader.TryRunAsync(
+            http, server.Url + "/file.zip", dest, lanes: 4,
+            (_, pct, _) => { if (pct is > 0) cancel.Cancel(); }, cancel.Token,
+            preservePartialOnCancellation: () => false));
+
+        Assert.False(File.Exists(dest + ".seg"));
+        Assert.False(File.Exists(dest + ".seg.state"));
+    }
+
     // ── md5 ────────────────────────────────────────────────────────────
 
     [Fact]
@@ -147,17 +231,22 @@ public class SegmentDownloadTests : IDisposable
         private readonly byte[] _body;
         private readonly bool _supportRange;
         private readonly bool _failNonProbeRange;
+        private readonly int _chunkDelayMs;
         private readonly CancellationTokenSource _stop = new();
         private int _requests;
+        private readonly System.Collections.Concurrent.ConcurrentQueue<(long From, long To)> _ranges = new();
 
         public int RequestCount => Volatile.Read(ref _requests);
         public string Url { get; }
+        public (long From, long To)[] Ranges => _ranges.ToArray();
+        public void ClearRanges() { while (_ranges.TryDequeue(out _)) { } }
 
-        public FakeCdn(byte[] body, bool supportRange, bool failNonProbeRange = false)
+        public FakeCdn(byte[] body, bool supportRange, bool failNonProbeRange = false, int chunkDelayMs = 0)
         {
             _body = body;
             _supportRange = supportRange;
             _failNonProbeRange = failNonProbeRange;
+            _chunkDelayMs = chunkDelayMs;
             _listener = new TcpListener(IPAddress.Loopback, 0);
             _listener.Start();
             var port = ((IPEndPoint)_listener.LocalEndpoint).Port;
@@ -207,6 +296,7 @@ public class SegmentDownloadTests : IDisposable
                             }
                         }
                     }
+                    if (hasRange) _ranges.Enqueue((from, to));
 
                     var partial = hasRange && _supportRange;
                     var sb = new StringBuilder();
@@ -232,11 +322,23 @@ public class SegmentDownloadTests : IDisposable
                         sb.Append("HTTP/1.1 206 Partial Content\r\n");
                         sb.Append($"Content-Range: bytes {from}-{to}/{_body.Length}\r\n");
                         sb.Append($"Content-Length: {len}\r\n");
+                        sb.Append("ETag: \"fake-v1\"\r\n");
                         sb.Append("Accept-Ranges: bytes\r\n");
                         sb.Append("Content-Type: application/zip\r\n");
                         sb.Append("Connection: close\r\n\r\n");
                         await stream.WriteAsync(Encoding.ASCII.GetBytes(sb.ToString()));
-                        await stream.WriteAsync(_body.AsMemory((int)from, len));
+                        if (_chunkDelayMs <= 0)
+                            await stream.WriteAsync(_body.AsMemory((int)from, len));
+                        else
+                        {
+                            const int chunk = 32 * 1024;
+                            for (var offset = 0; offset < len; offset += chunk)
+                            {
+                                var count = Math.Min(chunk, len - offset);
+                                await stream.WriteAsync(_body.AsMemory((int)from + offset, count));
+                                await Task.Delay(_chunkDelayMs, _stop.Token);
+                            }
+                        }
                     }
                     else
                     {

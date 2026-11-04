@@ -142,7 +142,9 @@ public partial class MainWindow : Window
             Log($"wwwroot/index.html exists? {File.Exists(wwwrootPath)} @ {wwwrootPath}");
 
             // v0.2.2：配置最早加载 —— 缓存位置（含 WebView2 目录）由它决定
-            var configService = new ConfigService();
+            ConfigService configService;
+            using (Services.PerfScope.Enter("启动/配置载入"))
+                configService = new ConfigService();
 
             // v1.3.13：下载层（NexusService / SegmentDownloader 都是静态类）读不到 DI 的配置，
             // 这里挂两个"现读"的钩子：设置页拨开关后立刻生效，不用重启进程。
@@ -156,9 +158,13 @@ public partial class MainWindow : Window
             // 变了，所以必须先把历史默认位置里的东西搬过来，WebView2 才能定地址（它只能在
             // 初始化之前搬）。搬不动的 webview2 会写进 PendingWebView2MoveFrom，下面的待搬链
             // 于是本会话继续用旧目录，绝不静默切到空的新目录。
-            StorageService.MigrateFromLegacyTempRoot(configService.Current.CacheRoot,
-                out var wv2StuckFromTemp, out var tempMoved);
-            if (tempMoved > 0) Log($"旧默认缓存位置已搬入 {StoragePaths.DefaultCacheRoot}（{tempMoved} 项）");
+            string? wv2StuckFromTemp = null;
+            using (Services.PerfScope.Enter("启动/旧缓存迁移"))
+            {
+                StorageService.MigrateFromLegacyTempRoot(configService.Current.CacheRoot,
+                    out wv2StuckFromTemp, out var tempMoved);
+                if (tempMoved > 0) Log($"旧默认缓存位置已搬入 {StoragePaths.DefaultCacheRoot}（{tempMoved} 项）");
+            }
             if (wv2StuckFromTemp is not null
                 && string.IsNullOrWhiteSpace(configService.Current.PendingWebView2MoveFrom))
             {
@@ -169,6 +175,8 @@ public partial class MainWindow : Window
             // v0.2.2：上次更改缓存目录时 WebView2 正被占用无法搬 → 趁 WebView2 还没初始化，先执行遗留迁移
             var wv2Use = StoragePaths.WebView2Dir;
             var wv2From = configService.Current.PendingWebView2MoveFrom;
+            using (Services.PerfScope.Enter("启动/WebView2 数据迁移"))
+            {
             if (!string.IsNullOrWhiteSpace(wv2From) && Directory.Exists(wv2From))
             {
                 if (string.Equals(Path.GetFullPath(wv2From), Path.GetFullPath(wv2Use), StringComparison.OrdinalIgnoreCase))
@@ -206,11 +214,13 @@ public partial class MainWindow : Window
             {
                 configService.Save(configService.Current);
             }
+            }
 
             // v0.2.2：可迁移项默认位置统一挪到 %TEMP%\JuniGrid —— 未设置缓存目录时，
             // 把旧默认位置（LocalAppData）的既有数据一次性搬过去（WebView2 必须在初始化前搬完）
             if (StoragePaths.CacheRoot is null)
             {
+                using var _legacyScope = Services.PerfScope.Enter("启动/旧默认缓存搬移");
                 var legacyPairs = new (string From, string To)[]
                 {
                     (Path.Combine(StoragePaths.LocalAppDataDir, "smapi-installer"), StoragePaths.SmapiInstallerDir),
@@ -238,6 +248,7 @@ public partial class MainWindow : Window
             //   （第一版就踩过：变成 smapi-installer\smapi-installer\*.zip，代码再也找不到）。
             try
             {
+                using var _smapiScope = Services.PerfScope.Enter("启动/SMAPI 包合并");
                 var legacySmapiZip = Path.Combine(StoragePaths.DepotStagingDir, "smapi-cache");
                 if (Directory.Exists(legacySmapiZip))
                 {
@@ -307,7 +318,8 @@ public partial class MainWindow : Window
             Log("DI configured");
 
             // 启动恢复 OAuth2 持久会话（有 token 则挂上 Bearer，过期则后台刷新）
-            provider.GetRequiredService<NexusOAuthService>().RestoreSession();
+            using (Services.PerfScope.Enter("启动/OAuth 会话恢复"))
+                provider.GetRequiredService<NexusOAuthService>().RestoreSession();
 
             // access token 会在会话中途过期：把刷新器挂到静态的 NexusService 上，
             // 让每个带 Bearer 的请求在发出前自己续期 —— 否则用到一半就"拉取失败、重登才好"。
@@ -324,7 +336,8 @@ public partial class MainWindow : Window
 
             // 命令桥的"期望状态 = 目录在不在"这条对齐：用户开着桥、而我们这次发版换了桥的
             // DLL，就在他下次启动 JuniGrid 时把 Mods 里那份覆盖成新的（游戏在跑则跳过）。
-            provider.GetRequiredService<CommandBridgeService>().ReconcileOnStartup();
+            using (Services.PerfScope.Enter("启动/命令桥对齐"))
+                provider.GetRequiredService<CommandBridgeService>().ReconcileOnStartup();
 
             // v0.2.1：内存管理后台循环随启动常驻 —— 定时/阈值自动压缩不依赖设置页是否打开过
             _ = provider.GetRequiredService<MemoryService>();
@@ -352,7 +365,8 @@ public partial class MainWindow : Window
                 configService.Current.GamePath,
                 provider.GetRequiredService<DepotDownloaderService>());
 
-            InitializeComponent();
+            using (Services.PerfScope.Enter("启动/界面构建"))
+                InitializeComponent();
             // v1.1.2b：拖拽最小尺寸完全由 WM_GETMINMAXINFO hook 强制（v1.2.11 起为
             // CSS 像素下限 480×420 × 本窗缩放，见 MonitorMinTrackSize）。
             // 必须放在 InitializeComponent 之后 —— XAML 里的 MinWidth/MinHeight(1100/650 DIP)
@@ -375,6 +389,20 @@ public partial class MainWindow : Window
             };
 
             Log("InitializeComponent done");
+
+            // 实测通道：JUNIGRID_CDP_PORT=<端口> 时给主 WebView2 开远程调试端口，
+            // 供 agent-browser / playwright 连 CDP 真实点界面做端到端实测。
+            // 不设该环境变量时（正常用户环境）这段完全不生效。
+            blazorWebView.BlazorWebViewInitializing += (_, e) =>
+            {
+                if (!int.TryParse(Environment.GetEnvironmentVariable("JUNIGRID_CDP_PORT"), out var cdpPort)
+                    || cdpPort <= 0) return;
+                e.EnvironmentOptions ??= new CoreWebView2EnvironmentOptions();
+                e.EnvironmentOptions.AdditionalBrowserArguments =
+                    (e.EnvironmentOptions.AdditionalBrowserArguments ?? "")
+                    + " --remote-debugging-port=" + cdpPort;
+                Log("[CDP] 远程调试端口已开启：" + cdpPort);
+            };
 
             // v0.19.0：监听前端 postMessage('ui-ready')，通知 App 层去淡出 Splash + 滑入主窗
             blazorWebView.BlazorWebViewInitialized += (_, args) =>
@@ -471,6 +499,10 @@ public partial class MainWindow : Window
             StateChanged += (_, e2) =>
             {
                 var isMin = WindowState == System.Windows.WindowState.Minimized;
+                // 先同步告诉 UI 层「窗口不可见了」：WebView 一旦 Collapsed，
+                // 任何 StateHasChanged 都会挂在渲染批次上（实机卡过 150 秒，见 AppUiState 注释），
+                // 所以这个标记必须在隐藏 WebView 之前落地。
+                Services.AppUiState.SetWindowVisible(!isMin);
                 Dispatcher.BeginInvoke(() =>
                 {
                     var target = isMin ? Visibility.Collapsed : Visibility.Visible;
@@ -566,6 +598,7 @@ public partial class MainWindow : Window
     // 成本是每秒 5 次空回调（微秒级）；Warn 只进内存缓冲，不同步落盘。
     private System.Windows.Threading.DispatcherTimer? _jankProbe;
     private long _jankLastTick;
+    private TimeSpan _jankLastGc;
     private const int JankTickMs = 200;
     // v1.3.18：450 → 300。450 只抓得到"整段冻住"，而用户报的"发木"其实是
     // 一连串 300~400ms 的小卡，每一拍都够让你在按下按钮的那一下丢掉反馈。
@@ -580,13 +613,27 @@ public partial class MainWindow : Window
         {
             Interval = TimeSpan.FromMilliseconds(JankTickMs),
         };
+        // v1.3.28：GC 暂停增量。阻塞式 GC 会停掉包括 UI 线程在内的所有托管线程，
+        // 探针看到的 gap 和「有段代码在同步跑」长得一模一样。把这段扣掉才能分清
+        // 「我们自己的活慢」还是「堆压力大」，否则永远只能写「无可归因段」。
+        _jankLastGc = GC.GetTotalPauseDuration();
         _jankProbe.Tick += (_, _) =>
         {
             var now = Environment.TickCount64;
-            var gap = now - _jankLastTick;
+            var prev = _jankLastTick;
+            var gap = now - prev;
             _jankLastTick = now;
-            if (gap >= JankReportMs)
-                AppLog.Warn("Perf", $"UI 线程被占住 {gap}ms（前一条 Perf/Download 日志就是嫌疑段）");
+            var gcNow = GC.GetTotalPauseDuration();
+            var gcMs = (gcNow - _jankLastGc).TotalMilliseconds;
+            _jankLastGc = gcNow;
+            if (gap < JankReportMs) return;
+            // v1.3.28：归因改成读 PerfScope 的真实标记。原来那句「前一条 Perf/Download
+            // 日志就是嫌疑段」是拿日志顺序猜的，实测三次启动期超时全被它指到了下载头上，
+            // 而当时线程其实卡在目录迁移/配置解析里 —— 那段的慢从不写 Perf 日志。
+            var gcNote = gcMs >= gap * 0.5
+                ? $"其中 GC 暂停 {gcMs:F0}ms（{GC.CollectionCount(2)} 次 gen2 累计）"
+                : $"GC 仅 {gcMs:F0}ms ⇒ 非 GC";
+            AppLog.Warn("Perf", $"UI 线程被占住 {gap}ms · {Services.PerfScope.Describe(prev)} · {gcNote}");
         };
         _jankProbe.Start();
     }

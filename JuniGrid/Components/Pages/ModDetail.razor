@@ -195,9 +195,11 @@
 
                             <div class="jg-pick-actions">
                                 <button class="jg-pick-btn" @onclick="ClosePicker">@Loc.T("取消")</button>
+                                @* 下载中不 disable：disabled 的按钮连 onclick 都不触发，用户只会觉得
+                                   「点了没反应」。留着可点，由 InstallPicked 里回一条 toast 指路。 *@
                                 <button class="jg-pick-btn primary" @onclick="InstallPicked"
-                                        disabled="@(_pickedFileId <= 0 || _pickBusy)">
-                                    @(_pickBusy ? Loc.T("处理中…") : Loc.T("下载并安装"))
+                                        disabled="@(_pickedFileId <= 0)">
+                                    @(_pickBusy ? Loc.T("下载中…") : Loc.T("下载并安装"))
                                 </button>
                             </div>
                         </div>
@@ -1055,48 +1057,68 @@
         await ClosePickVdd();
     }
 
-    /// <summary>弹窗里的「下载并安装」：指定 fileId 走完整安装管线。</summary>
+    /// <summary>弹窗里的「下载并安装」：指定 fileId 走完整安装管线。
+    /// <para>v1.3.21：点下去<b>立刻</b>收弹窗。InstallModDirectAsync 是等「下载 + 解压 + 装完」
+    /// 整段返回的，90 MB 的包要挂好几分钟 —— 弹窗一直开着挡在页面上，按钮停在「处理中…」，
+    /// 用户看到的就是「点了下载，弹窗再也不消失」。真正的进度本来就在任务中心，
+    /// 这里只留一条 toast 把人指过去；成功/失败再发一条。</para></summary>
     private async Task InstallPicked()
     {
-        if (_pickBusy || _pickedFileId <= 0) return;
+        if (_pickedFileId <= 0) return;
         var f = _files?.FirstOrDefault(x => x.FileId == _pickedFileId);
         if (f is null) return;
+        if (_pickBusy)
+        {
+            // 上次那一击已经在跑了。再点一下不该多排一条任务（StartOrRestart 对
+            // running 的行只会新开一行），所以拦在这里并指路。
+            _ = Toast(LocService.Tr("这个 mod 正在下载，进度在任务中心"));
+            return;
+        }
 
         _pickBusy = true;
-        _installMsg = LocService.Tr("正在下载并安装…（大文件需要一点时间）");
+        _installMsg = null;
+        if (_pickVddOpen) await ClosePickVdd();
+        _pickOpen = false;
         StateHasChanged();
+        _ = Toast(LocService.Tr("已加入任务中心，下载在后台继续"));
+
         try
         {
             var err = await Installer.InstallModDirectAsync(ModId, f.FileId, f.Name);
             if (err is null)
             {
-                _installMsg = null;
                 _scanCache = null;
                 _installedFolder ??= ModSvc.Scan(Cfg.Current.GamePath)
                     .FirstOrDefault(m => m.NexusModId == ModId)?.Folder;
                 _overlayInstalled = _installedFolder is null
                     && ModService.OverlayAppliedForMod(Cfg.Current.GamePath, Cfg.Current, ModId);
                 await RefreshSmapiStateAsync(freshRead: true);
-                _pickOpen = false;
+                _ = Toast(LocService.Tf("{0} 安装完成", f.Name), "ok");
             }
             else if (err is "已取消" or "已暂停")
             {
-                _installMsg = err == "已暂停" ? LocService.Tr("任务已暂停，可在任务中心继续") : null;
+                // 用户自己取消/暂停的：不再报错，任务中心那一行已经有状态
             }
             else
             {
-                _installMsg = LocService.Tr("安装失败：") + err;
+                _ = Toast(LocService.Tr("安装失败：") + err, "err");
             }
         }
         catch (Exception ex)
         {
-            _installMsg = LocService.Tr("失败：") + ex.Message;
+            _ = Toast(LocService.Tr("失败：") + ex.Message, "err");
         }
         finally
         {
             _pickBusy = false;
             StateHasChanged();
         }
+    }
+
+    /// <summary>发一条站内 toast（失败静默 —— 提示语丢了不该影响安装本身）。</summary>
+    private async Task Toast(string msg, string kind = "ok")
+    {
+        try { await JS.InvokeVoidAsync("junigridJs.toast", msg, kind); } catch { }
     }
 
     private void OpenPage() =>

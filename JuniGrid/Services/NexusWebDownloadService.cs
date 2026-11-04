@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.IO;
 using System.Text.Json;
 using System.Windows;
@@ -8,9 +7,11 @@ using Microsoft.Web.WebView2.Wpf;
 namespace JuniGrid.Services;
 
 /// <summary>应用内自动下载的结果：<see cref="Url"/> 非空即拿到了一次性 CDN 直链。</summary>
-public sealed record NexusWebDownloadResult(string? Url, string? Error)
+public sealed record NexusWebDownloadResult(string? Url, string? Error,
+    IReadOnlyList<string>? Mirrors = null)
 {
-    public static NexusWebDownloadResult Ok(string url) => new(url, null);
+    public static NexusWebDownloadResult Ok(string url, IReadOnlyList<string>? mirrors = null)
+        => new(url, null, mirrors);
     public static NexusWebDownloadResult Fail(string error) => new(null, error);
 }
 
@@ -61,6 +62,74 @@ public sealed record NexusWebDownloadResult(string? Url, string? Error)
 /// </summary>
 public sealed class NexusWebDownloadService
 {
+    private static Window? _accountWindow;
+    private static WebView2? _accountView;
+    private static string? _accountName;
+    public string? AccountName => _accountName;
+
+    /// <summary>显示使用下载通道同一 profile 的 Nexus 网页，让用户登录或切换账号。</summary>
+    public async Task OpenAccountWindowAsync()
+    {
+        var dispatcher = Application.Current?.Dispatcher;
+        if (dispatcher is null) return;
+        await dispatcher.InvokeAsync(async () =>
+        {
+            if (_accountWindow is not null)
+            {
+                _accountWindow.Left = SystemParameters.WorkArea.Left + 80;
+                _accountWindow.Top = SystemParameters.WorkArea.Top + 60;
+                _accountWindow.Activate();
+                return;
+            }
+            var profile = Path.Combine(StoragePaths.NexusWebDir, "profile");
+            Directory.CreateDirectory(profile);
+            var env = await HiddenHost.GetSharedEnvironmentAsync(profile);
+            var view = new WebView2();
+            await view.EnsureCoreWebView2Async(env);
+            view.CoreWebView2.Settings.AreDefaultContextMenusEnabled = true;
+            view.CoreWebView2.Settings.AreDevToolsEnabled = false;
+            var window = new Window
+            {
+                Title = "JuniGrid · 内置 Nexus 网页账号", Width = 1180, Height = 880,
+                WindowStartupLocation = WindowStartupLocation.CenterScreen, Content = view,
+                ShowInTaskbar = true,
+            };
+            _accountWindow = window;
+            _accountView = view;
+            window.Closed += (_, _) =>
+            {
+                _accountWindow = null; _accountView = null;
+                try { view.Dispose(); } catch { }
+            };
+            view.CoreWebView2.NavigationCompleted += async (_, _) =>
+            {
+                try
+                {
+                    var raw = await view.CoreWebView2.ExecuteScriptAsync("(function(){var a=document.querySelector('a[href^=\\\"/users/\\\"]');return a?(a.textContent||'').trim():''})()");
+                    var name = JsonSerializer.Deserialize<string>(raw);
+                    if (!string.IsNullOrWhiteSpace(name)) _accountName = name;
+                }
+                catch { }
+            };
+            window.Show();
+            view.CoreWebView2.Navigate("https://www.nexusmods.com/");
+        }).Task.Unwrap();
+    }
+
+    /// <summary>只清除内置 Nexus profile 的 Cookie，不影响 JuniGrid API token。</summary>
+    public async Task LogoutWebAccountAsync()
+    {
+        var dispatcher = Application.Current?.Dispatcher;
+        if (dispatcher is null) return;
+        await dispatcher.InvokeAsync(async () =>
+        {
+            if (_accountView is null) throw new InvalidOperationException("请先打开内置 Nexus 网页窗口");
+            _accountView.CoreWebView2.CookieManager.DeleteAllCookies();
+            _accountName = null;
+            _accountView.CoreWebView2.Navigate("https://www.nexusmods.com/");
+        }).Task.Unwrap();
+    }
+
     /// <summary>总开关。关掉后 <see cref="TryGetDirectUrlAsync"/> 立即失败，
     /// 调用方自动退回打开系统浏览器的老路。默认开启（这是本版的产品选择）。</summary>
     public static bool Enabled { get; set; } = true;
@@ -72,7 +141,8 @@ public sealed class NexusWebDownloadService
     /// 而且每多一个窗口就多一个 Chromium 渲染进程。</para></summary>
     private const int PoolSize = 3;
 
-    private static readonly SemaphoreSlim Gate = new(PoolSize, PoolSize);
+    private static readonly NexusDownloadSlotGate Gate = new(PoolSize);
+    private static readonly NexusFetchSlotRegistry FetchSlots = new();
 
     /// <summary>WebView2 环境按 profile 缓存 —— <b>同一个 user data folder 在一个进程里
     /// 只能建一个环境</b>，再建一次直接 <c>0x8007139F</c>。多窗口要共享它。</summary>
@@ -108,7 +178,8 @@ public sealed class NexusWebDownloadService
     public async Task<NexusWebDownloadResult> TryGetDirectUrlAsync(
         int modId, long fileId,
         Action<string, double?, double?>? report = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        TaskItem? task = null)
     {
         if (!Enabled) return NexusWebDownloadResult.Fail("应用内自动下载已关闭");
         if (modId <= 0 || fileId <= 0) return NexusWebDownloadResult.Fail("modId/fileId 无效");
@@ -117,31 +188,63 @@ public sealed class NexusWebDownloadService
         if (dispatcher is null) return NexusWebDownloadResult.Fail("界面尚未初始化");
 
         var entered = false;
+        NexusFetchSlot? slot = null;
+        var ownsSlot = false;
         try
         {
-            // 排队上限：池子里 3 个窗口都在忙时最多等 150 秒，等不到就明说
-            entered = await Gate.WaitAsync(TimeSpan.FromSeconds(150), ct);
-            if (!entered) return NexusWebDownloadResult.Fail("另一个应用内下载页正在使用中，稍后再试");
+            // 先登记 (mod,file)，再等全局窗口名额；排队期间到达的 nxm:// 也能并入原任务。
+            var reservation = FetchSlots.Reserve(modId, fileId);
+            slot = reservation.Slot;
+            ownsSlot = reservation.IsOwner;
+            if (!ownsSlot) return await slot.Completion.Task.WaitAsync(ct);
 
-            var host = new HiddenHost(modId, fileId, report);
+            using var gateCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            var gateWait = Gate.WaitAsync(task, TimeSpan.FromSeconds(150), gateCts.Token);
+            if (await Task.WhenAny(gateWait, slot.Completion.Task) == slot.Completion.Task)
+            {
+                // nxm 回流已经递来直链，不必再等一个隐藏窗口名额。
+                gateCts.Cancel();
+                try { entered = await gateWait; }
+                catch (OperationCanceledException) { }
+                return await slot.Completion.Task;
+            }
+
+            entered = await gateWait;
+            if (!entered)
+            {
+                var timeout = NexusWebDownloadResult.Fail("另一个应用内下载页正在使用中，稍后再试");
+                FetchSlots.Complete(modId, fileId, slot, timeout);
+                return timeout;
+            }
+
+            var host = new HiddenHost(modId, fileId, report, slot);
             // 窗口与 WebView2 全是 STA 亲和对象：整段跑在 UI 线程上。
             // 外层 await 拿到的是 Task<Result>，再 await 一次取值。
-            return await (await dispatcher.InvokeAsync(() => host.RunAsync(ct)));
+            var result = await (await dispatcher.InvokeAsync(() => host.RunAsync(ct)));
+            FetchSlots.Complete(modId, fileId, slot, result);
+            return result;
         }
         catch (OperationCanceledException)
         {
-            return NexusWebDownloadResult.Fail("已取消");
+            var canceled = NexusWebDownloadResult.Fail("已取消");
+            if (slot is not null && ownsSlot) FetchSlots.Complete(modId, fileId, slot, canceled);
+            return canceled;
         }
         catch (Exception ex)
         {
             AppLog.Warn("NexusWeb", "应用内自动下载异常：" + ex);
-            return NexusWebDownloadResult.Fail(ex.Message);
+            var failed = NexusWebDownloadResult.Fail(ex.Message);
+            if (slot is not null && ownsSlot) FetchSlots.Complete(modId, fileId, slot, failed);
+            return failed;
         }
         finally
         {
+            if (slot is not null && ownsSlot) FetchSlots.Remove(modId, fileId, slot);
             if (entered) Gate.Release();
         }
     }
+
+    public bool IsQueued(TaskItem task) => Gate.IsQueued(task);
 
     // ══════════════════════════════════════════════════════════════════
     // nxm 回流合流（同一 mod 只该有一行任务）
@@ -152,18 +255,16 @@ public sealed class NexusWebDownloadService
     /// 会顺手触发一次 <c>nxm://</c> —— Windows 把链接转回本进程，走「网页一键安装」那条路，
     /// 于是同一个 mod 同时冒出「更新 Mod「X」」和「下载并安装 X」两行任务（2026-11-04 用户反馈：
     /// 一个 mod 两个任务）。这里登记在跑的取链请求，nxm 回流时先问一句是不是自己撂的。</para></summary>
-    private static readonly ConcurrentDictionary<string, HiddenHost> Active = new();
-
-    private static string FetchKey(int modId, long fileId) => modId + ":" + fileId;
-
-    /// <summary>这个 (mod, file) 现在有隐藏窗口在等直链吗？</summary>
+    /// <summary>这个 (mod, file) 现在有人在等直链吗？窗口可能还没开（排队阶段就先占位了）。
+    /// </summary>
     public static bool HasPending(int modId, long fileId)
-        => Active.TryGetValue(FetchKey(modId, fileId), out var h) && !h.Finished;
+        => FetchSlots.HasPending(modId, fileId);
 
-    /// <summary>把 nxm 回流解析出的真直链交给正在等它的隐藏窗口。
+    /// <summary>把 nxm 回流解析出的真直链交给正在等它的那个槽位。
     /// 返回 true = 已接走（调用方不要再建任务）。</summary>
-    public static bool TryDeliver(int modId, long fileId, string? directUrl)
-        => Active.TryGetValue(FetchKey(modId, fileId), out var h) && h.Deliver(directUrl);
+    public static bool TryDeliver(int modId, long fileId, string? directUrl,
+        IReadOnlyList<string>? mirrors = null)
+        => FetchSlots.TryDeliver(modId, fileId, directUrl, mirrors);
 
     // ══════════════════════════════════════════════════════════════════
     // 隐藏窗口本体
@@ -180,9 +281,12 @@ public sealed class NexusWebDownloadService
         private WebView2? _view;
         private CoreWebView2? _core;
 
-        /// <summary>拦到直链 / 用户关窗（null）都会让它完成。</summary>
-        private readonly TaskCompletionSource<string?> _urlTcs =
-            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        /// <summary>拦到直链 / 用户关窗（null）都会让它完成。
+        /// <para>槽位拥有直链任务源，这里只引用它 ——
+        /// 占位（槽位）与开窗（本类）因此解耦，nxm 回流能在排队阶段就认领。</para></summary>
+        private readonly TaskCompletionSource<string?> _urlTcs;
+        /// <summary>本次取链所属的槽位（见 <see cref="Reserve"/>）。</summary>
+        private readonly NexusFetchSlot _slot;
 
         private string? _revealedHint;
         private string? _lastProbeSig;
@@ -192,11 +296,13 @@ public sealed class NexusWebDownloadService
         private DateTime _lastHarvestUtc = DateTime.MinValue;
         private string? _lastError;
 
-        public HiddenHost(int modId, long fileId, Action<string, double?, double?>? report)
+        public HiddenHost(int modId, long fileId, Action<string, double?, double?>? report, NexusFetchSlot slot)
         {
             _modId = modId;
             _fileId = fileId;
             _report = report;
+            _slot = slot;
+            _urlTcs = slot.DirectUrl;
         }
 
         /// <summary>
@@ -210,8 +316,6 @@ public sealed class NexusWebDownloadService
 
         public async Task<NexusWebDownloadResult> RunAsync(CancellationToken ct)
         {
-            var fetchKey = FetchKey(_modId, _fileId);
-            Active[fetchKey] = this;   // 先去登记：nxm 回流要能认领到这一个
             try
             {
                 await CreateUiAsync();
@@ -222,7 +326,8 @@ public sealed class NexusWebDownloadService
                 _core!.Navigate(PageUrl);
 
                 var url = await PumpAsync(ct);
-                if (!string.IsNullOrEmpty(url)) return NexusWebDownloadResult.Ok(url);
+                if (!string.IsNullOrEmpty(url))
+                    return NexusWebDownloadResult.Ok(url, _slot.Mirrors);
                 var why = _closedByUser ? "已取消" : _lastError ?? "没能在 Nexus 页面拿到下载链接";
                 AppLog.Warn("NexusWeb", $"获取直链失败：{why}");
                 return NexusWebDownloadResult.Fail(why);
@@ -238,22 +343,12 @@ public sealed class NexusWebDownloadService
             }
             finally
             {
-                if (Active.TryGetValue(fetchKey, out var cur) && ReferenceEquals(cur, this))
-                    Active.TryRemove(fetchKey, out _);
                 Close();
             }
         }
 
         /// <summary>这个窗口已经拿到结果了吗？</summary>
         public bool Finished => _urlTcs.Task.IsCompleted;
-
-        /// <summary>外部（nxm 回流）送进来的真直链：直接当结果交回，不再等页面自己发起下载。</summary>
-        public bool Deliver(string? directUrl)
-        {
-            if (string.IsNullOrWhiteSpace(directUrl) || _urlTcs.Task.IsCompleted) return false;
-            AppLog.Info("NexusWeb", $"采用 nxm 回流直链 mod={_modId} file={_fileId}");
-            return _urlTcs.TrySetResult(directUrl);
-        }
 
         // --------------------------------------------------------------
         // 建窗
@@ -353,7 +448,7 @@ public sealed class NexusWebDownloadService
             await _view!.EnsureCoreWebView2Async(env);
         }
 
-        private static async Task<CoreWebView2Environment> GetSharedEnvironmentAsync(string profile)
+        internal static async Task<CoreWebView2Environment> GetSharedEnvironmentAsync(string profile)
         {
             lock (EnvCache) { if (EnvCache.TryGetValue(profile, out var hit)) return hit; }
 
