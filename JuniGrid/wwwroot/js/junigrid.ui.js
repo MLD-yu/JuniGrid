@@ -989,3 +989,29 @@ window.junigridJs.sponsorMorph = function () {
         requestAnimationFrame(start);
     });
 };
+
+// ══════════════════════════════════════════════════════════════════
+// v1.3.17：点击探针（诊断用）。挂在 document 的捕获阶段 —— 比任何
+// stopPropagation 都早，所以"点击被某个层吃掉"也照样记得到。
+// 与 MainLayout 的 @onclick 冒泡日志配对使用：
+//   有 dom 无 blazor  ⇒ 断在 Blazor 电路（事件没送进 .NET）
+//   两个都没有        ⇒ 点击根本没落到页面（窗口/输入层问题）
+// ══════════════════════════════════════════════════════════════════
+window.junigridJs = window.junigridJs || {};
+window.junigridJs.clickProbe = function () {
+    if (window.__jgClickProbeHooked) return;
+    window.__jgClickProbeHooked = true;
+    document.addEventListener('click', function (e) {
+        try {
+            var t = e.target;
+            var d = t ? (t.tagName || '?').toLowerCase() : '?';
+            if (t && t.id) d += '#' + t.id;
+            if (t && typeof t.className === 'string' && t.className.trim()) {
+                d += '.' + t.className.trim().split(/\s+/).slice(0, 3).join('.');
+            }
+            if (window.chrome && window.chrome.webview) {
+                window.chrome.webview.postMessage('click:' + d);
+            }
+        } catch (err) { }
+    }, true);
+};

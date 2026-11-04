@@ -401,6 +401,15 @@ public partial class MainWindow : Window
                         {
                             var msg = e.TryGetWebMessageAsString();
                             if (msg == "ui-ready") App.NotifyUiReady();
+                            else if (msg is not null && msg.StartsWith("click:", StringComparison.Ordinal))
+                            {
+                                // v1.3.17 点击探针：JS 在 document 捕获阶段发的，比任何
+                                // stopPropagation 都早。与 MainLayout 的 [Click] blazor 配对：
+                                // 只有 dom 没有 blazor ⇒ 事件没送进 .NET；两个都没有 ⇒ 点击没落到页面。
+                                if (provider.GetRequiredService<ConfigService>().Current.UiClickProbe)
+                                    AppLog.Info("Click",
+                                        "dom  " + msg.Substring(6) + " t=" + DateTime.Now.ToString("HH:mm:ss.fff"));
+                            }
                         }
                         catch { }
                     };

@@ -7,7 +7,7 @@
 @inject LocalPackDelivery Delivery
 @implements IDisposable
 
-<div class="jg-shell">
+<div class="jg-shell" @onclick="OnAnyClickProbe" @onclick:stopPropagation="false">
     <TitleBar />
 
     <div class="jg-body">
@@ -82,6 +82,11 @@
             try { await JS.InvokeVoidAsync("junigridJs.playPageEnter"); } catch { }
             // v1.1.2：返回顶部按钮（滚动监听 + 路由显隐 + 点击丝滑回顶）
             try { await JS.InvokeVoidAsync("junigridJs.backTopInit"); } catch { }
+            // v1.3.17：点击探针（JS 侧那半条）—— 与下面 OnAnyClickProbe 的 blazor 那半条配对
+            if (Cfg.Current.UiClickProbe)
+            {
+                try { await JS.InvokeVoidAsync("junigridJs.clickProbe"); } catch { }
+            }
             // v1.1.2：全局自动翻译观察器 —— 挂一次管所有页面，外文内容一出现就送翻
             try
             {
@@ -92,6 +97,24 @@
             }
             catch { }
         }
+    }
+
+    /// <summary>
+    /// v1.3.17：点击探针 —— 挂在 shell 最外层，靠 Blazor 的事件冒泡接住【任何】点击。
+    /// <para>
+    /// 实机反馈「点按钮一点反应都没有」时，只靠 [Perf] 探针分不清三种情况：
+    /// ①点击根本没到 DOM（被某个全屏层吃掉 / 窗口没接到输入）；
+    /// ②到了 DOM 但没送进 .NET（Blazor 电路异常）；
+    /// ③进了 .NET 但处理器自己静默 return（_busy 之类的闸门）。
+    /// 所以 JS 侧另有一条 <c>[Click] dom</c>（见 junigrid.ui.js 的 clickProbe），
+    /// 这里写 <c>[Click] blazor</c>。三条日志一对，立刻能定位断在哪一段。
+    /// </para>
+    /// <para>只在诊断期开：Cfg.Current.UiClickProbe 为 false 时直接 return，零开销。</para>
+    /// </summary>
+    private void OnAnyClickProbe(Microsoft.AspNetCore.Components.Web.MouseEventArgs e)
+    {
+        if (!Cfg.Current.UiClickProbe) return;
+        Services.AppLog.Info("Click", $"blazor 收到点击 | 页面={Nav.Uri} t={DateTime.Now:HH:mm:ss.fff}");
     }
 
     public void Dispose()

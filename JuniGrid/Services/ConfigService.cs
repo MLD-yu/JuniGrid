@@ -606,6 +606,11 @@ public sealed class JuniGridConfig
     /// <summary>v1.3.13：分片车道数（1~6）。1 = 等价于不分片。</summary>
     public int SegmentDownloadLanes { get; set; } = 4;
 
+    /// <summary>v1.3.17：点击探针（诊断用，默认开，定位完就关）。
+    /// <para>开时每次点击会写两行日志：<c>[Click] dom</c>（JS 侧，证明点击到了页面）与
+    /// <c>[Click] blazor</c>（.NET 侧，证明事件送进了组件树）。两者对不上，就说明断在中间那一段。</para></summary>
+    public bool UiClickProbe { get; set; } = true;
+
     public string NexusAvatarDataUri { get; set; } = "";
 
     /// <summary>累计游玩时间（分钟）。LauncherService 在游戏进程退出时累加。</summary>
