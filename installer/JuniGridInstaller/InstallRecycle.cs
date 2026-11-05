@@ -79,11 +79,11 @@ public static class InstallRecycle
     }
 
     /// <summary>
-    /// 回收旧安装目录。<paramref name="fallbackTopLevel"/> 是本次 payload 的顶层条目名集合
-    /// （旧位置没有清单时用它当"哪些文件是我们家的"依据）。
+    /// 回收旧安装目录。<paramref name="fallbackFiles"/> 是本次 payload 的相对文件路径集合
+    /// （旧位置没有清单时只逐个删除这些确切文件，不递归删除同名目录）。
     /// <paramref name="dryRun"/> = 只算不删，给 <c>--recycle-preview</c> 用。
     /// </summary>
-    public static Result RecycleOldInstall(string oldDir, IReadOnlyCollection<string> fallbackTopLevel, bool dryRun)
+    public static Result RecycleOldInstall(string oldDir, IReadOnlyCollection<string> fallbackFiles, bool dryRun)
     {
         var failed = new List<string>();
         var deleted = 0;
@@ -98,7 +98,7 @@ public static class InstallRecycle
         var hadManifest = manifest.Count > 0;
         var targets = hadManifest
             ? manifest
-            : TopLevelWhitelist(oldDir, fallbackTopLevel);
+            : ExistingPayloadFiles(oldDir, fallbackFiles);
 
         foreach (var rel in targets)
         {
@@ -150,31 +150,33 @@ public static class InstallRecycle
         {
             // 预览模式：算一下"照这么删完，目录里还会剩什么"，不真动。
             // 清单文件本身真跑时会被删掉，所以不该出现在"剩余"里（否则预览骗人）。
-            remaining = EnumerateTopLevel(oldDir)
-                .Where(n => !targets.Any(t => t.Split('/')[0].Equals(n, StringComparison.OrdinalIgnoreCase))
-                            && !n.Equals(ManifestFile, StringComparison.OrdinalIgnoreCase))
-                .ToList();
+            var scheduled = new HashSet<string>(targets.Select(t => SafeCombine(oldDir, t) ?? ""),
+                StringComparer.OrdinalIgnoreCase);
+            remaining = EnumerateTopLevel(oldDir).Where(name =>
+            {
+                if (name.Equals(ManifestFile, StringComparison.OrdinalIgnoreCase)) return false;
+                var path = Path.Combine(oldDir, name);
+                if (File.Exists(path)) return !scheduled.Contains(path);
+                if (!Directory.Exists(path)) return false;
+                return Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories)
+                    .Any(file => !scheduled.Contains(file));
+            }).ToList();
         }
 
         return new Result(oldDir, deleted, failed, remaining, dirRemoved, hadManifest);
     }
 
-    /// <summary>没清单时的兜底：只认「本次 payload 里也有的顶层条目名」
-    /// <b>再加上解包之后我们自己造的那几个</b> —— <c>Uninstall.exe</c> 不在 payload 表里
-    /// （它是解包完成后从 JuniGrid.exe 复制出来的，见 InstallerEngine.cs 的"配置卸载程序"一步），
-    /// 漏了它就会在旧位置留下一个还能双击的隐形副本，正是这套回收要消灭的东西。</summary>
+    /// <summary>没清单时的兜底：只删除本次 payload 的确切文件路径和解包后生成的卸载入口。
+    /// 不按顶层目录名递归，避免把用户放在同名目录里的文件一并删除。</summary>
     private static readonly string[] CreatedAfterPayload = { "Uninstall.exe" };
 
-    private static List<string> TopLevelWhitelist(string oldDir, IReadOnlyCollection<string> payloadRels)
+    private static List<string> ExistingPayloadFiles(string oldDir, IReadOnlyCollection<string> payloadRels)
     {
-        var ours = new HashSet<string>(
-            payloadRels.Select(r => r.Replace('\\', '/').Split('/')[0]), StringComparer.OrdinalIgnoreCase);
-        ours.Add(ManifestFile);
-        foreach (var n in CreatedAfterPayload) ours.Add(n);
-        var hits = new List<string>();
-        foreach (var name in EnumerateTopLevel(oldDir))
-            if (ours.Contains(name)) hits.Add(name);
-        return hits;
+        return payloadRels.Concat(CreatedAfterPayload)
+            .Select(r => r.Replace('\\', '/'))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Where(rel => SafeCombine(oldDir, rel) is { } full && File.Exists(full))
+            .ToList();
     }
 
     private static List<string> EnumerateTopLevel(string dir)

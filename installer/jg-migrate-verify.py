@@ -208,6 +208,11 @@ def main():
           os.path.isfile(os.path.join(new, "depot-staging", "1.6.15", "meta.txt")))
     check("M3c 校验过了才删源：旧 depot-staging 已不在",
           not os.path.exists(os.path.join(old, "depot-staging")))
+    preserved = os.path.join(new, "depot-staging", "1.6.15", "body.bin.old-1")
+    check("M3e 内容不同的旧文件另存为 .old-1（不丢数据，也不卡住旧目录）",
+          os.path.isfile(preserved)
+          and io.open(preserved, encoding="utf-8").read() == "x" * 4096,
+          preserved if os.path.isfile(preserved) else "(没有另存文件)")
     check("M3d 别的数据目录照常搬",
           os.path.isdir(os.path.join(new, "downloads")) and os.path.isdir(os.path.join(new, "webview2")))
 

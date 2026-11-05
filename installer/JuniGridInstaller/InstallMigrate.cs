@@ -1,4 +1,5 @@
 using System.IO;
+using System.Security.Cryptography;
 
 namespace JuniGridInstaller;
 
@@ -13,8 +14,8 @@ namespace JuniGridInstaller;
 ///
 /// 搬哪些：只搬<b>数据目录</b>。程序文件（wwwroot / i18n / runtimes / zh-Hans / bridge-mod / tools）
 /// 由本次 payload 重新写出来，搬过去只会把旧版本的文件混进新安装里。
-/// 怎么搬：同盘 <c>Directory.Move</c>（瞬间完成）；跨盘只能真复制 —— 复制完必须逐个比对
-/// 文件数与总字节，对得上才删源，对不上就留着源并记一条失败，<b>绝不允许两头都没有</b>
+/// 怎么搬：同盘 <c>Directory.Move</c>（瞬间完成）；跨盘只能真复制 —— 复制完逐个确认源文件
+/// 都在目标处且大小一致；同名冲突再比 SHA-256。对不上就留着源并记一条失败，<b>绝不允许两头都没有</b>
 /// （那条跨盘 adopt 的老 bug 就是这么把旧版本体删掉、每次切版本重下 660 MB）。
 /// 配置里的 <c>cacheRoot</c> 若指向旧安装目录（或压根没设过但旧目录里确实有数据），
 /// 一并改指新目录 —— 不改的话应用回去用 %TEMP%，搬来的东西它看不见。
@@ -42,6 +43,40 @@ public static class InstallMigrate
 
     public sealed record Result(List<string> Moved, List<string> Failed,
         long Bytes, bool ConfigPatched, string? OldDir, string? NewDir);
+
+    /// <summary>估算迁移阶段会额外占用的空间；同卷且目标目录不存在时走目录改名，不额外占空间。</summary>
+    public static long EstimateAdditionalBytes(string? oldDir, string newDir)
+    {
+        if (string.IsNullOrWhiteSpace(oldDir) || !Directory.Exists(oldDir)) return 0;
+        var oldFull = Norm(oldDir);
+        var newFull = Norm(newDir);
+        if (oldFull.Equals(newFull, StringComparison.OrdinalIgnoreCase)) return 0;
+
+        var sameVolume = string.Equals(Path.GetPathRoot(oldFull), Path.GetPathRoot(newFull),
+            StringComparison.OrdinalIgnoreCase);
+        long total = 0;
+        foreach (var name in DataDirs)
+        {
+            var src = Path.Combine(oldFull, name);
+            if (!Directory.Exists(src)) continue;
+            var dst = Path.Combine(newFull, name);
+            // 同盘且目标不存在 ⇒ Directory.Move，一个字节都不额外占。
+            if (sameVolume && !Directory.Exists(dst)) continue;
+            // 合并/跨盘要真复制。同名冲突还会另存一份，所以这里按"整目录都要复制"估 ——
+            // 宁可多算一点让检查提前拦下，也不能少算到搬一半才发现没空间。
+            foreach (var file in Directory.EnumerateFiles(src, "*", SearchOption.AllDirectories))
+                total = checked(total + new FileInfo(file).Length);
+        }
+        foreach (var name in DataFiles)
+        {
+            var src = Path.Combine(oldFull, name);
+            if (!File.Exists(src)) continue;
+            var dst = Path.Combine(newFull, name);
+            if (!File.Exists(dst) || new FileInfo(dst).Length != new FileInfo(src).Length)
+                total = checked(total + new FileInfo(src).Length);
+        }
+        return total;
+    }
 
     /// <summary>把旧安装目录里的数据搬到新目录。<paramref name="dryRun"/> = 只算不搬（给 --migrate-preview 用）。
     /// <paramref name="configPath"/> 是应用的配置文件（<c>%APPDATA%\JuniGrid\junigrid.config.json</c>）。</summary>
@@ -98,19 +133,25 @@ public static class InstallMigrate
                             + "旧目录里的东西一个没动");
                         continue;
                     }
-                    MergeCopy(src, dst, out var skipped);
-                    // 校验按【源里的每一个文件都得在新目录里】来判，不能比两边总字节：
-                    // 合并场景新目录里那份同名文件是"更新的、不许被盖的"，它完全可以比源文件大或小，
-                    // 拿总字节比会把这种正常情况判成失败，于是旧目录永远删不掉。
+                    MergeCopy(src, dst, out var skipped, out var preserved);
+                    // 冲突的文件已经在 MergeCopy 里另存成 xxx.old-N（内容一个字都没丢），
+                    // 所以这里只确认"每个源文件要么在目标处内容一致，要么有一份另存"。
+                    // 只要都成立就能安全删源 —— 旧目录不该因为一个同名文件永远赖着不走。
                     var missing = new List<string>();
                     foreach (var f in Directory.EnumerateFiles(src, "*", SearchOption.AllDirectories))
                     {
                         var rel = Path.GetRelativePath(src, f);
                         var to = Path.Combine(dst, rel);
                         if (!File.Exists(to)) { missing.Add(rel); continue; }
-                        var keepExisting = skipped.Contains(rel);
-                        if (!keepExisting && new FileInfo(to).Length != new FileInfo(f).Length)
+                        if (skipped.Contains(rel))
+                        {
+                            if (FilesEqual(f, to) || preserved.ContainsKey(rel)) continue;
+                            missing.Add(rel + "（目标已有不同内容，且另存失败）");
+                        }
+                        else if (new FileInfo(to).Length != new FileInfo(f).Length)
+                        {
                             missing.Add(rel + "（大小对不上）");
+                        }
                         if (missing.Count >= 3) break;
                     }
                     if (missing.Count > 0)
@@ -118,6 +159,9 @@ public static class InstallMigrate
                         failed.Add($"{name}：复制校验没过，缺/不符 {string.Join("、", missing)} —— 旧目录原样保留");
                         continue;
                     }
+                    if (preserved.Count > 0)
+                        progress?.Report(new InstallProgress(
+                            $"{name}：{preserved.Count} 个同名文件内容不同，旧的那份已另存为 .old-N", 0.035));
                     Directory.Delete(src, true);
                 }
                 moved.Add(name);
@@ -139,7 +183,19 @@ public static class InstallMigrate
             try
             {
                 Directory.CreateDirectory(newFull);
-                if (File.Exists(dst)) continue;      // 新位置已有：不覆盖，旧的留在原地
+                if (File.Exists(dst))
+                {
+                    if (FilesEqual(src, dst))
+                    {
+                        File.Delete(src);
+                        moved.Add(name);
+                    }
+                    else
+                    {
+                        failed.Add($"{name}：新位置已有不同内容 —— 旧文件保留在原位置");
+                    }
+                    continue;
+                }
                 File.Move(src, dst);
                 moved.Add(name);
             }
@@ -152,10 +208,14 @@ public static class InstallMigrate
     }
 
     /// <summary>逐文件复制合并：已存在的文件一律不覆盖（新位置那份更新或更完整都不该被旧的盖掉）。
-    /// <paramref name="skipped"/> 回传被跳过的那些相对名（大写），校验时它们不参与"字节必须一致"。</summary>
-    private static void MergeCopy(string src, string dst, out HashSet<string> skipped)
+    /// 内容不同的旧文件<b>另存</b>为 <c>同名.old-N</c> —— 既不丢数据，也不让旧目录永远删不掉。
+    /// <paramref name="skipped"/> 回传被跳过的相对名；<paramref name="preserved"/> 回传
+    /// 「源相对名 → 另存后的文件名」。</summary>
+    private static void MergeCopy(string src, string dst, out HashSet<string> skipped,
+        out Dictionary<string, string> preserved)
     {
         skipped = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        preserved = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         Directory.CreateDirectory(dst);
         foreach (var f in Directory.EnumerateFiles(src, "*", SearchOption.AllDirectories))
         {
@@ -165,6 +225,14 @@ public static class InstallMigrate
             if (File.Exists(to))
             {
                 skipped.Add(rel);
+                if (FilesEqual(f, to)) continue;      // 内容一致：就是同一份，源可以删
+                var keep = NextPreservedPath(to);
+                try
+                {
+                    File.Copy(f, keep, false);
+                    preserved[rel] = Path.GetFileName(keep);
+                }
+                catch { /* 另存失败就记不到 preserved 里，校验会因此判该目录没搬成 */ }
                 continue;
             }
             File.Copy(f, to, false);
@@ -174,7 +242,30 @@ public static class InstallMigrate
             Directory.CreateDirectory(Path.Combine(dst, Path.GetRelativePath(src, d)));
     }
 
+    /// <summary>给另存文件找个没被占用的名字：<c>body.bin</c> → <c>body.bin.old-1</c>。
+    /// 反复换目录安装时不会互相覆盖。</summary>
+    private static string NextPreservedPath(string target)
+    {
+        for (var i = 1; i < 1000; i++)
+        {
+            var candidate = target + ".old-" + i;
+            if (!File.Exists(candidate)) return candidate;
+        }
+        return target + ".old-" + Guid.NewGuid().ToString("N")[..8];
+    }
+
     private static long DirSize(string dir) => DirStats(dir).bytes;
+
+    private static bool FilesEqual(string left, string right)
+    {
+        var leftInfo = new FileInfo(left);
+        var rightInfo = new FileInfo(right);
+        if (leftInfo.Length != rightInfo.Length) return false;
+        using var leftStream = File.OpenRead(left);
+        using var rightStream = File.OpenRead(right);
+        return CryptographicOperations.FixedTimeEquals(
+            SHA256.HashData(leftStream), SHA256.HashData(rightStream));
+    }
 
     private static (int files, long bytes) DirStats(string dir)
     {

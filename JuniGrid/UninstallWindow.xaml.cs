@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Text;
+using System.Text.Json;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Interop;
@@ -11,8 +13,7 @@ namespace JuniGrid;
 
 /// <summary>
 /// GUI 卸载向导（JuniGrid.exe --uninstall）：深色确认页 → 立绘卸载中 → 白底完成页。
-/// 目录收尾在退出前拉起自身子实例（--purge-install-dir）删两个 exe + 空目录，
-/// 不再起 cmd 延时自删（原因见 <see cref="ScheduleSelfDelete"/> 的注释）。
+/// 目录收尾交给独立进程在本进程退出后执行，避免加载中的运行库文件因锁定而残留。
 /// </summary>
 public partial class UninstallWindow : Window
 {
@@ -24,6 +25,7 @@ public partial class UninstallWindow : Window
     private readonly string _installDir;
     private bool _working;
     private bool _confirmed;
+    private bool _purgeUserData;
 
     [DllImport("dwmapi.dll")]
     private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
@@ -80,6 +82,7 @@ public partial class UninstallWindow : Window
         if (_working) return;
         _working = true;
         _confirmed = true;
+        _purgeUserData = PurgeUserDataBox.IsChecked == true;
         BtnUninstall.IsEnabled = false;
         BtnCancel.IsEnabled = false;
 
@@ -92,6 +95,9 @@ public partial class UninstallWindow : Window
             {
                 StopIndeterminate();
                 WorkingScreen.Visibility = Visibility.Collapsed;
+                DoneMessage.Text = _purgeUserData
+                    ? "JuniGrid 已卸载。安装目录、缓存、设置、登录状态和本地备份将在此窗口关闭后清理。结果见 %TEMP%\\JuniGrid-uninstall-report.txt。"
+                    : "JuniGrid 已卸载。程序文件将在此窗口关闭后清理；缓存、设置和登录状态会保留。结果见 %TEMP%\\JuniGrid-uninstall-report.txt。";
                 DoneScreen.Visibility = Visibility.Visible;
             }, TaskScheduler.FromCurrentSynchronizationContext());
     }
@@ -197,7 +203,7 @@ public partial class UninstallWindow : Window
     }
 
     /// <summary>按清单删掉我们自己写出去的文件，并把因此变空的目录收掉。
-    /// 正在运行的两个 exe 删不掉，交给收尾子实例（<see cref="ScheduleSelfDelete"/>）。
+    /// 文件清理由 <see cref="ScheduleSelfDelete"/> 启动的进程在卸载窗口退出后执行。
     /// <b>清单以外的东西一个都不碰。</b></summary>
     internal static int CleanByManifest(string dir, List<string> rels)
     {
@@ -267,31 +273,174 @@ public partial class UninstallWindow : Window
     /// <summary>调度本目录的清理：必须在窗口关闭（进程即将退出）时才执行。</summary>
     private void ScheduleSelfDelete()
     {
+        var planPath = Path.Combine(Path.GetTempPath(), "jg-uninstall-" + Guid.NewGuid().ToString("N") + ".json");
         try
         {
-            var dir = _installDir;
-            // 有清单就按清单把"我们写出去的文件"收干净（此刻进程还活着，两个 exe 留给子实例）。
-            // 没清单就一个文件都不多删 —— 子实例只摘两个 exe，空目录才会被收掉，
-            // 目录里只要还剩一个认不清的文件就原样留着（宁可留一堆 dll，也不能端掉用户的版本缓存）。
-            var manifest = ReadInstallManifest(dir);
-            if (manifest.Count > 0) CleanByManifest(dir, manifest);
-
-            var exe = Environment.ProcessPath;
-            if (string.IsNullOrEmpty(exe) || !File.Exists(exe)) return;
-
-            var psi = new ProcessStartInfo
+            var appData = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "JuniGrid");
+            var localAppData = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "JuniGrid");
+            var manifest = ReadInstallManifest(_installDir);
+            if (manifest.Count == 0) manifest = ["JuniGrid.exe", "Uninstall.exe"];
+            // Uninstall.exe 是解包后从 JuniGrid.exe 复制出来的，不在 payload 清单里 ——
+            // 不补进来的话普通卸载会留下一个还能双击的卸载器副本。
+            foreach (var extra in new[] { "Uninstall.exe", ManifestFile })
+                if (!manifest.Contains(extra, StringComparer.OrdinalIgnoreCase)) manifest.Add(extra);
+            File.WriteAllText(planPath, JsonSerializer.Serialize(new
             {
-                FileName = exe,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                WindowStyle = ProcessWindowStyle.Hidden,
-            };
-            // ArgumentList 是只读集合，只能逐条 Add —— 转义交给框架，不手拼命令行字符串。
-            foreach (var a in PurgeArguments(dir)) psi.ArgumentList.Add(a);
-            Process.Start(psi);
+                ParentPid = Environment.ProcessId,
+                InstallDir = _installDir,
+                ManifestFiles = manifest,
+                PurgeUserData = _purgeUserData,
+                AppDataDir = appData,
+                LocalAppDataDir = localAppData,
+                LegacyTempDir = Path.Combine(Path.GetTempPath(), "JuniGrid"),
+                CustomCacheDirs = ReadCustomCacheDirs(appData),
+                ReportPath = Path.Combine(Path.GetTempPath(), "JuniGrid-uninstall-report.txt"),
+            }), new UTF8Encoding(false));
+
+            if (TryStartPowerShellCleanup(planPath)) return;
+            StartLegacyPurge();
         }
-        catch { }
+        catch
+        {
+            // 计划文件都没写成 / 连进程都起不来：退回旧的自删实例，至少把两个 exe 收掉。
+            try { StartLegacyPurge(); } catch { /* 清理启动失败时保留文件，绝不递归误删。 */ }
+        }
     }
+
+    /// <summary>用 PowerShell 做收尾：它在安装目录之外，能删掉<b>包括两个 exe 在内</b>的全部
+    /// 程序文件（进程不能删自己）。脚本整段 base64 内联，不落盘 —— 见 <see cref="CleanupScript"/>。</summary>
+    private static bool TryStartPowerShellCleanup(string planPath)
+    {
+        var ps = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System),
+            @"WindowsPowerShell\v1.0\powershell.exe");
+        if (!File.Exists(ps)) return false;
+
+        var psi = new ProcessStartInfo
+        {
+            FileName = ps,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            WindowStyle = ProcessWindowStyle.Hidden,
+        };
+        psi.Environment["JG_UNINSTALL_PLAN"] = planPath;
+        foreach (var arg in new[]
+        {
+            "-NoProfile", "-NonInteractive",
+            // 企业机常把默认策略设成 AllSigned / Restricted，不加这句 -EncodedCommand 也可能被拦
+            "-ExecutionPolicy", "Bypass",
+            "-EncodedCommand", Convert.ToBase64String(Encoding.Unicode.GetBytes(CleanupScript)),
+        })
+            psi.ArgumentList.Add(arg);
+
+        using var p = Process.Start(psi);
+        return p is not null;
+    }
+
+    /// <summary>退路：让安装目录里那份 exe 起一个极短实例，删两个 exe + 收空目录。
+    /// 能力比 PowerShell 收尾弱（删不了自己那份），但它是本地代码，不依赖任何外部解释器。</summary>
+    private void StartLegacyPurge()
+    {
+        var exe = Environment.ProcessPath;
+        if (string.IsNullOrEmpty(exe) || !File.Exists(exe)) return;
+        var psi = new ProcessStartInfo
+        {
+            FileName = exe,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            WindowStyle = ProcessWindowStyle.Hidden,
+        };
+        foreach (var a in PurgeArguments(_installDir)) psi.ArgumentList.Add(a);
+        Process.Start(psi);
+    }
+
+    private static List<string> ReadCustomCacheDirs(string appData)
+    {
+        try
+        {
+            var config = Path.Combine(appData, "junigrid.config.json");
+            using var doc = JsonDocument.Parse(File.ReadAllText(config));
+            if (!doc.RootElement.TryGetProperty("cacheRoot", out var value)
+                || value.ValueKind != JsonValueKind.String
+                || string.IsNullOrWhiteSpace(value.GetString())) return [];
+            var root = Path.GetFullPath(value.GetString()!);
+            if (root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                .Equals(Path.GetPathRoot(root)?.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+                    StringComparison.OrdinalIgnoreCase)) return [];
+            var names = new[] { "depot-staging", "downloads", "mods-backup", "portrait-covers",
+                "self-update", "smapi-installer", "webview2", "nexus-browse", "nexus-web" };
+            return names.Select(n => Path.Combine(root, n)).Append(Path.Combine(root, "_smapi-install.dat")).ToList();
+        }
+        catch { return []; }
+    }
+
+    /// <summary>卸载收尾脚本。用 <c>-EncodedCommand</c> 整段传给 PowerShell（UTF-16LE + base64），
+    /// <b>不落 .ps1 文件</b>：
+    /// <list type="bullet">
+    /// <item>落盘的话 PS 5.1 按 ANSI 读无 BOM 的 UTF-8 脚本，中文串在 CP936 机器上会变成乱码、
+    /// 撑破引号直接语法错 —— 实测过，整段脚本一行都不执行，卸载后文件全留着。</item>
+    /// <item>不落盘也就不需要自删脚本，少一类"临时目录里躺个 .ps1"的杀软启发式特征。</item>
+    /// </list>
+    /// 计划数据走环境变量 <c>JG_UNINSTALL_PLAN</c>，路径里有空格/中文都不用拼引号。</summary>
+    private const string CleanupScript = """
+$ErrorActionPreference = 'SilentlyContinue'
+$planPath = $env:JG_UNINSTALL_PLAN
+$plan = Get-Content -LiteralPath $planPath -Raw -Encoding UTF8 | ConvertFrom-Json
+
+# 父进程（卸载向导）不退出，加载中的 dll 就一直锁着 —— 先等它真的没了再动手。
+$parentId = [int]$plan.ParentPid
+try { Wait-Process -Id $parentId -Timeout 120 } catch { }
+for ($i = 0; $i -lt 480; $i++) {
+  if (-not (Get-Process -Id $parentId -ErrorAction SilentlyContinue)) { break }
+  Start-Sleep -Milliseconds 250
+}
+
+# 删不动就重试：进程刚退出时 WebView2 子进程可能还攥着几百毫秒的文件锁。
+function Remove-Tree([string]$path) {
+  if (-not (Test-Path -LiteralPath $path)) { return }
+  for ($i = 0; $i -lt 12; $i++) {
+    Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue
+    if (-not (Test-Path -LiteralPath $path)) { return }
+    Start-Sleep -Milliseconds 300
+  }
+}
+
+function Remove-EmptyTree([string]$root) {
+  if (-not (Test-Path -LiteralPath $root -PathType Container)) { return }
+  Get-ChildItem -LiteralPath $root -Directory -Recurse -Force |
+    Sort-Object { $_.FullName.Length } -Descending |
+    ForEach-Object { if (-not (Get-ChildItem -LiteralPath $_.FullName -Force | Select-Object -First 1)) { Remove-Item -LiteralPath $_.FullName -Force } }
+  if (-not (Get-ChildItem -LiteralPath $root -Force | Select-Object -First 1)) { Remove-Item -LiteralPath $root -Force }
+}
+
+if ($plan.PurgeUserData) {
+  Remove-Tree $plan.InstallDir
+  Remove-Tree $plan.AppDataDir
+  Remove-Tree $plan.LocalAppDataDir
+  Remove-Tree $plan.LegacyTempDir
+  foreach ($path in $plan.CustomCacheDirs) { Remove-Tree $path }
+} else {
+  $root = [IO.Path]::GetFullPath([string]$plan.InstallDir).TrimEnd('\')
+  foreach ($rel in @($plan.ManifestFiles)) {
+    $relative = ([string]$rel).Replace('/', '\')
+    if ([IO.Path]::IsPathRooted($relative) -or $relative.Split('\') -contains '..') { continue }
+    $full = [IO.Path]::GetFullPath([IO.Path]::Combine($root, $relative))
+    if ($full.StartsWith($root + '\', [StringComparison]::OrdinalIgnoreCase)) { Remove-Tree $full }
+  }
+  Remove-Tree ([IO.Path]::Combine($root, 'junigrid-files.txt'))
+  Remove-EmptyTree $root
+}
+$left = @()
+if (Test-Path -LiteralPath $plan.InstallDir) { $left += Get-ChildItem -LiteralPath $plan.InstallDir -Force | ForEach-Object { $_.Name } }
+foreach ($path in $plan.CustomCacheDirs) { if (Test-Path -LiteralPath $path) { $left += $path } }
+$head = if ($plan.PurgeUserData) { '彻底卸载：' } else { '卸载：' }
+if ($left.Count -eq 0) {
+  ($head + '安装目录已清空，程序文件全部移除。') | Set-Content -LiteralPath $plan.ReportPath -Encoding UTF8
+} else {
+  @($head + '以下项目仍在磁盘上（不属于程序文件，或当前被占用）：') + $left |
+    Set-Content -LiteralPath $plan.ReportPath -Encoding UTF8
+}
+Remove-Item -LiteralPath $planPath -Force
+""";
 
     private void StartIndeterminate()
     {

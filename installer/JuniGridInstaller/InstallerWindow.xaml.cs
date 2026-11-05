@@ -216,6 +216,9 @@ public partial class InstallerWindow : Window
             StatusText.Visibility = Visibility.Collapsed;
             ProgressTrack.Visibility = Visibility.Collapsed;
             ProgressFill.Visibility = Visibility.Collapsed;
+            var notes = _engine.CompletionNotes;
+            CleanupSummaryText.Text = string.Join("\n", notes);
+            CleanupSummaryText.Visibility = notes.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
             _lastTargetDir = dir;
             DonePanel.Visibility = Visibility.Visible;
         }

@@ -33,8 +33,8 @@ public partial class App : Application
         sb.Append("recycle-check 目录: ").Append(dir)
           .AppendLine(apply ? "  【本次会真删】" : "  【只算不删】");
         if (!Directory.Exists(dir)) { sb.AppendLine("  （目录不存在，什么都不做）"); return sb.ToString(); }
-        var r = InstallRecycle.RecycleOldInstall(dir, InstallerEngine.PayloadTopLevelNames(), dryRun: !apply);
-        sb.AppendLine("  清单: " + (r.HadManifest ? "有（按清单删）" : "无（退回顶层白名单）"));
+        var r = InstallRecycle.RecycleOldInstall(dir, InstallerEngine.PayloadRelativePaths(), dryRun: !apply);
+        sb.AppendLine("  清单: " + (r.HadManifest ? "有（按清单删）" : "无（按确切文件路径逐项清理）"));
         sb.AppendLine("  " + (apply ? "删掉" : "会删掉") + "的条目数: " + r.Deleted);
         sb.AppendLine("  目录" + (apply ? (r.DirRemoved ? "已空、已删除" : "非空、保留") : "删完后会剩下")
             + ": " + (r.Remaining.Count == 0 ? "（空）" : string.Join(", ", r.Remaining)));

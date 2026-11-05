@@ -22,6 +22,7 @@ public sealed record InstallProgress(string Status, double Fraction, long DoneBy
 /// </summary>
 public sealed class InstallerEngine
 {
+    public List<string> CompletionNotes { get; } = new();
     /// <summary>旧 Inno 脚本里的 AppId（installer.iss: AppId={{7E1B2C64-...}）。</summary>
     public const string LegacyKey = "{7E1B2C64-9A4D-4C0E-9F61-3A5D8B2C4E10}_is1";
     private static readonly string UninstallKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\" + LegacyKey;
@@ -152,8 +153,16 @@ public sealed class InstallerEngine
     private void InstallCore(string targetDir, bool desktopShortcut,
         IProgress<InstallProgress> progress, CancellationToken ct)
     {
+        CompletionNotes.Clear();
         targetDir = Path.GetFullPath(targetDir);
-        Directory.CreateDirectory(targetDir);
+        // 选 Program Files 这类目录时，CreateDirectory 本身就会先抛 UnauthorizedAccessException ——
+        // 友好提示得罩住它，不能只罩后面那次写探测（否则用户看到的是原始系统异常）。
+        try { Directory.CreateDirectory(targetDir); }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException("无法创建所选安装目录。请选择当前账户有写入权限的文件夹。", ex);
+        }
+        EnsureWritableDirectory(targetDir);
 
         // 先关掉正在运行的 JuniGrid，再动旧版卸载器 —— 顺序反了文件被占用，
         // 旧版卸载器会弹「文件正在使用」错误或卡在拦截页，静默卸载等于失败。
@@ -161,6 +170,16 @@ public sealed class InstallerEngine
         CloseRunningApp();
 
         var legacy = FindLegacyInstall();
+
+        // 先确认安装包和跨盘迁移所需空间，再动旧目录。否则空间不足可能发生在数据已搬走之后。
+        long payloadBytes;
+        using (var res = OpenResource())
+            _ = ReadPayloadHeader(res, out payloadBytes);
+        var migrationBytes = Environment.GetEnvironmentVariable("JGINSTALLER_NOMIGRATE") == "1"
+            ? 0 : InstallMigrate.EstimateAdditionalBytes(legacy.location, targetDir);
+        EnsureFreeSpace(targetDir, checked(payloadBytes + migrationBytes + 256L * 1024 * 1024));
+
+        var migrationFailed = false;
 
         // 换目录安装＝搬家：先搬数据 → 再解包 → 最后清旧目录。顺序不能反 ——
         // 先删旧的就没东西可搬了；不搬的话新装看不见 886 MB 版本缓存和 WebView2 里的登录态，
@@ -177,7 +196,11 @@ public sealed class InstallerEngine
                     + (mig.ConfigPatched ? "，缓存目录也改指新位置" : ""), 0.04));
             // 搬不动不是失败：旧目录一个字节都还在，应用照旧能找到它。说清楚，别装作搬过了。
             foreach (var f in mig.Failed)
+            {
+                migrationFailed = true;
+                CompletionNotes.Add("迁移未完成：" + f);
                 progress.Report(new InstallProgress("这个数据目录没搬成：" + f, 0.04));
+            }
         }
 
         // 测试逃生口：设 JGINSTALLER_NOLEGACY=1 可跳过旧版静默卸载
@@ -188,10 +211,14 @@ public sealed class InstallerEngine
                 var (exe, _) = SplitCommand(legacy.uninstallCmd);
                 var ownGui = exe.Length > 0 && Path.GetFileName(exe)
                     .Equals("Uninstall.exe", StringComparison.OrdinalIgnoreCase);
-                if (!ownGui)
+                if (!ownGui && !migrationFailed)
                 {
                     progress.Report(new InstallProgress("正在移除旧版本…", 0.05));
                     RunLegacyUninstaller(legacy.uninstallCmd);
+                }
+                else if (!ownGui && migrationFailed)
+                {
+                    App.Log("数据迁移有未解决项，跳过旧卸载器以保留旧位置数据");
                 }
                 // 卸载入口是我们自己的 GUI 卸载向导（Uninstall.exe = 主程序副本）时，
                 // 绝不能在安装中途拉起：它会停在确认页等用户点击，应用还开着时只剩
@@ -206,9 +233,7 @@ public sealed class InstallerEngine
         {
             var entries = ReadPayloadHeader(res, out long total);
             totalBytes = total;
-            var root = Path.GetPathRoot(targetDir);
-            if (root is not null && new DriveInfo(root).AvailableFreeSpace < total + 256L * 1024 * 1024)
-                throw new InvalidOperationException("目标磁盘空间不足，请清理后重试。");
+            EnsureFreeSpace(targetDir, total + 256L * 1024 * 1024);
 
             var props = new byte[5];
             res.ReadExactly(props);
@@ -278,6 +303,28 @@ public sealed class InstallerEngine
         progress.Report(new InstallProgress("安装完成", 1.0, totalBytes, totalBytes));
     }
 
+    private static void EnsureFreeSpace(string targetDir, long requiredBytes)
+    {
+        var root = Path.GetPathRoot(targetDir);
+        if (root is not null && new DriveInfo(root).AvailableFreeSpace < requiredBytes)
+            throw new InvalidOperationException("目标磁盘空间不足，请清理后重试。空间检查在搬迁数据前进行。");
+    }
+
+    private static void EnsureWritableDirectory(string targetDir)
+    {
+        var probe = Path.Combine(targetDir, ".junigrid-write-check-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            using (new FileStream(probe, FileMode.CreateNew, FileAccess.Write, FileShare.None)) { }
+            File.Delete(probe);
+        }
+        catch (Exception ex)
+        {
+            try { if (File.Exists(probe)) File.Delete(probe); } catch { }
+            throw new InvalidOperationException("无法写入所选安装目录。请选择当前账户有写入权限的文件夹。", ex);
+        }
+    }
+
     private static string NormPath(string p)
     {
         try
@@ -304,10 +351,16 @@ public sealed class InstallerEngine
             if (oldN is null) return;
 
             progress.Report(new InstallProgress("正在清理旧版本…", 0.995));
-            var r = InstallRecycle.RecycleOldInstall(oldN, PayloadTopLevelNames(), dryRun: false);
+            var r = InstallRecycle.RecycleOldInstall(oldN, PayloadRelativePaths(), dryRun: false);
             App.Log($"回收旧位置 {r.OldDir}：删 {r.Deleted} 项（清单={(r.HadManifest ? "有" : "无→白名单")}）"
                     + $"，失败 {r.Failed.Count} 项，保留 {r.Remaining.Count} 项"
                     + (r.DirRemoved ? "，目录已空并删除" : ""));
+            if (r.Failed.Count > 0)
+                CompletionNotes.Add("旧目录有文件未能删除：" + string.Join("、", r.Failed.Take(3)));
+            if (r.Remaining.Count > 0)
+                CompletionNotes.Add($"旧目录仍有未清理内容，已保留在 {oldN}：" + string.Join("、", r.Remaining.Take(5)));
+            else if (r.DirRemoved)
+                CompletionNotes.Add("旧安装目录已清理。");
         }
         catch (Exception ex) { App.Log("回收旧位置失败: " + ex.Message); }
     }
@@ -373,16 +426,14 @@ public sealed class InstallerEngine
         return false;
     }
 
-    /// <summary>本次安装包内含文件的顶层条目名（wwwroot、i18n、tools、JuniGrid.exe…）。
-    /// 回收旧位置时用作「没有清单」的兜底判据。开发构建里 payload 没嵌进来，返回空表。</summary>
-    public static List<string> PayloadTopLevelNames()
+    /// <summary>本次安装包内含文件的相对路径。旧位置没有清单时只按这些确切路径逐文件回收。</summary>
+    public static List<string> PayloadRelativePaths()
     {
         try
         {
             using var res = OpenResource();
             return ReadPayloadHeader(res, out _)
-                .Select(e => e.rel.Replace('\\', '/').Split('/')[0])
-                .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+                .Select(e => e.rel.Replace('\\', '/')).ToList();
         }
         catch { return new List<string>(); }
     }
