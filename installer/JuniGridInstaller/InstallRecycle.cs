@@ -8,7 +8,9 @@ namespace JuniGridInstaller;
 /// 截图、配置备份、甚至像今天这样把缓存目录指过来（<c>E:\JuniGrid1</c> 里同时躺着
 /// <c>portrait-covers\</c> 和 <c>webview2\</c>）—— 那种东西一旦被"清理旧版本"连锅端掉，
 /// 用户不会认为这是他的错。所以：
-/// ① 有清单按清单删；② 没清单（老版本装的）按【本次 payload 的顶层条目名】删；
+/// ① 有清单按清单删；② 没清单（老版本装的）只删【本次 payload 里那些确切的文件路径】，
+/// 不按顶层目录名递归 —— 老版本里有、这版没有的文件会因此留下来，目录也就删不掉，
+/// 但那份残留会如实报进日志，比误删用户放在同名目录里的东西便宜得多；
 /// ③ 删完目录空了才删目录本身，不空就原样留着并把剩余项报回去。
 /// 主程序的卸载器（<c>JuniGrid/UninstallWindow.xaml.cs</c>）读同一份清单格式，两边格式注释互指。
 /// </summary>
@@ -59,6 +61,60 @@ public static class InstallRecycle
         }
         catch { }
         return list;
+    }
+
+    /// <summary>
+    /// 同址覆盖安装时清掉「上一版写出去、这版不再带来」的文件（孤儿）。
+    ///
+    /// <para>为什么需要它：安装器只写不删，而清单每次安装都被整张重写成新文件表 ——
+    /// 于是老版本发过、后来被删掉的那些 svg/png 会一直躺在装机目录里，
+    /// 清单一换代就连"曾经是我们写出去的"这条记录也断了，卸载和回收都认不出它们。</para>
+    ///
+    /// <para>判据只有一条：<b>旧清单里写了它，而本次 payload 没有它</b>。
+    /// 清单是安装器自己写的，认得出"这文件是我们写出去的"；用户手动放进去的东西
+    /// 从没进过清单，一个都不碰。<b>没有旧清单（更早版本装的）⇒ 什么都不删</b> ——
+    /// 宁可留着孤儿，也不靠猜去删用户的东西。</para>
+    ///
+    /// <para>解包之后、写新清单之前调用：payload 里有的文件会被覆盖成新版，
+    /// 不在 payload 里的才轮到这段删，顺序反了会把刚解包的新文件删掉。</para>
+    /// </summary>
+    /// <returns>删掉的相对路径（给日志和防线用）。</returns>
+    public static List<string> RemoveOrphans(string targetDir, IReadOnlyCollection<string> payloadRels)
+    {
+        var removed = new List<string>();
+        var old = ReadManifest(targetDir);
+        if (old.Count == 0) return removed;   // 没清单 ⇒ 认不出孤儿，一个都不删
+
+        // 新文件表 = 本次 payload + 解包后才造出来的（Uninstall.exe 那类）。
+        // 不把它们算进 keep 的话，Uninstall.exe 会被当孤儿删掉、下一秒又被复制回来。
+        var keep = new HashSet<string>(payloadRels.Select(r => r.Replace('\\', '/')),
+            StringComparer.OrdinalIgnoreCase);
+        foreach (var extra in CreatedAfterPayload) keep.Add(extra.Replace('\\', '/'));
+
+        foreach (var rel in old)
+        {
+            var norm = rel.Replace('\\', '/');
+            if (keep.Contains(norm)) continue;
+            if (norm.Equals(ManifestFile, StringComparison.OrdinalIgnoreCase)) continue;
+            var full = SafeCombine(targetDir, norm);
+            if (full is null) continue;
+            try
+            {
+                if (File.Exists(full)) { File.Delete(full); removed.Add(norm); }
+                else if (Directory.Exists(full)) { Directory.Delete(full, true); removed.Add(norm); }
+            }
+            catch { /* 删不掉就留着，不影响安装 */ }
+        }
+
+        // 把因此空掉的目录收掉：只收空的，不递归删非空目录
+        try
+        {
+            foreach (var d in Directory.EnumerateDirectories(targetDir, "*", SearchOption.AllDirectories)
+                         .OrderByDescending(x => x.Length))
+                try { if (!Directory.EnumerateFileSystemEntries(d).Any()) Directory.Delete(d); } catch { }
+        }
+        catch { }
+        return removed;
     }
 
     private static string? SafeCombine(string root, string rel)

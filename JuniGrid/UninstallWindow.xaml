@@ -166,9 +166,9 @@
         <TextBlock Text="卸载 JuniGrid？" FontSize="26" FontWeight="Bold" Foreground="#1A1A1A" Margin="0,26,0,0" TextWrapping="Wrap" />
         <TextBlock Text="程序文件和快捷方式会被移除。下载缓存、游戏版本缓存、设置和登录状态默认保留。"
                    FontSize="15" Foreground="#555555" TextWrapping="Wrap" LineHeight="24" Margin="0,18,0,0" />
-        <CheckBox x:Name="PurgeUserDataBox" Content="彻底卸载：同时删除缓存、设置、登录状态和本地备份"
+        <CheckBox x:Name="PurgeUserDataBox" Content="彻底删除：连同缓存一起删除（删除后无法恢复）"
                   IsChecked="False" FontSize="13" Foreground="#333333" Margin="0,22,0,0" />
-        <TextBlock Text="勾选后会删除安装目录内的全部内容（包括你手动放入的文件）及 JuniGrid 数据；不会删除游戏目录。此操作无法撤销。"
+        <TextBlock Text="连下载缓存、游戏版本缓存、Nexus 登录状态、设置、以及收起来的存档副本一起删，安装目录里的东西（包括你手动放入的文件）一个不剩。游戏本体和 Steam 里的存档不动。"
                    FontSize="12" Foreground="#777777" TextWrapping="Wrap" LineHeight="19" Margin="22,7,0,0" />
       </StackPanel>
       <StackPanel Orientation="Horizontal" VerticalAlignment="Bottom" Margin="36,0,36,44">

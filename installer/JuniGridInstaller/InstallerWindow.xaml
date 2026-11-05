@@ -301,8 +301,6 @@
       <!-- 完成态：底部中间 复选框 + 完成按钮 -->
       <StackPanel x:Name="DonePanel" VerticalAlignment="Bottom" HorizontalAlignment="Center" Margin="0,0,0,46" Visibility="Collapsed">
         <CheckBox x:Name="LaunchAfterDone" Content="启动 JuniGrid" IsChecked="True" Style="{StaticResource DarkCheck}" HorizontalAlignment="Center" />
-        <TextBlock x:Name="CleanupSummaryText" Width="390" MaxHeight="72" TextWrapping="Wrap" TextTrimming="CharacterEllipsis"
-                   FontSize="11" Foreground="#CFFFFFFF" Margin="0,12,0,0" Visibility="Collapsed" />
         <Button x:Name="BtnFinish" Style="{StaticResource AccentButton}" Content="完　成" Height="50" FontSize="16" Width="300" Margin="0,18,0,0" Click="OnFinish" />
       </StackPanel>
     </Grid>

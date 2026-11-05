@@ -291,6 +291,120 @@ def run_m13():
           "这是钉住 BUG-1 形状的唯一入口，不能删。")
 
 
+def run_m14():
+    """孤儿清理的调用链形状：谁调用、什么时候调用、拿什么当"新文件表"。
+
+    顺序是这条的关键：RemoveOrphans 必须排在 WriteManifest <b>之前</b> ——
+    反过来的话"新清单"已经写进去了，旧清单里的孤儿记录当场被抹掉，
+    这一趟就什么都没删；而且 payload 里有的文件会被解包覆盖，删早了会把新文件删掉。
+    第二个要点是参数：必须拿 payload 表（entries），不能拿 written ——
+    written 只含这次真写出去的，少了条目会把本该保留的文件当孤儿删掉。
+    """
+    eng = os.path.join(REPO, "installer", "JuniGridInstaller", "InstallerEngine.cs")
+    if not os.path.exists(eng):
+        return
+    src = read(eng)
+    i_orphan = src.find("InstallRecycle.RemoveOrphans")
+    i_write = src.find("InstallRecycle.WriteManifest")
+    check("M14a", "孤儿清理排在写新清单之前（顺序反了就白删）",
+          0 <= i_orphan < i_write,
+          f"RemoveOrphans@{i_orphan} vs WriteManifest@{i_write}")
+    check("M14b", "孤儿清理拿 payload 表当新文件表（不能拿 written）",
+          "RemoveOrphans(targetDir, entries" in src,
+          "参数必须是 entries（本次 payload 全表）")
+    check("M14c", "--orphan-check 验证入口存在",
+          '"--orphan-check"' in read(os.path.join(REPO, "installer", "JuniGridInstaller", "App.xaml.cs")))
+
+
+def run_orphan(exe):
+    """RT6–RT9：孤儿清理的真实行为。
+
+    只认「旧清单里写了它，本次 payload 没有它」这一条 —— 用户手动放的东西
+    从没进过清单，一个都不许碰；没清单时宁可留着孤儿也不靠猜删。
+    """
+    if exe is None:
+        return
+    import shutil
+
+    def sweep(dir_, payload_lines, apply=True):
+        listf = os.path.join(tempfile.gettempdir(), f"jg-orphan-payload-{os.getpid()}.txt")
+        out = os.path.join(tempfile.gettempdir(), f"jg-orphan-out-{os.getpid()}.txt")
+        with open(listf, "w", encoding="utf-8") as f:
+            f.write("\n".join(payload_lines) + "\n")
+        if os.path.exists(out):
+            os.remove(out)
+        env = dict(os.environ)
+        if apply:
+            env["JGINSTALLER_APPLY"] = "1"
+        else:
+            env.pop("JGINSTALLER_APPLY", None)
+        try:
+            subprocess.run([exe, "--orphan-check", dir_, listf, out],
+                           capture_output=True, timeout=90, env=env)
+        except Exception as ex:
+            return f"(启动失败: {ex})"
+        if os.path.exists(out):
+            with open(out, encoding="utf-8", errors="replace") as f:
+                return f.read()
+        return "(入口没产出报告文件)"
+
+    # RT6/RT7/RT7b：清单里有、这次没有 ⇒ 删；清单外绝不碰；空目录收掉
+    d = os.path.join(tempfile.gettempdir(), f"jg-fx-orphan-{os.getpid()}")
+    shutil.rmtree(d, ignore_errors=True)
+    os.makedirs(os.path.join(d, "assets"))
+    for rel, text in (("keep.txt", "这次也带来"),
+                      ("assets/orphan.svg", "上一版的图标"),
+                      ("assets/lock-closed.svg", "也是上一版的"),
+                      ("UserFile.txt", "用户自己放的")):
+        p = os.path.join(d, rel.replace("/", os.sep))
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "w", encoding="utf-8") as f:
+            f.write(text)
+    with open(os.path.join(d, "junigrid-files.txt"), "w", encoding="utf-8") as f:
+        f.write("JGMF1\nkeep.txt\nassets/orphan.svg\nassets/lock-closed.svg\n")
+    rep = sweep(d, ["keep.txt"])
+    check("RT6", "清单里有、这次没有 ⇒ 删掉（真孤儿）",
+          not os.path.exists(os.path.join(d, "assets", "orphan.svg"))
+          and not os.path.exists(os.path.join(d, "assets", "lock-closed.svg"))
+          and "orphan.svg" in rep, rep.replace("\n", " / ")[:130])
+    check("RT7", "清单外的文件一个不碰（用户手动放的）＋ 这次带来的保留",
+          os.path.isfile(os.path.join(d, "UserFile.txt"))
+          and os.path.isfile(os.path.join(d, "keep.txt")))
+    check("RT7b", "删完把空目录收掉（assets 空了就该没了）",
+          not os.path.isdir(os.path.join(d, "assets"))
+          or not os.listdir(os.path.join(d, "assets")))
+
+    # RT8：没清单 ⇒ 认不出孤儿，一个都不删
+    d2 = os.path.join(tempfile.gettempdir(), f"jg-fx-orphan2-{os.getpid()}")
+    shutil.rmtree(d2, ignore_errors=True)
+    os.makedirs(d2)
+    with open(os.path.join(d2, "old-thing.svg"), "w", encoding="utf-8") as f:
+        f.write("看着像孤儿")
+    rep2 = sweep(d2, ["keep.txt"])
+    check("RT8", "没旧清单 ⇒ 什么都不删（宁可留着也不靠猜）",
+          os.path.isfile(os.path.join(d2, "old-thing.svg")), rep2.replace("\n", " / ")[:130])
+
+    # RT9：清单里的穿越条目不许被当成删除目标
+    d3 = os.path.join(tempfile.gettempdir(), f"jg-fx-orphan3-{os.getpid()}")
+    shutil.rmtree(d3, ignore_errors=True)
+    os.makedirs(d3)
+    outside = os.path.join(tempfile.gettempdir(), f"jg-fx-outside-{os.getpid()}.txt")
+    with open(outside, "w", encoding="utf-8") as f:
+        f.write("装机目录外的文件，绝不许删")
+    with open(os.path.join(d3, "junigrid-files.txt"), "w", encoding="utf-8") as f:
+        f.write("JGMF1\n../" + os.path.basename(outside) + "\n")
+    rep3 = sweep(d3, ["keep.txt"])
+    check("RT9", "清单里的穿越条目（../）不许被删",
+          os.path.isfile(outside), rep3.replace("\n", " / ")[:130])
+
+    for p in (d, d2, d3):
+        shutil.rmtree(p, ignore_errors=True)
+    try:
+        os.remove(outside)
+    except Exception:
+        pass
+
+
 # ---------------------------------------------------------------- main
 
 def main():
@@ -310,8 +424,10 @@ def main():
     run_m11()      # BUG-1 调用链形状
     run_m12()      # 散装文件
     run_m13()      # 验证入口存在
+    run_m14()      # 孤儿清理调用链形状
     print("-" * 72)
     run_rt(exe)    # 真实入口行为
+    run_orphan(exe)  # 孤儿清理行为
 
     failed = [r for r in RESULTS if not r[2]]
     print("=" * 72)

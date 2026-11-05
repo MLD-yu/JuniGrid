@@ -22,7 +22,6 @@ public sealed record InstallProgress(string Status, double Fraction, long DoneBy
 /// </summary>
 public sealed class InstallerEngine
 {
-    public List<string> CompletionNotes { get; } = new();
     /// <summary>旧 Inno 脚本里的 AppId（installer.iss: AppId={{7E1B2C64-...}）。</summary>
     public const string LegacyKey = "{7E1B2C64-9A4D-4C0E-9F61-3A5D8B2C4E10}_is1";
     private static readonly string UninstallKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\" + LegacyKey;
@@ -153,7 +152,6 @@ public sealed class InstallerEngine
     private void InstallCore(string targetDir, bool desktopShortcut,
         IProgress<InstallProgress> progress, CancellationToken ct)
     {
-        CompletionNotes.Clear();
         targetDir = Path.GetFullPath(targetDir);
         // 选 Program Files 这类目录时，CreateDirectory 本身就会先抛 UnauthorizedAccessException ——
         // 友好提示得罩住它，不能只罩后面那次写探测（否则用户看到的是原始系统异常）。
@@ -198,7 +196,7 @@ public sealed class InstallerEngine
             foreach (var f in mig.Failed)
             {
                 migrationFailed = true;
-                CompletionNotes.Add("迁移未完成：" + f);
+                App.Log("迁移未完成：" + f);
                 progress.Report(new InstallProgress("这个数据目录没搬成：" + f, 0.04));
             }
         }
@@ -270,6 +268,19 @@ public sealed class InstallerEngine
                 }
             }
 
+            // 清掉上一版写出去、这版不再带来的文件（孤儿）：老版本发过、后来被删掉的
+            // svg/png 会一直躺着，而清单一换代就连"曾经是我们写的"这条记录也断了。
+            // 只认旧清单里的条目，用户手动放进去的东西一个都不碰；没旧清单就什么都不删。
+            try
+            {
+                var orphans = InstallRecycle.RemoveOrphans(targetDir, entries.Select(x => x.rel).ToList());
+                if (orphans.Count > 0)
+                    App.Log($"清理上一版遗留文件 {orphans.Count} 个"
+                        + (orphans.Count <= 5 ? "：" + string.Join("、", orphans)
+                           : "：" + string.Join("、", orphans.Take(5)) + " …"));
+            }
+            catch (Exception ex) { App.Log("清理遗留文件失败: " + ex.Message); }
+
             // 落一份文件清单：换目录安装时据此回收旧位置、卸载时据此只删自己写出去的文件。
             // 写失败不影响安装（最多是以后回收退回「顶层白名单」模式）。
             try { InstallRecycle.WriteManifest(targetDir, written); }
@@ -307,7 +318,7 @@ public sealed class InstallerEngine
     {
         var root = Path.GetPathRoot(targetDir);
         if (root is not null && new DriveInfo(root).AvailableFreeSpace < requiredBytes)
-            throw new InvalidOperationException("目标磁盘空间不足，请清理后重试。空间检查在搬迁数据前进行。");
+            throw new InvalidOperationException("目标磁盘空间不足，请清理后重试。");
     }
 
     private static void EnsureWritableDirectory(string targetDir)
@@ -352,15 +363,13 @@ public sealed class InstallerEngine
 
             progress.Report(new InstallProgress("正在清理旧版本…", 0.995));
             var r = InstallRecycle.RecycleOldInstall(oldN, PayloadRelativePaths(), dryRun: false);
-            App.Log($"回收旧位置 {r.OldDir}：删 {r.Deleted} 项（清单={(r.HadManifest ? "有" : "无→白名单")}）"
+            App.Log($"回收旧位置 {r.OldDir}：删 {r.Deleted} 项（清单={(r.HadManifest ? "有" : "无→按确切文件路径")}）"
                     + $"，失败 {r.Failed.Count} 项，保留 {r.Remaining.Count} 项"
                     + (r.DirRemoved ? "，目录已空并删除" : ""));
             if (r.Failed.Count > 0)
-                CompletionNotes.Add("旧目录有文件未能删除：" + string.Join("、", r.Failed.Take(3)));
+                App.Log("旧目录有文件未能删除：" + string.Join("、", r.Failed.Take(3)));
             if (r.Remaining.Count > 0)
-                CompletionNotes.Add($"旧目录仍有未清理内容，已保留在 {oldN}：" + string.Join("、", r.Remaining.Take(5)));
-            else if (r.DirRemoved)
-                CompletionNotes.Add("旧安装目录已清理。");
+                App.Log($"旧目录仍有未清理内容，已保留在 {oldN}：" + string.Join("、", r.Remaining.Take(5)));
         }
         catch (Exception ex) { App.Log("回收旧位置失败: " + ex.Message); }
     }

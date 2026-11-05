@@ -96,7 +96,7 @@ public partial class UninstallWindow : Window
                 StopIndeterminate();
                 WorkingScreen.Visibility = Visibility.Collapsed;
                 DoneMessage.Text = _purgeUserData
-                    ? "JuniGrid 已卸载。安装目录、缓存、设置、登录状态和本地备份将在此窗口关闭后清理。结果见 %TEMP%\\JuniGrid-uninstall-report.txt。"
+                    ? "JuniGrid 已卸载。安装目录、缓存、设置、Nexus 登录状态和收起来的存档副本将在此窗口关闭后彻底删除，删完找不回来。结果见 %TEMP%\\JuniGrid-uninstall-report.txt。"
                     : "JuniGrid 已卸载。程序文件将在此窗口关闭后清理；缓存、设置和登录状态会保留。结果见 %TEMP%\\JuniGrid-uninstall-report.txt。";
                 DoneScreen.Visibility = Visibility.Visible;
             }, TaskScheduler.FromCurrentSynchronizationContext());
@@ -200,49 +200,6 @@ public partial class UninstallWindow : Window
         }
         catch { }
         return list;
-    }
-
-    /// <summary>按清单删掉我们自己写出去的文件，并把因此变空的目录收掉。
-    /// 文件清理由 <see cref="ScheduleSelfDelete"/> 启动的进程在卸载窗口退出后执行。
-    /// <b>清单以外的东西一个都不碰。</b></summary>
-    internal static int CleanByManifest(string dir, List<string> rels)
-    {
-        var deleted = 0;
-        foreach (var rel in rels)
-        {
-            var full = SafeCombine(dir, rel);
-            if (full is null) continue;
-            try
-            {
-                if (File.Exists(full)) { File.Delete(full); deleted++; }
-                else if (Directory.Exists(full)) { Directory.Delete(full, true); deleted++; }
-            }
-            catch { }
-        }
-        try
-        {
-            if (File.Exists(Path.Combine(dir, ManifestFile))) { File.Delete(Path.Combine(dir, ManifestFile)); deleted++; }
-        }
-        catch { }
-        try
-        {
-            foreach (var d in Directory.EnumerateDirectories(dir, "*", SearchOption.AllDirectories)
-                         .OrderByDescending(x => x.Length))
-                try { if (!Directory.EnumerateFileSystemEntries(d).Any()) Directory.Delete(d); } catch { }
-        }
-        catch { }
-        return deleted;
-    }
-
-    private static string? SafeCombine(string root, string rel)
-    {
-        try
-        {
-            var full = Path.GetFullPath(Path.Combine(root, rel.Replace('/', Path.DirectorySeparatorChar)));
-            var rootFull = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-            return full.StartsWith(rootFull + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) ? full : null;
-        }
-        catch { return null; }
     }
 
     /// <summary>
@@ -412,14 +369,28 @@ function Remove-EmptyTree([string]$root) {
   if (-not (Get-ChildItem -LiteralPath $root -Force | Select-Object -First 1)) { Remove-Item -LiteralPath $root -Force }
 }
 
+# 安装目录读不出来、或它本身就是磁盘根（C:\）⇒ 一个文件都不动。
+# 彻底删除那支是整棵递归删，传进来一个盘根就等于格盘；
+# InstallRecycle.cs 的回收口有同一道闸，两边判据必须一致。
+$root = $null
+if (-not [string]::IsNullOrWhiteSpace([string]$plan.InstallDir)) {
+  try { $root = [IO.Path]::GetFullPath([string]$plan.InstallDir).TrimEnd('\') } catch { $root = $null }
+}
+if ($root -match '^[A-Za-z]:$') { $root = $null }
+if (-not $root) {
+  ('卸载：安装目录读不出来或本身就是磁盘根（' + [string]$plan.InstallDir + '），一个文件都没动。') |
+    Set-Content -LiteralPath $plan.ReportPath -Encoding UTF8
+  Remove-Item -LiteralPath $planPath -Force
+  exit
+}
+
 if ($plan.PurgeUserData) {
-  Remove-Tree $plan.InstallDir
+  Remove-Tree $root
   Remove-Tree $plan.AppDataDir
   Remove-Tree $plan.LocalAppDataDir
   Remove-Tree $plan.LegacyTempDir
   foreach ($path in $plan.CustomCacheDirs) { Remove-Tree $path }
 } else {
-  $root = [IO.Path]::GetFullPath([string]$plan.InstallDir).TrimEnd('\')
   foreach ($rel in @($plan.ManifestFiles)) {
     $relative = ([string]$rel).Replace('/', '\')
     if ([IO.Path]::IsPathRooted($relative) -or $relative.Split('\') -contains '..') { continue }
@@ -430,9 +401,9 @@ if ($plan.PurgeUserData) {
   Remove-EmptyTree $root
 }
 $left = @()
-if (Test-Path -LiteralPath $plan.InstallDir) { $left += Get-ChildItem -LiteralPath $plan.InstallDir -Force | ForEach-Object { $_.Name } }
+if (Test-Path -LiteralPath $root) { $left += Get-ChildItem -LiteralPath $root -Force | ForEach-Object { $_.Name } }
 foreach ($path in $plan.CustomCacheDirs) { if (Test-Path -LiteralPath $path) { $left += $path } }
-$head = if ($plan.PurgeUserData) { '彻底卸载：' } else { '卸载：' }
+$head = if ($plan.PurgeUserData) { '彻底删除：' } else { '卸载：' }
 if ($left.Count -eq 0) {
   ($head + '安装目录已清空，程序文件全部移除。') | Set-Content -LiteralPath $plan.ReportPath -Encoding UTF8
 } else {

@@ -94,6 +94,47 @@ public partial class App : Application
             return;
         }
 
+        // 孤儿清理验证入口：JuniGridSetup.exe --orphan-check <装机目录> [payload文件表] [输出文件]
+        // 报「上一版写出去、这版不再带来」的文件有哪些；默认只算不删，真删要 JGINSTALLER_APPLY=1。
+        // payload文件表 = 每行一个相对路径，省略时用本次安装包真实的 payload 表。
+        if (e.Args.Length >= 2 && e.Args[0].Equals("--orphan-check", StringComparison.OrdinalIgnoreCase))
+        {
+            var apply = Environment.GetEnvironmentVariable("JGINSTALLER_APPLY") == "1";
+            var outPath = e.Args.Length >= 4
+                ? e.Args[3]
+                : Path.Combine(Path.GetTempPath(), "jg-orphan-check.txt");
+            string report;
+            try
+            {
+                var dir = e.Args[1];
+                var payload = e.Args.Length >= 3 && File.Exists(e.Args[2])
+                    ? File.ReadAllLines(e.Args[2]).Select(l => l.Trim())
+                        .Where(l => l.Length > 0).ToList()
+                    : InstallerEngine.PayloadRelativePaths();
+                var before = InstallRecycle.ReadManifest(dir);
+                var removed = apply ? InstallRecycle.RemoveOrphans(dir, payload) : new List<string>();
+                var keep = new HashSet<string>(payload.Select(r => r.Replace('\\', '/')),
+                    StringComparer.OrdinalIgnoreCase);
+                var would = before.Select(r => r.Replace('\\', '/'))
+                    .Where(r => !keep.Contains(r)
+                             && !r.Equals(InstallRecycle.ManifestFile, StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+                var sb = new System.Text.StringBuilder();
+                sb.Append("orphan-check ").Append(dir)
+                  .AppendLine(apply ? "  【本次会真删】" : "  【只算不删】");
+                sb.AppendLine("  旧清单条目: " + before.Count + " ‖ 本次 payload: " + payload.Count);
+                sb.AppendLine((apply ? "  删掉的: " : "  会删的: ")
+                    + (would.Count == 0 ? "（无）" : string.Join(" | ", would)));
+                if (apply) sb.AppendLine("  实删计数: " + removed.Count);
+                report = sb.ToString();
+            }
+            catch (Exception ex) { report = "orphan-check 异常: " + ex; }
+            try { Console.Out.WriteLine(report); Console.Out.Flush(); } catch { }
+            try { File.WriteAllText(outPath, report); } catch { }
+            Shutdown(0);
+            return;
+        }
+
         // 只读验证入口：JuniGridSetup.exe --nxm-default [输出文件]
         // 报告「装机那个勾会默认成什么、注册表里现在是谁在接下载链接」，不写任何键。
         if (e.Args.Length >= 1 && e.Args[0].Equals("--nxm-default", StringComparison.OrdinalIgnoreCase))
