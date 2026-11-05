@@ -1,4 +1,5 @@
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 
 namespace JuniGridInstaller;
@@ -134,12 +135,11 @@ public static class InstallMigrate
                             + "旧目录里的东西一个没动");
                         continue;
                     }
-                    MergeCopy(src, dst, out var skipped);
+                    MergeCopy(src, dst, out var skipped, out var conflicts);
                     // 校验按【源里的每一个文件都得在新目录里】来判，不能比两边总字节：
                     // 合并场景新目录里那份同名文件是"更新的、不许被盖的"，它完全可以比源文件大或小，
                     // 拿总字节比会把这种正常情况判成失败，于是旧目录永远删不掉。
-                    // 冲突的那些以新位置那份为准，旧的一份随旧目录一起走 —— 不留 .old-N 副本：
-                    // 那玩意儿没人清，depot-staging 里一个就是几百 MB。
+                    // 内容不同的以新位置那份为准 —— 但旧的那份送回收站，不硬删。
                     var missing = new List<string>();
                     foreach (var f in Directory.EnumerateFiles(src, "*", SearchOption.AllDirectories))
                     {
@@ -157,7 +157,12 @@ public static class InstallMigrate
                     }
                     if (skipped.Count > 0)
                         progress?.Report(new InstallProgress(
-                            $"{name}：{skipped.Count} 个同名文件保留新位置那份", 0.035));
+                            $"{name}：{skipped.Count} 个同名文件保留新位置那份"
+                            + (conflicts.Count > 0 ? $"（其中 {conflicts.Count} 个内容不同，旧的送回收站）" : ""),
+                            0.035));
+                    // 内容不同而"输了"的源文件送回收站，再删旧目录 —— 顺序不能反：
+                    // 先删目录就把它们一起埋了。回收站不可用时 RecycleOrDelete 会退回硬删。
+                    foreach (var old in conflicts) RecycleOrDelete(old);
                     Directory.Delete(src, true);
                 }
                 moved.Add(name);
@@ -203,24 +208,150 @@ public static class InstallMigrate
         return new Result(moved, failed, bytes, patched, oldFull, newFull);
     }
 
-    /// <summary>逐文件复制合并：已存在的文件一律不覆盖（新位置那份更新或更完整都不该被旧的盖掉）。
-    /// <paramref name="skipped"/> 回传被跳过的那些相对名（大写），校验时它们不参与"字节必须一致"。</summary>
-    private static void MergeCopy(string src, string dst, out HashSet<string> skipped)
+    /// <summary>
+    /// 逐文件复制合并：已存在的文件一律不覆盖（新位置那份更新或更完整都不该被旧的盖掉）。
+    ///
+    /// <para><b>写入是原子的</b>：先写 <c>.junigrid-part</c> 再改名。搬家中途断电/被杀时，
+    /// 最终路径上要么是完整文件、要么压根没有 —— 绝不会留一个半截文件冒充"已迁移"
+    /// （老版本直接 <c>File.Copy</c> 写最终路径，中断就留半截；下次搬家见它存在便跳过、
+    /// 校验又不比内容，于是把<b>完整的源文件删掉、半截的留下</b>，方向正好反了）。</para>
+    ///
+    /// <para>目标已存在但其实是老版本留下的半截文件（内容是源文件的前缀）⇒ 覆盖成完整的。</para>
+    ///
+    /// <para>内容确实不同的，以<b>新位置那份为准</b>，旧的那份交给调用方送回收站 ——
+    /// 不硬删：装机目录不该堆积 <c>.old-N</c>，但旧文件也不能就这么没了。</para>
+    /// </summary>
+    /// <param name="skipped">被跳过的相对名（新位置那份已存在且被保留）。</param>
+    /// <param name="conflicts">内容不同、应当送回收站的<b>源文件完整路径</b>。</param>
+    private static void MergeCopy(string src, string dst, out HashSet<string> skipped,
+        out List<string> conflicts)
     {
         skipped = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        conflicts = new List<string>();
         Directory.CreateDirectory(dst);
         foreach (var f in Directory.EnumerateFiles(src, "*", SearchOption.AllDirectories))
         {
             var rel = Path.GetRelativePath(src, f);
             var to = Path.Combine(dst, rel);
             Directory.CreateDirectory(Path.GetDirectoryName(to)!);
-            if (File.Exists(to)) { skipped.Add(rel); continue; }
-            File.Copy(f, to, false);
+            if (File.Exists(to))
+            {
+                if (IsTruncatedCopy(f, to))
+                {
+                    // 老版本搬家中断留下的半截文件：覆盖成完整的，别让它冒充"已迁移"
+                    AtomicCopy(f, to);
+                    continue;
+                }
+                skipped.Add(rel);
+                if (!FilesEqual(f, to)) conflicts.Add(f);
+                continue;
+            }
+            AtomicCopy(f, to);
         }
         // 空目录也要过去，否则 depot-staging 里"占位但还没下东西"的版本目录会消失
         foreach (var d in Directory.EnumerateDirectories(src, "*", SearchOption.AllDirectories))
             Directory.CreateDirectory(Path.Combine(dst, Path.GetRelativePath(src, d)));
+        // 上一轮搬家若中断，会留下 .junigrid-part 残片；它不是数据，收掉
+        SweepPartFiles(dst);
     }
+
+    /// <summary>复制到 <c>.junigrid-part</c> 再改名覆盖到最终路径 —— 中断只会留下残片，
+    /// 不会让半截文件出现在最终路径上。</summary>
+    private static void AtomicCopy(string source, string target)
+    {
+        var part = target + ".junigrid-part";
+        try
+        {
+            File.Copy(source, part, true);
+            File.Move(part, target, true);
+        }
+        catch
+        {
+            try { if (File.Exists(part)) File.Delete(part); } catch { }
+            throw;
+        }
+    }
+
+    /// <summary>收掉搬家中断留下的 <c>.junigrid-part</c> 残片（只删残片，不碰别的）。</summary>
+    private static void SweepPartFiles(string root)
+    {
+        try
+        {
+            foreach (var p in Directory.EnumerateFiles(root, "*.junigrid-part", SearchOption.AllDirectories))
+                try { File.Delete(p); } catch { }
+        }
+        catch { }
+    }
+
+    /// <summary>目标那份是不是源文件的<b>半截</b>（老版本搬家中断留下的）。
+    /// 判据：目标更短，且它的字节是源文件的前缀。内容不同的同名文件（另一个版本/另一个东西）
+    /// 不满足前缀关系，不会被误判。</summary>
+    private static bool IsTruncatedCopy(string source, string target)
+    {
+        try
+        {
+            var si = new FileInfo(source);
+            var ti = new FileInfo(target);
+            if (ti.Length == 0 || ti.Length >= si.Length) return false;
+            const int chunk = 1 << 16;
+            var a = new byte[chunk];
+            var b = new byte[chunk];
+            using var fs = File.OpenRead(source);
+            using var ft = File.OpenRead(target);
+            long left = ti.Length;
+            while (left > 0)
+            {
+                int n = (int)Math.Min(chunk, left);
+                if (fs.Read(a, 0, n) != n || ft.Read(b, 0, n) != n) return false;
+                for (int i = 0; i < n; i++) if (a[i] != b[i]) return false;
+                left -= n;
+            }
+            return true;
+        }
+        catch { return false; }
+    }
+
+    /// <summary>把文件送进 Windows 回收站（可还原），失败就退回硬删 —— 不能因为回收站
+    /// 不可用就把搬家卡住。用 <c>SHFileOperation</c> + <c>FOF_ALLOWUNDO</c>，不依赖额外程序集。</summary>
+    internal static void RecycleOrDelete(string path)
+    {
+        try
+        {
+            if (!File.Exists(path)) return;
+            var op = new SHFILEOPSTRUCT
+            {
+                wFunc = FO_DELETE,
+                // pFrom 必须双 \0 结尾；封送只补一个，这里自己再补一个
+                pFrom = path + "\0",
+                fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT,
+            };
+            if (SHFileOperation(ref op) == 0) return;
+        }
+        catch { /* 回收站不可用 → 落到下面硬删 */ }
+        try { File.Delete(path); } catch { }
+    }
+
+    private const uint FO_DELETE = 3;
+    private const ushort FOF_SILENT = 0x0004;
+    private const ushort FOF_NOCONFIRMATION = 0x0010;
+    private const ushort FOF_ALLOWUNDO = 0x0040;
+    private const ushort FOF_NOERRORUI = 0x0400;
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct SHFILEOPSTRUCT
+    {
+        public IntPtr hwnd;
+        public uint wFunc;
+        public string pFrom;
+        public string pTo;
+        public ushort fFlags;
+        public bool fAnyOperationsAborted;
+        public IntPtr hNameMappings;
+        public string lpszProgressTitle;
+    }
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    private static extern int SHFileOperation(ref SHFILEOPSTRUCT lpFileOp);
 
     private static long DirSize(string dir) => DirStats(dir).bytes;
 

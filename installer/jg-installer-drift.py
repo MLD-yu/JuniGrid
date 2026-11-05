@@ -316,6 +316,31 @@ def run_m14():
           '"--orphan-check"' in read(os.path.join(REPO, "installer", "JuniGridInstaller", "App.xaml.cs")))
 
 
+def run_m15():
+    """搬家写入原子性 + 冲突文件的去处。
+
+    这两条钉的是同一个 bug 的两个形状：老版本 <c>File.Copy</c> 直接写最终路径，
+    搬家中途断电就留一个半截文件；下次搬家见它存在便跳过、校验又不比内容，
+    于是把完整的源文件删掉、半截的留下 —— 方向正好反了，而且是静默的。
+    """
+    mig = os.path.join(REPO, "installer", "JuniGridInstaller", "InstallMigrate.cs")
+    if not os.path.exists(mig):
+        return
+    src = read(mig)
+    check("M15a", "搬家写入走「临时名 + 改名」，不许直接写最终路径",
+          "AtomicCopy" in src and ".junigrid-part" in src
+          and "File.Move(part, target, true)" in src,
+          "中断只该留残片，不许留半截文件冒充已迁移")
+    check("M15b", "内容不同的源文件送回收站，不硬删（顺序在删旧目录之前）",
+          "RecycleOrDelete(old)" in src,
+          "装机目录不该堆积 .old-N，但旧文件也不能就这么没了")
+    i_recycle = src.find("RecycleOrDelete(old)")
+    i_del = src.find("Directory.Delete(src, true)")
+    check("M15c", "送回收站排在删旧目录之前（顺序反了就一起埋了）",
+          0 <= i_recycle < i_del,
+          f"recycle@{i_recycle} vs delete@{i_del}")
+
+
 def run_orphan(exe):
     """RT6–RT9：孤儿清理的真实行为。
 
@@ -425,6 +450,7 @@ def main():
     run_m12()      # 散装文件
     run_m13()      # 验证入口存在
     run_m14()      # 孤儿清理调用链形状
+    run_m15()      # 搬家写入原子性 + 冲突去处
     print("-" * 72)
     run_rt(exe)    # 真实入口行为
     run_orphan(exe)  # 孤儿清理行为

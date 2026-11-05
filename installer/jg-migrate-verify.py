@@ -211,6 +211,27 @@ def main():
     leftovers = [n for n in os.listdir(os.path.join(new, "depot-staging", "1.6.15")) if ".old-" in n]
     check("M3e 搬家成功后不留 .old-N 副本（没人清，depot-staging 里一个就是几百 MB）",
           not leftovers, "还留着: " + ", ".join(leftovers) if leftovers else "")
+    parts = [os.path.join(dp, n) for dp, _, fs in os.walk(new) for n in fs if n.endswith(".junigrid-part")]
+    check("M3f 不留 .junigrid-part 残片（写入是临时名+改名的，中断只该留残片且要被收掉）",
+          not parts, "还留着: " + ", ".join(parts) if parts else "")
+
+    # ── M3g 老版本搬家中断留下的半截文件 ⇒ 必须被覆盖成完整的，不许冒充"已迁移" ──
+    # 老版本 File.Copy 直接写最终路径，中断就留个半截；下次搬家见它存在便跳过、
+    # 校验又不比内容，于是把完整的源文件删掉、半截的留下。这里钉住反方向。
+    b = fresh_case("m3g")
+    old = build_old(b)
+    new = os.path.join(b, "new")
+    os.makedirs(os.path.join(new, "depot-staging", "1.6.15"))
+    # 目标那份是源文件的前 100 字节 —— 典型的"复制到一半断了"
+    io.open(os.path.join(new, "depot-staging", "1.6.15", "body.bin"), "w", encoding="utf-8").write("x" * 100)
+    cfg = cfgpath(b, {"cacheRoot": old})
+    rc, txt = run(old, new, cfg)
+    body = os.path.join(new, "depot-staging", "1.6.15", "body.bin")
+    check("M3g 目标是半截文件（源的前缀）⇒ 覆盖成完整的，不许留半截",
+          os.path.isfile(body) and io.open(body, encoding="utf-8").read() == "x" * 4096,
+          ("大小=" + str(os.path.getsize(body)) if os.path.isfile(body) else "(没了)"))
+    check("M3g2 半截覆盖后源目录照常清掉",
+          not os.path.exists(os.path.join(old, "depot-staging")))
     check("M3d 别的数据目录照常搬",
           os.path.isdir(os.path.join(new, "downloads")) and os.path.isdir(os.path.join(new, "webview2")))
 
