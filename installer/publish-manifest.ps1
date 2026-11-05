@@ -122,6 +122,44 @@ if (-not $SkipUrlCheck) {
     if ($remoteLen -and $remoteLen -ne [int64]$doc.size) {
         throw "Release 上的文件是 $remoteLen 字节，本地这份是 $($doc.size) 字节 —— 不是同一份构建，不能签。"
     }
+
+    # ── 字节级对账：GitHub 上传时自己算的 sha256（asset.digest）必须和本地这份一致 ──
+    # 只比大小是不够的：改一行字符串重编一次，体积可能一个字节都不差。那时门放行，
+    # 而清单里的 sha256 是本地那份的、用户下到的是 Release 那份 → 用户端校验失败、
+    # 包被删、提示「安装包校验不通过」→ 重试还是错。安全上 fail closed，但更新等于坏了，
+    # 而且发布那一刻完全看不出来。
+    #
+    # digest 是 GitHub 对 asset 字节的承诺，也正是应用「API 通道」用的那个凭据 ——
+    # 拿它对账，三者一致才说明：本地字节 == 清单 sha256 == Release 上的字节。
+    $tag = if ([string]$Version -match '^[vV]') { [string]$Version } else { 'v' + $Version }
+    $assetName = Split-Path $SetupExe -Leaf
+    $release = $null
+    try {
+        $release = Invoke-RestMethod -Uri "https://api.github.com/repos/MLD-yu/JuniGrid/releases/tags/$tag" `
+            -Headers @{ 'User-Agent' = 'JuniGrid-release-check' } -TimeoutSec 20
+    } catch {
+        Write-Host "⚠ 取 release 信息失败（网络/匿名配额），这次只比了大小：$($_.Exception.Message)" -ForegroundColor Yellow
+    }
+    if ($release) {
+        $asset = @($release.assets) | Where-Object { $_.name -eq $assetName } | Select-Object -First 1
+        if (-not $asset) {
+            throw "Release $tag 里没有 $assetName —— 清单会指向一个不存在的资产，别签。"
+        }
+        if ($asset.digest) {
+            $official = ([string]$asset.digest) -replace '^sha256:', ''
+            if ($official -ne [string]$doc.sha256) {
+                throw ("Release 上的字节和本地这份不是同一个文件 —— 拒绝签名：`n" +
+                       "  官方 sha256：$official`n" +
+                       "  本地 sha256：$($doc.sha256)`n" +
+                       "（签了的话，用户下到的包校验不过，会一直提示「安装包校验不通过」）")
+            }
+            Write-Host "字节级对账通过：官方 digest 与本地 sha256 一致（$($official.Substring(0,12))…）"
+        }
+        else {
+            Write-Host "⚠ 这个 release 没有 digest 字段（GitHub 后加的，老 release 没有）—— 这次只比了大小" -ForegroundColor Yellow
+        }
+    }
+
     Write-Host "发布前置通过：$url（$($doc.size) 字节）"
 }
 
