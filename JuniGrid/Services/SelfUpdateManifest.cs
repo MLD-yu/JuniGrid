@@ -53,44 +53,92 @@ public static class SelfUpdateManifest
     }
 
     /// <summary>
-    /// 依次尝试各托管点，取第一份<b>验签通过</b>且能解析的清单。
-    /// 返回 null = 所有源都不可用（调用方按老路走 HTML 回落）。
+    /// 各源<b>并发</b>竞速，取第一份验签通过的清单。
+    /// <para>为什么不能串行：两个源 × 两个文件 × 5 秒 = 最坏 20 秒，而且这段排队在 HTML
+    /// 回落之前。github.io / raw 在国内挂死是常态，用户看到的就是"检查更新转半天"——
+    /// V1.2.11 专门用并发修过这个症状，这里不能又退回去。</para>
+    /// <para>返回 null = 所有源都不可用（调用方按老路走 HTML 回落）。</para>
     /// </summary>
     public static async Task<SelfUpdateInfo?> TryFetchAsync()
     {
-        foreach (var baseUrl in BaseUrls)
+        var probes = BaseUrls.Select(TryOneAsync).ToList();
+        try
         {
-            try
+            while (probes.Count > 0)
             {
-                var json = await Http.GetByteArrayAsync(baseUrl + "/latest.json");
-                var sigText = await Http.GetStringAsync(baseUrl + "/latest.json.sig");
-                if (!ManifestTrust.VerifyBase64(json, sigText, out var keyId))
-                {
-                    AppLog.Warn("SelfUpdate", $"清单验签不过（{baseUrl}）—— 这个源不可信，换下一个");
-                    continue;
-                }
-                var doc = ManifestDocument.Parse(json);
-                if (doc is null)
-                {
-                    AppLog.Warn("SelfUpdate", $"清单内容不合规（{baseUrl}）—— 换下一个源");
-                    continue;
-                }
-                var info = ToInfo(doc);
-                if (info is null)
-                {
-                    AppLog.Warn("SelfUpdate", $"清单版本号看不懂（{baseUrl}）：{doc.Version}");
-                    continue;
-                }
-                AppLog.Info("SelfUpdate",
-                    $"清单通道：v{doc.Version} sha256={Short(doc.Sha256)} 大小={doc.Size} 密钥={keyId}（{baseUrl}）");
-                return info;
+                var done = await Task.WhenAny(probes);
+                probes.Remove(done);
+                SelfUpdateInfo? info;
+                try { info = await done; } catch { info = null; }
+                if (info is not null) return info;
             }
-            catch (Exception ex)
-            {
-                AppLog.Warn("SelfUpdate", $"清单通道失败（{baseUrl}）：{ex.Message}");
-            }
+            return null;
         }
-        return null;
+        finally
+        {
+            // 落败的探针不取消，但异常必须有人领走，否则终结器线程会刷 unobserved。
+            foreach (var t in probes) ObserveFault(t);
+        }
+    }
+
+    /// <summary>单个源：json 与 sig 也并发取（同一个站点的两个小文件，没必要串着等）。</summary>
+    private static async Task<SelfUpdateInfo?> TryOneAsync(string baseUrl)
+    {
+        try
+        {
+            var jsonTask = Http.GetByteArrayAsync(baseUrl + "/latest.json");
+            var sigTask = Http.GetStringAsync(baseUrl + "/latest.json.sig");
+            await Task.WhenAll(jsonTask, sigTask);
+            var json = await jsonTask;
+            var sigText = await sigTask;
+            if (!ManifestTrust.VerifyBase64(json, sigText, out var keyId))
+            {
+                AppLog.Warn("SelfUpdate", $"清单验签不过（{baseUrl}）—— 这个源不可信，换下一个");
+                return null;
+            }
+            var doc = ManifestDocument.Parse(json);
+            if (doc is null)
+            {
+                AppLog.Warn("SelfUpdate", $"清单内容不合规（{baseUrl}）—— 换下一个源");
+                return null;
+            }
+            // 清单自述的 key_id 必须和实际验过的那把一致：轮换期两把钥匙并存时，
+            // 这是唯一能发现"签名方和自述漂了"的地方（签名本身仍有效，不是漏洞，
+            // 但说明发版机上的钥匙搞混了，要当场看见）。
+            if (!string.IsNullOrWhiteSpace(doc.KeyId)
+                && !string.Equals(doc.KeyId, keyId, StringComparison.OrdinalIgnoreCase))
+            {
+                AppLog.Warn("SelfUpdate",
+                    $"清单自述密钥 {doc.KeyId}，实际是 {keyId} 签的（{baseUrl}）—— 丢弃这个源");
+                return null;
+            }
+            var info = ToInfo(doc);
+            if (info is null)
+            {
+                AppLog.Warn("SelfUpdate", $"清单版本号看不懂（{baseUrl}）：{doc.Version}");
+                return null;
+            }
+            AppLog.Info("SelfUpdate",
+                $"清单通道：v{doc.Version} sha256={Short(doc.Sha256)} 大小={doc.Size} 密钥={keyId}（{baseUrl}）");
+            return info;
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warn("SelfUpdate", $"清单通道失败（{baseUrl}）：{ex.Message}");
+            return null;
+        }
+    }
+
+    private static void ObserveFault(Task task)
+    {
+        if (task.IsCompleted)
+        {
+            _ = task.Exception;
+            return;
+        }
+        _ = task.ContinueWith(static t => _ = t.Exception, CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
     }
 
     /// <summary>把清单映射成和 API/HTML 通道同一种结果对象。</summary>

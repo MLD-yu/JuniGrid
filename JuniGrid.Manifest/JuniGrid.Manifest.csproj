@@ -18,4 +18,11 @@
     <InternalsVisibleTo Include="JuniGridTestHarness" />
   </ItemGroup>
 
+  <!-- 本机 MSBuild 的并行 Copy 在"覆盖已存在文件"时会 Stack overflow（DeleteFilePrivate 递归）：
+       仓库在 OneDrive 同步盘下必现。全新目录则不会。所以构建前先清空输出目录，
+       走"新建文件"而不是"覆盖"。这个项目很小，清一遍不心疼。 -->
+  <Target Name="CleanOutDirBeforeBuild" BeforeTargets="PrepareForBuild">
+    <RemoveDir Directories="$(OutDir)" ContinueOnError="true" />
+  </Target>
+
 </Project>

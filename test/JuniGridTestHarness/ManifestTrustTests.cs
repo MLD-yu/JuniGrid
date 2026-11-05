@@ -67,6 +67,32 @@ public class ManifestTrustTests
         Assert.Equal(pub1, pub2);
     }
 
+    /// <summary>
+    /// 私钥备份最常见的"内容对但用不了"：文本编辑器存 UTF-8 带 BOM（记事本就有这选项），
+    /// 或者前后多带空白/零宽字符。<c>ImportFromPem</c> 遇到 BOM 直接抛"不是有效 PEM"——
+    /// 一份完全正确的备份被判成废的，用户只会以为自己抄错了。
+    /// 所以这里钉死：带 BOM、带空白都必须能用。
+    /// </summary>
+    [Theory]
+    [InlineData("\uFEFF")]                 // UTF-8 BOM
+    [InlineData("")]                      // 无
+    [InlineData("  \r\n ")]               // 空白
+    [InlineData("\u200B")]                // 零宽空格
+    public void PemWithBOMOrWhitespaceStillUsable(string prefix)
+    {
+        var (pem, pub) = ManifestSigner.GenerateKeyPair();
+        var dirty = prefix + pem + "\r\n";
+
+        // 能导出公钥（读得进去）
+        Assert.Equal(pub, ManifestSigner.PublicKeyFromPem(dirty));
+
+        // 能签名，且签出来的东西验得过
+        var bytes = ManifestDocument.Serialize(SampleDoc());
+        var sig = ManifestSigner.Sign(bytes, dirty);
+        var spki = Convert.FromBase64String(pub);
+        Assert.True(ManifestTrust.VerifyWithKey(bytes, sig, spki, out _));
+    }
+
     /// <summary>内置公钥必须是合法 SPKI、且必须是 P-256 那条曲线。
     /// 有人手滑贴错 base64 / 贴成别的曲线，应用必须立刻发现（而不是每次更新都验签失败）。</summary>
     [Fact]

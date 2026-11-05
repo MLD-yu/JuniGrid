@@ -22,7 +22,7 @@ namespace JuniGrid.ManifestTool;
 /// <para>用法示例：
 /// <code>
 /// dotnet run --project tools/JuniGrid.ManifestSigner -- keygen --out E:\junigrid\keys
-/// dotnet run --project tools/JuniGrid.ManifestSigner -- make --exe dist-tmp\JuniGrid-cn-v1.3.1-setup.exe --version 1.3.1 --outdir dist-tmp --key E:\junigrid\keys\junigrid-manifest-2026-01.pem
+/// dotnet run --project tools/JuniGrid.ManifestSigner -- make --exe dist-tmp\JuniGrid-cn-v1.3.1-setup.exe --version 1.3.1 --outdir dist-tmp --key %USERPROFILE%\.junigrid\keys\junigrid-manifest-2026-01.pem
 /// dotnet run --project tools/JuniGrid.ManifestSigner -- verify --manifest dist-tmp\latest.json --sig dist-tmp\latest.json.sig
 /// </code>
 /// </summary>

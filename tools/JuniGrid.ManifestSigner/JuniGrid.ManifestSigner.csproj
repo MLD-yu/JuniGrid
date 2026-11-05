@@ -15,4 +15,10 @@
     <ProjectReference Include="..\..\JuniGrid.Manifest\JuniGrid.Manifest.csproj" />
   </ItemGroup>
 
+  <!-- 同 Manifest 库：OneDrive 同步盘下覆盖旧文件会 Stack overflow。
+       这个工具是发版时反复重建的（改一行就跑一次），最常撞上，所以不限定 Debug。 -->
+  <Target Name="CleanOutDirBeforeBuild" BeforeTargets="PrepareForBuild">
+    <RemoveDir Directories="$(OutDir)" ContinueOnError="true" />
+  </Target>
+
 </Project>
