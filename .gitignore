@@ -55,3 +55,9 @@ _backup-*/
 
 # WPF 标记编译第二遍落下的临时工程文件
 *_wpftmp.csproj
+
+# 清单签名私钥（绝不入库）
+# 私钥在仓库外离线保管（默认 E:/junigrid/keys/），只把公钥贴进
+# JuniGrid.Manifest/ManifestTrust.cs 的 PublicKeySpkiBase64。
+junigrid-manifest-*.pem
+*.pem

@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>JuniGrid.Manifest</RootNamespace>
+    <AssemblyName>JuniGrid.Manifest</AssemblyName>
+    <!-- 这库只做纯计算（验签/解析/签名），不碰文件系统以外的东西，别引入区域依赖 -->
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- 输出不放仓库里：仓库在 OneDrive 同步盘下，MSBuild 往 bin\ 并行 Copy 会 Stack overflow
+         （主项目 csproj 里有同样的说明）。统一落到本机 LocalAppData。 -->
+    <BaseOutputPath>$(LOCALAPPDATA)\JuniGridBuild\Manifest\</BaseOutputPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 白盒测试要用"指定公钥验签"这条内部路径（真私钥不在仓库里，测不了正向路径） -->
+    <InternalsVisibleTo Include="JuniGridTestHarness" />
+  </ItemGroup>
+
+</Project>

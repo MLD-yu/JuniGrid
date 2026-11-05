@@ -30,6 +30,12 @@
     <InternalsVisibleTo Include="JuniGridTestHarness" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- 清单签名库：应用与发版签名工具（tools/JuniGrid.ManifestSigner）共用同一份实现 ——
+         两边算法一旦漂移，发出去的清单就没人认。纯计算，不依赖 WPF/Windows API。 -->
+    <ProjectReference Include="..\JuniGrid.Manifest\JuniGrid.Manifest.csproj" />
+  </ItemGroup>
+
   <!-- 本机 MSBuild 的并行 Copy 在“覆盖已存在文件”时会 Stack overflow（DeleteFilePrivate 递归），
        全新目录则不会。所以 Debug 构建先清掉输出目录，保证每次都走“新建文件”而不是覆盖。
        代价是构建慢几秒，但 VS F5 / dotnet build 不会再崩在半路。 -->

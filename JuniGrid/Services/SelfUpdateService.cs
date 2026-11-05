@@ -14,8 +14,10 @@ public sealed record SelfUpdateInfo(string LatestVersion, string DownloadUrl, st
 
 /// <summary>
 /// 应用自更新的唯一通道（检查 + 下载缓存 + 弹出安装）：
-///  1) api.github.com /releases/latest —— 信息全，但匿名配额 60 次/小时/IP，容易被限流；
-///  2) github.com/.../releases/latest HTML 302 回落 —— 最终跳转 URL 里带 tag，不受 API 配额限制。
+///  1) api.github.com /releases/latest —— 信息全（含官方 sha256），但匿名配额 60 次/小时/IP，容易被限流；
+///  2) <b>签名清单</b>（latest.json + latest.json.sig，公钥内置）—— API 挂了时的首选：
+///     清单从哪取都无所谓（验签不过就丢那个源），但里面的 sha256 是我们自己签的，可以当凭据用；
+///  3) github.com/.../releases/latest HTML 302 回落 —— 拿不到校验值，只能退到"要用户再点一次确认"。
 /// 安装包下载到 StoragePaths.SelfUpdateDir（断点续传）：
 ///  · 已完整缓存 → 点击按钮直接弹安装向导，不再下载；
 ///  · 安装包向导被用户关掉 → 缓存保留，下次点击直接再弹；
@@ -115,9 +117,25 @@ public sealed class SelfUpdateService
         SelfUpdateInfo? result = api;
         if (result is null)
         {
-            result = await TryCheckViaHtmlAsync();
-            AppLog.Info("SelfUpdate", $"检查更新：API 通道 {apiMs}ms 未拿到版本，HTML 回落 {(sw.ElapsedMilliseconds - apiMs)}ms"
-                + (result is null ? " 也失败" : " 成功"));
+            // API 拿不到版本（匿名配额打满 / 直连不通）→ 试<b>签名清单</b>。
+            // 它带的是我们自己签过的 sha256：清单从哪取都无所谓（验签不过就丢那个源），
+            // 但里面的校验值可信 —— 比 HTML 回落（压根没有校验值，只能靠用户再点一次确认）
+            // 强得多。清单也拿不到，才退回 HTML 那条。
+            var manifest = await SelfUpdateManifest.TryFetchAsync();
+            var manifestMs = sw.ElapsedMilliseconds - apiMs;
+            if (manifest is not null)
+            {
+                AppLog.Info("SelfUpdate", $"检查更新：API 通道 {apiMs}ms 未拿到版本，清单通道 {manifestMs}ms 命中 v{manifest.LatestVersion}"
+                    + (string.IsNullOrEmpty(manifest.SetupSha256) ? "（但清单没带 sha256）" : ""));
+                result = manifest;
+            }
+            else
+            {
+                result = await TryCheckViaHtmlAsync();
+                AppLog.Info("SelfUpdate", $"检查更新：API 通道 {apiMs}ms 未拿到版本，清单通道 {manifestMs}ms 也没成，"
+                    + $"HTML 回落 {(sw.ElapsedMilliseconds - apiMs - manifestMs)}ms"
+                    + (result is null ? " 也失败" : " 成功"));
+            }
         }
         else
         {

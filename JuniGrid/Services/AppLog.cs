@@ -38,7 +38,14 @@ public static class AppLog
     private static readonly System.Threading.Timer FlushTimer =
         new(_ => Flush(), null, 250, 250);
 
-    static AppLog() => AppDomain.CurrentDomain.ProcessExit += (_, _) => Flush();
+    static AppLog()
+    {
+        AppDomain.CurrentDomain.ProcessExit += (_, _) => Flush();
+        // 把日志出口交给清单库（JuniGrid.Manifest）。那个库不能反向引用主程序集
+        //（会成环），所以它要写日志只能经这个回调转回来。
+        JuniGrid.Manifest.AppLogSink.InfoWriter = (source, message) => Info(source, message);
+        JuniGrid.Manifest.AppLogSink.WarnWriter = (source, message) => Warn(source, message);
+    }
 
     private static void Write(string level, string source, string message)
     {
