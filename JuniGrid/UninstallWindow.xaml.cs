@@ -73,6 +73,18 @@ public partial class UninstallWindow : Window
         catch { return false; }
     }
 
+    /// <summary>卸载全过程追踪，与装机日志同一个文件（<c>%TEMP%\jgsetup-log.txt</c>）——
+    /// 装一次卸一次会在同一个文件里串起来看。逐行落盘，人一边点一边能 tail。</summary>
+    internal static void Trace(string msg)
+    {
+        try
+        {
+            File.AppendAllText(Path.Combine(Path.GetTempPath(), "jgsetup-log.txt"),
+                $"[{DateTime.Now:HH:mm:ss.fff}] {msg}\r\n");
+        }
+        catch { }
+    }
+
     private void OnMinimize(object sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;
     private void OnClose(object sender, RoutedEventArgs e) => Close();
     private void OnCancel(object sender, RoutedEventArgs e) => Close();
@@ -83,6 +95,8 @@ public partial class UninstallWindow : Window
         _working = true;
         _confirmed = true;
         _purgeUserData = PurgeUserDataBox.IsChecked == true;
+        Trace($"[卸载] 开始 ‖ 目录={_installDir} ‖ 彻底删除={_purgeUserData}"
+             + $" ‖ 版本={System.Diagnostics.FileVersionInfo.GetVersionInfo(Environment.ProcessPath ?? "").FileVersion}");
         BtnUninstall.IsEnabled = false;
         BtnCancel.IsEnabled = false;
 
@@ -113,7 +127,10 @@ public partial class UninstallWindow : Window
             foreach (var p in Process.GetProcessesByName("JuniGrid"))
             {
                 if (p.Id == self) { p.Dispose(); continue; }
-                try { p.Kill(entireProcessTree: true); } catch { }
+                // 只结束这个应用本身，<b>不整树杀</b>：SMAPI / 游戏本体是应用拉起来的子进程，
+                // 整树会把玩家正在玩的那一局硬掐掉。安装目录里的文件不由游戏持有，
+                // 所以不杀游戏也删得掉；删除失败还有收尾脚本的 12 次重试兜着。
+                try { p.Kill(); } catch { }
                 p.Dispose();
             }
         }
@@ -125,6 +142,8 @@ public partial class UninstallWindow : Window
         // 老副本一按就把它们抹掉 ⇒ 用户在控制面板里再也找不到"卸载 JuniGrid"，
         // 桌面图标也没了，而新装那份还好端端地跑着。所以先问一句"这条登记说的是我不是"。
         var registeredHere = RegisteredHere();
+        Trace($"[卸载] 卸载登记指向本目录={registeredHere}"
+             + (!registeredHere ? " ⇒ 快捷方式/卸载项留给新装那份，不动" : ""));
 
         // 2) 快捷方式
         if (registeredHere)
@@ -135,14 +154,32 @@ public partial class UninstallWindow : Window
                 File.Delete(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonDesktopDirectory), "JuniGrid.lnk"));
                 var group = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Programs), "JuniGrid");
                 if (Directory.Exists(group)) Directory.Delete(group, true);
+                Trace("[卸载] 快捷方式已删（桌面 + 开始菜单）");
             }
-            catch { }
+            catch (Exception ex) { Trace("[卸载] 删快捷方式失败: " + ex.Message); }
         }
 
         // 3) 注册表卸载项
         if (registeredHere)
         {
-            try { Registry.CurrentUser.DeleteSubKeyTree(UninstallKeyPath, false); } catch { }
+            try { Registry.CurrentUser.DeleteSubKeyTree(UninstallKeyPath, false); Trace("[卸载] 注册表卸载项已删"); }
+            catch (Exception ex) { Trace("[卸载] 删注册表失败: " + ex.Message); }
+        }
+
+        // 4) nxm:// 处理器
+        // 不交接的话，卸载后浏览器点「Mod Manager Download」拉起的是一个刚被删掉的 exe，
+        // 而当初被我们压掉的 Vortex 命令还躺在 HKCU\Software\JuniGrid 里没人写回去 ——
+        // 用户除了重装一遍没别的办法。只有"这条登记确实是本目录这一份"才动它：
+        // 旧目录里残留的 Uninstall.exe 不该去改全局登记（与 registeredHere 同一个理由）。
+        if (registeredHere)
+        {
+            try
+            {
+                App.ReleaseNxmHandler(Path.Combine(_installDir, "JuniGrid.exe"));
+                Trace("[卸载] nxm:// 处理器已交还/清理");
+            }
+            catch (Exception ex) { Trace("[卸载] 释放 nxm 失败: " + ex.Message); }
+            try { Registry.CurrentUser.DeleteSubKeyTree(@"Software\JuniGrid", false); } catch { }
         }
     }
 
@@ -254,11 +291,13 @@ public partial class UninstallWindow : Window
                 ReportPath = Path.Combine(Path.GetTempPath(), "JuniGrid-uninstall-report.txt"),
             }), new UTF8Encoding(false));
 
-            if (TryStartPowerShellCleanup(planPath)) return;
+            if (TryStartPowerShellCleanup(planPath)) { Trace($"[卸收] 收尾进程已起，计划文件={planPath}"); return; }
+            Trace("[卸收] 脚本宿主起不来，退回旧自删实例");
             StartLegacyPurge();
         }
-        catch
+        catch (Exception ex)
         {
+            Trace("[卸收] 调度失败: " + ex.Message);
             // 计划文件都没写成 / 连进程都起不来：退回旧的自删实例，至少把两个 exe 收掉。
             try { StartLegacyPurge(); } catch { /* 清理启动失败时保留文件，绝不递归误删。 */ }
         }
@@ -343,13 +382,22 @@ $ErrorActionPreference = 'SilentlyContinue'
 $planPath = $env:JG_UNINSTALL_PLAN
 $plan = Get-Content -LiteralPath $planPath -Raw -Encoding UTF8 | ConvertFrom-Json
 
+# 与装机日志同一个文件，装一次卸一次串起来看
+$trace = Join-Path $env:TEMP 'jgsetup-log.txt'
+function Trace([string]$m) {
+  try { Add-Content -LiteralPath $trace -Value ('[{0:HH:mm:ss.fff}] {1}' -f (Get-Date), $m) -Encoding UTF8 } catch { }
+}
+Trace ('[卸收] 开始 ‖ 彻底删除=' + [bool]$plan.PurgeUserData + ' ‖ 目录=' + [string]$plan.InstallDir + ' ‖ 父进程=' + [int]$plan.ParentPid)
+
 # 父进程（卸载向导）不退出，加载中的 dll 就一直锁着 —— 先等它真的没了再动手。
 $parentId = [int]$plan.ParentPid
+$waitStart = Get-Date
 try { Wait-Process -Id $parentId -Timeout 120 } catch { }
 for ($i = 0; $i -lt 480; $i++) {
   if (-not (Get-Process -Id $parentId -ErrorAction SilentlyContinue)) { break }
   Start-Sleep -Milliseconds 250
 }
+Trace ('[卸收] 父进程已退出，开始清理（等了 ' + [math]::Round(((Get-Date) - $waitStart).TotalSeconds, 1) + 's）')
 
 # 删不动就重试：进程刚退出时 WebView2 子进程可能还攥着几百毫秒的文件锁。
 function Remove-Tree([string]$path) {
@@ -380,22 +428,27 @@ if ($root -match '^[A-Za-z]:$') { $root = $null }
 if (-not $root) {
   ('卸载：安装目录读不出来或本身就是磁盘根（' + [string]$plan.InstallDir + '），一个文件都没动。') |
     Set-Content -LiteralPath $plan.ReportPath -Encoding UTF8
+  Trace ('[卸收] 触发盘根/路径闸，拒绝动手: ' + [string]$plan.InstallDir)
   Remove-Item -LiteralPath $planPath -Force
   exit
 }
 
 if ($plan.PurgeUserData) {
+  Trace '[卸收] 彻底删除：安装目录 + 设置 + 本地数据 + 旧临时 + 自定缓存，一起删'
   Remove-Tree $root
   Remove-Tree $plan.AppDataDir
   Remove-Tree $plan.LocalAppDataDir
   Remove-Tree $plan.LegacyTempDir
-  foreach ($path in $plan.CustomCacheDirs) { Remove-Tree $path }
+  foreach ($path in $plan.CustomCacheDirs) { Trace ('[卸收]   删缓存: ' + $path); Remove-Tree $path }
 } else {
+  Trace '[卸收] 普通卸载：只按清单删程序文件，缓存/设置/登录态保留'
   foreach ($rel in @($plan.ManifestFiles)) {
     $relative = ([string]$rel).Replace('/', '\')
     if ([IO.Path]::IsPathRooted($relative) -or $relative.Split('\') -contains '..') { continue }
     $full = [IO.Path]::GetFullPath([IO.Path]::Combine($root, $relative))
-    if ($full.StartsWith($root + '\', [StringComparison]::OrdinalIgnoreCase)) { Remove-Tree $full }
+    # 清单只记文件。这里出现目录就跳过：Remove-Tree 是递归的，会把用户放在同名目录里的东西
+    # 一起端走，而这段的承诺是"只删我们自己写出去的文件"。
+    if ($full.StartsWith($root + '\', [StringComparison]::OrdinalIgnoreCase) -and [IO.File]::Exists($full)) { Remove-Tree $full }
   }
   Remove-Tree ([IO.Path]::Combine($root, 'junigrid-files.txt'))
   Remove-EmptyTree $root
@@ -403,6 +456,8 @@ if ($plan.PurgeUserData) {
 $left = @()
 if (Test-Path -LiteralPath $root) { $left += Get-ChildItem -LiteralPath $root -Force | ForEach-Object { $_.Name } }
 foreach ($path in $plan.CustomCacheDirs) { if (Test-Path -LiteralPath $path) { $left += $path } }
+$leftText = if ($left.Count) { $left -join '、' } else { '（无）' }
+Trace ('[卸收] 清理结束 ‖ 安装目录还在=' + (Test-Path -LiteralPath $root) + ' ‖ 保留项=' + $leftText)
 $head = if ($plan.PurgeUserData) { '彻底删除：' } else { '卸载：' }
 if ($left.Count -eq 0) {
   ($head + '安装目录已清空，程序文件全部移除。') | Set-Content -LiteralPath $plan.ReportPath -Encoding UTF8

@@ -411,6 +411,70 @@ def run_version_gate(exe):
     check("RT13", "JGINSTALLER_ALLOW_DOWNGRADE=1 ⇒ 强行降级放行",
           "降级=放行" in r_forced, r_forced)
 
+    # 注册表里的 DisplayVersion 不是我们能控制的：手改、老安装器、别的工具都写过。
+    # 严格 Version.TryParse 一失败就退回字符串比较，而 "v1.3.0" 比 "1.3.0" 大 ——
+    # 同一个版本被判成版本倒退，用户会被永久关在门外。
+    r_v = probe("v1.3.0")
+    check("RT14", "DisplayVersion 带 v 前缀（v1.3.0 = 同一个版本）⇒ 必须放行",
+          "降级=放行" in r_v, r_v)
+    r_pre = probe("1.3.0-beta")
+    check("RT15", "DisplayVersion 带 -预发布后缀且同号 ⇒ 视为更低，必须放行",
+          "降级=放行" in r_pre, r_pre)
+    r_rev = probe("1.3.0.1")
+    check("RT16", "同号但 revision 更高（1.3.0.1）⇒ 仍要拦（修 v 前缀不能把闸放松）",
+          "降级=拦" in r_rev, r_rev)
+
+
+def run_preview_guards(exe):
+    """RT17–RT18：验证入口不再"因为一段环境变量/一行清单"就递归删东西。"""
+    if exe is None:
+        return
+    import shutil
+
+    def preview(dir_, apply):
+        out = os.path.join(tempfile.gettempdir(), f"jg-prev-{os.getpid()}.txt")
+        if os.path.exists(out):
+            os.remove(out)
+        env = dict(os.environ)
+        env["JGINSTALLER_APPLY"] = "1"      # 残留的环境变量：现在不该起任何作用
+        args = [exe, "--recycle-preview", dir_, out]
+        if apply:
+            args.append("--apply")
+        try:
+            subprocess.run(args, capture_output=True, timeout=90, env=env)
+        except Exception:
+            return ""
+        if os.path.exists(out):
+            with open(out, encoding="utf-8", errors="replace") as f:
+                return f.read()
+        return ""
+
+    d = os.path.join(tempfile.gettempdir(), f"jg-fx-prev-{os.getpid()}")
+    shutil.rmtree(d, ignore_errors=True)
+    os.makedirs(d)
+    for rel, text in (("JuniGrid.exe", "MZ"), ("junigrid-files.txt", "JGMF1\nJuniGrid.exe\n")):
+        with open(os.path.join(d, rel), "w", encoding="utf-8") as f:
+            f.write(text)
+    preview(d, apply=False)
+    check("RT17", "设了 JGINSTALLER_APPLY=1 但没写 --apply ⇒ 一个文件都不许删",
+          os.path.isfile(os.path.join(d, "JuniGrid.exe")),
+          "JuniGrid.exe 仍在=" + str(os.path.isfile(os.path.join(d, "JuniGrid.exe"))))
+
+    d2 = os.path.join(tempfile.gettempdir(), f"jg-fx-prev2-{os.getpid()}")
+    shutil.rmtree(d2, ignore_errors=True)
+    os.makedirs(os.path.join(d2, "portrait-covers"))
+    userfile = os.path.join(d2, "portrait-covers", "用户自己的图.png")
+    with open(userfile, "w", encoding="utf-8") as f:
+        f.write("PNG")
+    with open(os.path.join(d2, "junigrid-files.txt"), "w", encoding="utf-8") as f:
+        f.write("JGMF1\nportrait-covers\n")
+    preview(d2, apply=True)
+    check("RT18", "清单条目是一个目录 ⇒ 跳过、不递归删（用户放在同名目录里的文件必须活着）",
+          os.path.isfile(userfile), "用户文件仍在=" + str(os.path.isfile(userfile)))
+
+    for p in (d, d2):
+        shutil.rmtree(p, ignore_errors=True)
+
 
 def run_orphan(exe):
     """RT6–RT9：孤儿清理的真实行为。
@@ -430,13 +494,12 @@ def run_orphan(exe):
         if os.path.exists(out):
             os.remove(out)
         env = dict(os.environ)
+        env.pop("JGINSTALLER_APPLY", None)   # 真删只认命令行 --apply
+        args = [exe, "--orphan-check", dir_, listf, out]
         if apply:
-            env["JGINSTALLER_APPLY"] = "1"
-        else:
-            env.pop("JGINSTALLER_APPLY", None)
+            args.append("--apply")
         try:
-            subprocess.run([exe, "--orphan-check", dir_, listf, out],
-                           capture_output=True, timeout=90, env=env)
+            subprocess.run(args, capture_output=True, timeout=90, env=env)
         except Exception as ex:
             return f"(启动失败: {ex})"
         if os.path.exists(out):
@@ -527,6 +590,7 @@ def main():
     run_rt(exe)    # 真实入口行为
     run_orphan(exe)  # 孤儿清理行为
     run_version_gate(exe)  # 防降级行为
+    run_preview_guards(exe)  # 预览/回收入口不再乱删
 
     failed = [r for r in RESULTS if not r[2]]
     print("=" * 72)

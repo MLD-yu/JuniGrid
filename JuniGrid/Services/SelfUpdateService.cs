@@ -142,9 +142,26 @@ public sealed class SelfUpdateService
         // → 补一次本地复验：通过就把校验值补写进 .done（这份旧缓存就此归队，不用重下），
         // 不通过就删掉重下。
         var want = Expectation(info);
-        if (want.Length == 0) return dest;   // 这次连官方凭据都没拿到，只能沿用「.done 在」这条弱判据
         string? marker = null;
         try { marker = File.ReadAllText(dest + ".done"); } catch { }
+        if (want.Length == 0)
+        {
+            // 这次检查没拿到官方凭据（HTML 回落通道就是这样）。但 .done 里可能记着
+            // 上次拿到的 sha256 —— 那是本机已有的一条可信凭据，不能因为这次没取到就丢掉：
+            // 丢掉之后，任何字节只要躺在这个路径上都会被当成"完整缓存"直接执行。
+            var recorded = RecordedSha(marker);
+            if (recorded is null) return dest;   // 真的一条凭据都没有：维持原状（VerifyInstaller 会记 WARN）
+            try
+            {
+                VerifyInstallerSha(dest, recorded);
+                return dest;
+            }
+            catch (Exception ex)
+            {
+                DropInstaller(dest, ex.Message);
+                return null;
+            }
+        }
         if (MarkerRecords(marker, want)) return dest;
         try
         {
@@ -175,6 +192,34 @@ public sealed class SelfUpdateService
         var sp = line.IndexOf(' ');
         return sp > 0 && string.Equals(line[(sp + 1)..].Trim(), want, StringComparison.OrdinalIgnoreCase);
     }
+
+    /// <summary>从 <c>.done</c> 里取出上次记过的 sha256（格式「&lt;version&gt; sha256=…」）。
+    /// 没有就返回 null。<b>只在这次检查拿不到官方凭据时用</b>：本机已有的凭据也是凭据，
+    /// 不能因为这次查不到就把它丢了。</summary>
+    internal static string? RecordedSha(string? markerText)
+    {
+        var line = (markerText ?? "").Trim();
+        var sp = line.IndexOf(' ');
+        if (sp < 0) return null;
+        var rest = line[(sp + 1)..].Trim();
+        const string prefix = "sha256=";
+        return rest.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) && rest.Length > prefix.Length
+            ? rest[prefix.Length..].Trim()
+            : null;
+    }
+
+    /// <summary>按给定 sha256 复验本机文件；对不上就抛（调用方负责丢弃）。</summary>
+    internal static void VerifyInstallerSha(string path, string sha256)
+    {
+        using var fs = File.OpenRead(path);
+        var got = Convert.ToHexString(SHA256.HashData(fs)).ToLowerInvariant();
+        if (!string.Equals(got, sha256, StringComparison.OrdinalIgnoreCase))
+            throw new InstallerIntegrityException(
+                $"安装包 SHA-256 与本机记录的不符（本机 {Short(got)}，记录 {Short(sha256)}）"
+                + "—— 已删除，需要重新下载");
+    }
+
+    private static string Short(string hex) => hex.Length <= 12 ? hex : hex[..12] + "…";
 
     /// <summary>校验落盘的安装包。长度对不上或 sha256 对不上都抛
     /// <see cref="InstallerIntegrityException"/>；两者都无从判断时不抛，但记一条 WARN，

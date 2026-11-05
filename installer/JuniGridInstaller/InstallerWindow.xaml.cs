@@ -217,6 +217,12 @@ public partial class InstallerWindow : Window
             ProgressTrack.Visibility = Visibility.Collapsed;
             ProgressFill.Visibility = Visibility.Collapsed;
             _lastTargetDir = dir;
+            // 装完了但有数据目录没搬过去：状态行会被收起来，这条必须常驻。
+            if (!string.IsNullOrWhiteSpace(_engine.MigrationWarning))
+            {
+                DoneNote.Text = _engine.MigrationWarning;
+                DoneNote.Visibility = Visibility.Visible;
+            }
             DonePanel.Visibility = Visibility.Visible;
         }
         catch (OperationCanceledException) { }

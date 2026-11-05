@@ -101,20 +101,47 @@ public static class InstallRecycle
             try
             {
                 if (File.Exists(full)) { File.Delete(full); removed.Add(norm); }
-                else if (Directory.Exists(full)) { Directory.Delete(full, true); removed.Add(norm); }
+                else if (Directory.Exists(full))
+                {
+                    // 清单只记文件。这里出现目录，只可能是清单被改过（或将来格式变了）——
+                    // 递归删会把用户放在同名目录里的东西一起端走，而"只删我们自己写出去的文件"
+                    // 是这一整块的底线，所以一律跳过。
+                    App.Log("孤儿清单里的条目是一个目录，已跳过（不递归删）：" + norm);
+                }
             }
             catch { /* 删不掉就留着，不影响安装 */ }
         }
 
-        // 把因此空掉的目录收掉：只收空的，不递归删非空目录
-        try
-        {
-            foreach (var d in Directory.EnumerateDirectories(targetDir, "*", SearchOption.AllDirectories)
-                         .OrderByDescending(x => x.Length))
-                try { if (!Directory.EnumerateFileSystemEntries(d).Any()) Directory.Delete(d); } catch { }
-        }
-        catch { }
+        // 把"因为删了孤儿才空掉"的那几条路径收掉。
+        // 不能扫全树：安装目录可以同时是用户的缓存根（depot-staging\1.6.15 这种占位空目录
+        // 是有意义的，见 InstallMigrate），用户自己建的空文件夹也不该被我们顺手删掉。
+        PruneEmptiedParents(targetDir, removed);
         return removed;
+    }
+
+    /// <summary>只往上收被删文件所在的路径：空了就删，遇到非空立刻停。</summary>
+    private static void PruneEmptiedParents(string root, IEnumerable<string> removedRels)
+    {
+        var rootFull = Path.GetFullPath(root)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        foreach (var rel in removedRels)
+        {
+            var full = SafeCombine(root, rel);
+            var dir = full is null ? null : Path.GetDirectoryName(full);
+            for (var depth = 0; depth < 64 && !string.IsNullOrEmpty(dir)
+                 && dir.Length > rootFull.Length
+                 && dir.StartsWith(rootFull + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+                 depth++)
+            {
+                try
+                {
+                    if (Directory.EnumerateFileSystemEntries(dir).Any()) break;   // 非空就别再往上爬
+                    Directory.Delete(dir);
+                }
+                catch { break; }
+                dir = Path.GetDirectoryName(dir);
+            }
+        }
     }
 
     private static string? SafeCombine(string root, string rel)
@@ -169,8 +196,9 @@ public static class InstallRecycle
                 }
                 else if (Directory.Exists(full))
                 {
-                    if (!dryRun) Directory.Delete(full, true);
-                    deleted++;
+                    // 清单只该记文件；见到目录就跳过。递归删会连用户放在同名目录里的东西
+                    // 一起端走，而这里的目标是"只删我们自己写出去的文件"。
+                    App.Log("回收清单里的条目是一个目录，已跳过（不递归删）：" + rel);
                 }
             }
             catch (Exception ex)
@@ -194,7 +222,9 @@ public static class InstallRecycle
         bool dirRemoved = false;
         if (!dryRun)
         {
-            TryPruneEmptyDirs(oldDir);
+            // 只收"因为删了我们自己的文件才空掉"的那几条路径，不扫全树：
+            // 旧目录里用户自己建的空文件夹（以及可能是占位用的空目录）不该被我们顺手删掉。
+            PruneEmptiedParents(oldDir, targets.Concat(new[] { ManifestFile }));
             remaining = EnumerateTopLevel(oldDir);
             if (remaining.Count == 0)
             {
@@ -245,24 +275,5 @@ public static class InstallRecycle
         }
         catch { }
         return list;
-    }
-
-    /// <summary>自底向上清空目录（只空删，非空不动）—— 我们写出去的文件删干净后，
-    /// 留下的空壳不该继续占着用户的目录。</summary>
-    private static void TryPruneEmptyDirs(string root)
-    {
-        try
-        {
-            foreach (var d in Directory.EnumerateDirectories(root, "*", SearchOption.AllDirectories)
-                         .OrderByDescending(x => x.Length))
-            {
-                try
-                {
-                    if (!Directory.EnumerateFileSystemEntries(d).Any()) Directory.Delete(d);
-                }
-                catch { }
-            }
-        }
-        catch { }
     }
 }

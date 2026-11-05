@@ -169,9 +169,13 @@ public partial class App : Application
     /// <summary>设置页开关关闭时调用：把我们压掉的那条原命令交还给上一个管理器。
     /// 只删键是不够的 —— 删掉的正是别家写进去的那个值，删完谁都没有；对方会不会自己再写回来
     /// 取决于它自己的时机，我们控制不了。抢注时已把原值备份，所以这里能确定性地还原。
-    /// 没有备份（或备份里的 exe 已不存在）才退回删除。</summary>
-    public static void ReleaseNxmHandler()
+    /// 没有备份（或备份里的 exe 已不存在）才退回删除。
+    /// <para><paramref name="ownExe"/>：哪一份 exe 算"我们自己"。默认是当前进程；
+    /// 卸载向导要传<b>安装目录里的 JuniGrid.exe</b> —— 那时当前进程叫 Uninstall.exe，
+    /// 拿它去比永远对不上，nxm 登记就会被当成"别人的"而原样留着（卸载后变成死路径）。</para></summary>
+    public static void ReleaseNxmHandler(string? ownExe = null)
     {
+        var mine = string.IsNullOrEmpty(ownExe) ? Environment.ProcessPath : ownExe;
         try
         {
             string? saved = null;
@@ -205,7 +209,7 @@ public partial class App : Application
                 cur = k?.GetValue(null) as string;
             var holder = ExeOf(cur);
             var isOurs = holder is { Length: > 0 }
-                && string.Equals(holder, Environment.ProcessPath, StringComparison.OrdinalIgnoreCase);
+                && string.Equals(holder, mine, StringComparison.OrdinalIgnoreCase);
             var isOurGhost = holder is { Length: > 0 } && !File.Exists(holder)
                 && string.Equals(Path.GetFileName(holder), "JuniGrid.exe", StringComparison.OrdinalIgnoreCase);
             if (!isOurs && !isOurGhost)

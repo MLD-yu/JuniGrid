@@ -215,6 +215,34 @@ if drv:
 else:
     check("U15 安装目录是磁盘根 ⇒ 拒绝动手", False, "找不到空闲盘符，subst 夹具搭不起来")
 
+# ── 行为检查 E：清单里出现目录名 ⇒ 不许递归删（清单只该记文件）────────
+root5 = os.path.join(TMP, "manifestdir")
+app5 = os.path.join(root5, "app")
+os.makedirs(os.path.join(app5, "portrait-covers"))
+io.open(os.path.join(app5, "portrait-covers", "用户自己的图.png"), "w", encoding="utf-8").write("PNG")
+io.open(os.path.join(app5, "JuniGrid.exe"), "w", encoding="utf-8").write("exe")
+io.open(os.path.join(app5, "junigrid-files.txt"), "w", encoding="utf-8").write(
+    "JGMF1\nJuniGrid.exe\nportrait-covers\n")
+for d in ("appdata", "localappdata", "legacytemp"):
+    os.makedirs(os.path.join(root5, d), exist_ok=True)
+plan5 = {
+    "ParentPid": 999999,
+    "InstallDir": app5,
+    "ManifestFiles": ["JuniGrid.exe", "portrait-covers"],
+    "PurgeUserData": False,
+    "AppDataDir": os.path.join(root5, "appdata"),
+    "LocalAppDataDir": os.path.join(root5, "localappdata"),
+    "LegacyTempDir": os.path.join(root5, "legacytemp"),
+    "CustomCacheDirs": [],
+    "ReportPath": os.path.join(root5, "report.txt"),
+}
+plan5_path = os.path.join(root5, "plan.json")
+io.open(plan5_path, "w", encoding="utf-8").write(json.dumps(plan5, ensure_ascii=False))
+run_cleanup(plan5_path)
+check("U16 清单条目是目录 ⇒ 跳过、不递归删（同名目录里用户文件必须活着）",
+      os.path.isfile(os.path.join(app5, "portrait-covers", "用户自己的图.png"))
+      and not os.path.exists(os.path.join(app5, "JuniGrid.exe")))
+
 print("\n".join(f'{"PASS " if ok else "FAIL "}{n}' + (f"  -- {d}" if d and not ok else "")
                 for n, ok, d in out))
 fails = sum(1 for _, ok, _ in out if not ok)

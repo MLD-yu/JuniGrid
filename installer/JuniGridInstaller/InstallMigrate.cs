@@ -155,14 +155,29 @@ public static class InstallMigrate
                         failed.Add($"{name}：复制校验没过，缺/不符 {string.Join("、", missing)} —— 旧目录原样保留");
                         continue;
                     }
-                    if (skipped.Count > 0)
+                    if (skipped.Count > 0 || conflicts.Count > 0)
+                    {
+                        // 内容不同而"输了"的源文件送回收站，再删旧目录 —— 顺序不能反：
+                        // 先删目录就把它们一起埋了。
+                        // 文案必须按<b>真实结果</b>写：回收站不可用时 RecycleOrDelete 会退回硬删，
+                        // 那时候再说"送回收站"就是骗人（用户会去回收站找，找不到）。
+                        int recycled = 0, hardDeleted = 0;
+                        foreach (var old in conflicts)
+                        {
+                            if (RecycleOrDelete(old)) recycled++;
+                            else hardDeleted++;
+                        }
+                        if (hardDeleted > 0)
+                            App.Log($"{name}：{hardDeleted} 个内容不同的旧文件没能进回收站，已直接删除"
+                                    + $"（{recycled} 个已送回收站）："
+                                    + string.Join("、", conflicts.Select(Path.GetFileName).Take(5)));
                         progress?.Report(new InstallProgress(
                             $"{name}：{skipped.Count} 个同名文件保留新位置那份"
-                            + (conflicts.Count > 0 ? $"（其中 {conflicts.Count} 个内容不同，旧的送回收站）" : ""),
+                            + (conflicts.Count == 0 ? "" : hardDeleted > 0
+                                ? $"（其中 {conflicts.Count} 个内容不同：{recycled} 个进回收站、{hardDeleted} 个直接删除）"
+                                : $"（其中 {conflicts.Count} 个内容不同，旧的已送回收站）"),
                             0.035));
-                    // 内容不同而"输了"的源文件送回收站，再删旧目录 —— 顺序不能反：
-                    // 先删目录就把它们一起埋了。回收站不可用时 RecycleOrDelete 会退回硬删。
-                    foreach (var old in conflicts) RecycleOrDelete(old);
+                    }
                     Directory.Delete(src, true);
                 }
                 moved.Add(name);
@@ -197,8 +212,11 @@ public static class InstallMigrate
                     }
                     else
                     {
-                        RecycleOrDelete(src);
-                        moved.Add(name + "（同名不同内容，旧的送回收站）");
+                        var toBin = RecycleOrDelete(src);
+                        moved.Add(name + (toBin
+                            ? "（同名不同内容，旧的送回收站）"
+                            : "（同名不同内容，旧文件已直接删除：回收站不可用）"));
+                        if (!toBin) App.Log($"{name}：回收站不可用，旧文件已直接删除");
                     }
                     continue;
                 }
@@ -319,12 +337,18 @@ public static class InstallMigrate
     }
 
     /// <summary>把文件送进 Windows 回收站（可还原），失败就退回硬删 —— 不能因为回收站
-    /// 不可用就把搬家卡住。用 <c>SHFileOperation</c> + <c>FOF_ALLOWUNDO</c>，不依赖额外程序集。</summary>
-    internal static void RecycleOrDelete(string path)
+    /// 不可用就把搬家卡住。用 <c>SHFileOperation</c> + <c>FOF_ALLOWUNDO</c>，不依赖额外程序集。
+    /// <para><b>返回值必须是"文件真进了回收站"这个事实，不能只看 SHFileOperation 的返回码</b>：
+    /// 实测在 subst 出来的盘上它返回成功、文件却被永久删除（没有回收站的卷都会这样：
+    /// subst / 网络盘 / 回收站被关掉）。所以改用回收站条目数前后对比来验结果 ——
+    /// 数不出来（-1）时按"没进回收站"处理，宁可少说一句"可在回收站还原"，也不能骗人。</para></summary>
+    /// <returns>true = 确实进了回收站；false = 已被永久删除（或压根删不掉）。</returns>
+    internal static bool RecycleOrDelete(string path)
     {
         try
         {
-            if (!File.Exists(path)) return;
+            if (!File.Exists(path)) return true;   // 没有要删的东西，不算失败
+            var before = RecycleBinItems(path);
             var op = new SHFILEOPSTRUCT
             {
                 wFunc = FO_DELETE,
@@ -332,11 +356,40 @@ public static class InstallMigrate
                 pFrom = path + "\0",
                 fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT,
             };
-            if (SHFileOperation(ref op) == 0) return;
+            if (SHFileOperation(ref op) == 0 && !op.fAnyOperationsAborted)
+            {
+                var after = RecycleBinItems(path);
+                return before >= 0 && after > before;
+            }
         }
         catch { /* 回收站不可用 → 落到下面硬删 */ }
         try { File.Delete(path); } catch { }
+        return false;
     }
+
+    /// <summary>该文件所在卷的回收站条目数；查不到返回 -1。</summary>
+    private static long RecycleBinItems(string path)
+    {
+        try
+        {
+            var root = Path.GetPathRoot(Path.GetFullPath(path));
+            if (string.IsNullOrEmpty(root)) return -1;
+            var info = new SHQUERYRBINFO { cbSize = Marshal.SizeOf<SHQUERYRBINFO>() };
+            return SHQueryRecycleBin(root, ref info) == 0 ? info.i64NumItems : -1;
+        }
+        catch { return -1; }
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct SHQUERYRBINFO
+    {
+        public int cbSize;
+        public long i64Size;
+        public long i64NumItems;
+    }
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    private static extern int SHQueryRecycleBin(string pszRootPath, ref SHQUERYRBINFO pSHQueryRBInfo);
 
     private const uint FO_DELETE = 3;
     private const ushort FOF_SILENT = 0x0004;

@@ -14,21 +14,40 @@ public partial class App : Application
 
     private static Mutex? _single;
 
+    /// <summary>装机全过程追踪日志。固定落在 <c>%TEMP%\jgsetup-log.txt</c>，逐行落盘
+    /// （AppendAllText 每次都开-写-关），所以人一边点、我一边 tail 就能看。
+    /// 每个进程启动时先写一行会话头（版本 + pid + 时间），多次安装会在同一个文件里串起来。</summary>
+    private static bool _logHeaderWritten;
     public static void Log(string msg)
     {
         try
         {
-            File.AppendAllText(Path.Combine(Path.GetTempPath(), "jgsetup-log.txt"),
-                $"[{DateTime.Now:HH:mm:ss.fff}] {msg}\r\n");
+            var path = Path.Combine(Path.GetTempPath(), "jgsetup-log.txt");
+            if (!_logHeaderWritten)
+            {
+                _logHeaderWritten = true;
+                File.AppendAllText(path,
+                    $"\r\n===== JuniGridSetup v{InstallerEngine.Version}  pid={Environment.ProcessId}"
+                    + $"  {DateTime.Now:yyyy-MM-dd HH:mm:ss} =====\r\n");
+            }
+            File.AppendAllText(path, $"[{DateTime.Now:HH:mm:ss.fff}] {msg}\r\n");
         }
         catch { }
     }
 
-    private static string PreviewRecycle(string dir)
+    /// <summary>追踪日志的固定路径 —— 给外部（回归防线、人工排查）指路用。</summary>
+    public static string LogPath => Path.Combine(Path.GetTempPath(), "jgsetup-log.txt");
+
+    /// <summary>验证入口的"真删/真搬"开关。<b>必须是命令行参数</b>，不能再用环境变量：
+    /// 环境变量会被"上次调试留下的值"悄悄打开，一个名叫 preview 的入口不该因为环境里有残留
+    /// 就真删文件。用法：<c>--recycle-preview &lt;目录&gt; --apply</c>。</summary>
+    private const string ApplyFlag = "--apply";
+
+    private static bool HasApply(IEnumerable<string> args)
+        => args.Any(a => a.Equals(ApplyFlag, StringComparison.OrdinalIgnoreCase));
+
+    private static string PreviewRecycle(string dir, bool apply)
     {
-        // 默认只算不删。要真删必须显式设 JGINSTALLER_APPLY=1（和 JGINSTALLER_NOLEGACY 同一类
-        // 测试逃生口），这样这个入口既能用来验证边界，也不会被人当 "rm" 误用。
-        var apply = Environment.GetEnvironmentVariable("JGINSTALLER_APPLY") == "1";
         var sb = new System.Text.StringBuilder();
         sb.Append("recycle-check 目录: ").Append(dir)
           .AppendLine(apply ? "  【本次会真删】" : "  【只算不删】");
@@ -46,17 +65,22 @@ public partial class App : Application
     {
         Log("App.OnStartup");
 
-        // 验证入口：JuniGridSetup.exe --recycle-preview <目录> [输出文件]
-        // 只报告「会删哪些、会留哪些」，一个文件都不删 —— 这样就能在没有真实安装的情况下
+        // --apply 是这些验证入口的"真删/真搬"开关，不是位置参数 —— 先摘掉，
+        // 免得它被当成"输出文件路径"。
+        var apply = HasApply(e.Args);
+        var argv = e.Args.Where(a => !a.Equals(ApplyFlag, StringComparison.OrdinalIgnoreCase)).ToArray();
+
+        // 验证入口：JuniGridSetup.exe --recycle-preview <目录> [输出文件] [--apply]
+        // 默认只报告「会删哪些、会留哪些」，一个文件都不删 —— 这样就能在没有真实安装的情况下
         // 证明回收逻辑的边界（尤其"用户自己的文件必须留下"那条），不必拿装机目录做实验。
-        if (e.Args.Length >= 2 && e.Args[0].Equals("--recycle-preview", StringComparison.OrdinalIgnoreCase))
+        if (argv.Length >= 2 && argv[0].Equals("--recycle-preview", StringComparison.OrdinalIgnoreCase))
         {
-            var report = PreviewRecycle(e.Args[1]);
+            var report = PreviewRecycle(argv[1], apply);
             try { Console.Out.WriteLine(report); Console.Out.Flush(); } catch { }
             try
             {
-                var outPath = e.Args.Length >= 3
-                    ? e.Args[2]
+                var outPath = argv.Length >= 3
+                    ? argv[2]
                     : Path.Combine(Path.GetTempPath(), "jg-recycle-preview.txt");
                 File.WriteAllText(outPath, report);
             }
@@ -65,19 +89,18 @@ public partial class App : Application
             return;
         }
 
-        // 搬家验证入口：JuniGridSetup.exe --migrate-preview <旧目录> <新目录> [输出文件]
+        // 搬家验证入口：JuniGridSetup.exe --migrate-preview <旧目录> <新目录> [输出文件] [--apply]
         // 默认只报「会搬哪几个数据目录、各多大、配置会不会改」，一个文件都不动；
-        // 真搬要显式设 JGINSTALLER_APPLY=1 —— 这个入口是用来验边界的，不能当 mv 用。
-        if (e.Args.Length >= 3 && e.Args[0].Equals("--migrate-preview", StringComparison.OrdinalIgnoreCase))
+        // 真搬要显式写 --apply —— 这个入口是用来验边界的，不能当 mv 用。
+        if (argv.Length >= 3 && argv[0].Equals("--migrate-preview", StringComparison.OrdinalIgnoreCase))
         {
-            var apply = Environment.GetEnvironmentVariable("JGINSTALLER_APPLY") == "1";
-            var cfgOut = e.Args.Length >= 4
-                ? e.Args[3]
+            var cfgOut = argv.Length >= 4
+                ? argv[3]
                 : Path.Combine(Path.GetTempPath(), "jg-migrate-preview.txt");
             string report;
             try
             {
-                var r = InstallMigrate.Run(e.Args[1], e.Args[2], e.Args.Length >= 5 ? e.Args[4]
+                var r = InstallMigrate.Run(argv[1], argv[2], argv.Length >= 5 ? argv[4]
                     : InstallMigrate.DefaultConfigPath(), dryRun: !apply);
                 var sb = new System.Text.StringBuilder();
                 sb.Append("migrate-check ").Append(r.OldDir).Append(" → ").Append(r.NewDir)
@@ -97,25 +120,23 @@ public partial class App : Application
         // 防降级验证入口：JuniGridSetup.exe --version-check [输出文件]（只读，不装任何东西）
         // 报「已装版本 vs 本安装包版本，降级会不会被拦」。探针 JGINSTALLER_FAKE_INSTALLED_VERSION
         // 用来构造"已装更新的版本"这种真机上不好造的情形。
-        if (e.Args.Length >= 1 && e.Args[0].Equals("--version-check", StringComparison.OrdinalIgnoreCase))
+        // 结论必须来自引擎里的同一个判定（EvaluateDowngrade），不能在这里抄一份 ——
+        // 抄一份的结果是"夹具验的规则"和"产品跑的规则"各走各的。
+        if (argv.Length >= 1 && argv[0].Equals("--version-check", StringComparison.OrdinalIgnoreCase))
         {
             var engine = new InstallerEngine();
-            var installed = engine.InstalledDisplayVersion();
             string report;
             try
             {
-                var blocked = Environment.GetEnvironmentVariable("JGINSTALLER_ALLOW_DOWNGRADE") == "1"
-                    ? false
-                    : (!string.IsNullOrWhiteSpace(installed)
-                       && InstallerEngine.CompareVersion(installed, InstallerEngine.Version) > 0);
+                var (blocked, reason, installed) = engine.EvaluateDowngrade();
                 report = "version-check 本包=" + InstallerEngine.Version + " ‖ 已装=" + (installed ?? "(没装过)")
-                       + " ‖ 降级=" + (blocked ? "拦" : "放行");
+                       + " ‖ 降级=" + (blocked ? "拦" : "放行") + " ‖ 依据=" + reason;
             }
             catch (Exception ex) { report = "version-check 异常: " + ex; }
             try { Console.Out.WriteLine(report); Console.Out.Flush(); } catch { }
             try
             {
-                var outPath = e.Args.Length >= 2 ? e.Args[1]
+                var outPath = argv.Length >= 2 ? argv[1]
                     : Path.Combine(Path.GetTempPath(), "jg-version-check.txt");
                 File.WriteAllText(outPath, report);
             }
@@ -124,21 +145,20 @@ public partial class App : Application
             return;
         }
 
-        // 孤儿清理验证入口：JuniGridSetup.exe --orphan-check <装机目录> [payload文件表] [输出文件]
-        // 报「上一版写出去、这版不再带来」的文件有哪些；默认只算不删，真删要 JGINSTALLER_APPLY=1。
+        // 孤儿清理验证入口：JuniGridSetup.exe --orphan-check <装机目录> [payload文件表] [输出文件] [--apply]
+        // 报「上一版写出去、这版不再带来」的文件有哪些；默认只算不删，真删要 --apply。
         // payload文件表 = 每行一个相对路径，省略时用本次安装包真实的 payload 表。
-        if (e.Args.Length >= 2 && e.Args[0].Equals("--orphan-check", StringComparison.OrdinalIgnoreCase))
+        if (argv.Length >= 2 && argv[0].Equals("--orphan-check", StringComparison.OrdinalIgnoreCase))
         {
-            var apply = Environment.GetEnvironmentVariable("JGINSTALLER_APPLY") == "1";
-            var outPath = e.Args.Length >= 4
-                ? e.Args[3]
+            var outPath = argv.Length >= 4
+                ? argv[3]
                 : Path.Combine(Path.GetTempPath(), "jg-orphan-check.txt");
             string report;
             try
             {
-                var dir = e.Args[1];
-                var payload = e.Args.Length >= 3 && File.Exists(e.Args[2])
-                    ? File.ReadAllLines(e.Args[2]).Select(l => l.Trim())
+                var dir = argv[1];
+                var payload = argv.Length >= 3 && File.Exists(argv[2])
+                    ? File.ReadAllLines(argv[2]).Select(l => l.Trim())
                         .Where(l => l.Length > 0).ToList()
                     : InstallerEngine.PayloadRelativePaths();
                 var before = InstallRecycle.ReadManifest(dir);

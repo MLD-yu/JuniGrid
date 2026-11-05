@@ -99,9 +99,11 @@ def run(old, new, cfg, apply=True):
     if os.path.exists(out):
         os.remove(out)
     env = dict(os.environ)
-    env["JGINSTALLER_APPLY"] = "1" if apply else "0"
-    p = subprocess.run([EXE, "--migrate-preview", old, new, out, cfg], env=env,
-                       capture_output=True, timeout=180)
+    env.pop("JGINSTALLER_APPLY", None)      # 真搬只认命令行 --apply，环境变量早就不是开关了
+    args = [EXE, "--migrate-preview", old, new, out, cfg]
+    if apply:
+        args.append("--apply")
+    p = subprocess.run(args, env=env, capture_output=True, timeout=180)
     txt = io.open(out, encoding="utf-8").read() if os.path.exists(out) else "(no report) " + str(p.returncode)
     return p.returncode, txt
 

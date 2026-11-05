@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Reflection;
 using System.Text;
@@ -32,6 +33,10 @@ public sealed class InstallerEngine
         Assembly.GetExecutingAssembly()
                 .GetCustomAttribute<AssemblyInformationalVersionAttribute>()
                 ?.InformationalVersion?.Split('+')[0] ?? "0.0.0";
+
+    /// <summary>装完了、但有事没办成（目前只有"数据目录没搬成"）。完成页必须显示它 ——
+    /// 只写进 jgsetup-log.txt 等于没说：没人会去 %TEMP% 翻日志。</summary>
+    public string? MigrationWarning { get; private set; }
 
     /// <summary>默认安装目录：优先沿用旧版安装位置，否则 %LocalAppData%\Programs\JuniGrid。</summary>
     public static string GetDefaultInstallDir()
@@ -173,23 +178,89 @@ public sealed class InstallerEngine
     /// "已有另一版本"），Chrome / VS Code 那类自动更新也不允许版本倒退。
     /// 这里只拦<b>真降级</b>（已装版本高于本安装包）；同版本放行，当修复安装处理。</para>
     /// <para>要强行降级：设 <c>JGINSTALLER_ALLOW_DOWNGRADE=1</c>。</para>
+    /// <para><b>注册表可能是残局</b>：卸载后手删目录、整目录搬走、盘符变了，那条卸载登记都还在。
+    /// 这种"已装 1.3.44"没有对应的程序可覆盖，拦下来等于让用户永远装不上 —— 提示里的
+    /// "先卸载当前版本"也没有卸载器可点。所以只有登记的那份程序确实还在，才算真的"已装更高版本"。
+    /// 探针（FAKE_INSTALLED_VERSION）构造的是完整的"已装"状态，不套这条前提，否则夹具在
+    /// 没有装机记录的 CI 上会自己变红。</para>
     /// </summary>
+    internal (bool Blocked, string Reason, string? Installed) EvaluateDowngrade()
+    {
+        if (Environment.GetEnvironmentVariable("JGINSTALLER_ALLOW_DOWNGRADE") == "1")
+            return (false, "JGINSTALLER_ALLOW_DOWNGRADE=1", null);
+        var probed = !string.IsNullOrWhiteSpace(
+            Environment.GetEnvironmentVariable("JGINSTALLER_FAKE_INSTALLED_VERSION"));
+        var installed = InstalledDisplayVersion();
+        if (string.IsNullOrWhiteSpace(installed)) return (false, "没装过", null);
+        if (CompareVersion(installed, Version) <= 0)
+            return (false, $"已装 {installed} ≤ 本包 {Version}", installed);
+        if (!probed)
+        {
+            var (_, loc) = FindLegacyInstall();
+            if (string.IsNullOrWhiteSpace(loc) || !File.Exists(Path.Combine(loc, "JuniGrid.exe")))
+                return (false, $"注册表说已装 {installed}，但登记目录里没有 JuniGrid.exe（残局，不按降级拦）", installed);
+        }
+        return (true, $"已装 {installed} > 本包 {Version}", installed);
+    }
+
     private void EnsureNotDowngrade()
     {
-        if (Environment.GetEnvironmentVariable("JGINSTALLER_ALLOW_DOWNGRADE") == "1") return;
-        var installed = InstalledDisplayVersion();
-        if (string.IsNullOrWhiteSpace(installed)) return;
-        if (CompareVersion(installed, Version) <= 0) return;
+        var (blocked, reason, installed) = EvaluateDowngrade();
+        if (!blocked)
+        {
+            App.Log("防降级闸放行：" + reason);
+            return;
+        }
         throw new InvalidOperationException(
             $"这台机器上已装的是 {installed}，不能用 {Version} 的安装包覆盖（版本倒退）。"
             + "确实要降级，请先卸载当前版本，或设置环境变量 JGINSTALLER_ALLOW_DOWNGRADE=1 后重试。");
     }
 
+    /// <summary>版本比较：先按宽松版本号比（认 v 前缀、2~4 段、-预发布后缀），
+    /// 两边都认不出才退回字符串比较。
+    /// <para>为什么不能只靠 <see cref="System.Version.TryParse"/>：注册表里的 DisplayVersion
+    /// 不是我们控制的（手改、老安装器、别的工具），它一失败就退回字符串比较，而
+    /// <c>"v1.3.0" &gt; "1.3.0"</c>（'v' 排在 '1' 后面）会把<b>同一个版本</b>判成版本倒退，
+    /// 用户直接被关在门外、只能卸载。</para></summary>
     internal static int CompareVersion(string a, string b)
     {
-        if (System.Version.TryParse(a, out var va) && System.Version.TryParse(b, out var vb))
-            return va.CompareTo(vb);
+        var left = LooseVersion.Parse(a);
+        var right = LooseVersion.Parse(b);
+        if (left is not null && right is not null) return left.Value.CompareTo(right.Value);
         return string.Compare(a, b, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>宽松版本号。预发布（<c>1.3.0-beta</c>）小于同号正式版。</summary>
+    private readonly record struct LooseVersion(int Major, int Minor, int Build, int Revision, bool Prerelease)
+        : IComparable<LooseVersion>
+    {
+        public int CompareTo(LooseVersion o)
+        {
+            var c = Major.CompareTo(o.Major); if (c != 0) return c;
+            c = Minor.CompareTo(o.Minor); if (c != 0) return c;
+            c = Build.CompareTo(o.Build); if (c != 0) return c;
+            c = Revision.CompareTo(o.Revision); if (c != 0) return c;
+            if (Prerelease == o.Prerelease) return 0;
+            return Prerelease ? -1 : 1;
+        }
+
+        public static LooseVersion? Parse(string? s)
+        {
+            if (string.IsNullOrWhiteSpace(s)) return null;
+            var t = s.Trim().TrimStart('v', 'V');
+            var plus = t.IndexOf('+');
+            if (plus >= 0) t = t[..plus];
+            var dash = t.IndexOf('-');
+            var pre = dash >= 0;
+            if (pre) t = t[..dash];
+            var parts = t.Split('.');
+            if (parts.Length < 2 || parts.Length > 4) return null;
+            var nums = new int[4];
+            for (var i = 0; i < parts.Length; i++)
+                if (!int.TryParse(parts[i], NumberStyles.None, CultureInfo.InvariantCulture, out nums[i]))
+                    return null;
+            return new LooseVersion(nums[0], nums[1], nums[2], nums[3], pre);
+        }
     }
 
     public Task InstallAsync(string targetDir, bool desktopShortcut,
@@ -202,6 +273,9 @@ public sealed class InstallerEngine
         // 最先做：版本倒退必须拦在一切动作之前（MSI/WiX 的 MajorUpgrade 默认就是这么拦的）
         EnsureNotDowngrade();
         targetDir = Path.GetFullPath(targetDir);
+        App.Log($"[装机] 开始 → {targetDir} ‖ 本包 v{Version}"
+              + $" ‖ 已装 v{InstalledDisplayVersion() ?? "(没装过)"}"
+              + $" ‖ 探针={Environment.GetEnvironmentVariable("JGINSTALLER_FAKE_INSTALLED_VERSION") ?? "-"}");
         // 选 Program Files 这类目录时，CreateDirectory 本身就会先抛 UnauthorizedAccessException ——
         // 友好提示得罩住它，不能只罩后面那次写探测（否则用户看到的是原始系统异常）。
         try { Directory.CreateDirectory(targetDir); }
@@ -217,6 +291,7 @@ public sealed class InstallerEngine
         CloseRunningApp();
 
         var legacy = FindLegacyInstall();
+        App.Log($"[装机] 旧安装: location={legacy.location ?? "(无)"} ‖ 卸载入口={(legacy.uninstallCmd is null ? "(无)" : "有")}");
 
         // 先确认安装包和跨盘迁移所需空间，再动旧目录。否则空间不足可能发生在数据已搬走之后。
         long payloadBytes;
@@ -224,6 +299,12 @@ public sealed class InstallerEngine
             _ = ReadPayloadHeader(res, out payloadBytes);
         var migrationBytes = Environment.GetEnvironmentVariable("JGINSTALLER_NOMIGRATE") == "1"
             ? 0 : InstallMigrate.EstimateAdditionalBytes(legacy.location, targetDir);
+        var freeNow = (Path.GetPathRoot(targetDir) is { } root && new DriveInfo(root) is { } d)
+            ? d.AvailableFreeSpace / (1024 * 1024) : -1;
+        App.Log($"[装机] 空间预检: payload={payloadBytes / (1024 * 1024)} MB"
+              + $" ‖ 迁移额外≈{migrationBytes / (1024 * 1024)} MB"
+              + $" ‖ 需要 {(payloadBytes + migrationBytes + 256L * 1024 * 1024) / (1024 * 1024)} MB"
+              + $" ‖ 目标盘可用 {freeNow} MB");
         EnsureFreeSpace(targetDir, checked(payloadBytes + migrationBytes + 256L * 1024 * 1024));
 
         var migrationFailed = false;
@@ -237,16 +318,30 @@ public sealed class InstallerEngine
         {
             var mig = InstallMigrate.Run(legacy.location, targetDir,
                 InstallMigrate.DefaultConfigPath(), dryRun: false, progress);
+            App.Log($"[搬家] {mig.OldDir ?? "(无旧目录)"} → {mig.NewDir}"
+                  + $" ‖ 搬成 {mig.Moved.Count} 项[{string.Join("、", mig.Moved)}]"
+                  + $" ‖ {mig.Bytes / (1024 * 1024)} MB"
+                  + $" ‖ 配置改指新位置={mig.ConfigPatched}"
+                  + (mig.Failed.Count > 0 ? $" ‖ 没搬成 {mig.Failed.Count} 项[{string.Join("、", mig.Failed)}]" : ""));
             if (mig.Moved.Count > 0)
                 progress.Report(new InstallProgress(
                     $"已把 {mig.Moved.Count} 个数据目录搬到新位置（{mig.Bytes / (1024 * 1024)} MB）"
                     + (mig.ConfigPatched ? "，缓存目录也改指新位置" : ""), 0.04));
-            // 搬不动不是失败：旧目录一个字节都还在，应用照旧能找到它。说清楚，别装作搬过了。
-            foreach (var f in mig.Failed)
+            // 搬不动不是"安装失败"，但也不是没事：新位置已经装好、cacheRoot 也改指新位置了，
+            // 留在旧位置的那几个目录应用<b>看不见</b>（进度行一闪而过，完成页又把状态文字收起来，
+            // 等于用户永远不会知道）。所以记成 MigrationWarning 交给完成页常驻显示。
+            if (mig.Failed.Count > 0)
             {
                 migrationFailed = true;
-                App.Log("迁移未完成：" + f);
-                progress.Report(new InstallProgress("这个数据目录没搬成：" + f, 0.04));
+                foreach (var f in mig.Failed) App.Log("迁移未完成：" + f);
+                progress.Report(new InstallProgress("这个数据目录没搬成：" + mig.Failed[0], 0.04));
+                MigrationWarning =
+                    $"有 {mig.Failed.Count} 个数据目录没能搬到新位置，仍留在 {mig.OldDir}：\n"
+                    + string.Join("\n", mig.Failed.Select(f => "· " + f))
+                    + "\n\n" + (mig.ConfigPatched
+                        ? "应用现在读的是新位置，所以这些目录在应用里会显示为空。旧目录我们一个文件都没删，"
+                          + "要找回就手动把它们复制到 " + mig.NewDir + " 对应位置。"
+                        : "应用仍然读原来的位置，这些数据照常可用。");
             }
         }
 
@@ -261,11 +356,16 @@ public sealed class InstallerEngine
                 if (!ownGui && !migrationFailed)
                 {
                     progress.Report(new InstallProgress("正在移除旧版本…", 0.05));
+                    App.Log("[装机] 走旧版卸载器清旧目录（非 GUI 入口）");
                     RunLegacyUninstaller(legacy.uninstallCmd);
                 }
                 else if (!ownGui && migrationFailed)
                 {
                     App.Log("数据迁移有未解决项，跳过旧卸载器以保留旧位置数据");
+                }
+                else if (ownGui)
+                {
+                    App.Log("[装机] 旧卸载入口是我们自己的 GUI 向导 ⇒ 跳过（会卡在确认页）");
                 }
                 // 卸载入口是我们自己的 GUI 卸载向导（Uninstall.exe = 主程序副本）时，
                 // 绝不能在安装中途拉起：它会停在确认页等用户点击，应用还开着时只剩
@@ -358,8 +458,14 @@ public sealed class InstallerEngine
         // 换目录安装 = 搬家：新位置已经装好、注册表与快捷方式也已指向它，最后一步才回收旧位置。
         // 放在最后是有意的 —— 中途任何失败都不会出现「新的没装成、旧的也没了」。
         // 旧位置用的是第 2 步（搬家之前）抓的那一份 —— 这里不能再查注册表，那时它已被我们改掉。
-        RecyclePreviousInstall(legacy.location, targetDir, progress);
+        // 搬家有没办成的项时整段跳过：旧目录可能还是那些数据的唯一副本，把里面的程序文件删掉
+        // 只会让用户既看不见、也回不去（旧卸载器在同一个条件下已经跳过了）。
+        if (migrationFailed)
+            App.Log("数据迁移未完成，跳过旧位置回收以保留旧位置数据：" + (legacy.location ?? "(无)"));
+        else
+            RecyclePreviousInstall(legacy.location, targetDir, progress);
 
+        App.Log($"[装机] 完成 → {targetDir} ‖ 解包 {totalBytes / (1024 * 1024)} MB ‖ 快捷方式={desktopShortcut}");
         progress.Report(new InstallProgress("安装完成", 1.0, totalBytes, totalBytes));
     }
 
@@ -577,17 +683,31 @@ public sealed class InstallerEngine
         }
     }
 
+    /// <summary>把正在运行的 JuniGrid 关掉（不关掉会占着待替换的 exe/dll）。
+    /// <para><b>不能连游戏一起杀</b>：SMAPI 和游戏本体是应用拉起来的子进程，
+    /// <c>Kill(entireProcessTree: true)</c> 会把玩家正在玩的那一局硬掐掉（没保存的进度就没了）。
+    /// 所以先看父链：游戏确实挂在某个 JuniGrid 下面时，宁可拒绝安装并让用户自己保存退出。
+    /// Steam 直接拉起的游戏不是我们的后代，整树杀本来就碰不到它，也不该拦安装。</para></summary>
     private static void CloseRunningApp()
     {
+        var running = new List<Process>();
+        try { running.AddRange(Process.GetProcessesByName("JuniGrid")); } catch { }
         try
         {
-            foreach (var p in Process.GetProcessesByName("JuniGrid"))
+            if (NativeMethods.AnyNamedProcessDescendsFrom(running.Select(p => p.Id).ToList(),
+                    "StardewModdingAPI.exe", "Stardew Valley.exe"))
+                throw new InvalidOperationException(
+                    "游戏正在运行（由 JuniGrid 启动），直接结束会丢失这一局没保存的进度。"
+                    + "请先在游戏里保存并退出，再安装。");
+            foreach (var p in running)
             {
                 try { p.Kill(entireProcessTree: true); } catch { }
-                p.Dispose();
             }
         }
-        catch { }
+        finally
+        {
+            foreach (var p in running) p.Dispose();
+        }
         Thread.Sleep(400);
     }
 

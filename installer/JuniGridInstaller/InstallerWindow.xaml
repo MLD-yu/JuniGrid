@@ -300,6 +300,11 @@
               Width="0" Background="{StaticResource AccentBrush}" />
       <!-- 完成态：底部中间 复选框 + 完成按钮 -->
       <StackPanel x:Name="DonePanel" VerticalAlignment="Bottom" HorizontalAlignment="Center" Margin="0,0,0,46" Visibility="Collapsed">
+        <!-- 装完了但有事没办成（数据目录没搬成）：必须常驻显示。
+             以前只写进一条进度行，而完成页会把状态文字收起来 —— 等于没说。 -->
+        <TextBlock x:Name="DoneNote" Text="" FontSize="12" Foreground="#FFCE6B" TextWrapping="Wrap"
+                   MaxWidth="440" HorizontalAlignment="Center" TextAlignment="Center"
+                   LineHeight="19" Margin="0,0,0,14" Visibility="Collapsed" />
         <CheckBox x:Name="LaunchAfterDone" Content="启动 JuniGrid" IsChecked="True" Style="{StaticResource DarkCheck}" HorizontalAlignment="Center" />
         <Button x:Name="BtnFinish" Style="{StaticResource AccentButton}" Content="完　成" Height="50" FontSize="16" Width="300" Margin="0,18,0,0" Click="OnFinish" />
       </StackPanel>

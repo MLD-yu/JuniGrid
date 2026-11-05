@@ -129,6 +129,76 @@ internal static class NativeMethods
     [DllImport("dwmapi.dll")]
     private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
 
+    // ---- 进程父链（只读，用 Toolhelp 快照；不需要提权） ----
+
+    private const uint TH32CS_SNAPPROCESS = 0x00000002;
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct PROCESSENTRY32W
+    {
+        public uint dwSize;
+        public uint cntUsage;
+        public uint th32ProcessID;
+        public IntPtr th32DefaultHeapID;
+        public uint th32ModuleID;
+        public uint cntThreads;
+        public uint th32ParentProcessID;
+        public int pcPriClassBase;
+        public uint dwFlags;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)]
+        public string szExeFile;
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr CreateToolhelp32Snapshot(uint dwFlags, uint th32ProcessID);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool Process32FirstW(IntPtr hSnapshot, ref PROCESSENTRY32W lppe);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool Process32NextW(IntPtr hSnapshot, ref PROCESSENTRY32W lppe);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr hObject);
+
+    /// <summary>这些进程里有没有哪个叫 <paramref name="names"/> 的祖先进程。
+    /// 用来回答"游戏是不是我们拉起来的"——整树杀只会碰到后代，所以判据必须是父链，
+    /// 不能是"游戏在不在跑"（Steam 拉起的游戏在跑也不该拦安装）。</summary>
+    public static bool AnyNamedProcessDescendsFrom(IReadOnlyCollection<int> ancestorPids, params string[] names)
+    {
+        if (ancestorPids.Count == 0) return false;
+        var parents = new Dictionary<int, int>();
+        var match = new List<int>();
+        var snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if (snap == IntPtr.Zero || snap == new IntPtr(-1)) return false;
+        try
+        {
+            var e = new PROCESSENTRY32W { dwSize = (uint)Marshal.SizeOf<PROCESSENTRY32W>(), szExeFile = "" };
+            if (!Process32FirstW(snap, ref e)) return false;
+            do
+            {
+                var pid = (int)e.th32ProcessID;
+                parents[pid] = (int)e.th32ParentProcessID;
+                if (names.Any(n => n.Equals(e.szExeFile, StringComparison.OrdinalIgnoreCase)))
+                    match.Add(pid);
+            }
+            while (Process32NextW(snap, ref e));
+        }
+        finally { CloseHandle(snap); }
+
+        foreach (var pid in match)
+        {
+            var cur = pid;
+            // 父链最多走 64 层，防止数据异常时死循环（也不存在这么深的链）
+            for (var depth = 0; depth < 64 && parents.TryGetValue(cur, out var parent) && parent > 0; depth++)
+            {
+                if (ancestorPids.Contains(parent)) return true;
+                cur = parent;
+            }
+        }
+        return false;
+    }
+
     /// <summary>Win11 上给无边框窗口加系统圆角；Win10 不支持则静默忽略。</summary>
     public static void TryRoundCorners(Window window)
     {
