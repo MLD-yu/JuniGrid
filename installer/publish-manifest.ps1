@@ -31,6 +31,13 @@
 .PARAMETER Publish
     额外把两个文件推到 GitHub Pages（gh-pages 分支）。需要 gh CLI 已登录。
 
+.PARAMETER SkipUrlCheck
+    跳过"下载地址能不能下到 + 字节对不对"的前置检查（离线签名时用）。
+
+.PARAMETER StrictDigest
+    要求必须完成字节级对账（官方 asset digest == 本地 sha256）。
+    默认在取不到 digest 时只警告、退化成比大小；加了这个开关就变成硬拦。
+
 .EXAMPLE
     .\installer\publish-manifest.ps1
     .\installer\publish-manifest.ps1 -Publish
@@ -42,7 +49,8 @@ param(
     [string] $OutDir,
     [string] $KeyPath,
     [switch] $Publish,
-    [switch] $SkipUrlCheck
+    [switch] $SkipUrlCheck,
+    [switch] $StrictDigest
 )
 
 $ErrorActionPreference = 'Stop'
@@ -134,11 +142,29 @@ if (-not $SkipUrlCheck) {
     $tag = if ([string]$Version -match '^[vV]') { [string]$Version } else { 'v' + $Version }
     $assetName = Split-Path $SetupExe -Leaf
     $release = $null
-    try {
-        $release = Invoke-RestMethod -Uri "https://api.github.com/repos/MLD-yu/JuniGrid/releases/tags/$tag" `
-            -Headers @{ 'User-Agent' = 'JuniGrid-release-check' } -TimeoutSec 20
-    } catch {
-        Write-Host "⚠ 取 release 信息失败（网络/匿名配额），这次只比了大小：$($_.Exception.Message)" -ForegroundColor Yellow
+    $whyNoApi = ''
+    # 先用 gh（已登录 = 5000 次/小时）。未登录的 REST 只有 60 次/小时，
+    # 出包那会儿多半已经打满 —— 那样这道门会悄悄退化成"只比大小"，正是它要防的情形
+    # （2026-11-05 实测踩过一次：403 rate limit，门降级但没人注意）。
+    if (Get-Command gh -ErrorAction SilentlyContinue) {
+        try {
+            $json = gh api "repos/MLD-yu/JuniGrid/releases/tags/$tag" 2>$null
+            if ($LASTEXITCODE -eq 0 -and $json) { $release = $json | ConvertFrom-Json }
+            else { $whyNoApi = "gh api 退出码 $LASTEXITCODE" }
+        } catch { $whyNoApi = "gh api 异常：$($_.Exception.Message)" }
+    }
+    if (-not $release) {
+        try {
+            $release = Invoke-RestMethod -Uri "https://api.github.com/repos/MLD-yu/JuniGrid/releases/tags/$tag" `
+                -Headers @{ 'User-Agent' = 'JuniGrid-release-check' } -TimeoutSec 20
+        } catch { $whyNoApi = "$whyNoApi / REST：$($_.Exception.Message)" }
+    }
+    if (-not $release) {
+        if ($StrictDigest) {
+            throw "取不到 release 信息，无法做字节级对账（-StrictDigest 要求必须做）：$whyNoApi"
+        }
+        Write-Host "⚠ 取不到 release 信息 —— 这次只比了大小：$whyNoApi" -ForegroundColor Yellow
+        Write-Host "  （要强制字节级对账：加 -StrictDigest）" -ForegroundColor Yellow
     }
     if ($release) {
         $asset = @($release.assets) | Where-Object { $_.name -eq $assetName } | Select-Object -First 1
@@ -156,6 +182,7 @@ if (-not $SkipUrlCheck) {
             Write-Host "字节级对账通过：官方 digest 与本地 sha256 一致（$($official.Substring(0,12))…）"
         }
         else {
+            if ($StrictDigest) { throw "这个 release 没有 digest 字段，无法做字节级对账（-StrictDigest）" }
             Write-Host "⚠ 这个 release 没有 digest 字段（GitHub 后加的，老 release 没有）—— 这次只比了大小" -ForegroundColor Yellow
         }
     }
