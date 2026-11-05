@@ -344,9 +344,16 @@ public sealed partial class StorageService
     public int AutoCleanDownloads()
     {
         if (_center.ActiveCount > 0) return 0;
-        var protectedPaths = GetFreshPartialDownloadPaths(_center.Snapshot(), DateTime.UtcNow);
+        var tasks = _center.Snapshot();
+        var protectedPaths = GetFreshPartialDownloadPaths(tasks, DateTime.UtcNow);
         var n = PruneStaleEntries(StoragePaths.DownloadsDir,
             DateTime.UtcNow - DownloadsRetention, protectedPaths);
+
+        // v1.3.41：断点文件没了（这轮清理删掉的，或用户手动删的），把任务行上的引用摘掉。
+        // 否则行上仍写「已暂停 · 62%」，点「继续」实际从 0 重下 —— 静默骗人。
+        var gone = GonePartialPaths(tasks);
+        if (gone.Count > 0) _center.ClearPartialDownloadPaths(gone);
+
         if (n > 0)
         {
             AppLog.Warn("Storage", $"下载/安装临时自动清理：删掉 {n} 个超过 24 小时的条目");
@@ -377,6 +384,26 @@ public sealed partial class StorageService
     }
 
     private static DateTime Max(DateTime a, DateTime b) => a >= b ? a : b;
+
+    /// <summary>v1.3.41：这些任务记着的断点文件，磁盘上已经一个都不剩了。
+    /// <para>注意判据是「文件真的不在」而不是「超过 7 天」—— 过期但文件还被占用删不掉的，
+    /// 不能把引用摘掉（摘了下次续传就找不到断点了）。</para></summary>
+    internal static List<string> GonePartialPaths(IEnumerable<TaskItem> tasks)
+    {
+        var gone = new List<string>();
+        foreach (var t in tasks)
+        {
+            if (string.IsNullOrWhiteSpace(t.PartialDownloadPath)) continue;
+            try
+            {
+                var p = Path.GetFullPath(t.PartialDownloadPath);
+                var any = File.Exists(p) || File.Exists(p + ".seg") || File.Exists(p + ".seg.state");
+                if (!any) gone.Add(p);
+            }
+            catch { }
+        }
+        return gone;
+    }
 
     /// <summary>删掉 <paramref name="dir"/> 下最后写入早于 <paramref name="cutoffUtc"/> 的一级条目。
     /// 目录要连里面的文件一起看：只要还有一份文件比闸门新就整目录留着（目录项时间不反映

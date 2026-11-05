@@ -958,6 +958,12 @@
                 // 就是两个标签页。
                 _installMsg = LocService.Tr("应用内没能自动取到下载链接（可能未登录 Nexus 网页）—— 已为你打开系统浏览器，点 Mod Manager Download 即可自动安装");
             }
+            else if (err == InstallService.AlreadyRunning)
+            {
+                // v1.3.44：同一个 mod 已经有一行在跑（重复点击 / 登录后自动重跑先一步出发）。
+                // 这不是失败：任务中心那一行就是这次的进度。
+                _installMsg = LocService.Tr("这个 mod 已经在安装中，进度见任务管理");
+            }
             else if (err is "已取消" or "已暂停")
             {
                 // v1.1.7：用户暂停/取消任务 —— 不是安装失败，别吓人
@@ -1098,6 +1104,11 @@
             else if (err is "已取消" or "已暂停")
             {
                 // 用户自己取消/暂停的：不再报错，任务中心那一行已经有状态
+            }
+            else if (err == InstallService.AlreadyRunning)
+            {
+                // v1.3.44：已经在装同一个 mod 了 —— 提示一下就行，别报「安装失败」
+                _ = Toast(LocService.Tr("这个 mod 已经在安装中，进度见任务管理"), "ok");
             }
             else
             {
@@ -1427,6 +1438,8 @@
                 _fileMsg = LocService.Tf("已安装 {0}", f.Name);
                 await RefreshSmapiStateAsync(freshRead: true);
             }
+            else if (err == InstallService.AlreadyRunning)
+                _fileMsg = LocService.Tr("这个 mod 已经在安装中，进度见任务管理");
             else if (err is "已取消" or "已暂停")
                 _fileMsg = err == "已暂停" ? LocService.Tr("任务已暂停，可在任务中心继续") : null;
             else

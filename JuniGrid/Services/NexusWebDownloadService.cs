@@ -62,16 +62,58 @@ public sealed record NexusWebDownloadResult(string? Url, string? Error,
 /// </summary>
 public sealed class NexusWebDownloadService
 {
+    /// <summary>v1.3.39：账号窗口的入口。根路径经常被 Cloudflare 挡，分区页能过。</summary>
+    private const string AccountStartUrl = "https://www.nexusmods.com/stardewvalley";
+    private const string AccountStartUrlFallback = "https://www.nexusmods.com/";
+    private static bool _accountRetried;
+    /// <summary>v1.3.43：这个账号窗口是「因为撞了登录墙」才打开的 —— 登录成功后自动收掉。
+    /// 用户自己点「打开内置网页」进来的不算（他可能只是想看看/换号，不该被自动关掉）。</summary>
+    private static bool _closeAfterLogin;
     private static Window? _accountWindow;
     private static WebView2? _accountView;
     private static string? _accountName;
-    public string? AccountName => _accountName;
+    public string? AccountName
+    {
+        get
+        {
+            if (!string.IsNullOrWhiteSpace(_accountName)) return _accountName;
+            try { return File.Exists(AccountNameCachePath) ? File.ReadAllText(AccountNameCachePath).Trim() : null; }
+            catch { return null; }
+        }
+    }
+    public event Action<string?>? AccountNameChanged;
+
+    /// <summary>v1.3.42：最近一次取链失败是不是「撞了登录墙」。
+    /// 调用方据此改成「打开内置网页让用户登录」，而不是退回打开系统浏览器
+    /// —— 新用户没看过更新说明，一上来就被弹到浏览器，等于功能没生效。</summary>
+    public bool LastFailureWasLoginWall { get; private set; }
+
+    /// <summary>v1.3.39：网页账号是否已登录。Nexus 新版页头把用户名藏进了弹出菜单，
+    /// 拿不到名字时至少要知道「已登录」——否则界面会一直显示「登录」，让人以为没登上。</summary>
+    public bool SignedIn
+    {
+        get
+        {
+            if (_signedIn) return true;
+            // 重启后窗口还没打开过时，靠上次落盘的标记 —— 否则明明登录着又会显示「登录」
+            try { return File.Exists(SignedInCachePath); } catch { return false; }
+        }
+    }
+    public event Action<bool>? SignedInChanged;
+    private static bool _signedIn;
+    /// <summary>v1.3.42：上一次推给界面的登录状态（null = 还没推过）。</summary>
+    private static bool? _publishedSignedIn;
+    private static string SignedInCachePath => Path.Combine(StoragePaths.NexusWebDir, "signed-in");
+    private static string AccountNameCachePath => Path.Combine(StoragePaths.NexusWebDir, "account-name.txt");
 
     /// <summary>显示使用下载通道同一 profile 的 Nexus 网页，让用户登录或切换账号。</summary>
-    public async Task OpenAccountWindowAsync()
+    /// <param name="closeAfterLogin">true = 这是「登录墙」打开的窗口，登录成功后自动关掉。</param>
+    public async Task OpenAccountWindowAsync(bool closeAfterLogin = false)
     {
+        _closeAfterLogin = closeAfterLogin;
+        AppLog.Info("NexusWeb", "用户请求打开内置 Nexus 网页账号窗口");
         var dispatcher = Application.Current?.Dispatcher;
-        if (dispatcher is null) return;
+        if (dispatcher is null) throw new InvalidOperationException("WPF 界面调度器尚未初始化");
         await dispatcher.InvokeAsync(async () =>
         {
             if (_accountWindow is not null)
@@ -81,17 +123,30 @@ public sealed class NexusWebDownloadService
                 _accountWindow.Activate();
                 return;
             }
+            _accountRetried = false;   // 每次开窗都允许换入口重试一次
             var profile = Path.Combine(StoragePaths.NexusWebDir, "profile");
             Directory.CreateDirectory(profile);
+            AppLog.Info("NexusWeb", $"正在初始化网页账号窗口 profile={profile}");
             var env = await HiddenHost.GetSharedEnvironmentAsync(profile);
             var view = new WebView2();
-            await view.EnsureCoreWebView2Async(env);
-            view.CoreWebView2.Settings.AreDefaultContextMenusEnabled = true;
-            view.CoreWebView2.Settings.AreDevToolsEnabled = false;
+            var root = new System.Windows.Controls.Grid();
+            root.Children.Add(view);
+            var loading = new System.Windows.Controls.TextBlock
+            {
+                Text = "正在连接 Nexus…",
+                TextAlignment = TextAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                Padding = new Thickness(24),
+                Background = System.Windows.Media.Brushes.White,
+                Foreground = System.Windows.Media.Brushes.DimGray,
+                FontSize = 16,
+            };
+            root.Children.Add(loading);
             var window = new Window
             {
                 Title = "JuniGrid · 内置 Nexus 网页账号", Width = 1180, Height = 880,
-                WindowStartupLocation = WindowStartupLocation.CenterScreen, Content = view,
+                WindowStartupLocation = WindowStartupLocation.CenterScreen, Content = root,
                 ShowInTaskbar = true,
             };
             _accountWindow = window;
@@ -101,19 +156,287 @@ public sealed class NexusWebDownloadService
                 _accountWindow = null; _accountView = null;
                 try { view.Dispose(); } catch { }
             };
-            view.CoreWebView2.NavigationCompleted += async (_, _) =>
+            // 关窗前再探一次：用户可能刚在里面点了 Sign out 就顺手关窗，
+            // 2 秒的轮询未必赶得上（v1.3.42）
+            window.Closing += async (_, _) =>
             {
-                try
-                {
-                    var raw = await view.CoreWebView2.ExecuteScriptAsync("(function(){var a=document.querySelector('a[href^=\\\"/users/\\\"]');return a?(a.textContent||'').trim():''})()");
-                    var name = JsonSerializer.Deserialize<string>(raw);
-                    if (!string.IsNullOrWhiteSpace(name)) _accountName = name;
-                }
-                catch { }
+                try { if (_accountView is not null) await TryCaptureAccountNameAsync(view); } catch { }
             };
             window.Show();
-            view.CoreWebView2.Navigate("https://www.nexusmods.com/");
+            if (!view.IsLoaded)
+            {
+                var loaded = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                RoutedEventHandler? handler = null;
+                handler = (_, _) =>
+                {
+                    view.Loaded -= handler;
+                    loaded.TrySetResult();
+                };
+                view.Loaded += handler;
+                await loaded.Task;
+            }
+            await view.EnsureCoreWebView2Async(env);
+            view.CoreWebView2.Settings.AreDefaultContextMenusEnabled = true;
+            view.CoreWebView2.Settings.AreDevToolsEnabled = false;
+            view.CoreWebView2.NavigationStarting += (_, e) =>
+                AppLog.Info("NexusWeb", "网页登录窗口开始导航：" + e.Uri);
+            view.CoreWebView2.NavigationCompleted += async (_, e) =>
+            {
+                if (!e.IsSuccess)
+                {
+                    var message = $"Nexus 页面加载失败：{e.WebErrorStatus}\n地址：{view.Source}";
+                    AppLog.Warn("NexusWeb", message);
+
+                    // v1.3.39：一次失败不代表网络断了 —— 根路径和分区页在这台机器上的
+                    // Cloudflare 待遇不同（2026-11-05 01:35 实测根路径 Unknown）。两个入口都试过再报错。
+                    var here = view.Source?.AbsolutePath ?? "/";
+                    var next = here.StartsWith("/stardewvalley") ? AccountStartUrlFallback : AccountStartUrl;
+                    if (!_accountRetried && !string.Equals(here, new Uri(next).AbsolutePath, StringComparison.OrdinalIgnoreCase))
+                    {
+                        _accountRetried = true;
+                        AppLog.Info("NexusWeb", "换入口重试：" + next);
+                        loading.Text = "Nexus 页面没打开，换个入口重试…";
+                        loading.Visibility = Visibility.Visible;
+                        view.CoreWebView2.Navigate(next);
+                        return;
+                    }
+
+                    loading.Text = message + "\n请检查网络后关闭此窗口，再点登录 / 切换重试。";
+                    loading.Visibility = Visibility.Visible;
+                    return;
+                }
+                AppLog.Info("NexusWeb", "网页登录窗口导航完成：" + view.Source);
+                loading.Visibility = Visibility.Collapsed;
+                await TryCaptureAccountNameAsync(view);
+            };
+
+            // v1.3.39：登录不是「一次导航」就完事 —— 点完登录还要跳转、还要过 Cloudflare 挑战，
+            // 甚至登录后是前端路由（未必触发 NavigationCompleted）。只在导航完成那一下抓一次，
+            // 结果就是「明明登录了，设置页还写着登录」。窗口开着期间每 2 秒探一次，拿到就停。
+            var probeTimer = new System.Windows.Threading.DispatcherTimer
+            {
+                Interval = TimeSpan.FromSeconds(2),
+            };
+            probeTimer.Tick += async (_, _) =>
+            {
+                // v1.3.42：以前「认到名字就停」+「最多 5 分钟」——两条都会让「后来退出登录」
+                // 没人发现。现在只要窗口还开着就一直看（每 2 秒一次轻量 JS，代价可以忽略）。
+                if (_accountView is null) { probeTimer.Stop(); return; }
+                await TryCaptureAccountNameAsync(view);
+            };
+            window.Closed += (_, _) => probeTimer.Stop();
+            probeTimer.Start();
+
+            view.CoreWebView2.ProcessFailed += (_, e) =>
+            {
+                var message = $"内置浏览器进程异常：{e.ProcessFailedKind}";
+                AppLog.Error("NexusWeb", message);
+                loading.Text = message;
+                loading.Visibility = Visibility.Visible;
+            };
+            // v1.3.39：先开游戏分区页 —— 隐藏下载窗口一直靠这类页面过 Cloudflare，
+            // 而根路径在这台机器上会被挡（实测 Unknown）。
+            view.CoreWebView2.Navigate(AccountStartUrl);
+            AppLog.Info("NexusWeb", "内置 Nexus 网页账号窗口已显示");
         }).Task.Unwrap();
+    }
+
+    /// <summary>v1.3.39：页面里「当前登录账号」的探测脚本。
+    /// <para>以前只读 <c>a[href^="/users/"]</c> 的 <b>文字</b>，但 Nexus 页头那个用户链接里放的是
+    /// 头像图片，文字是空的 ⇒ 永远取不到名字（点完登录界面还是写着「登录」）。现在把能拿的都拿回来：
+    /// href 里的 id、链接文字、头像 alt、title/aria-label、meta，交给 C# 按可靠性挑。</para></summary>
+    private const string AccountProbeJs =
+        """
+        (function () {
+          function tidy(s) { return (s || '').replace(/\s+/g, ' ').trim(); }
+          var out = { id: '', text: '', alt: '', tip: '', meta: '', href: '', auth: '', rsc: '' };
+
+          // 页头用户入口：老版是 <a href="/users/<id>">，新版是纯图标按钮（只能靠 #login-status 判状态）
+          var a = document.querySelector('header a[href^="/users/"], nav a[href^="/users/"]');
+          if (!a) {
+            var img = document.querySelector('a[href^="/users/"] img');
+            if (img) a = img.closest('a');
+          }
+          if (a) {
+            out.href = a.getAttribute('href') || '';
+            var m = /\/users\/([^\/?#]+)/.exec(out.href);
+            out.id = m ? decodeURIComponent(m[1]) : '';
+            out.text = tidy(a.textContent);
+            var im = a.querySelector('img');
+            out.alt = im ? tidy(im.getAttribute('alt')) : '';
+            out.tip = tidy(a.getAttribute('title') || a.getAttribute('aria-label'));
+          }
+          var meta = document.querySelector('meta[name="username"], meta[name="user"]');
+          if (meta) out.meta = tidy(meta.getAttribute('content'));
+
+          // 登录状态：页头有个隐藏的 #login-status（authenticated / guest）
+          var st = document.getElementById('login-status');
+          out.auth = st ? (st.textContent || '').trim() : '';
+
+          // 页面内嵌的服务端数据里有时直接带着用户名
+          try {
+            var chunks = [];
+            if (self.__next_f && self.__next_f.length) {
+              for (var i = 0; i < self.__next_f.length; i++) {
+                var c = self.__next_f[i];
+                if (c && typeof c[1] === 'string') chunks.push(c[1]);
+              }
+            }
+            var hit = /"(?:userName|username)"\s*:\s*"([^"]{2,40})"/.exec(chunks.join(''));
+            out.rsc = hit ? hit[1] : '';
+          } catch (e) { out.rsc = ''; }
+
+          return JSON.stringify(out);
+        })()
+        """;
+
+    /// <summary>v1.3.39：认出「当前登录的网页账号名」，认到就缓存 + 通知界面。
+    /// <para>会在窗口打开期间被反复调用（每 2 秒），所以：认到就立刻返回 true；
+    /// 认不到时只在与上次探测结果不同才写日志，免得日志被刷满。</para></summary>
+    private async Task<bool> TryCaptureAccountNameAsync(WebView2 view)
+    {
+        // v1.3.42：这里以前有一句「已认到名字就直接返回 true」——于是用户在内置网页里点
+        // Sign out 之后，轮询根本不再读页面，界面永远停在「已登录」。现在每次都探，
+        // 名字只是顺带的结果。
+        try
+        {
+            var core = view.CoreWebView2;
+            if (core is null) return false;
+
+            var raw = await core.ExecuteScriptAsync(AccountProbeJs);
+            var json = JsonSerializer.Deserialize<string>(raw) ?? "";
+            if (string.IsNullOrWhiteSpace(json)) return false;
+
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            string Get(string k) => root.TryGetProperty(k, out var v) ? (v.GetString() ?? "").Trim() : "";
+
+            var auth = Get("auth");
+            if (auth.Length > 0)
+            {
+                var signed = string.Equals(auth, "authenticated", StringComparison.OrdinalIgnoreCase);
+
+                // v1.3.42：落盘标记必须**每次都对齐**，不能只在「状态变了」时才写。
+                // 反例就是实测踩到的：磁盘上留着上次的 signed-in，进程刚起 _signedIn=false，
+                // 这次探测出「未登录」→ 因为 false == false 不走更新分支 → 旧文件永远留着
+                // → 界面一直显示「已登录」。
+                try
+                {
+                    if (signed)
+                    {
+                        Directory.CreateDirectory(StoragePaths.NexusWebDir);
+                        File.WriteAllText(SignedInCachePath, "1");
+                    }
+                    else File.Delete(SignedInCachePath);
+                }
+                catch { }
+
+                _signedIn = signed;
+                if (!signed && !string.IsNullOrWhiteSpace(_accountName))
+                {
+                    _accountName = null;   // 退出登录了，旧名字不能再挂着
+                    try { File.Delete(AccountNameCachePath); } catch { }
+                    AccountNameChanged?.Invoke(null);
+                }
+
+                // 通知界面的判据是「界面上一次看到的值」，不是「内存里上次的值」。
+                // 否则会出现：磁盘旧标记让界面显示「已登录」，探测出未登录时
+                // 内存恰好也是 false（进程刚起）→ 判定"没变化"→ 界面没人刷新。
+                if (_publishedSignedIn != signed)
+                {
+                    _publishedSignedIn = signed;
+                    AppLog.Info("NexusWeb", signed ? "网页账号状态：已登录" : "网页账号状态：未登录");
+                    SignedInChanged?.Invoke(signed);
+                    // v1.3.43：刚登录成功就把账号窗口收掉 —— 用户点完登录不用再手动关一次。
+                    // 留 1.2 秒让他看见页面已经变成登录态，不至于以为"点了就消失"。
+                    if (signed && _closeAfterLogin)
+                    {
+                        _closeAfterLogin = false;
+                        CloseAccountWindowSoon();
+                    }
+                }
+            }
+
+            if (_signedIn && !string.IsNullOrWhiteSpace(_accountName)) return true;
+
+            var id = Get("id");
+            var text = Get("text");
+            var alt = Get("alt");
+            var tip = Get("tip");
+            var meta = Get("meta");
+
+            string? name = null;
+            // Nexus 用户名不含空格；带空格的都是菜单文案（如 "account_circle My profile"）
+            if (text.Length is > 1 and <= 40 && !text.Contains(' ') && text != id) name = text;
+            else if (alt.Length > 0 && alt != id) name = alt;
+            else if (tip.Length > 0 && tip != id) name = tip;
+            else if (meta.Length > 0) name = meta;
+            else if (id.Length > 0 && !id.All(char.IsDigit)) name = id;
+
+            // 页面内嵌的服务端数据里常常直接带着用户名
+            if (name is null)
+            {
+                var rsc = Get("rsc");
+                if (rsc.Length > 1 && rsc.Length <= 40) name = rsc;   // 页面数据里直接带着用户名时用它
+            }
+
+            // 页头链接一般只给 memberId（纯数字）—— 去个人主页把用户名捞出来
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                if (json != _lastProbeLog)
+                {
+                    _lastProbeLog = json;
+                    AppLog.Info("NexusWeb", $"网页账号未识别：{json}");
+                }
+                return false;
+            }
+
+            _accountName = name;
+            try
+            {
+                Directory.CreateDirectory(StoragePaths.NexusWebDir);
+                File.WriteAllText(AccountNameCachePath, name);
+            }
+            catch { }
+            AppLog.Info("NexusWeb", $"识别到网页账号：{name}（探测：{json}）");
+            AccountNameChanged?.Invoke(name);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warn("NexusWeb", "识别网页账号失败：" + ex.Message);
+            return false;
+        }
+    }
+
+    private static string? _lastProbeLog;
+
+    /// <summary>v1.3.43：登录成功后延迟一点收起账号窗口。</summary>
+    private static void CloseAccountWindowSoon()
+    {
+        var w = _accountWindow;
+        var dispatcher = Application.Current?.Dispatcher;
+        if (w is null || dispatcher is null)
+        {
+            // 账号窗口已经关了 / 或 WPF 应用没起来 —— 记录一下，免得以后又"没反应也没日志"
+            AppLog.Info("NexusWeb", $"登录成功，但不关窗：window={(w is null ? "null" : "ok")} "
+                + $"dispatcher={(dispatcher is null ? "null" : "ok")}");
+            return;
+        }
+        _ = dispatcher.InvokeAsync(async () =>
+        {
+            try
+            {
+                AppLog.Info("NexusWeb", "登录成功，1.2 秒后关闭内置网页");
+                await Task.Delay(1200);
+                if (w.IsVisible) w.Close();
+                AppLog.Info("NexusWeb", "登录成功，已自动关闭内置网页");
+            }
+            catch (Exception ex)
+            {
+                AppLog.Warn("NexusWeb", "自动关闭内置网页失败：" + ex.Message);
+            }
+        });
     }
 
     /// <summary>只清除内置 Nexus profile 的 Cookie，不影响 JuniGrid API token。</summary>
@@ -121,11 +444,16 @@ public sealed class NexusWebDownloadService
     {
         var dispatcher = Application.Current?.Dispatcher;
         if (dispatcher is null) return;
+        if (_accountView is null) await OpenAccountWindowAsync();
         await dispatcher.InvokeAsync(async () =>
         {
-            if (_accountView is null) throw new InvalidOperationException("请先打开内置 Nexus 网页窗口");
+            if (_accountView is null) throw new InvalidOperationException("内置 Nexus 网页窗口尚未准备好");
             _accountView.CoreWebView2.CookieManager.DeleteAllCookies();
             _accountName = null;
+            _signedIn = false;
+            try { File.Delete(AccountNameCachePath); File.Delete(SignedInCachePath); } catch { }
+            AccountNameChanged?.Invoke(null);
+            SignedInChanged?.Invoke(false);
             _accountView.CoreWebView2.Navigate("https://www.nexusmods.com/");
         }).Task.Unwrap();
     }
@@ -183,6 +511,7 @@ public sealed class NexusWebDownloadService
     {
         if (!Enabled) return NexusWebDownloadResult.Fail("应用内自动下载已关闭");
         if (modId <= 0 || fileId <= 0) return NexusWebDownloadResult.Fail("modId/fileId 无效");
+        LastFailureWasLoginWall = false;
 
         var dispatcher = Application.Current?.Dispatcher;
         if (dispatcher is null) return NexusWebDownloadResult.Fail("界面尚未初始化");
@@ -217,7 +546,18 @@ public sealed class NexusWebDownloadService
                 return timeout;
             }
 
-            var host = new HiddenHost(modId, fileId, report, slot);
+            var host = new HiddenHost(modId, fileId, report, slot)
+            {
+                LoginWallHit = () =>
+                {
+                    LastFailureWasLoginWall = true;
+                    // v1.3.43：给这条任务打标记 —— 用户在内置网页登录成功后自动重跑，
+                    // 不用回任务页手动点重试。
+                    if (task is not null) task.NeedsLoginRetry = true;
+                    try { _ = OpenAccountWindowAsync(closeAfterLogin: true); }
+                    catch (Exception ex) { AppLog.Warn("NexusWeb", "打开登录窗口失败：" + ex.Message); }
+                },
+            };
             // 窗口与 WebView2 全是 STA 亲和对象：整段跑在 UI 线程上。
             // 外层 await 拿到的是 Task<Result>，再 await 一次取值。
             var result = await (await dispatcher.InvokeAsync(() => host.RunAsync(ct)));
@@ -276,6 +616,10 @@ public sealed class NexusWebDownloadService
         private readonly int _modId;
         private readonly long _fileId;
         private readonly Action<string, double?, double?>? _report;
+
+        /// <summary>v1.3.42：撞登录墙时通知外层 —— 由外层置「本次失败是登录墙」并打开内置网页。
+        /// HiddenHost 是嵌套类，拿不到外层实例，所以走回调。</summary>
+        public Action? LoginWallHit { get; set; }
 
         private Window? _window;
         private WebView2? _view;
@@ -463,10 +807,16 @@ public sealed class NexusWebDownloadService
                 // 倒计时上、下载事件永远不来（2026-11-04 04:18 实测：ready → 点击 →
                 // 43 秒零日志 → 我们 45 秒超时判失败，用户看到的就是「需要 Premium」）。
                 // 这一串就是 Electron 那边 backgroundThrottling:false 的等价物。
+                // v1.3.42：调试口。设了 JUNIGRID_NEXUS_CDP_PORT 才给这组 WebView2 加远程调试端口，
+                // 用来真机核对「账号窗口里退出登录后状态能不能跟着变」；不设变量时参数与以前完全一致。
+                var nexusCdp = Environment.GetEnvironmentVariable("JUNIGRID_NEXUS_CDP_PORT");
+                var cdpArg = int.TryParse(nexusCdp, out var cdpPort) && cdpPort > 0
+                    ? $"--remote-debugging-port={cdpPort} "
+                    : "";
                 var options = new CoreWebView2EnvironmentOptions
                 {
-                    AdditionalBrowserArguments =
-                        "--disable-background-timer-throttling "
+                    AdditionalBrowserArguments = cdpArg
+                        + "--disable-background-timer-throttling "
                         + "--disable-backgrounding-occluded-windows "
                         + "--disable-renderer-backgrounding "
                         + "--disable-ipc-flooding-protection "
@@ -760,9 +1110,13 @@ public sealed class NexusWebDownloadService
                 {
                     if (clicks == 0 || (DateTime.UtcNow - _lastClickUtc).TotalSeconds > 8)
                     {
-                        _lastError = "Nexus 要求登录 —— 应用内自动下载需要先登录一次 Nexus 账号";
+                        // v1.3.42：撞登录墙就把内置网页摆出来让用户登 —— 以前这里直接判失败，
+                        // 调用方于是退回「打开系统浏览器」，新用户根本不知道应用内通道存在。
+                        // 窗口里登录后，每 2 秒的轮询会把状态改成「已登录」，重试就能走应用内。
+                        _lastError = "需要先在内置网页登录 Nexus 账号 —— 已打开登录窗口，登录后再试一次";
                         _report?.Invoke(_lastError, null, null);
-                        AppLog.Warn("NexusWeb", "命中登录墙，放弃应用内通道");
+                        AppLog.Warn("NexusWeb", "命中登录墙：打开内置网页让用户登录");
+                        LoginWallHit?.Invoke();
                         return null;
                     }
                     await Task.Delay(1200, ct);

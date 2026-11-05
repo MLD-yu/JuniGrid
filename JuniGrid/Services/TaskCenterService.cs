@@ -338,11 +338,31 @@ public sealed class TaskCenterService
     /// <para>认得出的凭据只有 <paramref name="nexusId"/>：没有号的两条行（缓存清理、
     /// 一键装依赖）没有任何字段能说明它们是同一件事，照旧一次一条。</para></summary>
     public TaskItem StartOrRestart(string title, string kind, int? nexusId)
+        => StartOrRestart(title, kind, nexusId, out _);
+
+    /// <summary>同 <see cref="StartOrRestart(string,string,int?)"/>，另告调用方「这一行本来就在跑」。
+    /// <para><b>alreadyRunning = true 时调用方绝对不许再挂一个 worker</b>：同一个 mod 的
+    /// 直装通道、nxm 回流、登录后自动重跑都往同一个 zip 路径写，两个 worker 会互相覆盖
+    /// 半截包 —— 那比多一行任务更坏。</para>
+    /// <para>v1.3.44：旧实现只认 failed/paused，正在跑的行对不上号 → 又 Start 一条新的。
+    /// 实测 2026-11-05 03:01:56 / 03:02:00：登录成功自动重跑刚把行重开成 running，
+    /// 另一条通道 4 秒后又发起同一个 mod，任务管理里并排躺着两条
+    /// 「下载并安装 Lnh's Thicket FarmCave」。</para></summary>
+    public TaskItem StartOrRestart(string title, string kind, int? nexusId, out bool alreadyRunning)
     {
+        alreadyRunning = false;
         if (nexusId is > 0)
         {
             lock (_lock)
             {
+                // 先看有没有同一件事正在跑：有就把它交回去，让调用方自己收手
+                var live = Items.FirstOrDefault(t => t.Kind == kind && t.NexusId == nexusId
+                    && t.Status is "running");
+                if (live is not null)
+                {
+                    alreadyRunning = true;
+                    return live;
+                }
                 var old = Items.FirstOrDefault(t => t.Kind == kind && t.NexusId == nexusId
                     && t.Status is "failed" or "paused");
                 if (old is not null)
@@ -355,6 +375,16 @@ public sealed class TaskCenterService
         var fresh = Start(title, kind);
         fresh.NexusId = nexusId;
         return fresh;
+    }
+
+    /// <summary>这个 Nexus mod 现在有没有<b>任何</b>一行在跑（不分 kind）。
+    /// <para>给 nxm 回流用：一个更新任务正在跑同一个 mod 时，那条 nxm 不该再开一行
+    /// 「下载并安装 X」—— 2026-11-04 用户反馈的「一个 mod 两个任务」就是这一对。</para>
+    /// </summary>
+    public bool AnyLiveFor(int nexusId)
+    {
+        if (nexusId <= 0) return false;
+        lock (_lock) return Items.Any(t => t.NexusId == nexusId && t.Status == "running");
     }
 
     /// <summary>把一行重开成「正在跑的这一遍」：进度归零、日志清空、换新的 CTS。
@@ -382,6 +412,7 @@ public sealed class TaskCenterService
         t.Installing = false;         // 上一遍停在「安装中」，这一遍还没走到那步
         t.Downloading = false;        // 同上：这一遍从「准备中」重新开始
         t.Queued = false;             // 上一遍排着队被重启 —— 这一遍从头再来，先摘排队标记
+        t.NeedsLoginRetry = false;    // 上一遍的登录墙标记作废（这一遍再撞墙会重新打上）
         t.StartedAt = DateTime.Now;   // 「开始」= 这一遍开始的时刻（见方法注释）
         t.RunFrom = DateTime.Now;
         OnChanged?.Invoke();
@@ -460,6 +491,10 @@ public sealed class TaskCenterService
         t.Status = success ? "done" : "failed";
         t.Percent = success ? 100 : t.Percent;
         t.SpeedMBps = 0;
+        // v1.3.44：成功就等于「这次登录墙的事翻篇了」。旧实现只在重开/重跑时清，于是
+        // 撞过墙、后来装成功的那一行会一直挂着 NeedsLoginRetry（实测 tasks.json 里
+        // Timberline Falls 是 done + 标记为 true），下次登录会被误认成「待重跑」。
+        if (success) t.NeedsLoginRetry = false;
         if (finalMsg is not null)
         {
             lock (_lock)
@@ -491,6 +526,41 @@ public sealed class TaskCenterService
         }
         RequestSave();
         return true;
+    }
+
+    /// <summary>v1.3.41：断点文件已经不在磁盘上了（过期被自动清理 / 用户手动删了），
+    /// 把任务行上的引用摘掉。
+    /// <para>不摘的后果很具体：行上仍写着「已暂停 · 62%」，点「继续」实际从 0 重下 ——
+    /// 用户看到的是进度倒退，不知道断点已经被清掉了。</para></summary>
+    public void ClearPartialDownloadPaths(IEnumerable<string> paths)
+    {
+        var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var p in paths)
+        {
+            try { if (!string.IsNullOrWhiteSpace(p)) set.Add(Path.GetFullPath(p)); } catch { }
+        }
+        if (set.Count == 0) return;
+
+        var changed = 0;
+        lock (_lock)
+        {
+            foreach (var t in Items)
+            {
+                if (string.IsNullOrWhiteSpace(t.PartialDownloadPath)) continue;
+                try
+                {
+                    if (!set.Contains(Path.GetFullPath(t.PartialDownloadPath))) continue;
+                    t.PartialDownloadPath = null;
+                    changed++;
+                }
+                catch { }
+            }
+        }
+        if (changed > 0)
+        {
+            AppLog.Info("Tasks", $"断点已失效：摘掉 {changed} 条任务上的续传路径引用");
+            RequestSave();
+        }
     }
 
     private bool IsPartialPathReferenced(string path)
@@ -668,8 +738,10 @@ public sealed class TaskCenterService
 
                 // 没有运行中任务但还有已完成/失败的记录时，仍显示最上面那个任务
                 // 的最终进度（成功时就是 100%），避免一完成总进度突然变 0。
+                // v1.3.44：只有【成功】那一行才沿用 —— 失败行停在哪就报哪（实测 8.00%）
+                // 会被读成"还在跑"，而这时明明一个在跑的任务都没有（剩余任务 0）。
                 var top = Items.FirstOrDefault();
-                return top?.Percent ?? 0;
+                return top is { Status: "done" } ? top.Percent : 0;
             }
         }
     }
@@ -728,6 +800,11 @@ public sealed class TaskItem
     /// 谁也不消费的 true 值进 JSON，徒增噪音）。</para></summary>
     [JsonIgnore]
     public bool Queued { get; set; }
+
+    /// <summary>v1.3.43：这条任务是「网页没登录」导致失败的 —— 登录成功后自动重跑一遍。
+    /// <para>刻意**落盘**（不加 JsonIgnore）：用户可能先关掉应用去登录、回来再打开，
+    /// 那时也该能自动接上；重跑前会被清成 false，不会反复触发。</para></summary>
+    public bool NeedsLoginRetry { get; set; }
 
     /// <summary>v1.1.7：可暂停 = 下载/安装/更新/游戏版本；缓存清理等短任务不可暂停。</summary>
     [JsonIgnore]

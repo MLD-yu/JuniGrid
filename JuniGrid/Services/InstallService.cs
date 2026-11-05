@@ -35,6 +35,40 @@ public sealed partial class InstallService
         _game = game;
         _pageRefresh = pageRefresh;
         _webDownload = webDownload;
+
+        // v1.3.43：网页登录成功后，把「因为没登录而失败」的任务自动重跑一遍。
+        // 用户在登录窗口里登完就不必再回任务页手动点重试。
+        // 判空：测试里会用 null! 构造本服务（WorkerCancellationAndOverlayTests）。
+        if (_webDownload is not null) _webDownload.SignedInChanged += OnWebSignedIn;
+    }
+
+    /// <summary>v1.3.43：挑出「该在登录成功后自动重跑」的任务。
+    /// <para>三条同时满足才算：打过登录墙标记、当前确实是失败、有 NexusId（没 id 没法重新发起）。</para></summary>
+    internal static List<TaskItem> PendingLoginRetries(IEnumerable<TaskItem> tasks)
+        => tasks.Where(t => t.NeedsLoginRetry && t.Status == "failed" && t.NexusId is > 0).ToList();
+
+    /// <summary>v1.3.43：登录成功 → 自动重跑刚才被登录墙挡下的任务。
+    /// <para>只挑打了 <see cref="TaskItem.NeedsLoginRetry"/> 且当前仍是 failed 的行，
+    /// 重跑前先把标记清掉，避免下次登录又触发一遍。</para></summary>
+    private void OnWebSignedIn(bool signedIn)
+    {
+        AppLog.Info("Download", $"网页登录状态变化回调：signedIn={signedIn}");
+        if (!signedIn) return;
+        List<TaskItem> pending;
+        try
+        {
+            pending = PendingLoginRetries(_center.Snapshot());
+        }
+        catch { return; }
+
+        AppLog.Info("Download", $"登录成功回调：待重跑 {pending.Count} 条（因登录受阻失败的任务）");
+        foreach (var t in pending)
+        {
+            t.NeedsLoginRetry = false;
+            var id = t.NexusId!.Value;
+            AppLog.Info("Download", $"网页已登录，自动重试因登录受阻的任务：{t.Title}");
+            _ = InstallModDirectAsync(id);
+        }
     }
 
     public event Action? OnChanged;
@@ -175,9 +209,15 @@ public sealed partial class InstallService
         // 2026-11-04 实测：两条更新都卡在「正在从 Nexus 页面获取下载链接…」被看门狗杀掉。
         using var longRun = task is null ? null : (IDisposable)_center.BeginLongRunning(task);
         var auto = await _webDownload.TryGetDirectUrlAsync(modId, fileId, report, ct, task);
-        return auto.Url is not null
-            ? NexusDownloadResult.Ok(auto.Url, auto.Mirrors)
-            : new NexusDownloadResult(null, auto.Error ?? dl.Error, true);
+        if (auto.Url is not null) return NexusDownloadResult.Ok(auto.Url, auto.Mirrors);
+
+        // v1.3.42：撞登录墙时别把用户丢给系统浏览器 —— 内置网页已经打开了，
+        // 让他登完再点一次重试。这里 NeedsPremium 置 false 正是「别再开浏览器」的信号，
+        // 调用方只会把 Error 显示在任务行上。
+        if (_webDownload.LastFailureWasLoginWall)
+            return new NexusDownloadResult(null, auto.Error ?? dl.Error, false);
+
+        return new NexusDownloadResult(null, auto.Error ?? dl.Error, true);
     }
 
     /// <summary>校验值只是加固项：元数据接口偶发失败时不能阻断本来可用的下载。</summary>
@@ -217,6 +257,12 @@ public sealed partial class InstallService
     /// AT 素材包、旧版本好几个文件，只按「最新 MAIN」挑会让玩家永远装不到自己要的变体
     /// （实测 mod 1915 就有 CP/AT 两条并行发布）。</para></param>
     /// <param name="fileLabel">拿不到 files.json 时的兜底显示名（任务标题用）。</param>
+    /// <summary>「同一个 mod 已经有一行在跑」的返回值。
+    /// <para>调用方要把它当<b>用户可忽略的状态</b>处理（别拼「安装失败：」前缀）——
+    /// 任务管理里那一行就是用户要看的东西。用固定标记而不是本地化文案：它只在进程内比对，
+    /// 永远不显示给人看。</para></summary>
+    public const string AlreadyRunning = "already-running";
+
     public async Task<string?> InstallModDirectAsync(int modId, long? fileId = null, string? fileLabel = null)
     {
         var cfg = _cfg.Current;
@@ -224,6 +270,10 @@ public sealed partial class InstallService
             return LocService.Tr("还没登录 Nexus —— 先到「Nexus」页登录");
         if (string.IsNullOrWhiteSpace(cfg.GamePath))
             return LocService.Tr("还没设置游戏目录 —— 先到「设置」页选择");
+
+        // v1.3.44：入口气味诊断。以前这条路径一句日志都没有，两个任务行是怎么冒出来的
+        // 只能靠猜（2026-11-05 03:02 那次排查就是这么卡住的）。
+        AppLog.Info("Download", $"一键直装请求 mod={modId} file={(fileId?.ToString() ?? "最新 MAIN")}");
 
         // v1.3.1：Nexus mod 2400 = SMAPI —— 它的 Nexus 包是官方安装器而非 mod
         //（zip 里没有 manifest.json），普通安装管线必报"没有 manifest.json"。
@@ -234,7 +284,16 @@ public sealed partial class InstallService
         var taskTitle = await ResolveModTitleAsync(modId, null);
         // 带号入场：这个 mod 上一次失败/暂停的那一行就地重开，而不是在任务管理里
         // 再排一条 —— 同一次下载点两下多出两行是错的。
-        var task = _center.StartOrRestart($"下载并安装 {taskTitle}", "install", modId);
+        // v1.3.44：正在跑的那一行也算「同一次下载」—— 见 StartOrRestart 的 alreadyRunning。
+        var task = _center.StartOrRestart($"下载并安装 {taskTitle}", "install", modId, out var alreadyRunning);
+        if (alreadyRunning)
+        {
+            // 两条通道同时发起同一个 mod（实测：登录后自动重跑 + nxm 回流 / 用户再点一次）。
+            // 再挂一个 worker 会让两跑往同一个 zip 路径写，包必坏 —— 直接收手，
+            // 任务管理里那一行已经在跑，用户什么也不缺。
+            AppLog.Info("Download", $"同一 mod 已有任务在跑，忽略重复请求 mod={modId}（行 {task.Id}）");
+            return AlreadyRunning;
+        }
 
         // v1.1.7：整段工作可重入 —— 暂停后继续会重新挂 worker；半截包由 ResumableDownload 续传
         async Task<string?> RunAsync(CancellationToken ct)
@@ -313,6 +372,15 @@ public sealed partial class InstallService
                         ct.ThrowIfCancellationRequested();
                         if (auto.Url is null)
                         {
+                            // v1.3.42：撞登录墙时不要把用户丢给系统浏览器 —— 内置网页已经打开了，
+                            // 让他在那儿登录再点重试。这条分支正是「下载并安装」的现场（截图里
+                            // 「应用内没取到直链，已改为打开网页」就是从这来的）。
+                            if (_webDownload.LastFailureWasLoginWall)
+                            {
+                                var needLogin = LocService.Tr("需要先在内置网页登录 Nexus 账号（已打开登录窗口，登录后再试一次）");
+                                _center.Finish(task, false, needLogin);
+                                return needLogin;
+                            }
                             _center.Finish(task, false, LocService.Tr("应用内没取到直链，已改为打开网页"));
                             return PremiumNeedsWebFallback(modId, file.FileId, UpdateService.OpenUrl, auto.Error);
                         }
@@ -680,7 +748,9 @@ public sealed partial class InstallService
     private async Task<string?> InstallSmapiFromNexusEntryAsync()
     {
         var cfg = _cfg.Current;
-        var task = _center.StartOrRestart("下载并安装 SMAPI - Stardew Modding API", "install", SmapiNexusId);
+        var task = _center.StartOrRestart("下载并安装 SMAPI - Stardew Modding API", "install", SmapiNexusId,
+            out var alreadyRunning);
+        if (alreadyRunning) return AlreadyRunning;   // SMAPI 已经在装：别叠第二个 worker
 
         async Task<string?> RunAsync(CancellationToken ct)
         {
@@ -755,14 +825,20 @@ public sealed partial class InstallService
 
     public async Task HandleNxmLinkAsync(string link)
     {
+        var parsed = TryParseNxm(link, out var pendingMod, out var pendingFile, out var pendingKey, out var pendingExp);
+        // v1.3.44：这条路径以前一句话都不记 —— 于是「同一个 mod 怎么冒出第二行」只能靠猜。
+        // 链接里的 key 是一次性凭据，只记 mod/file。
+        AppLog.Info("Install", parsed
+            ? $"收到 nxm 回流 mod={pendingMod} file={pendingFile}"
+            : "收到无法解析的 nxm 链接（跳过）");
+
         // ── 第一件事：这条 nxm 是不是我们自己那个隐藏窗口撂出来的？ ──
         // N 网文件页必须带 &nmm=1 才会渲染下载面板，而那个面板会顺手触发一次 nxm://；
         // Windows 又把链接转回本进程。旧版不分青红皂白就开一行「下载并安装 X」，
         // 结果同一个 mod 在任务管理里出现「更新 Mod「X」」+「下载并安装 X」两行
         // （2026-11-04 用户反馈）。这里先认领：正在等直链的那个窗口就是它主人，
         // 把解析出来的真直链塞回去即可，不再新建任务。
-        if (TryParseNxm(link, out var pendingMod, out var pendingFile, out var pendingKey, out var pendingExp)
-            && NexusWebDownloadService.HasPending(pendingMod, pendingFile))
+        if (parsed && NexusWebDownloadService.HasPending(pendingMod, pendingFile))
         {
             try
             {
@@ -781,7 +857,27 @@ public sealed partial class InstallService
             }
         }
 
-        var task = _center.Start("网页一键安装（Nexus）", "install");
+        // v1.3.44：认领没成功也要先问一句「这个 mod 是不是已经在跑」。
+        // 认领只认 (mod,file) 这一对；下载面板撂出来的 nxm 带的 fileId 和任务要的文件
+        // 不一定同一个（面板默认最新 MAIN），对不上就落进这里 —— 旧实现于是又 Start 一行，
+        // 任务管理里同一个 mod 并排两条。这里连「更新任务正在跑同一个 mod」也挡住。
+        if (parsed && _center.AnyLiveFor(pendingMod))
+        {
+            AppLog.Info("Install",
+                $"同一 mod 已有任务在跑，这条 nxm 回流不再开新行 mod={pendingMod} file={pendingFile}");
+            return;
+        }
+
+        // 带号入场：这个 mod 上一次失败/暂停的那一行就地重开，而不是再排一条
+        var task = _center.StartOrRestart("网页一键安装（Nexus）", "install",
+            parsed && pendingMod > 0 ? pendingMod : null, out var alreadyRunning);
+        if (alreadyRunning)
+        {
+            // 上面那道 AnyLiveFor 已经挡过一次；这里只是两次检查之间挤进来一跑的兜底
+            AppLog.Info("Install",
+                $"同一 mod 已有任务在跑，这条 nxm 回流不再开新行 mod={pendingMod} file={pendingFile}（行 {task.Id}）");
+            return;
+        }
 
         // v1.1.7：整段可重入 —— 暂停后继续重新挂 worker；半截包续传
         async Task RunAsync(CancellationToken ct)

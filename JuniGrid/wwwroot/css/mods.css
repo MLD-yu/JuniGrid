@@ -226,26 +226,7 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
 .jg-tfilters { display: flex; gap: 8px; flex-wrap: wrap; margin: 0 0 14px; }.jg-tfilter {
     border: 1px solid var(--jg-line-strong); background: var(--jg-card); color: var(--jg-text-2);
     border-radius: 999px; padding: 7px 16px; font-size: 13px; cursor: pointer;
-}.jg-tfilter.active { background: var(--jg-ink); color: var(--jg-on-ink); border-color: var(--jg-outline); }/* v0.2.2：任务页「任务类型」下拉胶囊 —— 本体点击=回「全部」，只有小箭头才弹菜单 */
-.jg-tf-kind {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    border: 1px solid var(--jg-line-strong);
-    background: var(--jg-card);
-    color: var(--jg-text-2);
-    border-radius: 999px;
-    padding: 7px 8px 7px 16px;
-    font-size: 13px;
-    cursor: pointer;
-    user-select: none;
-}.jg-tf-kind.active { background: var(--jg-ink); color: var(--jg-on-ink); border-color: var(--jg-outline); }/* 菜单嵌在胶囊内，必须把文字色从胶囊的选中态（黑底白字）里夺回来，否则白字落白底 */
-.jg-tf-kind .jg-sort-menu { color: var(--jg-text-2); }.jg-tf-caret {
-    display: inline-flex;
-    padding: 2px 6px;
-    border-radius: 999px;
-    border-left: 1px solid var(--jg-line-strong);
-}.jg-tf-kind.active .jg-tf-caret { border-left-color: rgba(255,255,255,0.3); }.jg-tf-caret:hover { background: var(--jg-hover); }.jg-tf-kind.active .jg-tf-caret:hover { background: rgba(255,255,255,0.2); }/* ─── v1.06.6：下载信息下拉（GSAP easeReverse 弹性展开）─── */
+}.jg-tfilter.active { background: var(--jg-ink); color: var(--jg-on-ink); border-color: var(--jg-outline); }/* ─── v1.06.6：下载信息下拉（GSAP easeReverse 弹性展开）─── */
 .jg-taskdrop-trigger {
     border: none; background: transparent; cursor: pointer; color: var(--jg-text-2);
     display: inline-flex; padding: 2px; border-radius: 4px;

@@ -83,13 +83,17 @@
                 }
             </div>
             <div style="display:flex;align-items:center;gap:10px;padding-top:8px;border-top:1px solid var(--jg-border,#e5e7eb);">
+                @* v1.3.40：只显示登录状态，不显示头像/昵称。
+                   Nexus 新版页面把用户名藏进了个人主页，网页会话又没法可靠地证明自己是哪个号 ——
+                   显示 API 账号的身份有冒充风险（网页可能被切成别的号），所以干脆不显示。 *@
                 <img src="assets/nav/nexus.svg" alt="Nexus 网页" style="width:36px;height:36px;border-radius:50%;object-fit:cover;" />
                 <div style="flex:1">
-                    <div style="font-weight:600;display:flex;align-items:center;gap:6px;">@Loc.T("内置 Nexus 网页") · @(_nexusWebName ?? Loc.T("账号状态未检查"))</div>
-                    <div style="font-size:12px;opacity:.65">@Loc.T("用于应用内下载；与上方 JuniGrid Nexus 账号独立")</div>
+                    <div style="font-weight:600;">@Loc.T("内置 Nexus 网页") · @Loc.T(_nexusWebSignedIn ? "已登录" : "未登录")</div>
+                    <div style="font-size:12px;opacity:.65">@Loc.T("用于应用内下载")</div>
                 </div>
-                <button class="jg-nexus-login-btn" @onclick="OpenNexusWebLogin">@Loc.T("登录 / 切换")</button>
-                <button class="jg-nexus-logout-btn" @onclick="LogoutNexusWeb">@Loc.T("退出网页账号")</button>
+                @* 一颗按钮，永远是「打开内置网页」：登录 / 换号 / 退出都在那个窗口里做
+                   （Nexus 页面自己的 Sign out 就能退），这里不再摆二选一的按钮。 *@
+                <button class="jg-nexus-login-btn" @onclick="OpenNexusWebLogin">@Loc.T("打开内置网页")</button>
             </div>
         </div>
     </div>
@@ -663,6 +667,9 @@
     private string? _nexusAvatar;
     private bool   _nexusPremium;
     private string? _nexusWebName;
+    /// <summary>v1.3.39：网页那边是否已登录。Nexus 新版页头不吐用户名，
+    /// 靠 #login-status 判状态 —— 至少能显示「已登录」，而不是一直挂着「登录」按钮。</summary>
+    private bool _nexusWebSignedIn;
     private bool   _sponsorWechat = true;
     private bool   _showForgotQr;          // 关于页的「忘记备注」二维码弹窗
 
@@ -677,14 +684,46 @@
         StateHasChanged();
     }
 
-    private void OpenNexusWebLogin() => _ = NexusWeb.OpenAccountWindowAsync();
+    private async Task OpenNexusWebLogin()
+    {
+        try
+        {
+            await NexusWeb.OpenAccountWindowAsync();
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warn("NexusWeb", "打开内置 Nexus 网页窗口失败：" + ex);
+            _ = JS.InvokeVoidAsync("junigridJs.toast", LocService.Tr("内置 Nexus 网页窗口打开失败") + "：" + ex.Message, "err");
+        }
+    }
+    private void OnNexusWebSignInChanged(bool signedIn)
+    {
+        _ = InvokeAsync(() =>
+        {
+            _nexusWebSignedIn = signedIn;
+            if (!signedIn) _nexusWebName = null;
+            StateHasChanged();
+        });
+    }
+
+    private void OnNexusWebAccountChanged(string? name)
+    {
+        _ = InvokeAsync(() =>
+        {
+            // 只存「真的拿到账号名」这一种情况；null 就是未登录 —— 界面据此二选一显示按钮
+            _nexusWebName = string.IsNullOrWhiteSpace(name) ? null : name;
+            StateHasChanged();
+        });
+    }
 
     private async Task LogoutNexusWeb()
     {
         try
         {
             await NexusWeb.LogoutWebAccountAsync();
-            _nexusWebName = LocService.Tr("未登录");
+            _nexusWebName = null;   // 未登录 → 按钮切回「登录」
+            _nexusWebSignedIn = false;
+            StateHasChanged();
             _ = JS.InvokeVoidAsync("junigridJs.toast", LocService.Tr("已退出内置 Nexus 网页账号"));
         }
         catch (Exception ex)
@@ -864,7 +903,8 @@
         _steam = Steam.GetProfile();
         var cfg = Cfg.Current;
         _nexusName = cfg.NexusUserName;
-        _nexusWebName = NexusWeb.AccountName ?? LocService.Tr("点击登录 / 切换以查看网页账号");
+        _nexusWebName = NexusWeb.AccountName;   // 拿不到就是 null（未登录），别用占位文案伪装成"已知"
+        _nexusWebSignedIn = NexusWeb.SignedIn;
         _nexusPremium = cfg.NexusIsPremium;
         // v1.08.2：只信 image/* 的缓存 —— 旧版本曾把 profile_url（网页链接）的下载结果当头像缓存，
         // data:text/html 之类坏数据每次进页都命中，头像自然「对不上」
@@ -1341,6 +1381,8 @@
     public void Dispose()
     {
         Loc.OnChanged -= OnLocChanged;
+        NexusWeb.AccountNameChanged -= OnNexusWebAccountChanged;
+        NexusWeb.SignedInChanged -= OnNexusWebSignInChanged;
         Mem.OnSnapshot -= OnMemSnap;
         ConfigService.Saved -= OnCfgSaved;   // v1.1.4
         Storage.OnStats -= OnStorageStats;
@@ -1368,6 +1410,8 @@
     {
         // i18n：语言切换后就地重渲染本页（不整页 reload，避免闪一下）
         Loc.OnChanged += OnLocChanged;
+        NexusWeb.AccountNameChanged += OnNexusWebAccountChanged;
+        NexusWeb.SignedInChanged += OnNexusWebSignInChanged;
         await LoadAccountsAsync();
         _gamePath = Cfg.Current.GamePath;        _oneClickInstall = Cfg.Current.EnableOneClickInstall;
         // 重 IO 丢后台：ProbeManifest 扫 Steam 清单 + ListStagedPackages 过 52 个版本包，

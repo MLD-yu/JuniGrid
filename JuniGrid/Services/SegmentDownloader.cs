@@ -308,6 +308,13 @@ public static class SegmentDownloader
         long from, long to, int lane, Checkpoint checkpoint, Action<long> onBytes, CancellationToken ct)
     {
         var cursor = checkpoint.GetCursor(lane);
+        // v1.3.41：续传的唯一硬证据 —— 车道起点必须是「保存的 cursor」，不是本段开头 from。
+        // 真机验证「暂停→继续只请求剩余区间」就看这一行（光标 = 从段首跳过了多少）。
+        if (cursor > from)
+            AppLog.Info("Download", $"续传车道 {lane + 1}：跳过已下的 "
+                + ResumableDownload.FormatBytes(cursor - from)
+                + $"，从 {cursor} 接着请求到 {to}（本段 {from}…{to}）");
+
         for (var attempt = 1; cursor <= to; attempt++)
         {
             try

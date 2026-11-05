@@ -5861,7 +5861,16 @@
                         // 以前要等 ResolveDownloadUrlAsync 返回了任务才出现，而免费账号那一步
                         // 要先开隐藏窗口把 N 网文件页走一遍（十几到几十秒）—— 用户点了更新，
                         // 任务中心里空空的，看着就像没反应。现在点下去立刻就有一行在转。
-                        task = Center.StartOrRestart($"更新 Mod「{m.Name}」", "update", m.NexusModId);
+                        task = Center.StartOrRestart($"更新 Mod「{m.Name}」", "update", m.NexusModId,
+                            out var alreadyUpdating);
+                        if (alreadyUpdating)
+                        {
+                            // v1.3.44：这个 mod 已经有一个更新在跑（重复点 / 自动重跑先出发）。
+                            // 再挂一个 worker 会往同一个 zip 路径写 —— 宁可这一轮跳过。
+                            st.Status = "available";
+                            st.Message = LocService.Tr("已经有一个更新在跑，等它结束再看");
+                            StateHasChanged(); return;
+                        }
                         Center.Report(task, st.Message, 0);
 
                         // v1.3.31：跨通道缓存复用先于取链 —— direct-/nxm-/dep-/mod- 四种落盘名
@@ -6036,7 +6045,14 @@
                         NotifyCheckProgress();
 
                         // 与 N 网那条一致：任务行先出现，再干活
-                        task = Center.StartOrRestart($"更新 Mod「{m.Name}」", "update", m.NexusModId);
+                        task = Center.StartOrRestart($"更新 Mod「{m.Name}」", "update", m.NexusModId,
+                            out var alreadyUpdatingGh);
+                        if (alreadyUpdatingGh)
+                        {
+                            st.Status = "available";
+                            st.Message = LocService.Tr("已经有一个更新在跑，等它结束再看");
+                            StateHasChanged(); return;
+                        }
                         Center.Report(task, st.Message, 0);
 
                         var ghZip = Path.Combine(StoragePaths.DownloadsDir,

@@ -35,8 +35,101 @@ public class TaskRestartIdentityTests
     {
         "fail" => 99_900_001, "paused" => 99_900_002, "done" => 99_900_003,
         "kind" => 99_900_004, "clock" => 99_900_005, "resume" => 99_900_006,
+        "live" => 99_900_007, "loginwall" => 99_900_008, "anykind" => 99_900_009,
         _ => throw new ArgumentOutOfRangeException(nameof(which)),
     };
+
+    // ─────────────── ①′ 正在跑的那一行就是「同一件事」（v1.3.44） ───────────────
+
+    // 实测 2026-11-05 03:01:56 / 03:02:00：登录成功自动重跑刚把行重开成 running，
+    // 另一条通道 4 秒后为同一个 mod 再发起一次，任务管理里并排两条同名任务。
+    // 旧实现只认 failed/paused，对 running 的行视而不见 → 又 Start 一条新的。
+
+    [Fact]
+    public void RunningRow_IsHandedBack_SoCallerStopsInsteadOfStartingAnother()
+    {
+        var c = NewCenterThatNeverWritesDisk();
+        int id = Id("live");
+        var row = c.StartOrRestart("下载并安装 测试包", "install", id, out var firstWasRunning);
+        Assert.False(firstWasRunning);          // 第一次：这一行是我新建的
+        Assert.Equal("running", row.Status);
+
+        var again = c.StartOrRestart("下载并安装 测试包", "install", id, out var alreadyRunning);
+
+        Assert.True(alreadyRunning);            // 第二次：本来就是它在跑 —— 调用方不许再挂 worker
+        Assert.Same(row, again);
+        Assert.Single(RowsOf(c, id));           // 没有多排一条
+        Assert.Equal("running", again.Status);   // 也不许把它重置回 0%（那会把正在跑的进度抹掉）
+        c.ClearMatching(t => t.NexusId == id);
+    }
+
+    [Fact]
+    public void DoneRow_StillGetsANewRow_WhenAskedAgain()
+    {
+        // 和上面那条互为边界：装完（done）之后再点「安装」是一次新的下载，该有自己的行。
+        var c = NewCenterThatNeverWritesDisk();
+        int id = Id("done");
+        var row = c.StartOrRestart("下载并安装 测试包", "install", id);
+        c.Finish(row, true, "安装完成：测试包");
+
+        var again = c.StartOrRestart("下载并安装 测试包", "install", id, out var alreadyRunning);
+
+        Assert.False(alreadyRunning);
+        Assert.NotSame(row, again);
+        c.ClearMatching(t => t.NexusId == id);
+    }
+
+    [Fact]
+    public void TotalPercent_DoesNotEchoAFailedRowsStalePercent()
+    {
+        // 实机：任务页左侧「总进度 8.00%」+ 剩余任务 0 —— 8 是上面那条失败行停下的位置。
+        var c = NewCenterThatNeverWritesDisk();
+        int id = Id("anykind");
+        var row = c.StartOrRestart("下载并安装 测试包", "install", id);
+        c.Report(row, "正在下载…", 8);
+        c.Finish(row, false, "HTTP 404");
+
+        Assert.Equal(0, c.TotalPercent);
+
+        c.Restart(row);
+        c.Finish(row, true, "安装完成");
+        Assert.Equal(100, c.TotalPercent);   // 成功那一行仍沿用 100%，不要突然掉回 0
+        c.ClearMatching(t => t.NexusId == id);
+    }
+
+    [Fact]
+    public void AnyLiveFor_SeesTheModThroughAnyKind()
+    {
+        // 2026-11-04 的「一个 mod 两个任务」：更新在跑，网页又撂回一条 nxm →
+        // 旧实现只看 (kind=install, id)，认不出那是同一次下载的另一个通道。
+        var c = NewCenterThatNeverWritesDisk();
+        int id = Id("anykind");
+        var up = c.StartOrRestart("更新 Mod「测试包」", "update", id);
+
+        Assert.True(c.AnyLiveFor(id));
+
+        c.Finish(up, true, "更新完成：测试包");
+        Assert.False(c.AnyLiveFor(id));    // 跑完了就不该再挡住新的下载
+        Assert.False(c.AnyLiveFor(0));     // 0 号不是真号
+        c.ClearMatching(t => t.NexusId == id);
+    }
+
+    [Fact]
+    public void FinishSuccess_ClearsTheLoginWallFlag()
+    {
+        // 撞过登录墙、后来装成功的那一行不该继续挂着「待登录后重跑」——
+        // 实测 tasks.json 里出现过 done + NeedsLoginRetry=true。
+        var c = NewCenterThatNeverWritesDisk();
+        int id = Id("loginwall");
+        var row = c.StartOrRestart("下载并安装 测试包", "install", id);
+        row.NeedsLoginRetry = true;
+
+        c.Finish(row, true, "安装完成：测试包");
+
+        Assert.False(row.NeedsLoginRetry);
+        Assert.DoesNotContain(c.Snapshot(), t => t.NexusId == id && t.NeedsLoginRetry);
+        c.ClearMatching(t => t.NexusId == id);
+    }
 
     // ─────────────── ② 重新下载不许多排一条 ───────────────
 

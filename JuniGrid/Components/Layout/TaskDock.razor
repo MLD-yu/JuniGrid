@@ -103,12 +103,13 @@
         if (Services.AppUiState.WindowVisible) InvokeAsync(StateHasChanged);
     }
 
-    // 单个下载/安装任务落定 → 置顶主窗；失败再补一条红色 toast（成功已有任务舱对号 + 各页摘要，不叠 toast）
+    // 单个下载/安装任务落定 → 失败补一条红色 toast（成功已有任务舱对号 + 各页摘要，不叠 toast）。
     private void OnTaskFinished(TaskItem t, bool success)
     {
         _ = InvokeAsync(async () =>
         {
-            JuniGrid.App.BringMainWindowToFront();
+            // v1.3.43：不再 BringMainWindowToFront —— 下载现在走应用内，
+            // 任务结束时把用户正在别的窗口做的事顶掉纯属打扰（以前置顶是为了让人去浏览器收尾）。
             if (success) return;
             var msg = t.Title.Length > 0 ? t.Title + LocService.Tr(" 失败") : (t.LastLine ?? "下载失败");
             try { await JS.InvokeVoidAsync("junigridJs.toast", msg, "err"); } catch { }

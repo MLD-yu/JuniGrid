@@ -34,7 +34,7 @@ public static class InstallMigrate
     public static readonly string[] DataDirs =
     {
         "depot-staging", "downloads", "mods-backup", "portrait-covers",
-        "self-update", "smapi-installer", "webview2", "nexus-browse",
+        "self-update", "smapi-installer", "webview2", "nexus-browse", "nexus-web",
     };
 
     /// <summary>缓存根下的散装文件（不是目录），同样要跟着搬。</summary>

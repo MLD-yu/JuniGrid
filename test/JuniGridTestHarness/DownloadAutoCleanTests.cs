@@ -122,4 +122,56 @@ public class DownloadAutoCleanTests : IDisposable
     [Fact]
     public void MissingDir_IsNoOp()
         => Assert.Equal(0, StorageService.PruneStaleEntries(Path.Combine(_dir, "nope"), Cutoff));
+
+    // ── v1.3.41：断点被清掉之后，任务行上别再挂着「还能继续」的假象 ──
+
+    [Fact]
+    public void GonePartialPaths_OnlyReportsTasksWhoseArtifactsAreAllGone()
+    {
+        var alive = Path.Combine(_dir, "alive.zip");
+        File.WriteAllText(alive + ".seg", "x");        // 分片还在 → 断点没丢
+        var gone = Path.Combine(_dir, "gone.zip");     // 包 / .seg / .state 全无
+
+        var list = StorageService.GonePartialPaths(new[]
+        {
+            new TaskItem { PartialDownloadPath = alive, Status = "paused" },
+            new TaskItem { PartialDownloadPath = gone, Status = "paused" },
+            new TaskItem { PartialDownloadPath = null, Status = "paused" },
+        });
+
+        Assert.Single(list);
+        Assert.Equal(Path.GetFullPath(gone), list[0]);
+    }
+
+    [Fact]
+    public void ClearingGoneBreakpoints_RemovesTaskReference()
+    {
+        var c = NewCenterThatNeverWritesDisk();
+        var gone = Path.Combine(_dir, "gone-2.zip");
+        var alive = Path.Combine(_dir, "alive-2.zip");
+        File.WriteAllText(alive, "x");
+
+        var t1 = c.Start("测试 · 断点已失效", "install");
+        c.SetPartialDownloadPath(t1, gone);
+        var t2 = c.Start("测试 · 断点还在", "install");
+        c.SetPartialDownloadPath(t2, alive);
+
+        c.ClearPartialDownloadPaths(StorageService.GonePartialPaths(new[] { t1, t2 }));
+
+        Assert.Null(t1.PartialDownloadPath);          // 清掉 → 点「继续」按从头下载处理
+        Assert.Equal(alive, t2.PartialDownloadPath);  // 还在的断点一个字都不许动
+    }
+
+    /// <summary>与 TaskRestartIdentityTests 同款：掐掉落盘防抖定时器与回收定时器，
+    /// 免得测试往真实 tasks.json 里写玩具行。</summary>
+    private static TaskCenterService NewCenterThatNeverWritesDisk()
+    {
+        var c = new TaskCenterService();
+        const System.Reflection.BindingFlags F =
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
+        typeof(TaskCenterService).GetField("_saveTimer", F)?.SetValue(c,
+            new Timer(_ => { }, null, System.Threading.Timeout.Infinite, System.Threading.Timeout.Infinite));
+        (typeof(TaskCenterService).GetField("_reapTimer", F)?.GetValue(c) as Timer)?.Dispose();
+        return c;
+    }
 }

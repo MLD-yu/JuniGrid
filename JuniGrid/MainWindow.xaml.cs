@@ -532,6 +532,11 @@ public partial class MainWindow : Window
                 BeginAnimation(OpacityProperty, fadeOut);
             };
 
+            // v1.3.43：启动就把安装服务建出来 —— 它构造函数里订阅了「网页登录成功」事件，
+            // 用来把「因内置网页没登录而失败」的任务自动重跑。懒加载会让这个订阅在
+            // 用户第一次下载之前根本不存在（实测：只进设置页登录，回调一次都没触发）。
+            _ = provider.GetRequiredService<InstallService>();
+
             // 如果这次启动本身就是被 nxm:// 链接拉起的，现在 DI 好了，交给安装服务
             if (App.PendingNxmLink is { } pending)
             {
