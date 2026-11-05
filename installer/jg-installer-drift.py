@@ -341,6 +341,77 @@ def run_m15():
           f"recycle@{i_recycle} vs delete@{i_del}")
 
 
+def run_m16():
+    """防降级闸 + 散装文件冲突规则（两条都是行业默认，我们原本缺）。
+
+    MSI/WiX 的 MajorUpgrade 默认拦版本倒退；MSI 的组件一致性要求"同名即同物、
+    新版本胜出"。散装文件原来走的是另一套（冲突就留原地标失败）⇒ 一个
+    _smapi-install.dat 能让 migrationFailed 为真，旧卸载器被跳过、旧目录永远清不掉。
+    """
+    eng = os.path.join(REPO, "installer", "JuniGridInstaller", "InstallerEngine.cs")
+    mig = os.path.join(REPO, "installer", "JuniGridInstaller", "InstallMigrate.cs")
+    if not (os.path.exists(eng) and os.path.exists(mig)):
+        return
+    e = read(eng)
+    m = read(mig)
+    i_gate = e.find("EnsureNotDowngrade();")
+    i_touch = e.find("Directory.CreateDirectory(targetDir)")
+    check("M16a", "防降级闸排在一切动作之前（先动手再发现版本倒退就晚了）",
+          0 <= i_gate < i_touch, f"gate@{i_gate} vs create@{i_touch}")
+    check("M16b", "散装文件冲突与目录同一套规则（送回收站，不再标失败卡住）",
+          "RecycleOrDelete(src)" in m and "新位置已有不同内容 —— 旧文件保留在原位置" not in m,
+          "老做法会让旧目录永远清不掉")
+    check("M16c", "跨卷单文件搬家走原子写入（File.Move 跨卷=复制+删除，会留半截）",
+          "AtomicCopy(src, dst); File.Delete(src)" in m)
+
+
+def run_version_gate(exe):
+    """RT10–RT12：防降级闸的真实行为（用探针 JGINSTALLER_FAKE_INSTALLED_VERSION）。
+
+    真机上没法安全构造"已装更新的版本"（得改用户的卸载注册表项），所以走探针。
+    """
+    if exe is None:
+        return
+
+    def probe(installed, allow_downgrade=False):
+        out = os.path.join(tempfile.gettempdir(), f"jg-ver-{os.getpid()}.txt")
+        if os.path.exists(out):
+            os.remove(out)
+        env = dict(os.environ)
+        if installed is None:
+            env.pop("JGINSTALLER_FAKE_INSTALLED_VERSION", None)
+        else:
+            env["JGINSTALLER_FAKE_INSTALLED_VERSION"] = installed
+        if allow_downgrade:
+            env["JGINSTALLER_ALLOW_DOWNGRADE"] = "1"
+        else:
+            env.pop("JGINSTALLER_ALLOW_DOWNGRADE", None)
+        try:
+            subprocess.run([exe, "--version-check", out], capture_output=True, timeout=60, env=env)
+        except Exception as ex:
+            return f"(启动失败: {ex})"
+        if os.path.exists(out):
+            with open(out, encoding="utf-8", errors="replace") as f:
+                return f.read().strip()
+        return "(入口没产出报告文件)"
+
+    r_high = probe("9.9.9")
+    check("RT10", "已装 9.9.9 装 1.3.0 ⇒ 版本倒退被拦",
+          "降级=拦" in r_high, r_high)
+    r_low = probe("1.0.0")
+    check("RT11", "已装 1.0.0 装 1.3.0 ⇒ 正常升级放行",
+          "降级=放行" in r_low, r_low)
+    r_none = probe("none")
+    check("RT12", "没装过 ⇒ 放行（探针 none 表示假装没装过）",
+          "降级=放行" in r_none and "(没装过)" in r_none, r_none)
+    r_real = probe(None)
+    check("RT12b", "不带探针时读真注册表，结论必须与探针一致（只读，不写）",
+          "降级=" in r_real, r_real)
+    r_forced = probe("9.9.9", allow_downgrade=True)
+    check("RT13", "JGINSTALLER_ALLOW_DOWNGRADE=1 ⇒ 强行降级放行",
+          "降级=放行" in r_forced, r_forced)
+
+
 def run_orphan(exe):
     """RT6–RT9：孤儿清理的真实行为。
 
@@ -451,9 +522,11 @@ def main():
     run_m13()      # 验证入口存在
     run_m14()      # 孤儿清理调用链形状
     run_m15()      # 搬家写入原子性 + 冲突去处
+    run_m16()      # 防降级闸 + 散装文件冲突规则
     print("-" * 72)
     run_rt(exe)    # 真实入口行为
     run_orphan(exe)  # 孤儿清理行为
+    run_version_gate(exe)  # 防降级行为
 
     failed = [r for r in RESULTS if not r[2]]
     print("=" * 72)

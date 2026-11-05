@@ -94,6 +94,36 @@ public partial class App : Application
             return;
         }
 
+        // 防降级验证入口：JuniGridSetup.exe --version-check [输出文件]（只读，不装任何东西）
+        // 报「已装版本 vs 本安装包版本，降级会不会被拦」。探针 JGINSTALLER_FAKE_INSTALLED_VERSION
+        // 用来构造"已装更新的版本"这种真机上不好造的情形。
+        if (e.Args.Length >= 1 && e.Args[0].Equals("--version-check", StringComparison.OrdinalIgnoreCase))
+        {
+            var engine = new InstallerEngine();
+            var installed = engine.InstalledDisplayVersion();
+            string report;
+            try
+            {
+                var blocked = Environment.GetEnvironmentVariable("JGINSTALLER_ALLOW_DOWNGRADE") == "1"
+                    ? false
+                    : (!string.IsNullOrWhiteSpace(installed)
+                       && InstallerEngine.CompareVersion(installed, InstallerEngine.Version) > 0);
+                report = "version-check 本包=" + InstallerEngine.Version + " ‖ 已装=" + (installed ?? "(没装过)")
+                       + " ‖ 降级=" + (blocked ? "拦" : "放行");
+            }
+            catch (Exception ex) { report = "version-check 异常: " + ex; }
+            try { Console.Out.WriteLine(report); Console.Out.Flush(); } catch { }
+            try
+            {
+                var outPath = e.Args.Length >= 2 ? e.Args[1]
+                    : Path.Combine(Path.GetTempPath(), "jg-version-check.txt");
+                File.WriteAllText(outPath, report);
+            }
+            catch { }
+            Shutdown(0);
+            return;
+        }
+
         // 孤儿清理验证入口：JuniGridSetup.exe --orphan-check <装机目录> [payload文件表] [输出文件]
         // 报「上一版写出去、这版不再带来」的文件有哪些；默认只算不删，真删要 JGINSTALLER_APPLY=1。
         // payload文件表 = 每行一个相对路径，省略时用本次安装包真实的 payload 表。

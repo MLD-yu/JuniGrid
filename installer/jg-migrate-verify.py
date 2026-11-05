@@ -195,6 +195,24 @@ def main():
     check("M2g 内容跟着走（不是空目录）",
           io.open(os.path.join(new, "depot-staging", "1.6.15", "body.bin"), encoding="utf-8").read() == "x" * 4096)
 
+    # ── M12b 散装文件撞名 ⇒ 与目录同一套规则（MSI 组件一致性：同名即同物，新版本胜出）──
+    # 老做法是"旧文件留原地 + 记一条没搬成"，于是 migrationFailed 为真、旧卸载器被跳过、
+    # 旧目录永远清不掉 —— 一个 _smapi-install.dat 能卡住整棵树。
+    b = fresh_case("m12b")
+    old = build_old(b)
+    new = os.path.join(b, "new")
+    os.makedirs(new)
+    io.open(os.path.join(new, "_smapi-install.dat"), "w", encoding="utf-8").write("NEW-这份为准")
+    cfg = cfgpath(b, {"cacheRoot": old})
+    rc, txt = run(old, new, cfg)
+    keep = os.path.join(new, "_smapi-install.dat")
+    check("M12b 散装文件撞名 ⇒ 新位置那份为准，不被旧的盖掉",
+          os.path.isfile(keep) and io.open(keep, encoding="utf-8").read() == "NEW-这份为准")
+    check("M12c 散装文件撞名不再卡住：旧文件不留在原地、其余目录照常搬",
+          not os.path.exists(os.path.join(old, "_smapi-install.dat"))
+          and os.path.isdir(os.path.join(new, "depot-staging"))
+          and "没搬成" not in txt, txt.replace("\n", " / ")[:130])
+
     # ── M3 新目录已有同名数据 ⇒ 合并复制分支：已存在的不许被覆盖 ──
     b = fresh_case("m3")
     old = build_old(b)

@@ -186,6 +186,10 @@ public static class InstallMigrate
                 Directory.CreateDirectory(newFull);
                 if (File.Exists(dst))
                 {
+                    // 与目录同一套规则（MSI 的组件一致性：同名即同物）：
+                    // 目标那份更全/更新 ⇒ 以它为准，旧的送回收站，不再"留原地标失败"。
+                    // 老做法会让 migrationFailed 为真 ⇒ 旧卸载器被跳过 ⇒ 旧目录永远清不掉，
+                    // 一个文件卡住整棵树。
                     if (FilesEqual(src, dst))
                     {
                         File.Delete(src);
@@ -193,11 +197,14 @@ public static class InstallMigrate
                     }
                     else
                     {
-                        failed.Add($"{name}：新位置已有不同内容 —— 旧文件保留在原位置");
+                        RecycleOrDelete(src);
+                        moved.Add(name + "（同名不同内容，旧的送回收站）");
                     }
                     continue;
                 }
-                File.Move(src, dst);
+                // 跨卷是"复制+删除"，不是改名 —— 中断会留半截。走原子写入。
+                if (sameVolume) File.Move(src, dst);
+                else { AtomicCopy(src, dst); File.Delete(src); }
                 moved.Add(name);
             }
             catch (Exception ex) { failed.Add($"{name}：{ex.Message}"); }

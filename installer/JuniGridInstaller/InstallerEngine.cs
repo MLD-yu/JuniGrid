@@ -145,6 +145,53 @@ public sealed class InstallerEngine
         catch { return (null, null); }
     }
 
+    /// <summary>已装版本（注册表 DisplayVersion）；没装过/读不到返回 null。
+    /// <para><c>JGINSTALLER_FAKE_INSTALLED_VERSION</c> 是给回归防线用的探针（与
+    /// <c>JG_NXM_PROBE_CMD</c> 同款）：防降级这条闸只能靠"已装版本高于本包"才触发，
+    /// 真机上没法安全构造，探针让它可测。传 <c>none</c> 表示"假装没装过"。
+    /// 只读取，不写注册表。</para></summary>
+    public string? InstalledDisplayVersion()
+    {
+        var probe = Environment.GetEnvironmentVariable("JGINSTALLER_FAKE_INSTALLED_VERSION");
+        if (!string.IsNullOrWhiteSpace(probe))
+        {
+            var p = probe.Trim();
+            return p.Equals("none", StringComparison.OrdinalIgnoreCase) ? null : p;
+        }
+        try
+        {
+            using var k = Registry.CurrentUser.OpenSubKey(UninstallKeyPath);
+            return k?.GetValue("DisplayVersion") as string;
+        }
+        catch { return null; }
+    }
+
+    /// <summary>
+    /// 防降级：拿旧安装包盖住新版本是被拦的。
+    ///
+    /// <para>MSI / WiX 的 <c>MajorUpgrade</c> 默认就是这个行为（旧版安装包跑过来会报
+    /// "已有另一版本"），Chrome / VS Code 那类自动更新也不允许版本倒退。
+    /// 这里只拦<b>真降级</b>（已装版本高于本安装包）；同版本放行，当修复安装处理。</para>
+    /// <para>要强行降级：设 <c>JGINSTALLER_ALLOW_DOWNGRADE=1</c>。</para>
+    /// </summary>
+    private void EnsureNotDowngrade()
+    {
+        if (Environment.GetEnvironmentVariable("JGINSTALLER_ALLOW_DOWNGRADE") == "1") return;
+        var installed = InstalledDisplayVersion();
+        if (string.IsNullOrWhiteSpace(installed)) return;
+        if (CompareVersion(installed, Version) <= 0) return;
+        throw new InvalidOperationException(
+            $"这台机器上已装的是 {installed}，不能用 {Version} 的安装包覆盖（版本倒退）。"
+            + "确实要降级，请先卸载当前版本，或设置环境变量 JGINSTALLER_ALLOW_DOWNGRADE=1 后重试。");
+    }
+
+    internal static int CompareVersion(string a, string b)
+    {
+        if (System.Version.TryParse(a, out var va) && System.Version.TryParse(b, out var vb))
+            return va.CompareTo(vb);
+        return string.Compare(a, b, StringComparison.OrdinalIgnoreCase);
+    }
+
     public Task InstallAsync(string targetDir, bool desktopShortcut,
         IProgress<InstallProgress> progress, CancellationToken ct)
         => Task.Run(() => InstallCore(targetDir, desktopShortcut, progress, ct), ct);
@@ -152,6 +199,8 @@ public sealed class InstallerEngine
     private void InstallCore(string targetDir, bool desktopShortcut,
         IProgress<InstallProgress> progress, CancellationToken ct)
     {
+        // 最先做：版本倒退必须拦在一切动作之前（MSI/WiX 的 MajorUpgrade 默认就是这么拦的）
+        EnsureNotDowngrade();
         targetDir = Path.GetFullPath(targetDir);
         // 选 Program Files 这类目录时，CreateDirectory 本身就会先抛 UnauthorizedAccessException ——
         // 友好提示得罩住它，不能只罩后面那次写探测（否则用户看到的是原始系统异常）。
