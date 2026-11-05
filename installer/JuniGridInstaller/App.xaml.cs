@@ -105,7 +105,10 @@ public partial class App : Application
                 var sb = new System.Text.StringBuilder();
                 sb.Append("migrate-check ").Append(r.OldDir).Append(" → ").Append(r.NewDir)
                   .AppendLine(apply ? "  【本次会真搬】" : "  【只算不搬】");
-                sb.AppendLine("  搬走的: " + (r.Moved.Count == 0 ? "（没有可搬的数据目录）" : string.Join(" | ", r.Moved)));
+                sb.AppendLine("  搬走的: " + (r.Moved.Count == 0
+                    ? (r.SkipReason is null ? "（没有可搬的数据目录）" : "（跳过，见下）")
+                    : string.Join(" | ", r.Moved)));
+                if (!string.IsNullOrEmpty(r.SkipReason)) sb.AppendLine("  跳过: " + r.SkipReason);
                 sb.AppendLine("  合计: " + r.Bytes / (1024 * 1024) + " MB ‖ 配置改指新目录=" + r.ConfigPatched);
                 if (r.Failed.Count > 0) sb.AppendLine("  没搬成的: " + string.Join(" | ", r.Failed));
                 report = sb.ToString();

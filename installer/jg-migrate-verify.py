@@ -268,16 +268,21 @@ def main():
     check("M4b 旧目录里的 downloads 完整保留（绝不两头都没有）",
           os.path.isfile(os.path.join(old, "downloads", "nxm-1310-5131.zip")))
 
-    # ── M5 cacheRoot 指向别处（用户自己划的目录）⇒ 数据照搬，配置不许改 ──
+    # ── M5 cacheRoot 指向别处（用户自己划的目录）⇒ 配置不许改，数据也不搬 ──
+    # 2026-11-05 改：以前这里断言"数据照搬"。但 cacheRoot 指向别处时应用读的是那个目录，
+    # 搬进新安装目录只会得到一份永远没人读的副本（实测：换目录装完 D:\JuniGrid\nexus-browse
+    # 就是这么来的），卸载时还会让安装目录删不掉。现在是"跳过并说明"。
     b = fresh_case("m5")
     old = build_old(b)
     new = os.path.join(b, "new")
     cfg = cfgpath(b, {"cacheRoot": "D:\\JuniGridCache", "gamePath": "E:\\x"})
     before = io.open(cfg, encoding="utf-8").read()
     rc, txt = run(old, new, cfg)
-    check("M5 配置里写的不是旧安装目录 ⇒ 一个字节都不改",
+    check("M5 cacheRoot 指向别处 ⇒ 配置一个字节不改，旧目录里的数据目录不搬",
           io.open(cfg, encoding="utf-8").read() == before
-          and os.path.isdir(os.path.join(new, "depot-staging")), txt.replace("\n", " | ")[:160])
+          and os.path.isdir(os.path.join(old, "depot-staging"))
+          and not os.path.exists(os.path.join(new, "depot-staging"))
+          and "跳过" in txt, txt.replace("\n", " | ")[:200])
 
     # ── M6 cacheRoot 键根本没有（数据住在历史默认位置之外）⇒ 搬了才补上 ──
     b = fresh_case("m6")

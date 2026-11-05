@@ -44,15 +44,18 @@ public static class InstallMigrate
     public static readonly string[] DataFiles = { "_smapi-install.dat" };
 
     public sealed record Result(List<string> Moved, List<string> Failed,
-        long Bytes, bool ConfigPatched, string? OldDir, string? NewDir);
+        long Bytes, bool ConfigPatched, string? OldDir, string? NewDir, string? SkipReason = null);
 
     /// <summary>估算迁移阶段会额外占用的空间；同卷且目标目录不存在时走目录改名，不额外占空间。</summary>
-    public static long EstimateAdditionalBytes(string? oldDir, string newDir)
+    public static long EstimateAdditionalBytes(string? oldDir, string newDir, string? configPath = null)
     {
         if (string.IsNullOrWhiteSpace(oldDir) || !Directory.Exists(oldDir)) return 0;
         var oldFull = Norm(oldDir);
         var newFull = Norm(newDir);
         if (oldFull.Equals(newFull, StringComparison.OrdinalIgnoreCase)) return 0;
+        // 会跳过的那一趟不额外占空间 —— 不按 0 算的话，空间预检会多要一份根本用不到的额度，
+        // 在小盘上可能把一次本来能成的安装拦下来。
+        if (CacheRootElsewhere(oldFull, newFull, configPath) is not null) return 0;
 
         var sameVolume = string.Equals(Path.GetPathRoot(oldFull), Path.GetPathRoot(newFull),
             StringComparison.OrdinalIgnoreCase);
@@ -97,6 +100,19 @@ public static class InstallMigrate
         // 同一个地址：没搬家这回事（覆盖安装走 InstallRecycle 那条）
         if (oldFull.Equals(newFull, StringComparison.OrdinalIgnoreCase))
             return new Result(moved, failed, 0, false, oldFull, newFull);
+
+        // cacheRoot 指着**别处**（既不是旧目录、也不是新目录）⇒ 旧安装目录里那几个数据目录
+        // 是历史副本，应用读的根本不是它们。搬进新安装目录只会得到一份永远没人读的数据
+        // （实测：换目录装完，D:\JuniGrid\nexus-browse 就是这么来的），而且卸载时它还会
+        // 让安装目录删不掉。搬过去是负收益，跳过并说清楚。
+        var otherRoot = CacheRootElsewhere(oldFull, newFull, configPath);
+        if (otherRoot is not null)
+        {
+            App.Log($"搬家跳过：缓存根是 {otherRoot}（既不是旧目录也不是新目录）"
+                    + $" —— {oldFull} 里的数据目录是旧副本，搬过去应用也不会读");
+            return new Result(moved, failed, 0, false, oldFull, newFull,
+                $"缓存根指向 {otherRoot}，旧安装目录里的数据目录不搬（应用读的不是那里）");
+        }
 
         var sameVolume = string.Equals(Path.GetPathRoot(oldFull), Path.GetPathRoot(newFull),
             StringComparison.OrdinalIgnoreCase);
@@ -453,4 +469,18 @@ public static class InstallMigrate
 
     private static string Norm(string p)
         => Path.GetFullPath(p.Trim()).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
+    /// <summary>配置里的缓存根指向"别处"（既不是旧目录、也不是新目录）时返回它，否则 null。
+    /// <b>搬家与空间预检必须共用这一个判据</b> —— 两处各写一份，迟早一处改了一处没改。</summary>
+    private static string? CacheRootElsewhere(string oldFull, string newFull, string? configPath)
+    {
+        if (string.IsNullOrWhiteSpace(configPath)) return null;
+        var cfgRoot = InstallConfig.ReadCacheRoot(configPath);
+        if (string.IsNullOrWhiteSpace(cfgRoot)) return null;
+        string cfgFull;
+        try { cfgFull = Norm(cfgRoot); } catch { cfgFull = cfgRoot.Trim(); }
+        if (cfgFull.Equals(oldFull, StringComparison.OrdinalIgnoreCase)) return null;
+        if (cfgFull.Equals(newFull, StringComparison.OrdinalIgnoreCase)) return null;
+        return cfgRoot.Trim();
+    }
 }

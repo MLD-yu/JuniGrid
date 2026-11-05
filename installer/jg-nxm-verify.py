@@ -30,10 +30,10 @@ for name, probe, expect in cases:
     if os.path.exists(f):
         os.remove(f)
     env = dict(os.environ)
-    if probe:
-        env["JG_NXM_PROBE_CMD"] = probe
-    else:
-        env.pop("JG_NXM_PROBE_CMD", None)
+    # 空串也算"设过"：产品用它表达"注册表里那条命令是空的"。
+    # 以前这里对空串直接 pop，于是 N4 实际在测"没设探针 → 读真注册表"——
+    # 在装着 Vortex（NxmDisplacedCommand 有值）的机器上必红，和产品行为无关。
+    env["JG_NXM_PROBE_CMD"] = probe
     subprocess.run([EXE, "--nxm-default", f], env=env, timeout=120)
     txt = io.open(f, encoding="utf-8").read() if os.path.exists(f) else "(no report)"
     first = txt.splitlines()[0] if txt.splitlines() else ""

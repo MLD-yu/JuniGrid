@@ -80,6 +80,16 @@ dotnet publish (Join-Path $installerDir 'JuniGridInstaller') -c Release -r win-x
     -p:DebugType=none -p:Version=$version -o $out
 if ($LASTEXITCODE -ne 0) { throw "Installer publish failed" }
 
+# 5a) 去掉产物的 Low 完整性标签（否则整条出包流程在这里就废了）
+# 仓库根目录带 Low 标签时（本机实测有），publish 出来的 exe 会继承它：单文件自解压要写
+# %TEMP%\.net 会被拒（错误码 5），接着 5 条防线全部"入口没产出报告"，整个出包中止。
+# 只抬这一个文件的标签，不动目录、不提权。
+$probe = Join-Path $out 'JuniGridSetup.exe'
+if (Test-Path $probe) {
+    & icacls $probe /setintegritylevel Medium | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "给 $probe 去 Low 标签失败（icacls 退出码 $LASTEXITCODE）" }
+}
+
 # 5b) 回归防线：M10 搬家清单漂移 / M11 回收调用链形状 / RT* 守卫行为 / 搬家·配置·nxm 三套夹具
 #     / SI* 单实例闸的可见出口（真起两个实例看旧窗口有没有被拉回屏上）
 #     必须跑在 publish 之后、拷进 dist-tmp 之前：
@@ -119,6 +129,9 @@ $dist = Join-Path $repo 'dist-tmp'
 New-Item -ItemType Directory -Force $dist | Out-Null
 $dest = Join-Path $dist ("JuniGrid-cn-v{0}-setup.exe" -f $version)
 Copy-Item (Join-Path $out 'JuniGridSetup.exe') $dest -Force
+# dist-tmp 也在仓库里、同样带 Low 标签：拷进来的文件会重新继承，再抬一次
+& icacls $dest /setintegritylevel Medium | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "给 $dest 去 Low 标签失败（icacls 退出码 $LASTEXITCODE）" }
 Write-Host ("Output: {0}  ({1:N1} MB)" -f $dest, ((Get-Item $dest).Length / 1MB))
 
 # 7) 微软 SmartScreen 申诉材料。未签名文件的信誉绑在哈希上，每次构建哈希都变 ⇒ 每次发版
@@ -137,3 +150,8 @@ Set-Content -Path $noteOut -Value $note -Encoding ASCII -NoNewline
 Write-Host ("SHA-256 : {0}" -f $sha)
 Write-Host ("Size    : {0} bytes" -f $size)
 Write-Host ("申诉材料 : {0}  （表单里「产品」一栏要选 Microsoft Defender SmartScreen，不是反病毒）" -f $noteOut)
+Write-Host ""
+Write-Host "=== 下一步（顺序不能反）==="
+Write-Host ("  1) 把 {0} 传到 GitHub Release（tag v{1}）" -f (Split-Path $dest -Leaf), $version)
+Write-Host "  2) .\installer\publish-manifest.ps1 -Publish    # 先传包再签名：脚本会核对清单里的下载地址"
+Write-Host ("  3) 在装了 v{0} 的应用里确认日志出现「清单通道：v{0} sha256=…」—— 没这一行就是没接上" -f $version)

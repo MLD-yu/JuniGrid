@@ -14,6 +14,19 @@ internal static class InstallConfig
     public const string CacheRootKey = "cacheRoot";
     public const string OneClickInstallKey = "enableOneClickInstall";
 
+    /// <summary>只读：配置里的缓存根（没设 / 读不到 = null）。
+    /// 搬家用它判断"旧安装目录里的数据目录，到底是不是应用真正在读的那份"。</summary>
+    public static string? ReadCacheRoot(string configPath)
+    {
+        try
+        {
+            if (!File.Exists(configPath)) return null;
+            if (JsonNode.Parse(File.ReadAllText(configPath)) is not JsonObject obj) return null;
+            return TryStr(obj, CacheRootKey);
+        }
+        catch { return null; }
+    }
+
     /// <summary>把 <c>cacheRoot</c> 改指新安装目录。只在它原本指旧安装目录、或压根没设过却确实搬了数据时才改；
     /// 指向别处（用户自己划的 D:\JuniGridCache）一个字节都不动。</summary>
     public static bool PointCacheRootAt(string configPath, string oldDir, string newDir)

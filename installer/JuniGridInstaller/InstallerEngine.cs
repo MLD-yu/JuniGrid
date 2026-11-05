@@ -38,6 +38,9 @@ public sealed class InstallerEngine
     /// 只写进 jgsetup-log.txt 等于没说：没人会去 %TEMP% 翻日志。</summary>
     public string? MigrationWarning { get; private set; }
 
+    /// <summary>旧位置回收后还剩东西（不是程序文件）。以前只写日志，用户会以为"怎么还有这么多"。</summary>
+    public string? OldDirLeftoverNote { get; private set; }
+
     /// <summary>默认安装目录：优先沿用旧版安装位置，否则 %LocalAppData%\Programs\JuniGrid。</summary>
     public static string GetDefaultInstallDir()
     {
@@ -61,8 +64,10 @@ public sealed class InstallerEngine
     {
         // 测试逃生口：设了这条就用它判，一个注册表键都不读不动 ——
         // "别的管理器在接"这条分支必须能在只有一台机器的情况下证伪，不然它就是没验过的假设。
-        var probe = Environment.GetEnvironmentVariable("JG_NXM_PROBE_CMD");
-        if (!string.IsNullOrEmpty(probe)) return IsForeignCommand(probe);
+        // 注意"设成空串"= 模拟"注册表里那条命令是空的"，必须和"没设"区分开：
+        // GetEnvironmentVariable 对两者都返回 null/""，区分不了 —— 结果就是夹具在这台
+        // 真装着 Vortex 的机器上永远红（2026-11-05 实测 N4）。
+        if (TryGetNxmProbe(out var probe)) return IsForeignCommand(probe);
 
         foreach (var cmd in NxmCommandsToCheck())
             if (IsForeignCommand(cmd))
@@ -70,6 +75,21 @@ public sealed class InstallerEngine
                 App.Log($"nxm 有别的管理器在接: {cmd} ⇒ 装机默认不接管");
                 return true;
             }
+        return false;
+    }
+
+    /// <summary>探针是否被设置过（设成空串也算设过）。</summary>
+    private static bool TryGetNxmProbe(out string probe)
+    {
+        probe = "";
+        foreach (System.Collections.DictionaryEntry e in Environment.GetEnvironmentVariables())
+        {
+            if (string.Equals(e.Key as string, "JG_NXM_PROBE_CMD", StringComparison.OrdinalIgnoreCase))
+            {
+                probe = e.Value as string ?? "";
+                return true;
+            }
+        }
         return false;
     }
 
@@ -86,11 +106,11 @@ public sealed class InstallerEngine
     public static string DescribeNxmDefault()
     {
         var sb = new System.Text.StringBuilder();
-        var probe = Environment.GetEnvironmentVariable("JG_NXM_PROBE_CMD");
+        var hasProbe = TryGetNxmProbe(out var probe);
         var foreign = ForeignNxmHandlerInUse();
         sb.AppendLine("装机默认勾「Nexus 网页上的下载按钮打开 JuniGrid」 = " + (foreign ? "不勾" : "勾")
-            + (string.IsNullOrEmpty(probe) ? "" : "  【按 JG_NXM_PROBE_CMD 判，没读注册表】"));
-        if (!string.IsNullOrEmpty(probe)) sb.AppendLine("  探针命令: " + probe);
+            + (hasProbe ? "  【按 JG_NXM_PROBE_CMD 判，没读注册表】" : ""));
+        if (hasProbe) sb.AppendLine("  探针命令: " + (probe.Length == 0 ? "(空)" : probe));
         foreach (var cmd in NxmCommandsToCheck())
         {
             if (string.IsNullOrWhiteSpace(cmd)) { sb.AppendLine("  （无）"); continue; }
@@ -298,7 +318,8 @@ public sealed class InstallerEngine
         using (var res = OpenResource())
             _ = ReadPayloadHeader(res, out payloadBytes);
         var migrationBytes = Environment.GetEnvironmentVariable("JGINSTALLER_NOMIGRATE") == "1"
-            ? 0 : InstallMigrate.EstimateAdditionalBytes(legacy.location, targetDir);
+            ? 0 : InstallMigrate.EstimateAdditionalBytes(legacy.location, targetDir,
+                InstallMigrate.DefaultConfigPath());
         var freeNow = (Path.GetPathRoot(targetDir) is { } root && new DriveInfo(root) is { } d)
             ? d.AvailableFreeSpace / (1024 * 1024) : -1;
         App.Log($"[装机] 空间预检: payload={payloadBytes / (1024 * 1024)} MB"
@@ -524,7 +545,13 @@ public sealed class InstallerEngine
             if (r.Failed.Count > 0)
                 App.Log("旧目录有文件未能删除：" + string.Join("、", r.Failed.Take(3)));
             if (r.Remaining.Count > 0)
+            {
                 App.Log($"旧目录仍有未清理内容，已保留在 {oldN}：" + string.Join("、", r.Remaining.Take(5)));
+                OldDirLeftoverNote =
+                    $"旧目录 {oldN} 还剩 {r.Remaining.Count} 项没删。它们不是这次安装写出去的程序文件"
+                    + "（你自己的备份、调试产物，或者更早版本留下的），按规矩不动。"
+                    + "确认不需要的话，可以把整个旧目录删掉。";
+            }
         }
         catch (Exception ex) { App.Log("回收旧位置失败: " + ex.Message); }
     }
