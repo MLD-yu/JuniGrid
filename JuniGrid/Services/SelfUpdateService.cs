@@ -182,6 +182,25 @@ public sealed class SelfUpdateService
         info.SetupSha256 is { Length: > 0 } sha ? "sha256=" + sha
         : info.SetupSize > 0 ? "size=" + info.SetupSize : "";
 
+    /// <summary>
+    /// 这份缓存安装包当初是靠什么放行的 —— .done 第二个字段是不是空。
+    ///
+    /// <para>空 = 一条凭据都没有：API 被限流 → 走 HTML 回落 → 从第三方镜像下的包，
+    /// 而那条通道从来拿不到官方 digest/size。这种包不该<b>自动</b>弹安装向导 ——
+    /// 镜像换包至少不能再悄悄得手。判据读 .done 而不是这次检查的结果，
+    /// 关掉应用再回来也绕不过（见 <see cref="CachedInstallerPath"/>）。</para>
+    /// </summary>
+    public static bool IsVerified(string installerPath)
+    {
+        try
+        {
+            var marker = File.ReadAllText(installerPath + ".done");
+            var sp = marker.IndexOf(' ');
+            return sp >= 0 && marker[(sp + 1)..].Trim().Length > 0;
+        }
+        catch { return false; }
+    }
+
     /// <summary><c>.done</c> 的格式是「&lt;version&gt; &lt;校验值&gt;」。校验值可能为空
     /// （老版本只写了版本号，或那次压根没拿到官方凭据）—— 那种缓存是"无凭据放行"留下的，
     /// 不能只凭文件存在就信。判据就是：记的校验值等不等于这次该用的那个。</summary>

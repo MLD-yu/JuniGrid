@@ -112,6 +112,38 @@ public class InstallerIntegrityTests
         Assert.Equal("size=125978998", SelfUpdateService.Expectation(sizeOnly));
     }
 
+    // ───────── 自动弹安装向导的门槛：.done 里到底有没有凭据 ─────────
+    // 判据读 .done 而不是"这次检查拿没拿到"，否则关掉应用再回来就绕过了。
+
+    [Fact]
+    public void IsVerifiedFalseWhenDoneCarriesNoCredential()
+    {
+        // HTML 回落 + 第三方镜像那条：一条官方凭据都没有 ⇒ 不许自动弹安装向导
+        var p = MakeFile("integ-nocred", "payload-bytes");
+        File.WriteAllText(p + ".done", "9.9.9 ");
+        Assert.False(SelfUpdateService.IsVerified(p));
+    }
+
+    [Fact]
+    public void IsVerifiedTrueWhenDoneRecordsDigestOrSize()
+    {
+        var p = MakeFile("integ-cred", "payload-bytes");
+        File.WriteAllText(p + ".done", "9.9.9 sha256=" + RealSha);
+        Assert.True(SelfUpdateService.IsVerified(p));
+        var q = MakeFile("integ-cred-size", "payload-bytes");
+        File.WriteAllText(q + ".done", "9.9.9 size=125978998");
+        Assert.True(SelfUpdateService.IsVerified(q));
+    }
+
+    [Fact]
+    public void IsVerifiedFalseWhenDoneMissingOrWrittenByOldVersion()
+    {
+        var p = MakeFile("integ-nodone", "payload-bytes");
+        Assert.False(SelfUpdateService.IsVerified(p));      // 压根没有 .done
+        File.WriteAllText(p + ".done", "9.9.9");             // 老版本只写版本号
+        Assert.False(SelfUpdateService.IsVerified(p));
+    }
+
     // ───────── 落盘那个文件，放不放行 ─────────
 
     [Fact]

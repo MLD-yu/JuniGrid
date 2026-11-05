@@ -67,6 +67,7 @@
   "点击安装": "Click to install",
   "下载失败，点击重试": "Download failed, click to retry",
   "安装包校验不通过，点击重试": "The installer failed its checksum — deleted, click to download again",
+  "未校验完整性，仍要安装": "Integrity not verified — click to install anyway",
   "下载/安装任务（左键打开任务中心，右键隐藏悬浮窗）": "Download / install tasks (left click opens the task centre, right click hides the dock)",
   "{0} 个任务进行中": "{0} tasks running",
   "暂无任务": "No tasks",

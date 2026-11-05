@@ -38,6 +38,10 @@
                 <span class="jg-upd-tip-spin" aria-hidden="true"></span>
                 <span>@Loc.T("下载中")@(_progressPercent is > 0 ? $" {_progressPercent:0}%" : "")</span>
             }
+            else if (_ready && _unverified)
+            {
+                <span>@Loc.T("未校验完整性，仍要安装")</span>
+            }
             else if (_ready)
             {
                 <span>@Loc.T("点击安装")</span>
@@ -64,6 +68,7 @@
     private bool _ready;                // 安装包已缓存，点击即可弹向导
     private bool _failed;               // 下载失败（点击重试，断点续传）
     private bool _rejected;             // 下完了但校验不通过（包被截断/被换过，已删除，点击重下）
+    private bool _unverified;           // 已缓存但一条官方凭据都没有 ⇒ 不自动弹，等再点一次
     private double? _progressPercent;
     private ElementReference _wrap;
     private ElementReference _bubble;
@@ -114,6 +119,7 @@
         {
             _selfUpdate = info;
             _ready = cached is not null;
+            _unverified = cached is not null && !SelfUpdateService.IsVerified(cached);
             StateHasChanged();
         });
     }
@@ -123,9 +129,10 @@
     {
         var info = _selfUpdate;
         if (info is null || _downloading || _ready) return;
-        if (SelfUpdate.CachedInstallerPath(info) is not null)
+        if (SelfUpdate.CachedInstallerPath(info) is { } hit)
         {
             _ready = true;
+            _unverified = !SelfUpdateService.IsVerified(hit);
             await InvokeAsync(StateHasChanged);
             return;
         }
@@ -144,10 +151,12 @@
                 }));
             _downloading = false;
             _ready = true;
+            _unverified = !SelfUpdateService.IsVerified(path);
             await InvokeAsync(StateHasChanged);
-            // v1.0.18：下载完成自动弹出安装向导并退出本应用（v1.0.14 行为回归）；
-            // 向导被关掉也不影响缓存，下次启动/点击直接「点击安装」再弹
-            LaunchInstallerAndExit(path);
+            // 只有拿到过官方凭据（sha256 / size）才自动弹安装向导。
+            // 一条凭据都没有时（API 被限流 → 走 HTML 回落 → 从第三方镜像下）停在这里等再点一次：
+            // 不提高字节的可信度，但镜像换包至少不能再悄悄得手。
+            if (!_unverified) LaunchInstallerAndExit(path);
         }
         catch (Exception ex)
         {
