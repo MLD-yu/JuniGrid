@@ -135,11 +135,19 @@ public static class NexusUpdateTruth
             // 快道（smapi.io）只给版本号不给 fileId，这条是那种情况下唯一的判据 ——
             // 必须按语义比：N 网文件栏写 "1.4"、索引写 "1.4.0"，字面相等会把刚装的版认成旧版
             if (VersionUtil.Same(rec.RemoteVersion, remoteVersion)) return true;
-            // 本条目自己有安装记录 ⇒ 到此为止，下面三条是"没有记录"时的兜底证据。
-            // 不能让它们越过记录：换过 UniqueID 重新装成旧版时，配置里会同时留着旧 UID
-            // 的记录和"曾下载过这一版"的下载记录，继续往下走会把真更新判成"已装最新"
-            // （2026-11-05 实机 Farm Queue：当前记录 YuGe.FarmQueue=0.5.0，旧记录 189841=0.5.1
-            // 与 ModFileLastDownload 里那条一起把 0.5.1 吞掉了）。
+            // 自己这条对不上：**只承认同一页面的兄弟子包**装过这条文件。
+            // 捆绑包常只给其中一个子包写记录（Frontier Farm 记 127365、同页的 SVE Code 记 135998），
+            // 一律"有记录就到此为止"会把这半条证据也废掉 —— 于是那行明明已经是最新还一直亮 ⇧
+            // （2026-11-07 CI：RemoteVersionRestoreTests 抓到）。
+            // 但也不能无条件认领别的页：换过 UniqueID 重装成旧版时，配置里会同时留着旧 UID 的记录，
+            // 越过它就会把真更新判成"已装最新"（2026-11-05 Farm Queue：当前 YuGe.FarmQueue=0.5.0，
+            // 旧记录 189841=0.5.1 把它吞了）。两者的分界就是「是不是同一页」。
+            var page = rec.NexusModId > 0 ? rec.NexusModId : (m.NexusModId ?? 0);
+            if (remoteFileId is long sibFid && sibFid != 0 && page > 0)
+            {
+                foreach (var r in cfg.ModNexusInstalls.Values)
+                    if (r is not null && r.FileId == sibFid && r.NexusModId == page) return true;
+            }
             return false;
         }
         // 启动器历史上下载过「这一条」MAIN 文件（ModFileLastDownload[fileId]），
