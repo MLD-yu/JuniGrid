@@ -193,6 +193,81 @@
                                 }
                             }
 
+                            @* v1.3.69：分类栏**始终显示**（以前一个自定义分类都没有时整块藏起来，
+                               用户根本不知道有这功能，也没地方新建 —— 2026-11-07 反馈）。
+                               v1.3.60：素材包（XNB）走「内容覆盖」通道，装完不占 Mod 列表一行，
+                               分类对它没有意义，选中这类文件时改成一句说明。
+                               v1.3.72：列表改成**内嵌在按钮下方**（不用绝对定位的浮层）——
+                               它坐在弹窗最底一节，往下浮必然压住「取消/下载并安装」，往上浮用户又觉得别扭。
+                               内嵌展开只是把弹窗撑高，超出就自己在框里滚，怎么都不挡按钮。 *@
+                            @if (_files is { Count: > 0 } && !PickedIsContentOverride)
+                            {
+                                <div class="jg-pick-cap">@Loc.T("分类")</div>
+                                @* v1.3.73：回到**浮层**（绝对定位、可以探出弹窗边界），不要再内嵌展开 ——
+                                   内嵌会把弹窗撑高，用户明确说「下拉框不能超出这个弹窗吗」。
+                                   这里只靠 `.open` 类控制显隐（纯 CSS），不调 dropdownToggle 那套 gsap 动画：
+                                   fitPickVdd 是在动画途中量矩形的，量不到最终高度，翻不上去还容易抖。 *@
+                                <div class="jg-sort-dd jg-pick-vdd @(_pickCatOpen ? "open" : "")" id="jgPickCat" data-dd="pickcat">
+                                    <button type="button" class="jg-sort-trigger jg-pick-vdd-btn"
+                                            @onclick="TogglePickCat"
+                                            aria-expanded="@(_pickCatOpen ? "true" : "false")">
+                                        <span class="jg-pick-vdd-t @(_pickedCategory.Length == 0 ? "jg-pick-vdd-ph" : "")">
+                                            @(_pickedCategory.Length == 0 ? Loc.T("未分类") : _pickedCategory)
+                                        </span>
+                                        @* 箭头旋转交给 dropdownToggle 的 GSAP（back.out），别在这里加 .flip 类，
+                                           两套 transform 会互相覆盖 *@
+                                        <svg class="jg-sort-arrow" width="12" height="12" viewBox="0 0 12 12" fill="none">
+                                            <path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+                                        </svg>
+                                    </button>
+                                    <div class="jg-sort-menu">
+                                        <div class="jg-cat-menu">
+                                            <div class="jg-profile-item @(_pickedCategory.Length == 0 ? "active" : "")">
+                                                <button type="button" class="jg-profile-name"
+                                                        @onclick='() => PickCategory("")'>@Loc.T("未分类")</button>
+                                            </div>
+                                            @foreach (var c in CategoryChoices())
+                                            {
+                                                var cc = c;
+                                                // 这里只负责「选」，不给删除按钮 —— 分类管理在 Mods 页做，
+                                                // 在下载弹窗里删分类是越界（2026-11-07 用户要求）。
+                                                <div class="jg-profile-item @(_pickedCategory == cc ? "active" : "")">
+                                                    <button type="button" class="jg-profile-name"
+                                                            @onclick="() => PickCategory(cc)">@cc</button>
+                                                </div>
+                                            }
+                                        </div>
+                                        <div class="jg-cat-foot">
+                                            @if (!_newCatOpen)
+                                            {
+                                                <button type="button" class="jg-profile-addcap"
+                                                        data-tip='@Loc.T("新建分类")' aria-label='@Loc.T("新建分类")'
+                                                        @onclick="OpenNewCategoryInput"><span class="plus">＋</span></button>
+                                            }
+                                            else
+                                            {
+                                                @* ＋ 原地变成输入框（不再在下面多长一行），右侧是同一个字数计数器 *@
+                                                <div class="jg-remark-field">
+                                                    <input @ref="_newCatInput"
+                                                           class="jg-remark-input @(_newCatName.Length >= 16 ? "near-limit" : "")"
+                                                           maxlength="20" placeholder='@Loc.T("新分类名")'
+                                                           value="@_newCatName"
+                                                           @oninput="OnNewCatInput" @onkeydown="OnNewCatKeydown" />
+                                                    <span class="jg-remark-count jg-cat-count-new @(_newCatName.Length >= 20 ? "full" : _newCatName.Length >= 16 ? "warn" : "")">@(20 - _newCatName.Length)</span>
+                                                </div>
+                                            }
+                                        </div>
+                                    </div>
+                                </div>
+                            }
+                            else if (PickedIsContentOverride)
+                            {
+                                <div class="jg-pick-cap">@Loc.T("分类")</div>
+                                <div class="jg-pick-note">
+                                    @Loc.T("这类文件是素材/覆盖包，会直接盖到游戏 Content 里，不进入 Mod 列表 —— 分类不适用。")
+                                </div>
+                            }
+
                             <div class="jg-pick-actions">
                                 <button class="jg-pick-btn" @onclick="ClosePicker">@Loc.T("取消")</button>
                                 @* 下载中不 disable：disabled 的按钮连 onclick 都不触发，用户只会觉得
@@ -200,6 +275,64 @@
                                 <button class="jg-pick-btn primary" @onclick="InstallPicked"
                                         disabled="@(_pickedFileId <= 0)">
                                     @(_pickBusy ? Loc.T("下载中…") : Loc.T("下载并安装"))
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                }
+
+                @* v1.3.50：04 Files 里单条文件「安装」前先问一句装进哪个分类。
+                   v1.3.69：现在就算一个自定义分类都没有也照样弹（以前靠 HasCategoryChoices 短路，
+                   结果「没分类」的人压根看不到这一步，也没地方新建分类）。
+                   列表用 Mods 页「加入分类」那套竖排样式：每行右侧 × 删除，底部 ＋ 现场新建。 *@
+                @if (_catPickOpen && _catPickFile is not null)
+                {
+                    <div class="jg-modal-overlay" @onclick="CloseCatPick">
+                        <div class="jg-modal jg-pick-modal" @onclick:stopPropagation>
+                            <div class="jg-pick-title">@Loc.T("选择分类")</div>
+                            <div class="jg-pick-sub">@_catPickFile.Name</div>
+                            <div class="jg-pick-cap">@Loc.T("装好之后放进哪个分类（可多选；一个都不选就是未分类）")</div>
+                            <div class="jg-pick-list jg-pick-sm jg-catpick-list">
+                                <div class="jg-cat-menu">
+                                    <div class="jg-profile-item @(_pickedCats.Count == 0 ? "active" : "")">
+                                        <button type="button" class="jg-profile-name" @onclick="() => _pickedCats.Clear()">
+                                            @Loc.T("未分类")
+                                        </button>
+                                    </div>
+                                    @foreach (var c in CategoryChoices())
+                                    {
+                                        var cc = c;
+                                        // 同上：详情页只负责选，分类的增删都归 Mods 页管。
+                                        <div class="jg-profile-item @(_pickedCats.Contains(cc) ? "active" : "")">
+                                            <button type="button" class="jg-profile-name" @onclick="() => ToggleCatPick(cc)">@cc</button>
+                                        </div>
+                                    }
+                                </div>
+                                <div class="jg-cat-foot">
+                                    @if (!_newCatOpen)
+                                    {
+                                        <button type="button" class="jg-profile-addcap"
+                                                data-tip='@Loc.T("新建分类")' aria-label='@Loc.T("新建分类")'
+                                                @onclick="OpenNewCategoryInput"><span class="plus">＋</span></button>
+                                    }
+                                    else
+                                    {
+                                        @* ＋ 原地变成输入框，右侧是同一个字数计数器（与 Mods 页「加入分类」一致） *@
+                                        <div class="jg-remark-field">
+                                            <input @ref="_newCatInput"
+                                                   class="jg-remark-input @(_newCatName.Length >= 16 ? "near-limit" : "")"
+                                                   maxlength="20" placeholder='@Loc.T("新分类名")'
+                                                   value="@_newCatName"
+                                                   @oninput="OnNewCatInput" @onkeydown="OnNewCatKeydown" />
+                                            <span class="jg-remark-count jg-cat-count-new @(_newCatName.Length >= 20 ? "full" : _newCatName.Length >= 16 ? "warn" : "")">@(20 - _newCatName.Length)</span>
+                                        </div>
+                                    }
+                                </div>
+                            </div>
+                            <div class="jg-pick-actions">
+                                <button class="jg-pick-btn" @onclick="CloseCatPick">@Loc.T("取消")</button>
+                                <button class="jg-pick-btn primary" @onclick="ConfirmCatPick">
+                                    @(_pickedCats.Count == 0 ? Loc.T("不分类，直接安装") : Loc.T("继续安装"))
                                 </button>
                             </div>
                         </div>
@@ -534,6 +667,12 @@
 @code {
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
+        // 「新分类名」输入框刚出现的那一帧把焦点送进去（点 ＋ 就该直接能打字）
+        if (_focusNewCatPending && _newCatOpen)
+        {
+            _focusNewCatPending = false;
+            try { await _newCatInput.FocusAsync(); } catch { }
+        }
         if (firstRender)
         {
             // v0.72.1：.jg-main 是 MainLayout 的共享滚动容器 —— 从列表页滚到 y 再进详情，
@@ -621,6 +760,45 @@
     private bool _pickVddOpen;
     /// <summary>弹窗里当前选中的 fileId（主文件单选与历史版本下拉共用这一个状态）。</summary>
     private long _pickedFileId;
+
+    // ─── v1.3.50：安装时选分类 ───
+    /// <summary>版本弹窗里那个「分类」下拉展开没展开。</summary>
+    private bool _pickCatOpen;
+    /// <summary>本次要归入的分类；"" = 未分类（与 Mods 页的分段口径一致）。</summary>
+    private string _pickedCategory = "";
+    /// <summary>单文件安装前的「选分类」小弹窗开着没。</summary>
+    private bool _catPickOpen;
+    /// <summary>小弹窗里等着的那个文件（确认后接着装它）。</summary>
+    private NexusFileInfo? _catPickFile;
+    /// <summary>小弹窗里勾中的分类们。空集合 = 未分类。
+    /// <para>2026-11-07 03:59 用户反馈：「默认选中未分类，而且必须选中一个，不能多选或者空选」。
+    /// 于是改成**默认一个都不勾、可以勾多个、也可以一个都不勾直接装**（= 未分类）。
+    /// 多选写进配置时用逗号拼起来（<see cref="ApplyInstalledCategory(IReadOnlyList{string})"/>），
+    /// 读取侧 <c>CategoryOfGroup</c> 认第一个 —— 列表里仍然只占一段，不会同一个 mod 画好几行。</para></summary>
+    private readonly HashSet<string> _pickedCats = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>「新建分类」输入框展开着没 —— 两个弹窗（下载面板 / 单文件安装）共用。
+    /// 2026-11-07 用户要求：就算一个自定义分类都没有，安装时也要能选分类、并且能当场新建。</summary>
+    private bool _newCatOpen;
+    private string _newCatName = "";
+    /// <summary>「新分类名」输入框的 DOM 引用 —— 点 ＋ 之后要自动把焦点送进去
+    /// （两个弹窗互斥，共用一个引用是安全的：同时只会有其中一个 input 在 DOM 里）。</summary>
+    private ElementReference _newCatInput;
+    /// <summary>下一帧要把焦点送进「新分类名」输入框。元素刚插进 DOM 时直接 FocusAsync 还没渲染，
+    /// 必须等 OnAfterRenderAsync。</summary>
+    private bool _focusNewCatPending;
+
+    /// <summary>当前选中的版本是不是「内容覆盖」类（XNB 素材包）。见 <see cref="LooksLikeContentOverrideFile"/>。</summary>
+    private bool PickedIsContentOverride =>
+        _files?.FirstOrDefault(f => f.FileId == _pickedFileId) is { } f && LooksLikeContentOverrideFile(f);
+
+    /// <summary>这个文件是不是「内容覆盖」类 —— 它会直接盖到游戏 Content 里，装完不在 Mod 列表
+    /// 占一行，所以「装到哪个分类」对它没有意义（2026-11-07 用户反馈：选了分类，装完列表里
+    /// 根本找不到这个 mod）。
+    /// <para>判据只看文件名里的 xnb：N 网素材包几乎都这么命名（"xxx - xnb"），而 CP 版通常
+    /// 叫 "xxx - CP"。宁可漏判（照旧问分类，只是白问一次），也不要把正常 mod 误判掉。</para></summary>
+    private static bool LooksLikeContentOverrideFile(NexusFileInfo f)
+        => f.Name.Contains("xnb", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>主文件区：有 MAIN 就全列出来（CP/AT 这种并行发布很常见），一条都没有
     /// 就退化成「上传时间最新的那一条」—— 有些老 mod 压根没标 MAIN。</summary>
@@ -1006,6 +1184,10 @@
         _pickOpen = true;
         _pickedFileId = 0;
         _pickVddOpen = false;   // 上次是带着展开的下拉关掉的，重开时别让它自己弹着
+        _pickCatOpen = false;
+        ResetNewCategoryInput();   // 上次点过 ＋ 就收着，别让输入框一打开就挂在那儿
+        // 已经装过且在某个分类里 → 预选上，重装不会顺手把归类清掉
+        _pickedCategory = CurrentCategoryOfMod();
         StateHasChanged();
 
         // 复用 04 Files 的懒加载（同一次请求，开过手风琴就不再发）
@@ -1028,18 +1210,22 @@
         if (_pickBusy)
         {
             _pickOpen = false;
+            ResetNewCategoryInput();
             _ = JS.InvokeVoidAsync("junigridJs.toast",
                 LocService.Tr("下载在后台继续，可在任务中心查看"), "ok");
             return;
         }
         if (_pickVddOpen) _ = ClosePickVdd();
+        if (_pickCatOpen) _ = ClosePickCat();
         _pickOpen = false;
+        ResetNewCategoryInput();
     }
 
     /// <summary>历史版本下拉：开合走站内 dropdownToggle（GSAP 弹性动画 + 遮罩配对）。</summary>
     private async Task TogglePickVdd()
     {
         _pickVddOpen = !_pickVddOpen;
+        if (_pickVddOpen && _pickCatOpen) await ClosePickCat();   // 两个下拉不并存
         try { await JS.InvokeVoidAsync("junigridJs.dropdownToggle", "#jgPickVdd", _pickVddOpen); } catch { }
         // 向下展开会掉出弹窗/窗口时整块翻到触发按钮上方（同素材包弹窗那条 fitPkVar）
         if (_pickVddOpen)
@@ -1063,6 +1249,182 @@
         await ClosePickVdd();
     }
 
+    // ─── v1.3.50：安装时的分类选择 ───
+    /// <summary>有没有「可选」的分类。只有默认（未分类）时这一层整个不出现 ——
+    /// 一个只有「未分类」一项的下拉/弹窗，等于让用户白点一步。</summary>
+    private bool HasCategoryChoices
+        => Cfg.Current.ModUserCategoryOrder.Any(x => !string.IsNullOrWhiteSpace(x))
+           || Cfg.Current.ModUserCategory.Values.Any(v => !string.IsNullOrWhiteSpace(v));
+
+    /// <summary>可选分类。顺序与 Mods 页的分段/右侧导航一致：新建的在最前
+    /// （ModUserCategoryOrder 是建分类时追加的，倒过来读就是最新在前）。
+    /// <para>值可能是多选拼起来的 <c>"9,10"</c>，先拆再收集（否则列表里会冒出一个叫「9,10」的分类）。</para></summary>
+    private List<string> CategoryChoices()
+    {
+        var list = Cfg.Current.ModUserCategoryOrder
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Reverse()
+            .ToList();
+        foreach (var c in Cfg.Current.ModUserCategory.Values
+                     .SelectMany(ModCategoryUtil.Split)
+                     .Where(v => v.Length > 0 && !list.Contains(v, StringComparer.OrdinalIgnoreCase))
+                     .Distinct(StringComparer.OrdinalIgnoreCase)
+                     .OrderBy(x => x, StringComparer.OrdinalIgnoreCase))
+            list.Add(c);
+        return list;
+    }
+
+    /// <summary>展开「新建分类」输入框（两个弹窗共用）。</summary>
+    private void OpenNewCategoryInput()
+    {
+        _newCatOpen = true;
+        _newCatName = "";
+        _focusNewCatPending = true;   // 渲染完由 OnAfterRenderAsync 送焦点
+        StateHasChanged();
+    }
+
+    /// <summary>收起「新建分类」输入框 —— 换弹窗、关弹窗时都要清掉，
+    /// 否则上次点过 ＋ 的状态会带进下一次弹窗（2026-11-07 用户截图：输入框一打开就在那儿）。</summary>
+    private void ResetNewCategoryInput()
+    {
+        _newCatOpen = false;
+        _newCatName = "";
+        _focusNewCatPending = false;
+    }
+
+    private async Task OnNewCatInput(ChangeEventArgs e)
+    {
+        _newCatName = e.Value?.ToString() ?? "";
+        // 和 Mods 页「加入分类」同一个弹簧（Motion 的 characters-remaining）：每次敲字计数器
+        // back.out 弹一下，满 20 字再敲弹得更明显。只显示数字不算「有计数器」—— 2026-11-07 用户反馈。
+        try { await JS.InvokeVoidAsync("junigridJs.remarkCountBump", _newCatName.Length >= 20, ".jg-cat-count-new"); } catch { }
+    }
+
+    private void OnNewCatKeydown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter") CreateCategoryAndPick();
+        else if (e.Key == "Escape") { _newCatOpen = false; _newCatName = ""; }
+    }
+
+    /// <summary>新建分类并直接选中它 —— 用户点「＋」就是为了「装到这个新分类里」，
+    /// 让他在建完再点一次名字是多余的一步。</summary>
+    private void CreateCategoryAndPick()
+    {
+        var name = (_newCatName ?? "").Trim();
+        if (name.Length == 0) { _newCatOpen = false; return; }
+        var cfg = Cfg.Current;
+        if (!cfg.ModUserCategoryOrder.Contains(name, StringComparer.OrdinalIgnoreCase))
+            cfg.ModUserCategoryOrder.Add(name);
+        Cfg.Save(cfg);
+        _newCatOpen = false;
+        _newCatName = "";
+        // 下载面板是单选、单文件安装是多选，两边都点亮它
+        _pickedCategory = name;
+        _pickedCats.Add(name);
+        _pickCatOpen = false;
+        StateHasChanged();
+    }
+
+    /// <summary>这一页的 mod 现在归在哪个分类（没装过/没归类 = ""）。</summary>
+    private string CurrentCategoryOfMod()
+    {
+        var folder = _installedFolder;
+        if (folder is null) return "";
+        var i = folder.IndexOf('/');
+        var key = i > 0 ? folder[..i] : folder;
+        return Cfg.Current.ModUserCategory.TryGetValue(key, out var c) && !string.IsNullOrWhiteSpace(c) ? c : "";
+    }
+
+    /// <summary>分类列表开合。v1.3.77：走 Mods 页同一个 <c>dropdownToggle</c> ——
+    /// 箭头 back.out 转 180°、浮层 y/-scale 弹簧、每个分类项依次滑入（stagger 0.05），
+    /// 这样详情页的下拉和列表页的手感一致（用户要求）。
+    /// <para>⚠ 别在这里再调 <c>fitPickVdd</c>：它是在 gsap 展开动画【途中】量矩形的，
+    /// 量不到最终高度，翻不上去还会把位置算歪（v1.3.71 踩过）。</para></summary>
+    private async Task TogglePickCat()
+    {
+        _pickCatOpen = !_pickCatOpen;
+        if (_pickCatOpen && _pickVddOpen) await ClosePickVdd();   // 两个下拉不并存
+        try { await JS.InvokeVoidAsync("junigridJs.dropdownToggle", "#jgPickCat", _pickCatOpen); } catch { }
+    }
+
+    private async Task ClosePickCat()
+    {
+        if (!_pickCatOpen) return;
+        _pickCatOpen = false;
+        try { await JS.InvokeVoidAsync("junigridJs.dropdownToggle", "#jgPickCat", false); } catch { }
+    }
+
+    private async Task PickCategory(string c)
+    {
+        _pickedCategory = c ?? "";
+        await ClosePickCat();
+        StateHasChanged();
+    }
+
+    private void CloseCatPick()
+    {
+        _catPickOpen = false;
+        _catPickFile = null;
+        ResetNewCategoryInput();
+    }
+
+    /// <summary>小弹窗里勾/取消一个分类。</summary>
+    private void ToggleCatPick(string c)
+    {
+        if (!_pickedCats.Remove(c)) _pickedCats.Add(c);
+    }
+
+    /// <summary>「选分类」小弹窗确认 → 接着装那条文件。</summary>
+    private async Task ConfirmCatPick()
+    {
+        var f = _catPickFile;
+        // 按 CategoryChoices 的顺序取，别用 HashSet 的枚举顺序 —— 分类列表顺序变了以后，
+        // 多选里「第一个」会变成列表里排第一的那个，行为才可预期。
+        var cats = CategoryChoices().Where(_pickedCats.Contains).ToList();
+        _catPickOpen = false;
+        _catPickFile = null;
+        _pickedCats.Clear();
+        ResetNewCategoryInput();
+        if (f is null) return;
+        await InstallFileCore(f, cats);
+    }
+
+    /// <summary>装完之后把这一页装出来的目录归入所选分类。
+    /// 键取顶层目录 —— 与 Mods 页的登记单位一致（捆绑包记顶层，散装记自己的文件夹）；
+    /// 一个都不给 = 从分类表里摘掉。整段失败只记日志，绝不因为归类没写进去就说安装失败。
+    /// <para>多选用逗号拼进同一个字符串（<c>"9,10"</c>）：配置里 <c>ModUserCategory</c> 仍是
+    /// <c>Dictionary&lt;string,string&gt;</c>，老配置读到单值照旧；列表侧只认第一个（见
+    /// Mods 页的 <c>CategoryOfGroup</c>），所以同一个 mod 不会在列表里重复出现。</para></summary>
+    private void ApplyInstalledCategory(IReadOnlyList<string> cats)
+        => ApplyInstalledCategory(ModCategoryUtil.Join(cats));
+
+    private void ApplyInstalledCategory(string category)
+    {
+        if (!HasCategoryChoices) return;      // 没有分类可选：不凭空往分类表里写东西
+        try
+        {
+            _scanCache = null;    // 刚装完，缓存必然是旧的
+            var mods = ScanLocal(Cfg.Current.GamePath)
+                .Where(m => m.NexusModId == ModId).ToList();
+            if (mods.Count == 0) return;
+            var cfg = Cfg.Current;
+            foreach (var m in mods)
+            {
+                var i = m.Folder.IndexOf('/');
+                var key = i > 0 ? m.Folder[..i] : m.Folder;
+                if (category.Length == 0) cfg.ModUserCategory.Remove(key);
+                else cfg.ModUserCategory[key] = category;
+            }
+            // 逗号里的每个分类都要进名单，否则「第二个分类」在列表里没有段位、会垫到最下面
+            foreach (var one in ModCategoryUtil.Split(category))
+                if (!cfg.ModUserCategoryOrder.Contains(one, StringComparer.OrdinalIgnoreCase))
+                    cfg.ModUserCategoryOrder.Add(one);
+            Cfg.Save(cfg);
+        }
+        catch (Exception ex) { AppLog.Warn("ModDetail", $"[分类] 安装后归类失败：{ex.Message}"); }
+    }
+
     /// <summary>弹窗里的「下载并安装」：指定 fileId 走完整安装管线。
     /// <para>v1.3.21：点下去<b>立刻</b>收弹窗。InstallModDirectAsync 是等「下载 + 解压 + 装完」
     /// 整段返回的，90 MB 的包要挂好几分钟 —— 弹窗一直开着挡在页面上，按钮停在「处理中…」，
@@ -1084,6 +1446,7 @@
         _pickBusy = true;
         _installMsg = null;
         if (_pickVddOpen) await ClosePickVdd();
+        if (_pickCatOpen) await ClosePickCat();
         _pickOpen = false;
         StateHasChanged();
         _ = Toast(LocService.Tr("已加入任务中心，下载在后台继续"));
@@ -1098,6 +1461,7 @@
                     .FirstOrDefault(m => m.NexusModId == ModId)?.Folder;
                 _overlayInstalled = _installedFolder is null
                     && ModService.OverlayAppliedForMod(Cfg.Current.GamePath, Cfg.Current, ModId);
+                ApplyInstalledCategory(_pickedCategory);
                 await RefreshSmapiStateAsync(freshRead: true);
                 _ = Toast(LocService.Tf("{0} 安装完成", f.Name), "ok");
             }
@@ -1407,12 +1771,38 @@
     {
         if (_installedFolder is null && !_overlayInstalled) return false;
 
+        // v1.3.45：先看安装账本（UID → 真正装上的那条 fileId）。旧实现只看
+        // ModInstalledFile，那一格缺失就退回 ModFileLastDownload（「下载过」）——
+        // 同一页下 0.7.1 和 0.7.0 于是都标成「已安装」（2026-11-06 用户截图）。
+        if (_thisEntry is not null)
+        {
+            var rec = NexusUpdateTruth.GetInstallRecord(Cfg.Current, _thisEntry);
+            if (rec is not null && rec.FileId > 0) return rec.FileId == fileId;
+        }
         var cur = Cfg.Current.ModInstalledFile.GetValueOrDefault(ModId.ToString());
         if (!string.IsNullOrEmpty(cur)) return cur == fileId.ToString();
 
-        return Cfg.Current.ModFileLastDownload.ContainsKey(fileId.ToString());
+        // 旧账（既没记录也没快照）才退回下载记录，而且只认【最近下载的那一条】：
+        // 同一页里下过多条旧版本时，全标「已安装」就是把下载过说成装过。
+        if (_files is null || _files.Count == 0) return false;
+        var dates = Cfg.Current.ModFileLastDownload;
+        var mine = dates.GetValueOrDefault(fileId.ToString());
+        if (mine is null) return false;
+        var newest = _files
+            .Select(f => (Id: f.FileId.ToString(), Date: dates.GetValueOrDefault(f.FileId.ToString())))
+            .Where(x => x.Date is not null)
+            .OrderByDescending(x => x.Date, StringComparer.Ordinal)
+            .ThenByDescending(x => x.Id, StringComparer.Ordinal)
+            .ToList();
+        if (newest.Count == 0) return false;
+        var top = newest[0].Date;
+        var topIds = newest.Where(x => string.Equals(x.Date, top, StringComparison.Ordinal)).Select(x => x.Id).ToList();
+        return topIds.Count == 1 && topIds[0] == fileId.ToString();
     }
 
+    /// <summary>单个文件（04 Files 里那一排）的「安装」。
+    /// v1.3.50：存在自定义分类时先弹一张「选分类」小卡 —— 装完才建目录，分类只能在那之后写，
+    /// 所以选择要在发起前问；只有一个「未分类」时直接装，不拿这一步烦人。</summary>
     private async Task InstallFile(NexusFileInfo f)
     {
         if (_fileBusyId is not null) return;
@@ -1421,6 +1811,25 @@
             OpenPage();
             return;
         }
+        // v1.3.69：不再要求「已经有自定义分类」才问 —— 没分类的人也要能看到这一步，
+        // 并且能在弹窗里当场新建一个（用户 2026-11-07 明确要求「没创建分类时也要显示」）。
+        if (!LooksLikeContentOverrideFile(f))
+        {
+            _catPickFile = f;
+            // 2026-11-07：不再预选任何分类（以前会预选当前分类，甚至预选到「未分类」）。
+            // 一个都不勾、直接点「不分类，直接安装」就是未分类，和以前空选的语义一致。
+            _pickedCats.Clear();
+            ResetNewCategoryInput();
+            _catPickOpen = true;
+            StateHasChanged();
+            return;
+        }
+        await InstallFileCore(f, Array.Empty<string>());
+    }
+
+    private async Task InstallFileCore(NexusFileInfo f, IReadOnlyList<string> cats)
+    {
+        if (_fileBusyId is not null) return;
         _fileBusyId = f.FileId;
         _fileMsg = LocService.Tf("正在安装 {0}…", f.Name);
         StateHasChanged();
@@ -1435,6 +1844,7 @@
                     .FirstOrDefault(m => m.NexusModId == ModId)?.Folder;
                 _overlayInstalled = _installedFolder is null
                     && ModService.OverlayAppliedForMod(Cfg.Current.GamePath, Cfg.Current, ModId);
+                ApplyInstalledCategory(cats);
                 _fileMsg = LocService.Tf("已安装 {0}", f.Name);
                 await RefreshSmapiStateAsync(freshRead: true);
             }

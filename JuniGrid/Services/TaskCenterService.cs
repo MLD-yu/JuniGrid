@@ -528,6 +528,20 @@ public sealed class TaskCenterService
         return true;
     }
 
+    /// <summary>记下这一跑要下的文件号 —— 跨重启保留，重发时才能落回同一个 zip、接上断点。
+    /// 见 <see cref="TaskItem.DownloadFileId"/> 的实机说明。</summary>
+    public bool SetDownloadFileId(TaskItem t, long? fileId)
+    {
+        lock (_lock)
+        {
+            if (!Items.Contains(t)) return false;
+            if (t.DownloadFileId == fileId) return true;
+            t.DownloadFileId = fileId;
+        }
+        RequestSave();
+        return true;
+    }
+
     /// <summary>v1.3.41：断点文件已经不在磁盘上了（过期被自动清理 / 用户手动删了），
     /// 把任务行上的引用摘掉。
     /// <para>不摘的后果很具体：行上仍写着「已暂停 · 62%」，点「继续」实际从 0 重下 ——
@@ -769,6 +783,13 @@ public sealed class TaskItem
     /// <summary>这条任务源自哪个 Nexus mod。它是唯一能跨重启重建下载动作的凭据，因此必须落盘：
     /// 内存里那份 worker 一重启就没了，只有带着这个号的失败行还能重新发起一条。</summary>
     public int? NexusId { get; set; }
+
+    /// <summary>这一跑当初下的是<b>哪一个文件</b>（fileId）。同样落盘。
+    /// <para>2026-11-07 05:07 实机：暂停在 21.3 MB 的 <c>direct-54220-190084.zip.seg</c> 上，
+    /// 应用重启后点「继续」，因为只认 NexusId，重新解析「最新 MAIN」拿到了 <b>190111</b> ——
+    /// 文件名一变，<c>.seg</c> 与 <c>.seg.state</c> 全都对不上，于是从 0 重下，用户看到的是
+    /// 「暂停一下再继续，进度归零」。记住 fileId 才能让重发落到同一个 zip 上、接上断点。</para></summary>
+    public long? DownloadFileId { get; set; }
 
     /// <summary>这一路到底有没有报过速度。版本下载（DepotDownloader）压根不输出字节数，
     /// 从没报过 —— 界面据此显示「—」而不是 0.00 M/s，那是个假数字。</summary>

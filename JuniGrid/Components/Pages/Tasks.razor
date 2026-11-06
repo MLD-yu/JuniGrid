@@ -334,6 +334,11 @@
             "failed"  => q.Where(t => t.Status == "failed"),
             _         => q
         };
+        // v1.3.45：运行中的行永远置顶。任务中心是干活的地方 —— 一堆已结束的历史
+        // 把正在跑的那一行压到屏幕外，用户第一眼看到的是"没有在跑"。其余行保持
+        // 原有顺序（新创建在上），OrderBy 是稳定排序，不会打乱历史。
+        // 排队中的行 Status 也是 running（另有 Queued 标记），一并置顶。
+        q = q.OrderBy(t => t.Status == "running" ? 0 : 1);
         _visible = q.Select(t => (t, Center.CopyLog(t))).ToList();
     }
 
@@ -555,16 +560,17 @@
         // 摘掉它就等于让它新建一条，任务管理里同一次下载又会多出一行。
         if (t.NexusId is int modId)
         {
-            _ = RedispatchAsync(modId);
+            _ = RedispatchAsync(modId, t.DownloadFileId);
             return;
         }
 
         _ = JS.InvokeVoidAsync("junigridJs.toast", LocService.Tr("该任务需要重新发起（已保留已下载部分）"), "err");
     }
 
-    private async Task RedispatchAsync(int modId)
+    private async Task RedispatchAsync(int modId, long? fileId = null)
     {
-        var err = await Installer.InstallModDirectAsync(modId);
+        // 带上当初那个 fileId：命中同一个 zip 才能接上 .seg 断点（null = 按最新 MAIN 重新解析）
+        var err = await Installer.InstallModDirectAsync(modId, fileId);
         // v1.3.44：AlreadyRunning = 这个 mod 已经有一行在跑，不是错误，也没必要 toast ——
         // 用户眼睛就在任务管理页上，那一行的进度比一句话有用。
         if (err is not null && err != InstallService.AlreadyRunning)
@@ -583,7 +589,17 @@
             return;
         }
         if (!Center.Resume(t))
+        {
+            // 重启后 worker 已经不在了。行上要记着当初那个 fileId，就按它重发 ——
+            // 只按 NexusId 重发会重新解析「最新 MAIN」，作者换过文件的话 fileId 就变了，
+            // .seg/.state 名字一对不上只能从 0 重下（2026-11-07 05:07 实机：21.3 MB 白费）。
+            if (t.NexusId is int modId)
+            {
+                _ = RedispatchAsync(modId, t.DownloadFileId);
+                return;
+            }
             _ = JS.InvokeVoidAsync("junigridJs.toast", LocService.Tr("该任务暂停后需重新发起（已保留已下载部分）"), "err");
+        }
     }
 
     // ─── 全部删除（当前筛选）：确认弹窗 → 按筛选清掉记录，正在跑的同步取消 ───

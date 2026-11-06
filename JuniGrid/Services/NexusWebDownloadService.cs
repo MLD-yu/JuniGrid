@@ -44,9 +44,11 @@ public sealed record NexusWebDownloadResult(string? Url, string? Error,
 /// 用户至少不会卡死。
 /// </para>
 /// <para>
-/// <b>并发</b>：池子里最多同时 3 个窗口（见 <see cref="PoolSize"/>）。所有窗口共用
-/// 同一个 WebView2 环境（同一个 profile → 登录态天然共享），只是各自一个控件，
-/// 于是批量更新可以几路并行，而不是一个个排队。
+/// <b>并发</b>：池子容量是 <b>1</b>，一次只开一个窗口。这个通道只在免费账号上走
+/// （Premium 直接用 API 直链，压根不进这里），而 N 网免费账号同一时间只允许一个下载：
+/// 多开窗口时只有最先那个能拿到文件，其余会卡在「按钮点过但没有下载事件」直到超时
+/// （2026-11-05 实机：批量更新 4 个 → 1 成 3 败；改回串行后逐个成功）。批量更新照样能跑，
+/// 只是在门外排队。
 /// </para>
 /// <para>
 /// 独立 UserDataFolder 是硬要求：主界面那个 BlazorWebView 已经占住
@@ -65,6 +67,10 @@ public sealed class NexusWebDownloadService
     /// <summary>v1.3.39：账号窗口的入口。根路径经常被 Cloudflare 挡，分区页能过。</summary>
     private const string AccountStartUrl = "https://www.nexusmods.com/stardewvalley";
     private const string AccountStartUrlFallback = "https://www.nexusmods.com/";
+
+    /// <summary>明确没登录时直接开登录页 —— 以前不管登没登录都开游戏分区页，用户得自己在
+    /// 页头找那颗小小的「Log in」，找不到就以为内置浏览器坏了（2026-11-07 用户反馈）。</summary>
+    private const string LoginStartUrl = "https://users.nexusmods.com/auth/login";
     private static bool _accountRetried;
     /// <summary>v1.3.43：这个账号窗口是「因为撞了登录墙」才打开的 —— 登录成功后自动收掉。
     /// 用户自己点「打开内置网页」进来的不算（他可能只是想看看/换号，不该被自动关掉）。</summary>
@@ -236,8 +242,10 @@ public sealed class NexusWebDownloadService
             };
             // v1.3.39：先开游戏分区页 —— 隐藏下载窗口一直靠这类页面过 Cloudflare，
             // 而根路径在这台机器上会被挡（实测 Unknown）。
-            view.CoreWebView2.Navigate(AccountStartUrl);
-            AppLog.Info("NexusWeb", "内置 Nexus 网页账号窗口已显示");
+            // v1.3.59：没登录就直接进登录页（否则用户面对首页找不到入口）。
+            var startUrl = SignedIn ? AccountStartUrl : LoginStartUrl;
+            view.CoreWebView2.Navigate(startUrl);
+            AppLog.Info("NexusWeb", "内置 Nexus 网页账号窗口已显示，入口=" + startUrl);
         }).Task.Unwrap();
     }
 
@@ -467,10 +475,25 @@ public sealed class NexusWebDownloadService
     /// 「一个一个排队 × 每个十几秒」，用户看到的是「点了更新半天不动」。现在免费账号也能
     /// 三路并行（和 Premium 的下载并发一致）。再多意义不大：瓶颈在网络和 N 网限速，
     /// 而且每多一个窗口就多一个 Chromium 渲染进程。</para></summary>
-    private const int PoolSize = 3;
+    /// <summary>池子容量 = 同时最多几个隐藏窗口。
+    /// <para><b>必须是 1</b>：这条通道只在免费账号上走，而 N 网免费账号一次只允许一个下载。
+    /// 2026-11-04 曾经提到 3（理由写的是"免费账号也能三路并行，和 Premium 一致"），
+    /// 2026-11-05 实机打脸：批量更新 4 个 mod，只有最先那个拿到直链，另外 3 个分别卡在
+    /// 「60 秒没等到按钮」和「点了按钮但 100 秒没有下载事件」，最后全部退回开网页。</para></summary>
+    private const int PoolSize = 1;
 
     private static readonly NexusDownloadSlotGate Gate = new(PoolSize);
     private static readonly NexusFetchSlotRegistry FetchSlots = new();
+
+    /// <summary>隐藏窗口里截到的 nxm:// 链接 —— 进程内直送，不经过 Windows 协议处理器。
+    /// <para>为什么需要它：Nexus 的「Slow download」在 <c>nmm=1</c> 页面里实际是导航到
+    /// <c>nxm://…</c>。正常路径是 WebView2 把外部协议交给 Windows，Windows 再拉起本程序、
+    /// 由单实例管道回流。但 WebView2 对外部协议默认会弹一个「是否打开」的确认框，而隐藏
+    /// 窗口在屏幕外，那个框没人点得到 —— 链接就无声消失。2026-11-06 实机：同一个文件在
+    /// Edge 里点必出 nxm://，应用内有时拿不到，任务行就卡在「正在从 Nexus 页面获取下载
+    /// 链接…」直到超时。这里在进程内截住同一条链接，直接交给既有回流管线。</para>
+    /// <para>订阅方：MainWindow 建好 DI 后挂到 <c>App.DispatchNxm</c>。</para></summary>
+    public static event Action<string>? NxmLinkDetected;
 
     /// <summary>WebView2 环境按 profile 缓存 —— <b>同一个 user data folder 在一个进程里
     /// 只能建一个环境</b>，再建一次直接 <c>0x8007139F</c>。多窗口要共享它。</summary>
@@ -490,10 +513,43 @@ public sealed class NexusWebDownloadService
     /// 覆盖一个节流周期，而且这时点已经每 3 秒扫一次页面锚点，正常情况几秒就返回了。</para></summary>
     private const int WaitAfterClickSeconds = 100;
 
+    /// <summary>点完按钮、按钮又从 DOM 里消失之后，多少秒还没下载事件就重载页面重来。
+    /// <para>2026-11-06 实机：这条通道的失败不是「N 网不给」，而是那一下点在了还没接上
+    /// React 的服务端渲染按钮上 —— 页面随后重建下载面板，按钮消失，什么都没发生。
+    /// nxm 回流正常 0.2~1 秒就到；12 秒还没动静就重载重试，比干等满 100 秒有用得多。</para></summary>
+    private const int ReloadAfterClickSeconds = 12;
+
+    /// <summary>重载页面重试几次。两次足够：真遇到 Cloudflare/限流时再多也是白搭。</summary>
+    private const int MaxReloads = 2;
+
     /// <summary>忍耐期：页面刚打开的前 10 秒不因「验证 / 登录」判定去弹窗。
     /// 实测 N 网首屏经常先给一张 Cloudflare 中间页（Just a moment…），3~8 秒才自己放行；
     /// 太早 Reveal 会让用户对着一个下一秒就消失的挑战页发呆。</summary>
     private const int GraceSeconds = 10;
+
+    /// <summary>验证页卡住时重载页面的次数。
+    /// <para>控制台实测（同一 profile、同一参数、离屏无焦点）8 秒就能过 —— 卡住多半是单次
+    /// 挑战的死循环，重载一次拿到的就是新挑战。</para>
+    /// <para>v1.3.61 从 2 降到 1：每次重试要花 ~33 秒（等 25s + 清 cookie + 重载），两次就是
+    /// 一分半，而这条通道在这种网络环境下真的过不去（2026-11-07 03:39 实机：3 轮循环后照样
+    /// 交浏览器）。留一次兜住「偶发死循环」，剩下的时间交给浏览器那条稳的路。</para></summary>
+    private const int MaxChallengeReloads = 1;
+
+    /// <summary>验证页刚出现时的「完全静默」时长：这段时间里一次的探针都不打。
+    /// <para>2026-11-07 03:47 对照实验：用真实 profile（<c>E:\junigrid\nexus-web\profile</c>）、
+    /// 同样的离屏位置、同样的 <c>ShowActivated=false</c>、同样的启动参数、同样挂着 CDP，
+    /// 一个独立测试窗口 <b>8 秒就自己过了</b>——它和正式流程唯一的差别是探针脚本的重量：
+    /// 测试窗口只读 <c>document.title</c>，而正式探针要读 <c>innerText</c> 8000 字、
+    /// 遍历 <c>iframe</c>、调 <c>getBoundingClientRect()</c>，每 1.5 秒一轮，每一轮都强制
+    /// 整页重新布局。CF 的挑战脚本靠 rAF + 精确计时跑 Web Worker，被这样反复打断很容易
+    /// 卡在半路（实机就是「一直转圈、永远不放行」）。所以先闭嘴 8 秒，按测试窗口那种
+    /// 「没人打扰」的节奏让它自己跑完；过不了再走重载/交接的老路。</para></summary>
+    private const int ChallengeQuietSeconds = 8;
+
+    /// <summary>验证窗口交到用户手上之后，给他多久自己过。这段时间里不重载、不清 cookie、
+    /// 也不偷偷转浏览器 —— 他正在看着那个转圈的页面，任何自作主张都会把页面换掉。
+    /// 45 秒足够：手动过一次 CF 托管挑战通常十几秒，卡到 45 秒基本是真过不去。</summary>
+    private const int ChallengeManualSeconds = 45;
 
     private const string GameDomain = "stardewvalley";
 
@@ -638,6 +694,64 @@ public sealed class NexusWebDownloadService
         private DateTime _lastClickUtc = DateTime.MinValue;
         /// <summary>上一次从页面里捞下载锚点的时间 —— 每 3 秒最多扫一次 DOM，避免每轮都扫。</summary>
         private DateTime _lastHarvestUtc = DateTime.MinValue;
+        /// <summary>同一条 nxm 链接会从「外部协议」和「网络层」各来一次，只转交一次。</summary>
+        private int _nxmRaised;
+        /// <summary>点过按钮却没反应时重载页面的次数（见 <see cref="ReloadAfterClickSeconds"/>）。</summary>
+        private int _reloads;
+        /// <summary>连续多少次探不到挑战页 —— 用来给「验证已通过」的收窗去抖。</summary>
+        private int _cfMisses;
+        /// <summary>这次运行里见过人机验证页吗 —— 失败时用来把结论说得更准。</summary>
+        private bool _sawChallenge;
+        /// <summary>「正在自动校验，不需要操作」这句提示发过没有 —— 别每轮都往任务行推一遍。</summary>
+        private bool _autoHintSent;
+        /// <summary>当前页面是不是停在验证页上 —— 导航失败日志据此标注「（验证期间）」。</summary>
+        private bool _challengeActive;
+        /// <summary>验证过不去时，是否已经把文件页交给系统浏览器等 nxm 回流。</summary>
+        private bool _browserHandoff;
+        /// <summary>验证页卡住后已经重载过几次（见 <see cref="MaxChallengeReloads"/>）。</summary>
+        private int _challengeReloads;
+        /// <summary>这一轮挑战页是否已经给过「完全静默」的时间（见 <see cref="ChallengeQuietSeconds"/>）。</summary>
+        private bool _challengeQuieted;
+        /// <summary>验证窗口是什么时候交到用户手上的（用户自己过的计时起点）。</summary>
+        private DateTime _challengeRevealAtUtc;
+
+        /// <summary>CF 的固定 cookie 名。只删这些（登录态原样保留）—— 见 <see cref="ClearCfCookiesAsync"/>。</summary>
+        private static readonly string[] CfCookieNames =
+            ["cf_clearance", "__cf_bm", "__cf_chl_2fa", "__cf_chl_prog", "__cf_chl_rc_m",
+             "__cf_chl_js_t", "__cf_chl_tk", "__cfduid", "__cf_waitlist"];
+
+        /// <summary>清掉 profile 里 Cloudflare 的验证 cookie。2026-11-07 03:16 实测：被污染的
+        /// cf_clearance/__cf_bm 会让托管挑战永远不放行；清掉后同一 profile 7 秒通过。
+        /// 走 CDP 的 Network.deleteCookies，逐个来，失败不炸。
+        /// <para>2026-11-07 03:35 实机日志出现过「CDP 调用全部失败」：<c>Network.deleteCookies</c>
+        /// 只给 <c>name</c> 会被判参数非法（缺 <c>url</c>/<c>domain</c>），所以这里带上
+        /// <c>url</c>，并把第一个异常记下来 —— 不然只能看到「全部失败」，没法判断是参数问题
+        /// 还是内核/通道真的废了。</para></summary>
+        private async Task ClearCfCookiesAsync()
+        {
+            if (_core is null) return;
+            var cleared = 0;
+            string? firstError = null;
+            foreach (var name in CfCookieNames)
+            {
+                try
+                {
+                    await _core.CallDevToolsProtocolMethodAsync("Network.deleteCookies",
+                        JsonSerializer.Serialize(new Dictionary<string, object?>
+                        {
+                            ["name"] = name,
+                            ["url"] = "https://www.nexusmods.com/",
+                        }));
+                    cleared++;
+                }
+                catch (Exception ex) { firstError ??= ex.Message; }
+            }
+            AppLog.Info("NexusWeb", cleared > 0
+                ? $"已清除 CF 验证 Cookie（{cleared}/{CfCookieNames.Length} 个，含 cf_clearance/__cf_bm）"
+                : $"清除 CF Cookie 没有生效（CDP 调用全部失败：{firstError ?? "未知"}）");
+        }
+        /// <summary>静默窗口到期时间：这段时间内不做任何探针注入（见 PumpAsync 里的说明）。</summary>
+        private DateTime _quietUntilUtc = DateTime.MinValue;
         private string? _lastError;
 
         public HiddenHost(int modId, long fileId, Action<string, double?, double?>? report, NexusFetchSlot slot)
@@ -662,7 +776,7 @@ public sealed class NexusWebDownloadService
         {
             try
             {
-                await CreateUiAsync();
+                await CreateUiAsync(ct);
                 ct.ThrowIfCancellationRequested();
 
                 AppLog.Info("NexusWeb", $"开始获取直链 mod={_modId} file={_fileId}");
@@ -698,7 +812,7 @@ public sealed class NexusWebDownloadService
         // 建窗
         // --------------------------------------------------------------
 
-        private async Task CreateUiAsync()
+        private async Task CreateUiAsync(CancellationToken ct)
         {
             // 独立 profile：与主界面 BlazorWebView 的 StoragePaths.WebView2Dir 分开。
             // 好处是 N 网的登录态只活在这一个目录里，清缓存/换账号互不影响。
@@ -749,7 +863,18 @@ public sealed class NexusWebDownloadService
                 await loaded.Task;
             }
 
-            await EnsureIsolatedWebViewAsync(profile);
+            // 2026-11-06 21:31 实机：环境就绪后内核初始化无征兆挂死（33 秒+ 没有「内核就绪」，
+            // 期间任务行一动不动，用户只能重启应用）。给它 45 秒上限：到点判失败，
+            // 调用方照旧退回「打开系统浏览器」的老路，别让用户对着假死干等。
+            // 注意：超时后底下那次 EnsureCoreWebView2Async 还在后台跑，本进程内的
+            // EnvGate 可能被它占着 —— 后续重试同样会走到这个超时再兜底，重启后恢复。
+            var init = EnsureIsolatedWebViewAsync(profile);
+            if (await Task.WhenAny(init, Task.Delay(TimeSpan.FromSeconds(45), ct)) != init)
+            {
+                ct.ThrowIfCancellationRequested();   // 取消引起的先行退场，走「已取消」语义
+                throw new TimeoutException("内置浏览器内核初始化超时（45 秒）");
+            }
+            await init;   // WhenAny 只看谁先完成、不解包异常：失败要在这里照常炸出来
             _core = _view.CoreWebView2;
             AppLog.Info("NexusWeb", $"内核就绪 {_core.Environment?.BrowserVersionString} profile={profile}");
 
@@ -763,11 +888,18 @@ public sealed class NexusWebDownloadService
             _core.DownloadStarting += OnDownloadStarting;
             _core.NewWindowRequested += OnNewWindowRequested;
             _core.NavigationStarting += OnNavigationStarting;
+            _core.LaunchingExternalUriScheme += OnLaunchingExternalUriScheme;
             await HookNetworkAsync();
             _core.NavigationCompleted += (_, e) =>
             {
                 if (!e.IsSuccess && e.WebErrorStatus != CoreWebView2WebErrorStatus.OperationCanceled)
+                {
                     _lastError = $"页面加载失败（{e.WebErrorStatus}）";
+                    // 验证期间页面被反复掐断是「卡住」的信号之一 —— 日志里标出来，
+                    // 配合 chunk 里那句「放弃应用内通道」能把整条时间线讲清楚。
+                    AppLog.Warn("NexusWeb", $"导航失败：{e.WebErrorStatus}（{_core?.Source}）"
+                        + (_challengeActive ? "（验证期间）" : ""));
+                }
             };
         }
 
@@ -861,6 +993,7 @@ public sealed class NexusWebDownloadService
                     _core.DownloadStarting -= OnDownloadStarting;
                     _core.NewWindowRequested -= OnNewWindowRequested;
                     _core.NavigationStarting -= OnNavigationStarting;
+                    _core.LaunchingExternalUriScheme -= OnLaunchingExternalUriScheme;
                     UnhookNetwork();
                 }
             }
@@ -884,6 +1017,7 @@ public sealed class NexusWebDownloadService
         // 打开 Network 域后，只要那个请求真的发出去过，responseReceived 里就带着
         // 最终 URL（已经跟完 302），直接拿来用，不依赖浏览器是否落盘。
         private CoreWebView2DevToolsProtocolEventReceiver? _netRecv;
+        private CoreWebView2DevToolsProtocolEventReceiver? _netReqRecv;
 
         private async Task HookNetworkAsync()
         {
@@ -892,6 +1026,11 @@ public sealed class NexusWebDownloadService
             {
                 _netRecv = _core.GetDevToolsProtocolEventReceiver("Network.responseReceived");
                 _netRecv.DevToolsProtocolEventReceived += OnNetworkResponse;
+                // 请求层再挂一只：Nexus 的 Slow download 会发起 nxm:// 导航，它先出现在
+                // requestWillBeSent 里，然后才轮到「外部协议」那道闸。外部协议在隐藏窗口里
+                // 可能被确认框挡住，请求层这条是拿回链接的第二条证据（见 NxmLinkDetected）。
+                _netReqRecv = _core.GetDevToolsProtocolEventReceiver("Network.requestWillBeSent");
+                _netReqRecv.DevToolsProtocolEventReceived += OnNetworkRequest;
                 await _core.CallDevToolsProtocolMethodAsync("Network.enable", "{}");
             }
             catch (Exception ex) { AppLog.Warn("NexusWeb", "挂网络监听失败：" + ex.Message); }
@@ -905,6 +1044,75 @@ public sealed class NexusWebDownloadService
             }
             catch { }
             _netRecv = null;
+            try
+            {
+                if (_netReqRecv is not null) _netReqRecv.DevToolsProtocolEventReceived -= OnNetworkRequest;
+            }
+            catch { }
+            _netReqRecv = null;
+        }
+
+        /// <summary>外链协议就绪的那一刻截住它。隐藏窗口没有用户能点那个「是否打开」
+        /// 确认框，所以这里一律取消默认行为，把 nxm 链接自己交给回流管线。</summary>
+        private void OnLaunchingExternalUriScheme(object? sender,
+            CoreWebView2LaunchingExternalUriSchemeEventArgs e)
+        {
+            try
+            {
+                var uri = e.Uri ?? "";
+                e.Cancel = true;
+                AppLog.Info("NexusWeb", "外部协议命中：" + NxmSummary(uri));
+                TryRaiseNxm(uri);
+            }
+            catch (Exception ex)
+            {
+                AppLog.Warn("NexusWeb", "处理外部协议失败：" + ex.Message);
+            }
+        }
+
+        /// <summary>网络请求层截 nxm:// —— 外部协议被拦住时这条仍然会先发出来。</summary>
+        private void OnNetworkRequest(object? sender, CoreWebView2DevToolsProtocolEventReceivedEventArgs e)
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(e.ParameterObjectAsJson);
+                if (!doc.RootElement.TryGetProperty("request", out var req)) return;
+                var url = req.TryGetProperty("url", out var u) ? u.GetString() : null;
+                if (string.IsNullOrWhiteSpace(url)
+                    || !url.StartsWith("nxm://", StringComparison.OrdinalIgnoreCase)) return;
+                AppLog.Info("NexusWeb", "网络层截到 nxm：" + NxmSummary(url));
+                TryRaiseNxm(url);
+            }
+            catch { /* 事件参数格式异常不影响主流程 */ }
+        }
+
+        private void TryRaiseNxm(string uri)
+        {
+            if (string.IsNullOrWhiteSpace(uri)
+                || !uri.StartsWith("nxm://", StringComparison.OrdinalIgnoreCase)) return;
+            if (Interlocked.Exchange(ref _nxmRaised, 1) != 0) return;
+            try
+            {
+                var handler = NxmLinkDetected;
+                if (handler is null)
+                {
+                    AppLog.Warn("NexusWeb", "截到 nxm 但没有订阅方，链接会丢");
+                    return;
+                }
+                handler(uri);
+            }
+            catch (Exception ex)
+            {
+                AppLog.Warn("NexusWeb", "转交 nxm 链接失败：" + ex.Message);
+            }
+        }
+
+        /// <summary>日志里只留 scheme + 路径：链接带的 <c>key</c> 是一次性凭据，
+        /// 和 InstallService 那条回流日志的规矩一致，不落盘。</summary>
+        private static string NxmSummary(string uri)
+        {
+            var q = uri.IndexOf('?');
+            return q > 0 ? uri[..q] : uri;
         }
 
         /// <summary>只认「N 网自家域名 + 压缩包类 MIME」的响应。
@@ -993,6 +1201,7 @@ public sealed class NexusWebDownloadService
             {
                 e.Handled = true;                       // 一律不弹真窗口
                 var uri = e.Uri;
+                AppLog.Info("NexusWeb", "新窗口请求：" + (string.IsNullOrWhiteSpace(uri) ? "(空)" : uri));
                 if (string.IsNullOrWhiteSpace(uri)) return;
                 if (LooksLikeDownloadUrl(uri))
                 {
@@ -1012,6 +1221,8 @@ public sealed class NexusWebDownloadService
             try
             {
                 if (string.IsNullOrWhiteSpace(e.Uri)) return;
+                if (e.Uri.IndexOf("DownloadPopUp", StringComparison.OrdinalIgnoreCase) >= 0)
+                    AppLog.Info("NexusWeb", "导航到下载弹页：" + e.Uri);
                 if (!LooksLikeDownloadUrl(e.Uri)) return;
                 e.Cancel = true;
                 AppLog.Info("NexusWeb", "导航直链命中：" + e.Uri);
@@ -1044,6 +1255,8 @@ public sealed class NexusWebDownloadService
             var started = DateTime.UtcNow;
             var clicks = 0;
             var interactive = false;
+            // 这一轮是不是刚经历过验证页（用来在它退场时重置计时预算）
+            var sawChallenge = false;
 
             while (true)
             {
@@ -1054,9 +1267,22 @@ public sealed class NexusWebDownloadService
                 if (DateTime.UtcNow - started > limit)
                 {
                     _lastError = interactive
-                        ? "等待你在 Nexus 页面完成验证超时"
+                        ? (_browserHandoff
+                            ? "浏览器里没有收到下载回流（没有点下载按钮，或点了但没回到本应用）"
+                            : "等待你在 Nexus 页面完成验证超时")
                         : "没能在 Nexus 页面触发下载（账号未登录，或页面结构已变化）";
                     return null;
+                }
+
+                // 静默窗口：刚把验证页交到用户眼前的那几秒里，一次探针都不打。
+                // 每次探针都是一次 CDP Runtime.evaluate 注入，而 CF 的反自动化最爱抓这个 ——
+                // 「一直有人在页面上执行脚本」正是托管挑战迟迟不自动放行的常见原因
+                // （2026-11-07 01:06 实机：验证页连续 11 次刷新失败，而同一时刻普通浏览器
+                //  秒过；差别不在网络——裸连 0.67s 就拿到质询页——而在指纹与注入）。
+                if (DateTime.UtcNow < _quietUntilUtc)
+                {
+                    await Task.Delay(1000, ct);
+                    continue;
                 }
 
                 var probe = await ProbeAsync();
@@ -1067,7 +1293,7 @@ public sealed class NexusWebDownloadService
                 }
 
                 // 只在状态跳变时记一行：这张页面每 0.6 秒探一次，全记就是刷屏
-                var sig = $"{probe.Button}/cf={probe.Challenge}/login={probe.Login}";
+                var sig = $"{probe.Button}/cf={probe.Challenge}/login={probe.Login}/act={probe.NeedsClick}";
                 if (sig != _lastProbeSig)
                 {
                     _lastProbeSig = sig;
@@ -1082,21 +1308,146 @@ public sealed class NexusWebDownloadService
                 // ── 人机验证：这是【唯一】会让窗口出现在用户眼前的情形 ──
                 if (probe.Challenge && !inGrace)
                 {
+                    _cfMisses = 0;
+                    _sawChallenge = true;
+                    sawChallenge = true;
+                    _challengeActive = true;
+
+                    if (probe.NeedsClick)
+                    {
+                        // 页面上有可见的 Turnstile 复选框 —— 只有这种才值得把窗口交给用户点。
+                        if (_revealedHint != "cf")
+                        {
+                            Reveal("cf", "Nexus 要求人机验证 —— 请在弹出的窗口里点一下完成，之后会自动继续");
+                            interactive = true;
+                        }
+                        // 手动计时起点：复选框可能被系统画在 iframe 里、点完变成「转圈」形态，
+                        // 那时会掉到下面的自动分支去 —— 不能让那条路读到默认值直接判超时。
+                        if (_challengeRevealAtUtc == default) _challengeRevealAtUtc = DateTime.UtcNow;
+                        await Task.Delay(1500, ct);
+                        continue;
+                    }
+
+                    // 自动校验页（只有转圈）。
+                    // 2026-11-07 02:14 实机：这个页面在应用内窗口里会一直转圈（普通浏览器秒过，
+                    // 内置窗口过不去 —— CF 对嵌入式浏览器 + 调试通道的判定不同），刷新循环每 20 秒
+                    // 一次、永远不收敛。以前这里会显形让用户「点一下」，可页面上根本没有可点的东西；
+                    // 再往后就是干等满 5 分钟。
+                    // 2026-11-07 03:47 对照实验推翻了这个结论：同样的 profile / 位置 / 参数 / CDP，
+                    // 独立窗口 8 秒就过，唯一差别是探针没那么重。所以先给一段完全静默（见
+                    // ChallengeQuietSeconds），别再一上来就用重脚本打断挑战。
+                    if (!_challengeQuieted)
+                    {
+                        _challengeQuieted = true;
+                        _quietUntilUtc = DateTime.UtcNow.AddSeconds(ChallengeQuietSeconds);
+                        AppLog.Info("NexusWeb",
+                            $"检测到 Cloudflare 验证页（页面上没有需要点的控件），静默 {ChallengeQuietSeconds}s 让它自己完成");
+                        _report?.Invoke("Nexus 正在验证浏览器（不需要操作）…", null, null);
+                        _autoHintSent = true;
+                        await Task.Delay(500, ct);
+                        continue;
+                    }
+                    // 静默过后它还在转圈 → 直接交给用户。
+                    // 「如果是人机验证，为什么不直接弹窗让咱们自己验证？」（2026-11-07 03:52）
+                    // —— 对，这才是这条通道该有的样子。挑战页虽然没有可点的复选框，但
+                    // 托管挑战确实存在「窗口要有焦点 / 页面要被真人碰一下」才放行的情况，
+                    // 那是我们替不了的；而背着用户偷偷转去浏览器，等于把主动权也拿走了。
+                    // 所以：静默期一过就显形，让用户看着它转、必要时点一下页面。
                     if (_revealedHint != "cf")
                     {
-                        Reveal("cf", "Nexus 要求人机验证 —— 请在弹出的窗口里点一下完成，之后会自动继续");
+                        Reveal("cf", "Nexus 要验证一下浏览器 —— 窗口已弹出，等它转完会自动继续；"
+                                   + "要是停着不动，点一下页面任意位置");
                         interactive = true;
+                        _challengeRevealAtUtc = DateTime.UtcNow;
+                        _report?.Invoke("Nexus 要验证浏览器 —— 请在弹出的窗口里等一下它转完", null, null);
+                        AppLog.Info("NexusWeb",
+                            $"验证页静默 {ChallengeQuietSeconds}s 后仍未放行，弹窗交给用户自己过");
+                        await Task.Delay(1200, ct);
+                        continue;
+                    }
+
+                    // 已经交到用户手上了：给他 ChallengeManualSeconds 亲手过，
+                    // 期间不催、不重载、不偷偷转浏览器。
+                    var age = (DateTime.UtcNow - started).TotalSeconds;
+                    var manualAge = (DateTime.UtcNow - _challengeRevealAtUtc).TotalSeconds;
+                    if (manualAge > ChallengeManualSeconds)
+                    {
+                        // 2026-11-07 03:16 实锤：同一个真实 profile，挑战页 35s+ 不放行；
+                        // 删掉 Cookies 库后 7 秒通过 —— profile 里被污染的 CF cookie
+                        // （过期 cf_clearance / 坏 __cf_bm）会让托管挑战永远不放行。
+                        // 重载前先清这几个 CF 专用 cookie（Nexus 登录 cookie 原样保留）。
+                        if (_challengeReloads < MaxChallengeReloads)
+                        {
+                            _challengeReloads++;
+                            await ClearCfCookiesAsync();
+                            AppLog.Warn("NexusWeb",
+                                $"验证页 {age:F0}s 未放行（act=False），已清 CF Cookie，重载页面重试（第 {_challengeReloads} 次）");
+                            _report?.Invoke($"验证没通过，正在重试（第 {_challengeReloads} 次）…", null, null);
+                            started = DateTime.UtcNow;
+                            _autoHintSent = false;
+                            _challengeQuieted = false;   // 新一轮挑战也先给静默，别一上来就探
+                            _core?.Navigate(PageUrl);
+                            await Task.Delay(800, ct);
+                            continue;
+                        }
+
+                        if (!_browserHandoff)
+                        {
+                            _browserHandoff = true;
+                            interactive = true;          // 交接之后给足 5 分钟等他点
+                            _lastError = "已打开浏览器下载页 —— 点一下页面上的下载按钮，会自动接回本任务";
+                            _report?.Invoke("已用浏览器打开下载页 —— 点一下下载按钮，任务会自动继续…", null, null);
+                            AppLog.Warn("NexusWeb",
+                                $"验证页 {age:F0}s 仍未放行（重载 {_challengeReloads} 次后），改开系统浏览器等 nxm 回流");
+                            try { UpdateService.OpenUrl(PageUrl); }
+                            catch (Exception ex) { AppLog.Warn("NexusWeb", "打开浏览器失败：" + ex.Message); }
+                        }
+                        await Task.Delay(1500, ct);
+                        continue;
+                    }
+
+                    if (!_autoHintSent)
+                    {
+                        // 不弹窗（没东西可点），但任务行得说清楚它在自救 —— 不然看着像卡住。
+                        // 措辞别写「一般几秒钟」：这台机器上挑战经常一卡就是几十秒，
+                        // 说「几秒钟」等于骗人（2026-11-07 03:39 用户截图）。
+                        _autoHintSent = true;
+                        _report?.Invoke($"Nexus 风控校验中…（第 {_challengeReloads + 1} 次尝试，最多 {MaxChallengeReloads + 1} 次）", null, null);
                     }
                     await Task.Delay(1500, ct);
                     continue;
                 }
 
+                // 挑战页退场：CF 花掉的那几十秒不该算进「页面多久没出现按钮」的预算里，
+                // 否则一次慢验证就能把后面的正常加载时间挤没。
+                // ⚠ 只重置计时，不重置 _challengeReloads：探针在重载间隙会闪变 cf=False 走到这里，
+                // 把重载计数也清零的话就变成「永远在重试第 1 次」的死循环（2026-11-07 03:11 实机）。
+                // 计数只在窗口生命周期里累加，到 MaxChallengeReloads 就走外跳兜底。
+                if (sawChallenge)
+                {
+                    sawChallenge = false;
+                    _autoHintSent = false;
+                    _challengeActive = false;
+                    started = DateTime.UtcNow;
+                }
+
                 // 验证过了（或页面已经自己恢复）→ 立刻搬回屏幕外。
                 // 「除了人机验证，其它时候内置浏览器都是隐藏的」—— 收窗这一步就是兑现它。
+                // 2026-11-06 21:38 实机：CF 中间页在「英文原文 / 本地化文案」之间闪变
+                // （21:38:58 cf=1 弹窗 → 21:39:01 cf=0 收窗 → 21:39:38 失败现场 title=请稍候…
+                //   页面仍停在验证页），单次 cf=0 就收窗会把正卡在验证页的窗口抽走，
+                // 用户对着「请在弹出的窗口里点一下」干等一个已经不存在的弹窗。
+                // 连续 3 次探不到挑战页（约 4 秒）才算真的过了。
                 if (_revealedHint == "cf")
                 {
+                    if (++_cfMisses < 3)
+                    {
+                        await Task.Delay(700, ct);
+                        continue;
+                    }
                     Conceal();
                     _revealedHint = null;
+                    _cfMisses = 0;
                     AppLog.Info("NexusWeb", "人机验证已通过，窗口收回屏幕外");
                 }
 
@@ -1143,10 +1494,28 @@ public sealed class NexusWebDownloadService
                             return anchor;
                         }
                     }
+                    // 按钮从 DOM 里消失、又没有下载事件 —— 实测是那一下点在了还没接上
+                    // React 的服务端渲染按钮上（面板随后被重建）。以前在这里干等 100 秒
+                    // 再判失败，用户看到的就是「批量更新卡了 2 分钟」。重载后通常一次就成。
+                    if (waited > ReloadAfterClickSeconds && probe.Button == "none"
+                        && _reloads < MaxReloads)
+                    {
+                        _reloads++;
+                        clicks = 0;
+                        _lastClickUtc = DateTime.MinValue;
+                        _report?.Invoke("页面没反应，正在重试获取下载链接…", null, null);
+                        AppLog.Warn("NexusWeb",
+                            $"点过按钮 {waited:F0}s 没有下载事件，重载文件页重试（第 {_reloads} 次）");
+                        _core!.Navigate(PageUrl);
+                        await Task.Delay(800, ct);
+                        continue;
+                    }
                     if (waited > WaitAfterClickSeconds)
                     {
                         await HarvestAsync(logScene: true);   // 把现场（URL/标题/正文）写进日志
-                        _lastError = "点了 Slow download，但 Nexus 没把文件交出来（页面没给下载事件，也没给落点链接）";
+                        _lastError = _reloads > 0
+                            ? "点了 Slow download，但 Nexus 没把文件交出来（重载重试后仍然没有下载事件）"
+                            : "点了 Slow download，但 Nexus 没把文件交出来（页面没给下载事件，也没给落点链接）";
                         AppLog.Warn("NexusWeb", _lastError);
                         return null;
                     }
@@ -1166,11 +1535,37 @@ public sealed class NexusWebDownloadService
                     continue;
                 }
 
+                // 页面加载完了，但下载面板一直没出现 —— 实测有两种：① 真的慢，SVE/POV
+                // 这类大页面按钮要 20 秒才渲染；② SPA 渲染失败，只有导航和页脚，正文空白
+                // （2026-11-06 实机：POV 文件页两次都卡在「标题对、内容没渲染」，干等 60 秒
+                // 后失败；同一条 URL 重开能出按钮）。30 秒还没按钮就重载一次，给第二种一条活路，
+                // 又不打断第一种的慢加载（正常 22 秒内就出来了）。
+                if (clicks == 0 && probe.Button == "none" && !probe.Challenge && !probe.Login
+                    && (DateTime.UtcNow - started).TotalSeconds > 30
+                    && _reloads < MaxReloads)
+                {
+                    _reloads++;
+                    AppLog.Warn("NexusWeb",
+                        $"页面 {((DateTime.UtcNow - started).TotalSeconds):F0}s 还没出现下载按钮，重载重试（第 {_reloads} 次）");
+                    _report?.Invoke("Nexus 页面没加载出来，正在重试…", null, null);
+                    _core!.Navigate(PageUrl);
+                    started = DateTime.UtcNow;   // 重载后重新计时，否则立刻撞上 60 秒上限
+                    await Task.Delay(800, ct);
+                    continue;
+                }
+
                 // 认不出按钮 60 秒 = 这页多半不是我们以为的样子（N 网改版 / 文件已下架 /
                 // 落到了中转页）。不弹窗让它自己躲着，直接收工给结论，别干等满 120 秒。
                 if (clicks == 0 && (DateTime.UtcNow - started).TotalSeconds > GraceSeconds + 50)
                 {
-                    _lastError = "Nexus 页面迟迟没出现下载按钮（页面结构可能已变化，或这个文件需要先在网页上确认）";
+                    // 把现场（URL/标题/正文前 180 字）写进日志：这条分支以前什么都不留，
+                    // 复发时只能猜「页面结构变了」还是「正文根本没渲染」。
+                    await HarvestAsync(logScene: true);
+                    // 2026-11-06 实机：真实的死法是 CF 验证页一直没过（网络反复中断），
+                    // 别把它含糊地归成「页面结构变化」。
+                    _lastError = _sawChallenge
+                        ? "Nexus 的 Cloudflare 人机验证一直没通过（网络不稳会让验证反复重来）"
+                        : "Nexus 页面迟迟没出现下载按钮（页面结构可能已变化，或这个文件需要先在网页上确认）";
                     AppLog.Warn("NexusWeb", _lastError);
                     return null;
                 }
@@ -1192,6 +1587,9 @@ public sealed class NexusWebDownloadService
             var firstTime = _revealedHint is null;
             _revealedHint = reason;
             _report?.Invoke(hint, null, null);
+            // 交窗之后先静默几秒：让 CF 的托管挑战在没有脚本注入的干净环境里跑一次，
+            // 很多挑战就是这样自己过的（用户的原话：「有时不用点就通过了」）。
+            _quietUntilUtc = DateTime.UtcNow.AddSeconds(6);
             if (!firstTime || _window is null) return;
             try
             {
@@ -1233,7 +1631,9 @@ public sealed class NexusWebDownloadService
         // 页面探测与点击（CDP）
         // --------------------------------------------------------------
 
-        private sealed record ProbeState(string Button, bool Challenge, bool Login);
+        /// <param name="NeedsClick">这张挑战页上有可见的 Turnstile 控件（必须由用户点一下）；
+    /// false = 自动校验页（只有转圈），通常自己会过。</param>
+    private sealed record ProbeState(string Button, bool Challenge, bool Login, bool NeedsClick);
 
         /// <summary>从当前页面里捞下载落点，<paramref name="logScene"/> 时顺带把
         /// URL / 标题 / 正文前 180 字写进日志（失败后用来看它到底停在哪个页面）。</summary>
@@ -1269,7 +1669,8 @@ public sealed class NexusWebDownloadService
                 var state = root.TryGetProperty("s", out var sv) ? sv.GetString() ?? "none" : "none";
                 var cf = root.TryGetProperty("cf", out var cv) && cv.GetInt32() == 1;
                 var login = root.TryGetProperty("login", out var lv) && lv.GetInt32() == 1;
-                return new ProbeState(state, cf, login);
+                var act = root.TryGetProperty("act", out var av) && av.GetInt32() == 1;
+                return new ProbeState(state, cf, login, act);
             }
             catch { return null; }
         }
@@ -1288,7 +1689,13 @@ public sealed class NexusWebDownloadService
                 if (attempt <= 2)
                 {
                     var raw = await EvalAsync(ClickScript, userGesture: true);
-                    return raw is not null && raw.Contains("\"ok\":1", StringComparison.Ordinal);
+                    if (raw is not null && raw.Contains("\"ok\":1", StringComparison.Ordinal))
+                    {
+                        AppLog.Info("NexusWeb", "点击慢速下载：" + raw);
+                        return true;
+                    }
+                    AppLog.Info("NexusWeb", "点击未命中：" + (raw ?? "(null)"));
+                    return false;
                 }
 
                 var pos = await EvalAsync(ScrollAndMeasureScript, userGesture: false);
@@ -1391,6 +1798,7 @@ public sealed class NexusWebDownloadService
             }
           };
           scan(document, 0);
+          window.__jgHits = hits.length;
           return hits.length > 0 ? hits[0] : null;
         }
         """;
@@ -1408,7 +1816,7 @@ public sealed class NexusWebDownloadService
     /// </list></summary>
     private static readonly string ProbeScript = $$"""
         (function () {
-          var out = { s: 'none', cf: 0, login: 0 };
+          var out = { s: 'none', cf: 0, login: 0, act: 0 };
           try {
             var host = (location.hostname || '').toLowerCase();
             var href = (location.href || '').toLowerCase();
@@ -1442,9 +1850,44 @@ public sealed class NexusWebDownloadService
               var lc = ((document.title || '') + ' ' + text).toLowerCase();
               // 别把 iframe[src*=challenges.cloudflare.com] 算进来：N 网每张页面都预载了
               // 用于登录表单的 Turnstile 隐藏 iframe，一加就是 100% 误判成人机验证。
+              // 2026-11-06 21:39 实机：中文系统的 CF 中间页是「请稍候…」+「正在进行安全验证」，
+              // 英文正则一个都匹配不上 → 探针闪变 cf=0 → 窗口被误收回，验证页永远等不到弹窗。
+              // N 网站本身是纯英文站，页面上出现中文只可能是 CF 的中间页，按中文匹配是安全的。
               if (/just a moment|checking your browser|verify you are human|attention required|enable javascript and cookies/.test(lc)
+                  || lc.indexOf('正在进行安全验证') >= 0
+                  || lc.indexOf('验证您不是自动程序') >= 0
+                  || lc.indexOf('请确认您是真人') >= 0
+                  || lc.indexOf('由 cloudflare 提供的性能和安全服务') >= 0
+                  || (document.title || '').trim().toLowerCase().indexOf('请稍候') === 0
                   || document.querySelector('#challenge-form, #cf-challenge-running, .cf-browser-verification'))
                 out.cf = 1;
+
+              // 这张挑战页到底要不要人动手？CF 的「托管挑战」有两种长相：
+              //  · 自动校验：只有一个转圈 + 「请稍候…」，自己几秒后就放行 → 不该弹窗；
+              //  · 需要点击：页面上有可见的 Turnstile 复选框 → 必须把窗口交到用户手上。
+              // 判据只看「可见尺寸」的 Turnstile 控件：N 网每页预载的登录用 iframe 是 0×0，
+              // 按尺寸排除掉（历史误报就是它造成的）。
+              if (out.cf) {
+                try {
+                  var fr = document.querySelectorAll('iframe');
+                  for (var i = 0; i < fr.length; i++) {
+                    var src = (fr[i].src || '');
+                    if (src.indexOf('challenges.cloudflare.com') < 0) continue;
+                    var rr = fr[i].getBoundingClientRect();
+                    if (rr.width >= 40 && rr.height >= 25) { out.act = 1; break; }
+                  }
+                  if (!out.act) {
+                    var stage = document.querySelector('#challenge-stage, #challenge-form, .cf-browser-verification');
+                    if (stage) {
+                      var hit = stage.querySelector('input[type=checkbox], button, [role=button], label');
+                      if (hit) {
+                        var hr = hit.getBoundingClientRect();
+                        if (hr.width >= 8 && hr.height >= 8) out.act = 1;
+                      }
+                    }
+                  }
+                } catch (e) { }
+              }
             }
           } catch (e) { }
           return JSON.stringify(out);
@@ -1482,6 +1925,16 @@ public sealed class NexusWebDownloadService
             el.click();
             return JSON.stringify({
               ok: 1,
+              hits: (window.__jgHits || 0),
+              tag: el.tagName,
+              id: el.id || '',
+              cls: String(el.className && el.className.baseVal !== undefined ? el.className.baseVal : el.className || '').slice(0, 60),
+              href: el.getAttribute ? (el.getAttribute('href') || '') : '',
+              vis: !!(el.offsetParent || el.getClientRects().length),
+              rs: document.readyState,
+              // React 挂上去之后元素上才会出现 __reactProps$… 这种键。没有它就说明
+              // 点的是服务端渲染那颗还没接线的按钮 —— 点了也白点（失败时用来定性）。
+              react: Object.keys(el).some(function (k) { return k.indexOf('__react') >= 0; }),
               x: Math.round(r.left + r.width / 2),
               y: Math.round(r.top + r.height / 2)
             });

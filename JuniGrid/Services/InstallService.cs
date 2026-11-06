@@ -321,6 +321,10 @@ public sealed partial class InstallService
                     file = new NexusFileInfo(missingId, fileLabel ?? LocService.Tr("所选文件"), "", "");
                 if (file is null) { _center.Finish(task, false, LocService.Tr("找不到可下载的文件")); return LocService.Tr("找不到可下载的文件"); }
                 mainFileId = file.FileId;
+                // 把「这一跑下的是哪个文件」记到任务行上（落盘）：重启后点继续/重试时靠它
+                // 落回同一个 zip，否则重新解析「最新 MAIN」可能拿到另一个 fileId，
+                // 断点文件名对不上，21 MB 已经下好的部分就白费了（2026-11-07 05:07 实机）。
+                _center.SetDownloadFileId(task, mainFileId);
                 // 只有 MAIN 才记「已装文件快照」（见下面 RecordInstall 那段的说明）
                 var isMainFile = string.IsNullOrEmpty(file.Category)
                     || file.Category.Equals("MAIN", StringComparison.OrdinalIgnoreCase);
@@ -381,7 +385,9 @@ public sealed partial class InstallService
                                 _center.Finish(task, false, needLogin);
                                 return needLogin;
                             }
-                            _center.Finish(task, false, LocService.Tr("应用内没取到直链，已改为打开网页"));
+                            // v1.3.45：交接不算「失败」—— 网页那条路随后还能把包接上，
+                            // 先弹一条红 toast 会让人以为整件事没成（announce:false）。
+                            _center.Finish(task, false, LocService.Tr("应用内没取到直链，已改为打开网页"), announce: false);
                             return PremiumNeedsWebFallback(modId, file.FileId, UpdateService.OpenUrl, auto.Error);
                         }
                         usedWebChannel = true;
@@ -498,6 +504,40 @@ public sealed partial class InstallService
                             modId, file.FileId, file.Version ?? "");
                     }
                 }
+                else if (!isMainFile && modId > 0)
+                {
+                    // v1.3.45：非 MAIN 文件也可能是【同一个 mod 的旧版本】—— 它把盘上的文件
+                    // 整个换掉了，账本却还停在上一次 MAIN（更新）上。更新检查据此判「最新版
+                    // 已装」，用户明明降级却看不到 ⇧（2026-11-06 实机：Simple Hoard Chest 从
+                    // 文件列表装了 1.39，账本仍是 1.43/189961，刷新多少次都不报更新）。
+                    // 只认「包内 UniqueID 与某条已有安装记录相同」= 同一个 mod 换版本；
+                    // CP/AT 素材包是独立 UID，照旧不记 —— 否则拿素材包的版本去改本体的账，
+                    // 本体就会永远显示可更新（v1.3.5 的教训）。
+                    var uids = ModService.PackageUniqueIds(pack);
+                    if (uids.Any(u => cfg.ModNexusInstalls.ContainsKey(u)))
+                    {
+                        var scanned = await Task.Run(() => _mods.Scan(cfg.GamePath), ct);
+                        var entry = NexusUpdateTruth.FindInstalledEntry(scanned, modId, modName ?? "");
+                        if (entry is not null && uids.Contains(entry.UniqueID))
+                            NexusUpdateTruth.RecordInstall(cfg, entry, modId, file.FileId, file.Version ?? "");
+                        else
+                        {
+                            // 扫出来的条目对不上（改名/子包）时直接改账本键，至少让「这一版已装」
+                            // 不再骗更新检查。磁盘上的事实是这一条文件，不是上一条 MAIN。
+                            foreach (var uid in uids)
+                            {
+                                if (!cfg.ModNexusInstalls.TryGetValue(uid, out var old) || old is null) continue;
+                                cfg.ModNexusInstalls[uid] = new NexusInstallRecord
+                                {
+                                    NexusModId = modId,
+                                    FileId = file.FileId,
+                                    RemoteVersion = file.Version ?? "",
+                                    InstalledAtUtc = DateTime.UtcNow,
+                                };
+                            }
+                        }
+                    }
+                }
                 _cfg.Save(cfg);
                 // 覆盖包搬过文件时 notes 里有一条去向（汉化文件放根目录不会生效）——
                 // 不说的话用户查不到 zh.json 到底落在哪。
@@ -524,7 +564,8 @@ public sealed partial class InstallService
                 // nxm 回流仍然能把包接上。
                 if (usedWebChannel && !ct.IsCancellationRequested && mainFileId > 0)
                 {
-                    _center.Finish(task, false, LocService.Tr("应用内下载失败，已改为网页方式"));
+                    // 同上：改成网页方式不是失败，别弹红 toast。
+                    _center.Finish(task, false, LocService.Tr("应用内下载失败，已改为网页方式"), announce: false);
                     return PremiumNeedsWebFallback(modId, mainFileId, UpdateService.OpenUrl, ex.Message);
                 }
                 _center.Finish(task, false, ex.Message);
@@ -617,6 +658,10 @@ public sealed partial class InstallService
             }
             catch (Exception ex)
             {
+                // v1.3.51：这一段以前只把 ex.Message 抛给界面，日志里一个字都没有。
+                // 「无法加载文件或汇编 SharpCompress…」这种只给结论不给位置的错误，
+                // 现场排查全靠猜 —— 现在把类型 + 堆栈完整落进日志。
+                AppLog.Error("Download", $"直装失败 mod={modId}: {ex}");
                 _center.Finish(task, false, ex.Message);
                 return ex.Message;
             }

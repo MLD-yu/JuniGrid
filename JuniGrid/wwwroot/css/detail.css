@@ -328,6 +328,13 @@ html[data-theme="dark"] .jg-user-tip-bubble {
     margin: 14px 0 7px; font-size: 11.5px; font-weight: 700;
     color: var(--jg-text-3); letter-spacing: .05em;
 }
+/* v1.3.60：素材/覆盖类文件（XNB）不进入 Mod 列表，分类对它不适用 —— 用一行说明顶掉下拉框 */
+.jg-pick-note {
+    padding: 9px 11px; border-radius: 9px;
+    background: rgba(47, 158, 92, .08);
+    border: 1px solid rgba(47, 158, 92, .18);
+    font-size: 12px; line-height: 1.5; color: var(--jg-text-2);
+}
 .jg-pick-list {
     display: flex; flex-direction: column; gap: 6px;
     max-height: 210px; overflow-y: auto; scrollbar-width: thin;
@@ -335,6 +342,8 @@ html[data-theme="dark"] .jg-user-tip-bubble {
 /* 弹窗里现在最多三节（主文件 / 可选文件 / 更多文件下拉），每节列表都收紧一档：
    三节一起铺满会把「下载并安装」挤出屏幕。单节内部照旧自己滚。 */
 .jg-pick-list.jg-pick-sm { max-height: 148px; }
+/* v1.3.50：安装前的「选分类」弹窗 —— 分类一多就自己滚，别把「继续安装」顶出屏幕 */
+.jg-pick-list.jg-catpick-list { max-height: 236px; }
 .jg-pick-row {
     display: flex; align-items: flex-start; gap: 9px;
     padding: 10px 12px; border: 1px solid transparent; border-radius: 12px;
@@ -363,7 +372,10 @@ html[data-theme="dark"] .jg-user-tip-bubble {
 
 /* 「历史版本」下拉 —— 复用站内 .jg-sort-dd（mod 管理的排序/存档下拉同款）。
    原生 <select> 的弹出列表由系统绘制，圆角/配色不受主题控制，深浅色切换时永远是白底方角。 */
-.jg-modal.jg-pick-modal { overflow: visible; }        /* 菜单要能探出弹窗边界 */
+/* 保留 visible：弹窗里还有一支绝对定位的「更多文件」下拉要能探出边界。
+   分类列表改成内嵌展开后靠 .jg-cat-inline 自己限高（200px 内滚），弹窗最多增高两百来像素，
+   不会顶出屏幕，也就用不着让整个弹窗滚起来（那会把浮层裁掉）。 */
+.jg-modal.jg-pick-modal { overflow: visible; }
 .jg-pick-vdd { display: block; width: 100%; }
 .jg-pick-vdd .jg-pick-vdd-btn {
     display: flex; width: 100%; justify-content: space-between; gap: 10px;
@@ -380,19 +392,21 @@ html[data-theme="dark"] .jg-user-tip-bubble {
 .jg-pick-vdd.open.up .jg-sort-menu { transform-origin: bottom left; }
 /* 弹窗内的遮罩要压在菜单之下：全局 .jg-dd-overlay 是 9000，会盖住菜单（看得见、点不中）。 */
 .jg-pick-modal .jg-dd-overlay { z-index: 15; }
-.jg-pick-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
-/* 药丸按钮：和详情页那颗 .jg-dl4-cta 同一套皮（墨色实心 / 描边次要） */
+.jg-pick-actions { display: flex; justify-content: flex-end; gap: 12px; margin-top: 22px; }
+/* 药丸按钮：和详情页那颗 .jg-dl4-cta 同一套皮（墨色实心 / 描边次要）。
+   v1.3.81：照用户给的目标图放大一档 —— 原来的 9×20 padding 在弹窗里显得偏小、按钮不"立"，
+   改成 12×26 + 14px 字，主按钮阴影也柔和一点。 */
 .jg-pick-btn {
-    padding: 9px 20px; border-radius: 999px;
+    padding: 12px 26px; border-radius: 999px;
     border: 1px solid var(--jg-line-strong); background: transparent;
-    color: var(--jg-text-2); font-size: 13.5px; font-weight: 600;
+    color: var(--jg-text-2); font-size: 14px; font-weight: 600;
     font-family: inherit; cursor: pointer;
     transition: background .14s ease, color .14s ease, border-color .14s ease, transform .14s ease;
 }
 .jg-pick-btn:hover { background: var(--jg-well); color: var(--jg-text); }
 .jg-pick-btn.primary {
     border-color: transparent; background: var(--jg-ink); color: var(--jg-on-ink);
-    box-shadow: 0 4px 14px rgba(0, 0, 0, .18);
+    box-shadow: 0 6px 16px rgba(0, 0, 0, .14);
 }
 .jg-pick-btn.primary:hover:not(:disabled) { background: var(--jg-ink-hover); color: var(--jg-on-ink); transform: translateY(-1px); }
 .jg-pick-btn:disabled { opacity: .5; cursor: not-allowed; }
@@ -411,3 +425,21 @@ html[data-theme="dark"] .jg-user-tip-bubble {
 .jg-file-more:hover { background: var(--jg-well); color: var(--jg-text); border-color: var(--jg-ink); }
 /* 装过的那条：按钮直接显示「已安装」并灰掉 */
 .jg-file-btn-done { opacity: .5; cursor: default; }
+
+/* ═══ v1.3.73：弹窗里的分类浮层（下载面板）═══
+   它是**浮层**，允许探出弹窗边界（`.jg-pick-modal` 保持 overflow: visible），不撑高弹窗。
+   两个历史坑必须继续压住：
+   ① 双滚动容器 → 会挤出横向滚动条：内层 .jg-cat-menu 不再自己滚，交给 .jg-sort-menu。
+   ② ＋ 按钮 width:100% + padding + 虚线边框，content-box 下横向溢出 20 多像素。 */
+.jg-pick-vdd .jg-sort-menu { max-height: 260px; overflow-y: auto; overflow-x: hidden; }
+.jg-pick-vdd .jg-cat-menu { max-height: none; overflow: visible; margin: 0; min-width: 0; }
+.jg-pick-vdd .jg-cat-menu .jg-profile-item { min-width: 0; }
+.jg-pick-vdd .jg-profile-addcap { box-sizing: border-box; }
+.jg-pick-vdd .jg-cat-foot { margin: 6px 0 0; }
+
+/* 04 Files 的单文件安装弹窗：分类列表内嵌在弹窗里（这里撑高是正常的，弹窗本来就是内容自适应） */
+.jg-pick-list .jg-cat-menu { max-height: none; overflow: visible; margin: 0; min-width: 0; }
+.jg-pick-list .jg-cat-menu .jg-profile-item { min-width: 0; }
+.jg-pick-list .jg-profile-addcap { box-sizing: border-box; }
+.jg-pick-list .jg-cat-foot { margin: 6px 0 0; }
+.jg-pick-list.jg-catpick-list { overflow-x: hidden; }

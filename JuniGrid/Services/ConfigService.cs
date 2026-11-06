@@ -635,8 +635,11 @@ public sealed class JuniGridConfig
     /// <see cref="Load"/> 会统一纠正为 <c>true</c>。UI 没了就没有别的入口能关它。</para></summary>
     public bool SegmentDownload { get; set; } = true;
 
-    /// <summary>v1.3.13：分片车道数（1~6）。1 = 等价于不分片。</summary>
-    public int SegmentDownloadLanes { get; set; } = 4;
+    /// <summary>v1.3.13：分片车道数（1~16）。1 = 等价于不分片。
+    /// <para>v1.3.57 从 4 提到 8：2026-11-06 23:05 实机，同一个 97.6MB 文件同一时段，
+    /// XDyno 0.75MB/s、我们 4 条连接 174KB/s —— 晚高峰 CDN 对单条 TCP 让速很重，
+    /// 多开连接是唯一能自救的事。默认值给 8，上限放到 16。</para></summary>
+    public int SegmentDownloadLanes { get; set; } = 8;
 
     /// <summary>v1.3.17：点击探针（诊断用，默认开，定位完就关）。
     /// <para>开时每次点击会写两行日志：<c>[Click] dom</c>（JS 侧，证明点击到了页面）与
@@ -662,6 +665,14 @@ public sealed class JuniGridConfig
     /// <summary>已经查过官网、但没拿到分类的 mod 文件夹（Nexus 那边没配分类、或请求失败）。
     /// 没有这份名单，回填每进一次 Mods 页就会把它们重查一遍 —— 白烧限流额度。</summary>
     public List<string> ModCategoryTried { get; set; } = new();
+
+    /// <summary>v1.3.46：用户自定义分类（不是 N 网官方分类）—— 顶层目录（捆绑包）或独立 mod 的
+    /// 文件夹 → 分类名。一个 mod 只属于一个分类；没登记 = 未分类。
+    /// 「按分类」视图用它分段，右侧导航栏按分段跳转。</summary>
+    public Dictionary<string, string> ModUserCategory { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>自定义分类的展示顺序（创建顺序）。分类删空后这里可能残留一项 ——
+    /// 渲染前按「字典里还有成员」过滤，不靠清理。</summary>
+    public List<string> ModUserCategoryOrder { get; set; } = new();
 
     /// <summary>vNext：更新检查指纹缓存 —— Nexus modId → (updatedAt 指纹, 上次精查到的最新 MAIN 文件版本, 精查时间)。
     /// 进 Mod 页先跑一次免 key 的 GraphQL 批量指纹比对：updatedAt 没变的 mod 直接复用缓存版本号

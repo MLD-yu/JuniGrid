@@ -357,7 +357,7 @@ public sealed partial class NexusService
                 // TryRunAsync 内部把"不支持/太小/某片失败"一律收敛成 false，这里不额外判断。
                 if (await SegmentDownloader.TryRunAsync(DownloadHttp, url, destPath,
                         SegmentDownloader.Lanes, Report, ct, expectedMd5,
-                        preservePartialOnCancellation).ConfigureAwait(false))
+                        preservePartialOnCancellation, mirrors).ConfigureAwait(false))
                     return;
             }
 

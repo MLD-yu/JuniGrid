@@ -274,3 +274,94 @@ window.junigridJs.saveScrollKey = function (key, y, atBottom) {
     }
 })();
 
+
+// v1.3.46：分类导航 —— 滚到分段标题。
+// 不能直接用 scrollIntoView({block:'start'})：吸顶的筛选工具条（.jg-mods-toolbar）
+// 会盖住滚到顶端的那一行（实机截图：分类跳转后第一行被 chips 栏压住）。
+// 落点 = 「工具条实际底边 + 8px 呼吸位」（吸顶位置不一定等于容器顶边：实机量到底边在
+// .jg-main 顶边下方 77px，而 height 只有 56）。
+window.junigridJs.hasElement = function (id) {
+    return !!document.getElementById(id);
+};
+window.junigridJs.hasElement = function (id) {
+    return !!document.getElementById(id);
+};
+// ── v1.3.48：右侧导航那一列短杠自己的两件事 ────────────────────────────────
+// ① 卡片跟杠走：卡片必须待在滚动区外面（放进去会被 overflow 一起裁掉），所以它的纵向位置
+//    由这里量出第 idx 根杠的中心，写进 --jg-cat-card-y 交给 CSS 定位。以前卡片钉在整列中部，
+//    悬停最上面那根杠时卡片却出现在屏幕中间。
+// ② 杠多到一屏放不下：滚轮落在杠列上只滚这一列，不带动整页；放得下时完全不拦事件，
+//    页面照常滚（否则悬停区会莫名其妙吃掉滚轮）。用 scrollTop 手动滚，不用 scrollIntoView
+//    —— 那会连祖先容器（整页）一起滚走。
+window.junigridJs.setCatCardY = function (idx) {
+    var nav = document.querySelector('.jg-catnav');
+    var list = nav ? nav.querySelector('.jg-catnav-list') : null;
+    var dash = list && list.children[idx];
+    if (!nav || !dash) return;
+    var r = dash.getBoundingClientRect(), b = nav.getBoundingClientRect();
+    nav.style.setProperty('--jg-cat-card-y', Math.round(r.top - b.top + r.height / 2) + 'px');
+};
+document.addEventListener('wheel', function (e) {
+    var list = document.querySelector('.jg-catnav-list');
+    if (!list || !list.contains(e.target)) return;
+    if (list.scrollHeight <= list.clientHeight) return;
+    e.preventDefault();
+    list.scrollTop += e.deltaY;
+}, { passive: false });
+// v1.3.49：改成「时间基缓动」的连续滑动。
+// 旧写法是每帧把 diff 补掉 28%（指数逼近）：远距离首帧瞬移一大截、看着像跳；近距离尾段
+// 亚像素爬行，还得在落点上「保持 500ms 不抖」才收工 —— 当落点就在屏幕里时（点第一个标签、
+// 或目标段已在视口内）diff 很小，动画全耗在等这 500ms 上，所以特别慢。
+// 现在按「当前 scrollTop 与目标之间的距离」定一个 240~650ms 的时长，用 easeInOut 时间基
+// 插值推进；目标每帧重算（上方懒加载把落点推走时跟着校正，不重启）。到点精确落位即收工，
+// 没有那 500ms 的原地等待。
+// 用户一动（滚轮/触摸/点在列表里）立刻让位；点导航杠自己不算「用户动了」。
+window.junigridJs.scrollToCategory = function (id) {
+    var el = document.getElementById(id);
+    if (!el) return false;
+    var main = document.querySelector('.jg-main');
+    if (!main) { el.scrollIntoView({ behavior: 'smooth', block: 'start' }); return true; }
+
+    if (main.__jgCat) main.__jgCat.stop = true;          // 连点两根杠：上一次收工
+    var job = { stop: false };
+    main.__jgCat = job;
+
+    var target = function () {
+        var bar = document.querySelector('.jg-mods-toolbar');
+        var offset = bar
+            ? Math.max(0, bar.getBoundingClientRect().bottom - main.getBoundingClientRect().top) + 8
+            : 12;
+        var top = el.getBoundingClientRect().top - main.getBoundingClientRect().top + main.scrollTop - offset;
+        return top < 0 ? 0 : top;
+    };
+    var onUser = function (e) {
+        if (e.target && e.target.closest && e.target.closest('.jg-catnav')) return;
+        job.stop = true;
+    };
+    var cleanup = function () {
+        main.removeEventListener('wheel', onUser);
+        main.removeEventListener('touchstart', onUser);
+        main.removeEventListener('pointerdown', onUser);
+        if (main.__jgCat === job) main.__jgCat = null;
+    };
+    main.addEventListener('wheel', onUser, { passive: true });
+    main.addEventListener('touchstart', onUser, { passive: true });
+    main.addEventListener('pointerdown', onUser, { passive: true });
+
+    // easeInOutCubic：首尾都缓，中间快 —— 近距离也不会「啪」地一步到位，远距离不会先瞬移再爬。
+    var ease = function (t) { return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2; };
+    var startY = main.scrollTop;
+    var t0 = performance.now();
+    var frame = function () {
+        if (job.stop) { cleanup(); return; }
+        var want = target();
+        var dist = Math.abs(want - startY);
+        var dur = Math.max(240, Math.min(650, dist * 0.6));   // 240ms（近）~ 650ms（远）
+        var p = (performance.now() - t0) / dur;
+        if (p >= 1) { main.scrollTop = want; cleanup(); return; }
+        main.scrollTop = startY + (want - startY) * ease(p);
+        requestAnimationFrame(frame);
+    };
+    requestAnimationFrame(frame);
+    return true;
+};

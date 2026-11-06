@@ -57,6 +57,21 @@ public partial class App : Application
             return;
         }
 
+        // v1.3.51 诊断：托管解压库（SharpCompress）能不能加载。
+        // 安装第 2 步会去体检下载缓存（ModService.ArchiveLooksComplete），那个方法里 rar/7z
+        // 分支引用着 SharpCompress 的类型 —— JIT 它的时候就得加载程序集，所以一旦缺库，
+        // 玩家看到的是「正在获取文件信息…」这一步直接失败：「无法加载文件或汇编 SharpCompress」。
+        // 这里开机先摸一次：成功记版本与路径，失败连完整异常一起落盘，别再靠猜。
+        try
+        {
+            var archAsm = typeof(SharpCompress.Archives.Zip.ZipArchive).Assembly;
+            AppLog.Info("Startup", $"[解压库] SharpCompress 就绪：{archAsm.FullName} @ {archAsm.Location}");
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error("Startup", "[解压库] SharpCompress 载入失败: " + ex);
+        }
+
         var nxmArg = e.Args.FirstOrDefault(
             a => a.StartsWith("nxm://", StringComparison.OrdinalIgnoreCase));
 

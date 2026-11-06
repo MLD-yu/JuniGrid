@@ -112,6 +112,36 @@ public class SegmentDownloadTests : IDisposable
     }
 
     [Fact]
+    public async Task Rotates_To_Next_Mirror_When_Current_Node_Is_Persistently_Slow()
+    {
+        // v1.3.57：2026-11-06 晚高峰实机 —— 同一账号平时 2.6~2.8MB/s，当晚某个 CDN 节点只有
+        // ~105KB/s。引擎必须在「持续慢」时换下一个节点，而不是陪着它爬到底。
+        // 假服务器：慢节点每车道 32KB/800ms ≈ 40KB/s（四线 ≈160KB/s，低于 200KB/s 阈值），
+        // 快节点不限速。20MB 保证触发时剩余量 > 8MB 的换节点门槛。
+        var body = MakeBody(20 * 1024 * 1024);
+        using var slow = new FakeCdn(body, supportRange: true, chunkDelayMs: 800);
+        using var fast = new FakeCdn(body, supportRange: true);
+        using var http = new HttpClient();
+        var dest = Path.Combine(_dir, "rotated-pack.zip");
+        var reports = new List<string>();
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+
+        var ok = await SegmentDownloader.TryRunAsync(
+            http, slow.Url + "/file.zip", dest, lanes: 4,
+            (msg, _, _) => { lock (reports) reports.Add(msg); },
+            mirrors: new[] { fast.Url + "/file.zip" });
+        sw.Stop();
+
+        Assert.True(ok, "换到备用节点后应当下完");
+        Assert.Equal(body, await File.ReadAllBytesAsync(dest));
+        Assert.True(fast.RequestCount > 1, $"备用节点必须真正接到分片请求，实际 {fast.RequestCount}");
+        lock (reports) Assert.Contains(reports, m => m.Contains("切换备用 CDN"));
+        Assert.True(sw.Elapsed < TimeSpan.FromSeconds(90),
+            $"换节点后不该陪着慢节点爬完，实际耗时 {sw.Elapsed.TotalSeconds:F0}s");
+        Assert.Empty(Directory.GetFiles(_dir, "*.seg"));
+    }
+
+    [Fact]
     public async Task Pause_PreservesLaneCursors_AndResumeRequestsOnlyRemainingRanges()
     {
         var body = MakeBody(20 * 1024 * 1024);

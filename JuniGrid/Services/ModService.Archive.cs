@@ -183,6 +183,41 @@ public sealed partial class ModService
         => key is not null && Path.GetFileName(key.Replace('\\', '/'))
             .Equals("manifest.json", StringComparison.OrdinalIgnoreCase);
 
+    /// <summary>只读压缩包里的 manifest.json 取出 UniqueID（不解整包）。
+    /// <para>给「装完之后这是不是同一个 mod 的换版本」判家用：非 MAIN 文件里既有旧版本
+    /// （UID 与本体相同，会把盘上的文件整个换掉），也有 CP/AT 素材包（独立 UID，只是附加物）。
+    /// 前者要更新安装账本，后者绝不能 —— 拿素材包的版本去改本体的账，本体就会永远显示可更新
+    /// （v1.3.5 的教训）。zip 之外（rar/7z）的 N 网包不存在，直接返回空集。</para></summary>
+    internal static HashSet<string> PackageUniqueIds(string zipPath)
+    {
+        var uids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            if (DetectArchiveFormat(zipPath) != "zip") return uids;
+            using var zip = System.IO.Compression.ZipFile.OpenRead(zipPath);
+            foreach (var e in zip.Entries)
+            {
+                var name = e.FullName.Replace('\\', '/');
+                if (!name.EndsWith("manifest.json", StringComparison.OrdinalIgnoreCase)) continue;
+                if (name.Count(c => c == '/') > 2) continue;   // 只看包根与一层子目录
+                try
+                {
+                    using var s = e.Open();
+                    using var r = new StreamReader(s);
+                    using var doc = JsonDocument.Parse(r.ReadToEnd(), ManifestJson);
+                    if (doc.RootElement.ValueKind == JsonValueKind.Object
+                        && doc.RootElement.TryGetProperty("UniqueID", out var uid)
+                        && uid.ValueKind == JsonValueKind.String
+                        && !string.IsNullOrWhiteSpace(uid.GetString()))
+                        uids.Add(uid.GetString()!.Trim());
+                }
+                catch { /* 单个 manifest 坏了不影响其它 */ }
+            }
+        }
+        catch { }
+        return uids;
+    }
+
     private static string? ExtractToTemp(string zipPath, string prefix, out string tempDir,
         CancellationToken ct = default, Action<int, int>? onProgress = null)
     {
@@ -738,8 +773,14 @@ public sealed partial class ModService
     {
         var lossy = innerName.Contains('\uFFFD', StringComparison.Ordinal);
         if (innerName.Length > 0 && !atZipRoot && !lossy) return innerName;
-        var zipName = isBundle && !lossy ? Path.GetFileNameWithoutExtension(zipPath) : null;
-        return SanitizeFolderName(zipName ?? manifestName ?? "NewMod");
+        // v1.3.45：捆绑包以前在包根直接拿 zip 名当目录名 —— N 网直装/回流链路的 zip 名是
+        // direct-{modId}-{fileId} / nxm-…，落到 Mods 里就成了 "direct-53426-189551" 这种
+        // 玩家看不懂的名字（2026-11-06 实机）。包内有可读的共同名（InstallNew 从子包名
+        // 算出的 Stardew Visual Enhancer）就用它；zip 名只在连共同名都没有时兜底。
+        var fallback = manifestName;
+        if (string.IsNullOrWhiteSpace(fallback) && isBundle && !lossy)
+            fallback = Path.GetFileNameWithoutExtension(zipPath);
+        return SanitizeFolderName(fallback ?? "NewMod");
     }
 
     private static string SanitizeFolderName(string name)

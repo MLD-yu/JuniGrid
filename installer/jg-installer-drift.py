@@ -414,14 +414,22 @@ def run_version_gate(exe):
     # 注册表里的 DisplayVersion 不是我们能控制的：手改、老安装器、别的工具都写过。
     # 严格 Version.TryParse 一失败就退回字符串比较，而 "v1.3.0" 比 "1.3.0" 大 ——
     # 同一个版本被判成版本倒退，用户会被永久关在门外。
-    r_v = probe("v1.3.0")
-    check("RT14", "DisplayVersion 带 v 前缀（v1.3.0 = 同一个版本）⇒ 必须放行",
+    #
+    # 基准版本必须取自包本身（r_real 里的「本包=」），不能写死 "1.3.0"：
+    # 写死的话每次发新版本，RT16 的「已装 1.3.0.1」就比新包更旧 ⇒ 实际放行 ⇒ 假失败，
+    # 打包被自己的防线拦住（2026-11-07 发 1.3.1 时正是这么挂的）。
+    import re as _re
+    _m = _re.search(r"本包=([0-9]+(?:\.[0-9]+){1,3})", r_real or "")
+    base = _m.group(1) if _m else "1.3.0"
+
+    r_v = probe("v" + base)
+    check("RT14", f"DisplayVersion 带 v 前缀（v{base} = 同一个版本）⇒ 必须放行",
           "降级=放行" in r_v, r_v)
-    r_pre = probe("1.3.0-beta")
-    check("RT15", "DisplayVersion 带 -预发布后缀且同号 ⇒ 视为更低，必须放行",
+    r_pre = probe(base + "-beta")
+    check("RT15", f"DisplayVersion 带 -预发布后缀且同号（{base}-beta）⇒ 视为更低，必须放行",
           "降级=放行" in r_pre, r_pre)
-    r_rev = probe("1.3.0.1")
-    check("RT16", "同号但 revision 更高（1.3.0.1）⇒ 仍要拦（修 v 前缀不能把闸放松）",
+    r_rev = probe(base + ".1")
+    check("RT16", f"同号但 revision 更高（{base}.1）⇒ 仍要拦（修 v 前缀不能把闸放松）",
           "降级=拦" in r_rev, r_rev)
 
 

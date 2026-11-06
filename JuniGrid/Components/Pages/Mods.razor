@@ -76,7 +76,7 @@
                     }
                 }
                 else if (_initialLoading) { <span>@Loc.T("正在加载 mod 列表…")</span> }
-                else { <text>@Loc.F("共 {0} 个（{1} 已启用）", _mods.Count, _mods.Count(m => !m.Disabled))</text> }
+                else { <text>@Loc.F("共 {0} 个（{1} 已启用）", CountRows(_mods), CountRows(_mods.Where(m => !m.Disabled)))</text> }
             </div>
         </div>
         <div style="display:flex;align-items:center;gap:8px">
@@ -546,10 +546,56 @@
         </div>
     }
     <div class="jg-modrows" style="@(_initialLoading || _showTrash ? "display:none" : "")">
-        @foreach (var group in RenderedGroups())
+        @foreach (var sec in RenderedGroups())
         {
+            @* v1.3.46：「按分类」视图的分段标题。id 给右侧导航做平滑滚动落点。
+               v1.3.49：段头 + 段内 mod 组套进 .jg-cat-body，折叠时 GSAP 弹簧过渡（与捆绑包同款）。
+               v1.3.51：不再画六点手柄 —— 长按段头就能拖（pointer 手势见 junigrid.core.js）。
+               data-cat-key 是投放目标（"" = 未分类段，也能接收 mod）；
+               data-drag-key 每段都有（v1.3.55：「未分类」也能拖 —— 想让它在最上面就拖上去）。 *@
+            @if (sec.HasHeader)
+            {
+            <div class="jg-cat-head @(sec.Collapsed ? "collapsed" : "")" id="jg-cat-@sec.Index"
+                 data-cat-key="@sec.Key"
+                 data-drag-key="@("c:" + sec.Key)"
+                 data-drag-label="@sec.Label"
+                 @onclick='() => ToggleCategoryCollapse(sec.Key)'>
+                <span class="jg-cat-head-name" title='@Loc.T("双击重命名分类")'
+                      @ondblclick="() => OpenCategoryRename(sec.Key)"
+                      @ondblclick:stopPropagation="true">@sec.Label</span>
+                <svg class="jg-cat-chevron" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                    <path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                @if (sec.Key.Length > 0)
+                {
+                    <button class="jg-cat-head-more" data-tip='@Loc.T("分类操作")' aria-label='@Loc.T("分类操作")'
+                            @onclick="() => ToggleCategoryMenu(sec.Key)"
+                            @onclick:stopPropagation="true">…</button>
+                    @if (_categoryMenu == sec.Key)
+                    {
+                        <div class="jg-cat-head-menu" @onclick:stopPropagation="true">
+                            <button class="jg-sort-item" @onclick="() => MoveCategoryStep(sec.Key, -1)">@Loc.T("上移一位")</button>
+                            <button class="jg-sort-item" @onclick="() => MoveCategoryStep(sec.Key, +1)">@Loc.T("下移一位")</button>
+                            <button class="jg-sort-item" @onclick="() => OpenCategoryRename(sec.Key)">@Loc.T("重命名分类")</button>
+                            <button class="jg-sort-item danger" @onclick="() => DeleteCategory(sec.Key)">@Loc.T("删除分类（不删 mod）")</button>
+                        </div>
+                    }
+                }
+            </div>
+            }
+            <div class="jg-cat-body @(sec.Collapsed ? "collapsed" : "")" id="jg-cat-body-@sec.Index">
+            @foreach (var group in sec.Groups)
+            {
+            // v1.3.67：捆绑包**恢复展开式父行**（「（3 个）」+ 每个子包一行）。
+            // v1.3.57 曾把「子包都指同一页」的包并成一行，但子包版本本来就可能各不相同
+            // （作者常单独更新某个组件），并成一行只能显示其中一个版本，反而看不出差异
+            // —— 2026-11-07 用户要求改回来。
             var bundle = group.Key != "";
             var open = !bundle || GroupOpen(group.Key);
+            // 同一个 mod 的捆绑包：几个子包都指向同一页，只在父行亮一颗更新徽标。
+            // 子包来自不同页面时这里为 null，仍在各自行上显示（不吞第二个来源）。
+            var groupBadge = bundle ? GroupUpdateBadge(group) : null;
+            var groupBadgeVer = groupBadge is null ? null : GetState(groupBadge.Folder).RemoteVersion;
             @if (bundle)
             {
                 @* 捆绑包 = 一行父包：封面取包里第一个有封面的子包（同一个 mod 的包），
@@ -559,8 +605,10 @@
                 var gOn = group.Items.All(m => !m.Disabled);   // 全选框口径：全开才亮，有一个没开就是关
                 @* 选中标题上那行「（N 个/已选 N 个）」的父行照子行同款样式画：
                    点父行就是整包全选，画得不一样会让人以为这行不参与选择。 *@
-                <div class="jg-modrow jg-group-head @(selInGroup == group.Items.Count ? "selected" : "")" @key="@("b:" + group.Key)" data-al
-                     @onclick="() => ToggleGroupSelection(group.Items)">
+                    <div class="jg-modrow jg-group-head @(selInGroup == group.Items.Count ? "selected" : "")" @key="@("b:" + group.Key)"
+                         data-drag-key="@("g:" + group.Key)" data-drag-label="@group.Key"
+                         data-al
+                         @onclick="() => ToggleGroupSelection(group.Items)">
                     @if (gcover is not null)
                     {
                         <img class="jg-modrow-icon" src="@gcover" loading="lazy" alt="" />
@@ -578,6 +626,10 @@
                             {
                                 <span class="jg-tag broken">@Loc.F(" 缺失依赖 {0}", group.Missing.Count)</span>
                             }
+                            @if (groupBadge is not null && groupBadgeVer is not null)
+                            {
+                                @NewVersionBadge(groupBadge, groupBadgeVer)
+                            }
                         </div>
                     </div>
                     <div class="jg-modrow-end" @onclick:stopPropagation>
@@ -591,6 +643,13 @@
                                 aria-label="@(gOn ? Loc.T("禁用") : Loc.T("启用"))"
                                 @onclick="() => _ = SetBundleDisabled(group, gOn)">
                             <span class="jg-switch"><span class="jg-switch-knob"></span></span>
+                        </button>
+                        <button class="jg-rowbtn" data-tip='@Loc.T("加入分类")' aria-label='@Loc.T("加入分类")'
+                                @onclick="() => OpenCategoryForGroup(group)">
+                            <svg class="jg-rowbtn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                <path d="M20.6 13.4 12 22l-9-9V4h9l8.6 8.6a1 1 0 0 1 0 1.4z"/>
+                                <circle cx="7.5" cy="7.5" r="1.2" fill="currentColor" stroke="none"/>
+                            </svg>
                         </button>
                         <button class="jg-rowbtn" data-tip="@(open ? Loc.T("收起子包") : Loc.T("展开子包"))"
                                 aria-label="@(open ? Loc.T("收起子包") : Loc.T("展开子包"))"
@@ -618,7 +677,18 @@
                        旧 key 是 Folder#序号 —— 启禁用就是把 Folder 改名（X ↔ .X），于是每次点开关
                        这一行都被销毁重建：封面重新解码闪一下、正在跑的开关动画被掐断、
                        列表位置一变还会连带重建别的好几行。两种键各加前缀，互不撞（同名 UID/folder 也不会串）。 *@
+                    @* v1.3.51：长按这一行就能拖到分类段头上归类（手势在 junigrid.core.js）。
+                       混装包的子行不给 data-drag-key —— 分类按顶层目录登记，拖一个子包等于把整包
+                       搬走，会误导。
+                       ⚠ Razor 注释不能写进标签的属性列表里：那样它会变成属性值的一部分，
+                       浏览器 setAttribute 直接抛 InvalidCharacterError，整页渲染当场断掉。 *@
+                    @* 2026-11-07 用户要求：拖父行和拖任一子行都必须迁移**整个捆绑包**。
+                       分类按顶层目录登记（GroupKeyOf），子包单独归类没有意义 —— 整包只有一个归属。
+                       所以子行的拖拽键也统一成 "g:<顶层目录>"；散装 mod（无顶层目录）才是 "f:<自身>"。
+                       以前这里给捆绑包子行返回 null（完全不能拖），改成 null 等于让用户以为拖不动。 *@
                     <div class="jg-modrow @(bundle ? "jg-modrow-sub" : "") @(_selected.Contains(m.Folder) ? "selected" : "") @(_deleting.Contains(m.Folder) ? "jg-modrow-deleting" : "")"
+                         data-drag-key="@(bundle ? "g:" + group.Key : "f:" + m.Folder)"
+                         data-drag-label="@(bundle ? group.Key : RemarkName(m))"
                          @key="@(string.IsNullOrEmpty(m.UniqueID) ? "f:" + m.Folder : "u:" + m.UniqueID)"
                          data-al
                          @onclick="() => { if (!_deleting.Contains(m.Folder)) ToggleSelect(m.Folder); }">
@@ -651,19 +721,11 @@
                                 {
                                     <span class="jg-tag" data-tip='@Loc.T("JuniGrid 把 Portraiture 素材转成的 CP 包，不参与 N 网版本比对")'>@Loc.T("已转换")</span>
                                 }
-                                else if (NexusUpdateTruth.ShouldShowUpdate(Cfg.Current, m, st.RemoteVersion, st.RemoteFileId))
+                                else if (groupBadge is null
+                                    && NexusUpdateTruth.ShouldShowUpdate(Cfg.Current, m, st.RemoteVersion, st.RemoteFileId))
                                 {
                                     @* 新版本徽标：右箭头 + 「新版本」+ 版本号；点版本号打开下载页 *@
-                                    <button type="button" class="jg-newver"
-                                            title='@Loc.F("点击打开 {0} 的下载页", st.RemoteVersion)'
-                                            @onclick="() => OpenUpdatePage(m)" @onclick:stopPropagation="true">
-                                        <svg class="jg-newver-arrow" viewBox="0 0 1024 1024" aria-hidden="true">
-                                            <path d="M560 512.414C560 453.643 512.357 406 453.586 406H204.414C145.643 406 98 453.643 98 512.414v0.172C98 571.357 145.643 619 204.414 619h249.172C512.357 619 560 571.357 560 512.586v-0.172z" fill="currentColor"/>
-                                            <path d="M630.024 211.105l20.067 16.805 124.46 103.419L818 366.98v0.146l39.008 33.527 24.734 21.15c22.165 18.618 35.789 41.557 41.386 65.588 5.395 23.169 2.94 47.343-7.045 69.656-7.398 16.532-19.033 32.047-34.867 45.347l-21.025 17.62a128.674 128.674 0 0 1-3.92 3.425l-40.2 33.659-42.484 35.575-118.372 99.341a133.759 133.759 0 0 1-5.123 4.078l-20.068 16.805c-36.162 30.236-79.744 36.785-117.069 22.211-24.069-9.397-45.542-27.555-60.722-53.889l-2.171-3.77c-5.856-13.007-9.497-27.58-10.563-43.322l-0.455 0.443s41.854-154.592 41.854-222.471-41.758-212.887-41.758-212.887c0.035-19.354 3.923-37.113 10.923-52.66l2.171-3.77c14.42-25.015 34.524-42.636 57.131-52.395a112.775 112.775 0 0 1 3.59-1.494c37.325-14.574 80.907-8.024 117.069 22.212z" fill="currentColor"/>
-                                        </svg>
-                                        <span class="jg-newver-label">@Loc.T("新版本")</span>
-                                        <span class="jg-newver-num">@st.RemoteVersion</span>
-                                    </button>
+                                    @NewVersionBadge(m, st.RemoteVersion!)
                                 }
                                 else if (st.Status is "updating")
                                 {
@@ -684,8 +746,12 @@
                                     <span class="jg-tag" style="background:rgba(232,17,35,.12);color:#c50f1f">@Loc.T("无清单")</span>
                                 }
                                 @* v1.2.6：依赖装着但被禁用了 —— SMAPI 照样把依赖方 Skipped，
-                                   而「缺依赖」抓不到它（确实装了）。单独一条标签，点一下开依赖。 *@
-                                @if (!m.Disabled && DisabledDeps(m) is { Count: > 0 } offDeps)
+                                   而「缺依赖」抓不到它（确实装了）。单独一条标签，点一下开依赖。
+                                   ⚠ 变量先在外面算好：写在 @if 的模式变量会被 Razor 生成到
+                                   属性写入的闭包里，编译器判不出「已赋值」（CS0165），
+                                   整页编译直接断掉。 *@
+                                @{ var offDeps = m.Disabled ? null : DisabledDeps(m); }
+                                @if (offDeps is { Count: > 0 })
                                 {
                                     <span class="jg-tag broken"
                                           data-tip='@Loc.F("{0} 依赖的 {1} 当前被禁用 —— 游戏里 SMAPI 会跳过 {0}（不是没装，是装着但关了）。点一下把依赖打开。", m.Name, string.Join("、", offDeps))'
@@ -797,9 +863,9 @@
                         <div class="jg-modrow-end" @onclick:stopPropagation>
                             @* v1.1.8：换成设置页那颗挤压回弹开关（.jg-switch + junigrid.switch.js）；
                                .jg-squish-host = 这条开关自己就是拖拽宿主（设置页那边宿主是整行） *@
-                            <button class="jg-modrow-switch jg-squish-host @(m.Disabled ? "" : "on")" role="switch"
-                                    aria-checked="@(!m.Disabled)" data-tip="@(m.Disabled ? Loc.T("启用") : Loc.T("禁用"))"
-                                    aria-label="@(m.Disabled ? Loc.T("启用") : Loc.T("禁用"))"
+                            <button class="jg-modrow-switch jg-squish-host @(!m.Disabled ? "on" : "")" role="switch"
+                                    aria-checked="@(!m.Disabled)" data-tip="@(!m.Disabled ? Loc.T("禁用") : Loc.T("启用"))"
+                                    aria-label="@(!m.Disabled ? Loc.T("禁用") : Loc.T("启用"))"
                                     @onclick="() => SetDisabled(m, !m.Disabled)">
                                 <span class="jg-switch"><span class="jg-switch-knob"></span></span>
                             </button>
@@ -832,6 +898,7 @@
                                     {
                                         <button class="jg-sort-item" @onclick="() => MenuAct(() => _ = OpenDetail(m))">@Loc.T("mod 详情")</button>
                                     }
+                                    <button class="jg-sort-item" @onclick="() => MenuAct(() => OpenCategoryForRow(m))">@Loc.T("加入分类")</button>
                                     <button class="jg-sort-item" @onclick="() => MenuAct(() => OpenRemark(m))">@Loc.T("备注 / 重命名")</button>
                                     <button class="jg-sort-item" @onclick="() => MenuAct(() => OpenFolder(m))">@Loc.T("打开文件所在位置")</button>
                                     <button class="jg-sort-item danger" @onclick="() => MenuAct(() => AskDeleteMod(m))">@Loc.T("删除")</button>
@@ -842,6 +909,8 @@
                 }
             </div>
             }
+            </div>
+        }
 
         @if (!_showTrash && _rowsLoaded && FilteredMods.Count == 0)
         {
@@ -882,6 +951,31 @@
     </div>
 </div>
 
+@* v1.3.46：按分类视图的右侧导航 —— 一根短杠一个分类；悬停出卡（分类名 + 前几个 mod），
+   点击平滑滚到分段标题。按分类视图且列表里真有分段时才显示。
+   v1.3.48：杠列自己是一层（.jg-catnav-list）—— 标签多到一屏放不下时它封顶并可用滚轮滚，
+   卡片留在这一层外面（放进滚动区会被 overflow 裁掉），纵向位置由 JS 跟着被悬停的那根杠走。 *@
+@if (!_showTrash && !_initialLoading && _categorySections.Count > 0)
+{
+    <div class="jg-catnav" @onmouseleave="() => _categoryHover = null">
+        <div class="jg-catnav-list">
+            @foreach (var sec in _categorySections)
+            {
+                <button class="jg-catnav-dash @(_categoryHover == sec.Key ? "hot" : "")"
+                        aria-label="@sec.Label"
+                        @onmouseenter="() => HoverCategory(sec.Key)"
+                        @onclick="() => ScrollToCategory(sec.Key)"></button>
+            }
+        </div>
+        @if (_categoryHover is not null && CategorySectionOf(_categoryHover) is { } hov)
+        {
+            <div class="jg-catnav-card">
+                <div class="jg-catnav-title">@hov.Label</div>
+            </div>
+        }
+    </div>
+}
+
 @* ── 批量操作悬浮条（左键多选后出现）── *@
 @if (_selected.Count > 0)
 {
@@ -905,6 +999,12 @@
                     : Loc.T("选中的 Mod 没有可更新来源（缺 Nexus / GitHub 标识）"))'
                 disabled="@(_selected.Count == 0 || !anyUpdatable)" @onclick="BatchUpdate">
             <img src="assets/actions/batch-update.svg" alt="" draggable="false" />
+        </button>
+        <button class="jg-mini-btn jg-ico" data-tip='@Loc.T("加入分类")' @onclick="OpenCategoryDialog">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M20.6 13.4 12 22l-9-9V4h9l8.6 8.6a1 1 0 0 1 0 1.4z"/>
+                <circle cx="7.5" cy="7.5" r="1.2" fill="currentColor" stroke="none"/>
+            </svg>
         </button>
         <button class="jg-mini-btn jg-ico" data-tip='@Loc.T("启用")' disabled="@(!anyDisabled)" @onclick="() => BatchSetDisabled(false)">
             <img src="assets/actions/enable.svg" alt="" draggable="false" />
@@ -946,6 +1046,86 @@
     </div>
 }
 
+@* v1.3.46：加入分类 —— 选已有分类点一下就走；也可以输入新名字新建并加入。 *@
+@if (_categoryDialogOpen)
+{
+    <div class="jg-dlg-overlay" @onclick:stopPropagation>
+        <div class="jg-dialog jg-remark-dialog jg-cat-dialog">
+            <div class="jg-remark-title">@Loc.F("把选中的 {0} 个 mod 加入分类", _categoryTargets.Count)</div>
+            @* v1.3.46：照「存档」下拉的竖排样式 —— 一行一个分类，选中行整行高亮，每行右侧一颗 ×。
+               v1.3.48：分类多到一定高度就自己滚（弹窗不再被标签顶长），＋ 和输入框钉在列表下面
+               跟着滚走的是分类行，不是这两个出口；输入框平时不出现，点了 ＋ 才出来并直接进焦点。 *@
+            <div class="jg-cat-menu">
+                <div class="jg-profile-item @(CommonCategory() == "" ? "active" : "")">
+                    <button class="jg-profile-name" @onclick="() => AssignSelectedCategory(null)">@Loc.T("未分类")</button>
+                </div>
+                @foreach (var c in ExistingCategories())
+                {
+                    <div class="jg-profile-item @(CommonCategory() == c ? "active" : "")">
+                        <button class="jg-profile-name" @onclick="() => AssignSelectedCategory(c)">@c</button>
+                        <button class="jg-profile-del" data-tip='@Loc.T("删除这个分类（mod 回到未分类，不删 mod）")'
+                                aria-label='@Loc.T("删除这个分类")'
+                                @onclick="() => DeleteCategory(c)">×</button>
+                    </div>
+                }
+            </div>
+            <div class="jg-cat-foot">
+                @* v1.3.72：＋ 原地变成输入框（以前是在下面再长出一行，位置会跳），
+                   右侧字数计数器沿用同一套。 *@
+                @if (!_categoryNewOpen)
+                {
+                    <button class="jg-profile-addcap" data-tip='@Loc.T("新建分类")' aria-label='@Loc.T("新建分类")'
+                            @onclick="FocusCategoryInput"><span class="plus">＋</span></button>
+                }
+                else
+                {
+                    <div class="jg-remark-field">
+                        <input class="jg-remark-input @(_categoryNewName.Length >= 16 ? "near-limit" : "")" maxlength="20"
+                               placeholder='@Loc.T("新分类名")' value="@_categoryNewName"
+                               @oninput="OnCategoryNameInput" @onkeydown="OnCategoryNameKeydown" />
+                        <span class="jg-remark-count jg-cat-count-new @(_categoryNewName.Length >= 20 ? "full" : _categoryNewName.Length >= 16 ? "warn" : "")">@(20 - _categoryNewName.Length)</span>
+                    </div>
+                }
+            </div>
+            @if (_categoryDialogError is not null)
+            {
+                <div class="jg-cat-err">@_categoryDialogError</div>
+            }
+            <div class="jg-dialog-actions">
+                <button class="jg-btn" @onclick="CloseCategoryDialog">@Loc.T("取消")</button>
+                @if (_categoryNewOpen)
+                {
+                    <button class="jg-btn primary" @onclick="CreateCategoryFromInput">@Loc.T("新建并加入")</button>
+                }
+            </div>
+        </div>
+    </div>
+}
+
+@* v1.3.46：分类重命名（只改分组名，不动 mod） *@
+@if (_categoryRenameFrom is not null)
+{
+    <div class="jg-dlg-overlay" @onclick:stopPropagation>
+        <div class="jg-dialog jg-remark-dialog jg-cat-dialog">
+            <div class="jg-remark-title">@Loc.F("重命名分类「{0}」", _categoryRenameFrom)</div>
+            <div class="jg-remark-field">
+                <input class="jg-remark-input @(_categoryRenameDraft.Length >= 16 ? "near-limit" : "")" maxlength="20"
+                       placeholder='@Loc.T("新分类名")' value="@_categoryRenameDraft"
+                       @oninput="OnCategoryRenameInput" @onkeydown="OnCategoryRenameKeydown" />
+                <span class="jg-remark-count jg-cat-count-rename @(_categoryRenameDraft.Length >= 20 ? "full" : _categoryRenameDraft.Length >= 16 ? "warn" : "")">@(20 - _categoryRenameDraft.Length)</span>
+            </div>
+            @if (_categoryDialogError is not null)
+            {
+                <div class="jg-cat-err">@_categoryDialogError</div>
+            }
+            <div class="jg-dialog-actions">
+                <button class="jg-btn" @onclick="() => { _categoryRenameFrom = null; _categoryDialogError = null; }">@Loc.T("取消")</button>
+                <button class="jg-btn primary" @onclick="ConfirmCategoryRename">@Loc.T("保存")</button>
+            </div>
+        </div>
+    </div>
+}
+
     @* v0.71.6：存档下拉打开时铺透明遮罩，点"除下拉框本身以外"的地方收回。
        v1.1.2：改常驻 DOM + class 随状态绑定 —— 原 @if 渲染比 profileDropdown 的
        同帧 .open 翻转慢一拍，遮罩永远追不上菜单，点外部收不掉。 *@
@@ -972,7 +1152,7 @@
     }
 
     @* 删除 mod 确认对话框（单个 / 批量共用，替代旧的行内二段式确认） *@
-    @if (_pendingDeleteMod is not null || _pendingBatchDelete)
+    @if (_pendingDeleteMod is not null || _pendingBatchDelete || _pendingDeleteGroupFolders is not null)
     {
         <div class="jg-modal-overlay" @onclick="CancelDeleteMods">
             <div class="jg-modal" @onclick:stopPropagation>
@@ -1039,6 +1219,13 @@
                         @foreach (var u in depList)
                         {
                             var di = _depNames.TryGetValue(u, out var dd) ? dd : null;
+                            // 2026-11-07 用户实机：「完整手册」要的是 StardewUI Continued（43861，
+                            // 版本 0.6.4-unofficial-mushymato.0），弹窗却显示 focustense 原版
+                            // 「StardewUI」——因为本机装着的那份（0.6.1）复用了同一个 UniqueID
+                            // 且挂在原版页上，弹窗就照它的自述来报。装了但版本不够的依赖，
+                            // 「真正有那一版」的页（_depProvider）才是要点开/要下载的那一页。
+                            if (_depProvider.TryGetValue(u, out var prov) && prov.Id is int pid && pid > 0)
+                                di = new InstallService.DependencyDisplayInfo(u, prov.Name ?? di?.Name, pid, di?.CoverUrl);
                             var clickable = di?.ModId is not null;
                             var coverData = di?.CoverUrl;
                             <div class="jg-dep-row" data-clickable="@clickable"
@@ -1547,6 +1734,7 @@
     private bool _smapiUpdating;
     private ModEntry? _pendingDeleteMod;   // 待确认删除的单个 mod（弹窗确认后真正卸载）
     private bool _pendingBatchDelete;      // 待确认的批量删除（弹窗确认后真正卸载）
+    private List<string>? _pendingDeleteGroupFolders;   // v1.3.49：待确认删除的整包（整合行）子包 folder 列表
     // v1.09：删除确认弹窗里的"移入mod回收站"复选框 —— 默认不勾（沿用旧的彻底删除），
     // 勾选后删除的 mod 进 Mods/.junigrid_trash 常驻回收站，可从 设置→存储 打开手动还原
     private bool _deleteToTrash;
@@ -1802,6 +1990,14 @@
     {
         CloseDropdownsForDialog();
         _pendingDeleteMod = m;
+    }
+
+    /// <summary>v1.3.49：整合行的删除 —— 整包（同一 mod 的所有子包）一起删，
+    /// 与启禁/更新同口径（少一个都不行）。</summary>
+    private void AskDeleteGroup(ModGroup g)
+    {
+        CloseDropdownsForDialog();
+        _pendingDeleteGroupFolders = g.Items.Select(m => m.Folder).ToList();
     }
 
 
@@ -2162,6 +2358,10 @@
         _ => null,
     };
 
+    /// <summary>「找问题」的三个状态筛选（见 v1.3.56）：这些视图不按分类分段，
+    /// 结果平铺 —— 否则「可更新 2」还要先躲开一堆分类段头才看得见那两行。</summary>
+    private bool IsStatusFilter => _filter is "updatable" or "missing" or "broken";
+
     /// <summary>已装 UniqueID 集合（v1.2.3：指向 ReindexMods 维护的缓存，不再每次访问全表重建）。</summary>
     private HashSet<string> InstalledUids => _installedUids;
 
@@ -2213,15 +2413,26 @@
 
     private int CountFor(string key) => key switch
     {
-        "all" => _mods.Count,
-        "enabled" => _mods.Count(m => !m.Disabled),
-        "disabled" => _mods.Count(m => m.Disabled),
-        "updatable" => _mods.Count(m => IsUpdatable(m)),
-        "missing" => _mods.Count(m => MissingDeps(m).Count > 0 || StaleDeps(m).Count > 0
-            || SmapiTooOldNeed(m) is not null),
-        "broken" => _mods.Count(IsBroken),
+        "all" => CountRows(_mods),
+        "enabled" => CountRows(_mods.Where(m => !m.Disabled)),
+        "disabled" => CountRows(_mods.Where(m => m.Disabled)),
+        "updatable" => CountRows(_mods.Where(IsUpdatable)),
+        "missing" => CountRows(_mods.Where(m => MissingDeps(m).Count > 0 || StaleDeps(m).Count > 0
+            || SmapiTooOldNeed(m) is not null)),
+        "broken" => CountRows(_mods.Where(IsBroken)),
         _ => 0,
     };
+
+    /// <summary>「共 N 个 / 可更新 N」里的 N 是<b>多少个 mod</b>，不是多少行 ——
+    /// 捆绑包的父行只是包名，不该算一个 mod（子包 3 个就报 3）。
+    /// <para>v1.3.67：捆绑包恢复展开式父行后，这里不需要再为「并成一行」打折。</para></summary>
+    private static int CountRows(IEnumerable<ModEntry> set)
+    {
+        var n = 0;
+        foreach (var g in set.GroupBy(GroupKeyOf, StringComparer.OrdinalIgnoreCase))
+            n += g.Count();
+        return n;
+    }
 
     // ── v1.2.5：SMAPI 社区兼容性判定（数据随上面的 smapi.io 批量预查一起取回）──
     // 词表按 SMAPI 那份库：ok / unknown / optional 都不构成提示，只有明确的负面判定才标。
@@ -2626,6 +2837,27 @@
     // v0.36.0：mod 列表 AnimatedList 滚动效果（进入视口 scale/opacity + 顶底渐变）
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
+        // v1.3.51：把长按拖拽的回调交给 JS（只需一次；JS 那边自己挂 pointer 监听）。
+        // 放在最前 —— 下面渐进渲染那段每帧都会提前 return，排在它后面要等全部行画完才轮到。
+        // ⚠ 以前这里 catch 空吞：WebView2 若缓存了旧版 JS（index.html 的 ?v= 没顶掉），
+        // 这个函数根本不存在，interop 直接抛「Could not find …」，表现就是「拖动没反应」而日志干干净净。
+        if (!_dragInit)
+        {
+            _dragInit = true;
+            try
+            {
+                _dragRef ??= DotNetObjectReference.Create(this);
+                await JS.InvokeVoidAsync("junigridJs.longPressDragInit", _dragRef);
+                AppLog.Info("Mods", "[拖动] 长按手势已挂载");
+            }
+            catch (Exception ex)
+            {
+                AppLog.Error("Mods", "[拖动] 长按手势挂载失败（多半是 WebView2 缓存了旧 JS）: " + ex);
+            }
+            // 自检：合成一次按下/抬起，把手势有没有起来写进日志（不改任何数据）
+            _ = RunDragSelfTestAsync();
+        }
+
         // v1.3.29 渐进渲染：这一帧只画了前 _renderLimit 行 → 放一帧让浏览器先画出来，
         // 再把额度翻倍补下一批。放在方法最前：它必须每帧都被判到，不能排在下面那些
         // JS 调用（placeViewThumb / 滚动恢复）后面被顺延。
@@ -2686,6 +2918,19 @@
         {
             _remarkFocusPending = false;
             try { await JS.InvokeVoidAsync("junigridJs.focusElement", ".jg-remark-input"); } catch { }
+        }
+        // v1.3.48：点 ＋ 时输入框还不存在，这一帧它刚被渲染出来 ⇒ 此刻才把焦点送进去
+        if (_categoryInputFocusPending)
+        {
+            _categoryInputFocusPending = false;
+            try { await JS.InvokeVoidAsync("junigridJs.focusElement", ".jg-cat-dialog .jg-remark-input"); } catch { }
+        }
+        // v1.3.46：分类导航点完先全量渲染，这一帧再把滚动落到段头
+        if (_pendingCategoryAnchor is not null)
+        {
+            var anchor = _pendingCategoryAnchor;
+            _pendingCategoryAnchor = null;
+            try { await JS.InvokeVoidAsync("junigridJs.scrollToCategory", anchor); } catch { }
         }
         // v0.71.1：从详情页返回时恢复滚动位置 —— setScrollWhenReady 轮询等容器高度足够再设
         // v0.72.0：带上离开时的「是否在底部」标记，恢复器不再用 y>limit 猜底部
@@ -2942,7 +3187,10 @@
     /// （<see cref="InstallService.FindVersionProviderAsync"/>）。原先这一行的页面号退回
     /// <c>InstalledDepNexusId</c> = "本机这份来自哪一页"，于是把用户一遍遍领回 focustense 的 28870
     /// （整页最高 0.6.1），红字永远消不掉 —— 实机 2026-10-12。</para></summary>
-    private readonly Dictionary<string, (int? Id, string? Name)> _depProvider = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, (int? Id, string? Name)> _depProvider = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>正在溯源中的 UID —— 防「后台重扫」与「点开始安装」两路并发重复发请求，
+    /// 也让 <see cref="EnsureStaleDepProvidersAsync"/> 能等到它们结束。</summary>
+    private readonly ConcurrentDictionary<string, byte> _depProviderBusy = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>逐条依赖汇总"被要求到哪一版"（同一个依赖可能被几个父包各要不同版本）。</summary>
     private Dictionary<string, List<string>> StaleNeedsByUid()
@@ -2962,11 +3210,33 @@
         foreach (var (uid, list) in StaleNeedsByUid())
         {
             if (_depProvider.ContainsKey(uid)) continue;
-            var hit = await Installer.FindDependencyProviderAsync(
-                Cfg.Current, uid, list, InstalledDepNexusId(uid), ParentNexusIdsForDep(uid));
-            if (_disposed) return;
-            _depProvider[uid] = hit is null ? (null, null) : (hit.Value.Id, hit.Value.Name);
-            await InvokeAsync(StateHasChanged);
+            if (!_depProviderBusy.TryAdd(uid, 1)) continue;   // 另一路正在算它，别重复发请求
+            try
+            {
+                var hit = await Installer.FindDependencyProviderAsync(
+                    Cfg.Current, uid, list, InstalledDepNexusId(uid), ParentNexusIdsForDep(uid));
+                if (_disposed) return;
+                _depProvider[uid] = hit is null ? (null, null) : (hit.Value.Id, hit.Value.Name);
+                await InvokeAsync(StateHasChanged);
+            }
+            finally { _depProviderBusy.TryRemove(uid, out _); }
+        }
+    }
+
+    /// <summary>「开始安装」前必须跑的那一步：把「装了但版本不够」的依赖溯源等出来。
+    /// <para>不等就会按本机那份自述的页去装。实机 2026-11-07 05:04：用户点一键安装时溯源
+    /// 还没算完，于是从 28870（focustense 原版，整页最高 0.6.1）下了包，装完版本照样不够；
+    /// 21 秒后日志才写出「命中页面 43861」（StardewUI Continued）—— 用户看到的就是
+    /// 「明明要 Continued，装的却是 StardewUI」。</para>
+    /// <para>溯源有缓存时是毫秒级，最坏几步搜索也就几秒。宁可等这几秒，也不要装错再来一轮。</para></summary>
+    private async Task EnsureStaleDepProvidersAsync()
+    {
+        if (StaleNeedsByUid().Count == 0) return;
+        try { await ResolveStaleDepProvidersAsync(); } catch (Exception ex) { AppLog.Warn("Mods", "依赖溯源等待失败：" + ex.Message); }
+        // 另一路（后台重扫）可能正持有其中几条：等它写完，别抢先读到空值
+        for (var i = 0; i < 40 && !_depProviderBusy.IsEmpty; i++)
+        {
+            try { await Task.Delay(150); } catch { break; }
         }
     }
 
@@ -3155,12 +3425,19 @@
         _depError = null;
         try
         {
+            // 先把「装了但版本不够」的依赖溯源等出来 —— 否则会按本机那份自述的页去装，
+            // 装完版本照样不够（见 EnsureStaleDepProvidersAsync 的实机记录）。
+            await EnsureStaleDepProvidersAsync();
             // 空列表 = 全部缺失依赖；服务端每轮重扫磁盘，无需在此快照。
             // v1.2.3：把弹窗已解析出的 UID → modId 一并传给安装管线（免二次搜索，
             // 安装时照常做 UniqueID 校验）。等待期间 Installer.OnChanged 推动列表实时重扫。
             var pre = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             foreach (var kv in _depNames)
                 if (kv.Value.ModId is int mid) pre[kv.Key] = mid;
+            // 「装了但版本不够」的那批：有版本证据的那一页覆盖掉本机自述的页 ——
+            // 否则传下去的是原版页（UniqueID 相同，校验也会过），装了还是不达标，白跑一轮。
+            foreach (var kv in _depProvider)
+                if (kv.Value.Id is int provId && provId > 0) pre[kv.Key] = provId;
             var err = await Installer.InstallMissingDependenciesAsync(
                 uids is { Count: > 0 } ? uids : null, pre);
             if (err is not null && err != "已取消") _depError = err;
@@ -3202,7 +3479,8 @@
                 && ReferenceEquals(_groupsKeyUids, _installedUids)
                 && _groupsKeyFilter == _filter
                 && _groupsKeySearch == SearchText
-                && _groupsKeySort == _sortMode)
+                && _groupsKeySort == _sortMode
+                && _groupsKeyCategoryRev == _categoryRev)
                 return _groupsCache;
 
             var installed = InstalledUids;
@@ -3215,12 +3493,73 @@
                     .Distinct(StringComparer.OrdinalIgnoreCase)
                     .ToList();
 
+            // v1.3.47：自定义分类不再是一种「排序方式」—— 有分类就分段显示（重开应用也在），
+            // 排序方式只决定段内顺序。段可折叠（折叠时只留段头一行）。
+            // v1.3.48：段之间认「标签是哪一刻建的」—— ModUserCategoryOrder 是建分类时追加的
+            // 名单，越靠末尾越新，倒过来排就是「新建的在最上面」。旧写法用「这一类里最新 mod
+            // 的磁盘时间」，把几个老 mod 归进新标签时新标签反而沉到底下。
+            // v1.3.56：状态筛选（可更新/缺依赖/维护存疑）是「找东西」的视图 —— 这几个 chip 的
+            // 结果通常只有几条，按分类再切段只会把结果藏进一堆段头里，直接平铺。
+            if (HasUserCategories() && !IsStatusFilter)
+            {
+                var catOrder = Cfg.Current.ModUserCategoryOrder;
+                // 名单是倒序存的（末尾 = 显示最上）。v1.3.55：「未分类」也算一段、也能拖 ——
+                // 它在名单里用空字符串占位，占不到位置就垫底（老配置的行为）。
+                // 名单里没有的自定义分类排在已知分类之下、未分类之上，同档按名字收口。
+                int SectionRank(string c)
+                    => catOrder.FindLastIndex(x => string.Equals(x ?? "", c, StringComparison.OrdinalIgnoreCase)) + 1;
+                units = units
+                    .OrderByDescending(u => SectionRank(CategoryOfUnit(u)))
+                    .ThenBy(u => CategoryOfUnit(u).Length == 0 ? 1 : 0)
+                    .ThenBy(u => CategoryOfUnit(u), StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                BuildCategorySections(units);
+
+                var display = new List<ModGroup>(units.Count + _categorySections.Count);
+                string? lastCat = null;
+                foreach (var u in units)
+                {
+                    var c = CategoryOfUnit(u);
+                    var collapsed = _collapsedCats.Contains(c);
+                    if (!string.Equals(c, lastCat, StringComparison.OrdinalIgnoreCase))
+                    {
+                        lastCat = c;
+                        display.Add(new ModGroup
+                        {
+                            Key = "",
+                            Items = new List<ModEntry>(),
+                            SectionHeader = c,
+                            SectionKey = c,
+                            SectionCollapsed = collapsed,
+                        });
+                    }
+                    // v1.3.49：折叠段的行仍进 display（进 DOM），只是渲染时被 .jg-cat-body 的
+                    // height:0 藏起来 —— 手风琴动画要能量到真实高度，行得一直在 DOM 里。
+                    u.SectionKey = c;
+                    u.SectionCollapsed = collapsed;
+                    display.Add(u);
+                }
+                units = display;
+            }
+            else
+            {
+                _categorySections = new List<CategorySection>();
+                foreach (var u in units)
+                {
+                    u.SectionHeader = null;
+                    u.SectionKey = null;
+                    u.SectionCollapsed = false;
+                }
+            }
+
             _groupsCache = units;
             _groupsKeyMods = _mods;
             _groupsKeyUids = _installedUids;
             _groupsKeyFilter = _filter;
             _groupsKeySearch = SearchText;
             _groupsKeySort = _sortMode;
+            _groupsKeyCategoryRev = _categoryRev;
             // 列表内容变了 ⇒ 从头开始渐进渲染（否则换了筛选还按上一批的行数一次画光）
             _renderLimit = FirstRenderRows;
             return units;
@@ -3233,6 +3572,7 @@
     private string? _groupsKeyFilter;
     private string? _groupsKeySearch;
     private string? _groupsKeySort;
+    private int _groupsKeyCategoryRev;
 
     // ── v1.3.29 渐进渲染 ──────────────────────────────────────────────
     // 实测（2026-11-04）：切到 Mods 页 UI 线程被占 344ms，而把列表用搜索框滤成 0 行后
@@ -3252,42 +3592,100 @@
     /// <summary>已经排了一次补画，防止 OnAfterRenderAsync 重入。</summary>
     private bool _renderMorePending;
 
-    /// <summary>本次渲染要画的组。分批时把最后一组按剩余额度切断（组头也算一行，
-    /// 否则会出现"额度用完但组头全画出来"的一排空组）。</summary>
-    private IReadOnlyList<ModGroup> RenderedGroups()
+    /// <summary>本次渲染要画的分类段。分批时把最后一组按剩余额度切断（组头也算一行，
+    /// 否则会出现"额度用完但组头全画出来"的一排空组）。折叠段的行照常进段（进 DOM 供手风琴
+    /// 动画量高），只是渲染时被 .jg-cat-body 的 height:0 藏住。</summary>
+    private IReadOnlyList<CatSection> RenderedGroups()
     {
         var all = Groups;
         var total = 0;
         foreach (var g in all) total += g.Items.Count + (g.Key.Length > 0 ? 1 : 0);
         _renderTotalRows = total;
 
+        IReadOnlyList<ModGroup> picked;
         if (_renderLimit <= 0 || total <= _renderLimit)
         {
             _renderShown = total;
-            return all;
+            picked = all;
+        }
+        else
+        {
+            var list = new List<ModGroup>(Math.Min(all.Count, 64));
+            var shown = 0;
+            foreach (var g in all)
+            {
+                var head = g.Key.Length > 0 ? 1 : 0;
+                if (shown + head >= _renderLimit) break;
+                var room = _renderLimit - shown - head;
+                if (room <= 0) break;
+                if (room >= g.Items.Count)
+                {
+                    list.Add(g);
+                    shown += g.Items.Count + head;
+                }
+                else
+                {
+                    list.Add(new ModGroup { Key = g.Key, Items = g.Items.Take(room).ToList(), Missing = g.Missing });
+                    shown += room + head;
+                }
+            }
+            _renderShown = shown;
+            picked = list;
         }
 
-        var picked = new List<ModGroup>(Math.Min(all.Count, 64));
-        var shown = 0;
-        foreach (var g in all)
+        // 扁平组 → 段结构：段头组（SectionHeader 非空）开一段，其后同段的 mod 组收进该段。
+        // ⚠ 没有任何自定义分类时一个段头都没有 —— 此时退化成单个「隐式段」（不画段头），
+        // 否则整份列表会被这段分组吃掉、界面一片空白。
+        var sections = new List<CatSection>();
+        CatSection? cur = null;
+        foreach (var g in picked)
         {
-            var head = g.Key.Length > 0 ? 1 : 0;
-            if (shown + head >= _renderLimit) break;
-            var room = _renderLimit - shown - head;
-            if (room <= 0) break;
-            if (room >= g.Items.Count)
+            if (g.SectionHeader is not null)
             {
-                picked.Add(g);
-                shown += g.Items.Count + head;
+                var sec = CategorySectionOf(g.SectionHeader);
+                cur = new CatSection
+                {
+                    Key = g.SectionKey ?? "",
+                    Label = sec.Label,
+                    Index = sec.Index,
+                    // 折叠状态实时读 _collapsedCats（不烘进 Groups 缓存）：折叠只是显示状态，
+                    // 为它作废缓存会把渐进渲染打回 40 行，列表先缩一截再补画。
+                    Collapsed = _collapsedCats.Contains(g.SectionKey ?? ""),
+                    HasHeader = true,
+                };
+                sections.Add(cur);
+                continue;
             }
-            else
+            if (cur is null)                 // 隐式段：无分类视图
             {
-                picked.Add(new ModGroup { Key = g.Key, Items = g.Items.Take(room).ToList(), Missing = g.Missing });
-                shown += room + head;
+                cur = new CatSection { Key = "", Index = -1, HasHeader = false };
+                sections.Add(cur);
             }
+            cur.Groups.Add(g);
         }
-        _renderShown = shown;
-        return picked;
+
+        // v1.3.78：**一个 mod 都没有的分类也要画段头**。
+        // 段头就是长按拖拽的落点（data-cat-key），空分类不进 picked（没有 unit），
+        // 不补的话新建的分类在列表里根本画不出来、也就没法把 mod 拖进去
+        // —— 2026-11-07 用户反馈「分类标签里没有任何 mod 就不要再隐藏了，否则没办法拖动进去」。
+        // 只补段头不补行：Count 保持 0，段体为空。
+        foreach (var c in ExistingCategories())
+        {
+            if (sections.Any(s => string.Equals(s.Key, c, StringComparison.OrdinalIgnoreCase))) continue;
+            var meta = CategorySectionOf(c);
+            sections.Add(new CatSection
+            {
+                Key = c,
+                Label = meta.Label,
+                Index = meta.Index,
+                Collapsed = _collapsedCats.Contains(c),
+                HasHeader = true,
+            });
+        }
+        // 补进来的排在末尾，按段序重排（Index 来自 _categorySections，已按「最新建的在最上」编好）
+        if (sections.Count > 1)
+            sections = sections.OrderBy(s => s.Index < 0 ? int.MaxValue : s.Index).ToList();
+        return sections;
     }
 
     private static string GroupKeyOf(ModEntry m)
@@ -3300,16 +3698,72 @@
     /// <summary>界面上的一行：捆绑包 = 一行（Items 是它的子包），根目录散装 mod = 各自一行。
     /// 散装与捆绑包必须放进<b>同一个</b>序列排序 —— 旧写法先按"是不是捆绑包"分组再排，
     /// 结果所有捆绑包永远堆在列表末尾，刚下载的包看着像没下完。</summary>
+    /// <summary>「新版本」徽标（父行与子行共用一套 DOM）—— 点版本号打开下载页。
+    /// 父行与子行必须长得一模一样，否则同一件事看起来像两种状态。</summary>
+    private RenderFragment NewVersionBadge(ModEntry m, string ver) => @<button type="button" class="jg-newver"
+            title='@Loc.F("点击打开 {0} 的下载页", ver)'
+            @onclick="() => OpenUpdatePage(m)" @onclick:stopPropagation="true">
+        <svg class="jg-newver-arrow" viewBox="0 0 1024 1024" aria-hidden="true">
+            <path d="M560 512.414C560 453.643 512.357 406 453.586 406H204.414C145.643 406 98 453.643 98 512.414v0.172C98 571.357 145.643 619 204.414 619h249.172C512.357 619 560 571.357 560 512.586v-0.172z" fill="currentColor"/>
+            <path d="M630.024 211.105l20.067 16.805 124.46 103.419L818 366.98v0.146l39.008 33.527 24.734 21.15c22.165 18.618 35.789 41.557 41.386 65.588 5.395 23.169 2.94 47.343-7.045 69.656-7.398 16.532-19.033 32.047-34.867 45.347l-21.025 17.62a128.674 128.674 0 0 1-3.92 3.425l-40.2 33.659-42.484 35.575-118.372 99.341a133.759 133.759 0 0 1-5.123 4.078l-20.068 16.805c-36.162 30.236-79.744 36.785-117.069 22.211-24.069-9.397-45.542-27.555-60.722-53.889l-2.171-3.77c-5.856-13.007-9.497-27.58-10.563-43.322l-0.455 0.443s41.854-154.592 41.854-222.471-41.758-212.887-41.758-212.887c0.035-19.354 3.923-37.113 10.923-52.66l2.171-3.77c14.42-25.015 34.524-42.636 57.131-52.395a112.775 112.775 0 0 1 3.59-1.494c37.325-14.574 80.907-8.024 117.069 22.212z" fill="currentColor"/>
+        </svg>
+        <span class="jg-newver-label">@Loc.T("新版本")</span>
+        <span class="jg-newver-num">@ver</span>
+    </button>;
+
+    /// <summary>父行要不要替子包显示更新徽标 —— 只限「同一个 mod 的捆绑包」：
+    /// 可更新的子包都指向<b>同一个</b> N 网页面时，父行亮一颗就够（三个子包各亮一颗
+    /// 既吵又重复）。子包来自不同页面、或其中一条没有 N 网号（只有 GitHub 源）时
+    /// 返回 null，仍在各子行上显示，免得把第二个来源的更新吞掉。</summary>
+    private ModEntry? GroupUpdateBadge(ModGroup g)
+    {
+        if (g.Key.Length == 0 || g.Items.Count < 2) return null;
+        ModEntry? first = null;
+        var page = 0;
+        foreach (var m in g.Items)
+        {
+            var st = GetState(m.Folder);
+            if (!NexusUpdateTruth.ShouldShowUpdate(Cfg.Current, m, st.RemoteVersion, st.RemoteFileId)) continue;
+            if (m.NexusModId is not int id) return null;
+            if (first is null) { first = m; page = id; }
+            else if (page != id) return null;
+        }
+        return first;
+    }
+
     public sealed class ModGroup
     {
         public string Key = "";
         public List<ModEntry> Items = new();
+
+        /// <summary>v1.3.46：分类段头 —— 非 null 时这一组前面要画一段标题。
+        /// 空字符串 = 「未分类」段。</summary>
+        public string? SectionHeader;
+
+        /// <summary>这一段属于哪个分类（段头占位组与段内每一组都带，供折叠/定位使用）。</summary>
+        public string? SectionKey;
+
+        /// <summary>这一段当前是不是折叠状态（只对段头占位组有意义）。</summary>
+        public bool SectionCollapsed;
 
         /// <summary>该分组内所有缺失依赖（不在已装集合中）的并集，去重。</summary>
         public List<string> Missing { get; set; } = new();
 
         /// <summary>行序用的名字：捆绑包是顶层目录名，散装 mod 是它自己的名字。</summary>
         public string SortName => Key.Length > 0 ? Key : Items[0].Name;
+    }
+
+    /// <summary>v1.3.49：一个分类段 —— 段头 + 段内的 mod 组。渲染循环按段套一层
+    /// .jg-cat-body 容器，折叠时用 GSAP 弹簧做 height 0↔auto 过渡（与捆绑包同款）。
+    /// 没有任何自定义分类时没有段头，整份列表是一个 <see cref="HasHeader"/>=false 的隐式段。</summary>
+    public sealed class CatSection
+    {
+        public string Key = "";
+        public string Label = "";
+        public int Index;
+        public bool Collapsed;
+        public bool HasHeader;
+        public List<ModGroup> Groups = new();
     }
 
     /// <summary>把扫描结果排成行序：组内按所选模式排，组间也按同一模式排（捆绑包不再沉底）。
@@ -3463,6 +3917,7 @@
         // 放到后面会让首屏先亮一帧「全部」再翻成「已启用」。
         if (_svFilter is not null) _filter = _svFilter;
         if (_svSort is not null) _sortMode = _svSort;
+        if (_sortMode == "cat") _sortMode = "time-asc";   // v1.3.47：分类不再是排序方式
         SearchText = _svSearch ?? "";
         _searchOpen = _svSearchOpen;
         // v1.08：从任务中心恢复 SMAPI 任务状态 —— 页面离开再回来组件会重建，
@@ -3662,6 +4117,9 @@
     public void Dispose()
     {
         _disposed = true;
+        // 长按拖拽的 JS 回调引用：本页销毁后就别再往一个死组件上回调
+        try { _dragRef?.Dispose(); } catch { }
+        _dragRef = null;
         try { LeaveCts.Cancel(); } catch { }
         Installer.OnChanged -= OnInstallerChanged;
         PageRefresh.OnRefresh -= OnPageRefresh;
@@ -3868,6 +4326,12 @@
     private bool _bgRescanRunning;
     private bool _bgRescanQueued;
 
+    /// <summary>目录改名代次（启禁用是 X ↔ .X 的改名）。后台扫描开始前记下它，扫完发现变了
+    /// 就丢掉这份结果重扫 —— 扫描枚举到的是改名前/后的混合状态，旧路径读取失败会被
+    /// ScanRaw 的局部容错当作「这一项不在」跳过，套用后这一行会消失一两秒再被下一轮补回来
+    /// （2026-11-06 用户反馈：连点两下启禁，行消失一两秒又出现）。</summary>
+    private int _renameEpoch;
+
     /// <summary>v1.1.6：后台版重扫 —— CleanupDuplicateCopies（含全盘枚举+目录搬移）与
     /// Scan 都放 Task.Run，回 UI 线程只套用结果。扫描期间再来的事件合并为一轮补扫，
     /// 最后一个事件不丢。调用方必须已在 UI 线程（三处入口均为 InvokeAsync 回调）。</summary>
@@ -3890,6 +4354,7 @@
                 // 那段"还在转"的时间全在这里头（磁盘忙完才 StateHasChanged）。
                 var __t = System.Diagnostics.Stopwatch.GetTimestamp();
                 double __cleanup = 0, __rehome = 0;
+                var __epoch = Volatile.Read(ref _renameEpoch);
                 var scanned = await Task.Run(() =>
                 {
         try { ModSvc.CleanupDuplicateCopiesIfChanged(Cfg.Current.GamePath); }
@@ -3905,6 +4370,12 @@
                     ("判重清理", __cleanup), ("孤儿归位", __rehome - __cleanup),
                     ("磁盘扫描", ElapsedMs(__t) - __rehome));
                 if (_disposed || DepotDownloaderService.IsApplyInProgress) return;
+                if (__epoch != Volatile.Read(ref _renameEpoch))
+                {
+                    // 扫描期间目录被改名：这一份结果可能缺行（旧路径已不存在），不能套用
+                    _bgRescanQueued = true;
+                    continue;
+                }
                 Rescan(scanned);
                 // v1.3.18：整页 diff 也记账。列表上千行时它自己就是一段可观的渲染线程
                 // 占用，[Perf] 只说"被占住 N ms"，不知道是谁占的 —— 这里补上主体。
@@ -4096,6 +4567,548 @@
         _pendingBatchDelete = false;
     }
 
+    // ── v1.3.46：自定义分类（用户自己建的分组，不是 N 网官方分类）──────────────
+    // 数据：Cfg.ModUserCategory[顶层目录或独立 mod 文件夹] = 分类名（一个 mod 只属于一个）。
+    // 「按分类」视图按它分段；右侧导航跳段。分类的增删改只动分组，不碰 mod 文件。
+    private sealed class CategorySection
+    {
+        public string Key = "";
+        public string Label = "";
+        public int Count;
+        public int Index;
+        public List<string> Names = new();
+    }
+
+    private List<CategorySection> _categorySections = new();
+    /// <summary>被折叠的分类（键 = 分类名，"" = 未分类）。只活在本次会话，不落盘。</summary>
+    private readonly HashSet<string> _collapsedCats = new(StringComparer.OrdinalIgnoreCase);
+    private int _categoryRev;
+    private bool _categoryDialogOpen;
+    /// <summary>这一次「加入分类」作用于哪些行：批量条 = 勾选的那批；行内「…」= 这一行。
+    /// 两者共用同一个对话框，但作用范围不能混。</summary>
+    private List<string> _categoryTargets = new();
+    private string _categoryNewName = "";
+    /// <summary>「新分类名」输入框开没开 —— 平时不开，点 ＋ 才出现（v1.3.48）。</summary>
+    private bool _categoryNewOpen;
+    /// <summary>＋ 刚按下、输入框还没渲染出来 ⇒ 下一帧再把焦点送进去（autofocus 属性实测不生效）。</summary>
+    private bool _categoryInputFocusPending;
+    private string? _categoryDialogError;
+    private string? _categoryHover;
+    private string? _categoryMenu;
+    private string? _categoryRenameFrom;
+    private string _categoryRenameDraft = "";
+    private string? _pendingCategoryAnchor;
+    // v1.3.51：长按拖拽 —— 手势全在 JS 里，这里只留一个回调引用（首帧交给 JS）。
+    private DotNetObjectReference<Mods>? _dragRef;
+    private bool _dragInit;
+
+    /// <summary>分类的登记单位：捆绑包记顶层目录，独立 mod 记自己的文件夹 ——
+    /// 与列表的一行对齐（子包不单独归分类）。</summary>
+    private static string CategoryKeyOf(ModEntry m)
+    {
+        var top = GroupKeyOf(m);
+        return top.Length > 0 ? top : m.Folder;
+    }
+
+    private string CategoryOfGroup(ModGroup g)
+    {
+        var key = g.Key.Length > 0 ? g.Key : g.Items.Count > 0 ? g.Items[0].Folder : "";
+        if (key.Length == 0 || !Cfg.Current.ModUserCategory.TryGetValue(key, out var c)) return "";
+        // 2026-11-07：一个 mod 现在可以同时归进多个分类（安装弹窗支持多选），配置里存成
+        // "9,10"。列表只按第一个分类摆（同一个 mod 不重复画行），其余分类只作标签保留。
+        return FirstCategory(c);
+    }
+
+    /// <summary>配置里的分类值可能是多选拼起来的（<c>"9,10"</c>）—— 取第一个。
+    /// 老配置是单值，原样返回。口径统一在 <see cref="ModCategoryUtil.First"/>。</summary>
+    private static string FirstCategory(string? raw) => ModCategoryUtil.First(raw);
+
+    /// <summary>一组（捆绑包或独立 mod）归哪个分类；"" = 未分类。</summary>
+    private string CategoryOfUnit(ModGroup g) => CategoryOfGroup(g);
+
+    /// <summary>有没有任何已登记的自定义分类（含空分类）。没有时列表不画分段、右侧不出导航。</summary>
+    private bool HasUserCategories()
+        => Cfg.Current.ModUserCategoryOrder.Any(x => !string.IsNullOrWhiteSpace(x))
+           || Cfg.Current.ModUserCategory.Values.Any(v => !string.IsNullOrWhiteSpace(v));
+
+    private CategorySection CategorySectionOf(string key)
+        => _categorySections.FirstOrDefault(x => string.Equals(x.Key, key, StringComparison.OrdinalIgnoreCase))
+           ?? new CategorySection { Key = key, Label = key.Length > 0 ? key : Loc.T("未分类"), Index = 0 };
+
+    /// <summary>已有分类。v1.3.48：顺序与列表分段/右侧导航一致 —— 新建的在最前
+    /// （ModUserCategoryOrder 是建分类时追加的，倒过来读就是最新在前）。之前弹窗是正序，
+    /// 和屏上段的顺序正好相反 ⇒ 照着最上面那个分类去点弹窗第一行，加进去的是另一个。
+    /// v1.3.46：成员搬空的分类也保留 —— 删除分类只有弹窗里那颗「×」和段头「…」两条显式
+    /// 路径，搬走最后一个 mod 不等于删分类。</summary>
+    private List<string> ExistingCategories()
+    {
+        var known = new List<string>();
+        foreach (var c in Cfg.Current.ModUserCategoryOrder)
+            if (!string.IsNullOrWhiteSpace(c) && !known.Contains(c, StringComparer.OrdinalIgnoreCase)) known.Add(c);
+        var list = new List<string>(known);
+        list.Reverse();                       // 最新建的在最前，和分段标题/右侧导航同一个顺序
+        // 值可能是多选拼起来的 "9,10" —— 先拆开再收集，否则会把整串当成一个分类名
+        var used = Cfg.Current.ModUserCategory.Values
+            .SelectMany(v => ModCategoryUtil.Split(v))
+            .Where(v => v.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(x => x, StringComparer.OrdinalIgnoreCase);
+        foreach (var c in used)
+            if (!list.Contains(c, StringComparer.OrdinalIgnoreCase))
+                list.Add(c);                  // 名单外的老分类排最后（列表里也是垫底）
+        return list;
+    }
+
+    /// <summary>这次要操作的行共同的分类："" = 都未分类；分类名 = 都一样；null = 来自不同分类。
+    /// 对话框用它把当前分类那颗 chip 点亮（多选混分类时一颗都不亮）。</summary>
+    private string? CommonCategory()
+    {
+        string? common = null;
+        var first = true;
+        foreach (var f in _categoryTargets)
+        {
+            var cat = "";
+            if (_modsByFolder.TryGetValue(f, out var m))
+                cat = Cfg.Current.ModUserCategory.TryGetValue(CategoryKeyOf(m), out var c) ? FirstCategory(c) : "";
+            if (first) { common = cat; first = false; }
+            else if (!string.Equals(common, cat, StringComparison.OrdinalIgnoreCase)) return null;
+        }
+        return first ? "" : common;
+    }
+
+    /// <summary>虚线加号：输入框平时不在屏上，所以先让它出现，下一帧再把焦点送进去。
+    /// 已经开着就只聚焦 —— 重复点 ＋ 不该把他刚打的字清掉。</summary>
+    private void FocusCategoryInput()
+    {
+        if (_categoryNewOpen)
+        {
+            _ = JS.InvokeVoidAsync("junigridJs.focusElement", ".jg-cat-dialog .jg-remark-input");
+            return;
+        }
+        _categoryNewOpen = true;
+        _categoryInputFocusPending = true;
+    }
+
+    private void OpenCategoryDialog()
+    {
+        if (_selected.Count == 0) return;
+        _categoryTargets = _selected.ToList();
+        _categoryDialogOpen = true;
+        _categoryNewName = "";
+        _categoryNewOpen = false;
+        _categoryDialogError = null;
+    }
+
+    /// <summary>捆绑包父行的标签按钮：作用于整包（列出全部子包，对话框数量如实；登记时折到顶层目录）。</summary>
+    private void OpenCategoryForGroup(ModGroup g)
+    {
+        _categoryTargets = g.Items.Select(x => x.Folder).ToList();
+        _categoryDialogOpen = true;
+        _categoryNewName = "";
+        _categoryNewOpen = false;
+        _categoryDialogError = null;
+    }
+
+    /// <summary>行内「…」→ 加入分类：只作用于这一行（捆绑包按顶层目录算一个单位）。</summary>
+    private void OpenCategoryForRow(ModEntry m)
+    {
+        _categoryTargets = new List<string> { m.Folder };
+        _categoryDialogOpen = true;
+        _categoryNewName = "";
+        _categoryNewOpen = false;
+        _categoryDialogError = null;
+    }
+
+    private void CloseCategoryDialog() { _categoryDialogOpen = false; _categoryNewOpen = false; _categoryDialogError = null; }
+    private async Task OnCategoryNameInput(ChangeEventArgs e)
+    {
+        _categoryNewName = e.Value?.ToString() ?? "";
+        _categoryDialogError = null;
+        try { await JS.InvokeVoidAsync("junigridJs.remarkCountBump", _categoryNewName.Length >= 20, ".jg-cat-count-new"); } catch { }
+    }
+
+    private async Task OnCategoryRenameInput(ChangeEventArgs e)
+    {
+        _categoryRenameDraft = e.Value?.ToString() ?? "";
+        _categoryDialogError = null;
+        try { await JS.InvokeVoidAsync("junigridJs.remarkCountBump", _categoryRenameDraft.Length >= 20, ".jg-cat-count-rename"); } catch { }
+    }
+
+    private void OnCategoryNameKeydown(Microsoft.AspNetCore.Components.Web.KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter") CreateCategoryFromInput();
+        else if (e.Key == "Escape") CloseCategoryDialog();
+        else if (_categoryNewName.Length >= 20 && e.Key.Length == 1)
+            _ = JS.InvokeVoidAsync("junigridJs.remarkCountBump", true, ".jg-cat-count-new");
+    }
+
+    private void OnCategoryRenameKeydown(Microsoft.AspNetCore.Components.Web.KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter") ConfirmCategoryRename();
+        else if (e.Key == "Escape") { _categoryRenameFrom = null; _categoryDialogError = null; }
+        else if (_categoryRenameDraft.Length >= 20 && e.Key.Length == 1)
+            _ = JS.InvokeVoidAsync("junigridJs.remarkCountBump", true, ".jg-cat-count-rename");
+    }
+
+    private void CreateCategoryFromInput()
+    {
+        var name = _categoryNewName.Trim();
+        if (name.Length == 0) { _categoryDialogError = Loc.T("先输入一个分类名"); return; }
+        if (name.Length > 20) name = name[..20];
+        AssignSelectedCategory(name);
+    }
+
+    private void AssignSelectedCategory(string? category)
+    {
+        var cfg = Cfg.Current;
+        var tops = _categoryTargets
+            .Select(f => _modsByFolder.TryGetValue(f, out var m) ? CategoryKeyOf(m) : null)
+            .Where(k => !string.IsNullOrWhiteSpace(k)).Select(k => k!)
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        if (tops.Count == 0) return;
+        var name = category?.Trim() ?? "";
+        foreach (var k in tops)
+        {
+            if (name.Length == 0) cfg.ModUserCategory.Remove(k);
+            else cfg.ModUserCategory[k] = name;
+        }
+        if (name.Length > 0 && !cfg.ModUserCategoryOrder.Contains(name, StringComparer.OrdinalIgnoreCase))
+            cfg.ModUserCategoryOrder.Add(name);
+        Cfg.Save(cfg);
+        _categoryRev++;
+        _categoryDialogOpen = false;
+        _categoryNewOpen = false;
+        _categoryDialogError = null;
+        // v1.3.48：这里以前写死 `_sortMode = "cat"` —— 分类早就不是一种排序方式了，那一行会把
+        // 用户选的「首字母 / 最早在前」悄悄改成按名字排。分段本来就在 Groups 里做，不需要动排序。
+        ClearSelection();
+        ShowNotice("ok", name.Length == 0
+            ? LocService.Tf("已把 {0} 项移出分类", tops.Count)
+            : LocService.Tf("已把 {0} 项加入「{1}」", tops.Count, name));
+        StateHasChanged();
+    }
+
+    private void ToggleCategoryMenu(string key) => _categoryMenu = _categoryMenu == key ? null : key;
+
+    /// <summary>点段头：展开/收起这一段（只重排列表，不动盘上任何东西）。
+    /// v1.3.49：先让 JS 播 height 0↔auto 的手风琴弹簧，动画回来再落折叠状态 ——
+    /// 与捆绑包 ToggleGroupOpen 同一时序约束（先落状态会让 CSS 的 height:0 抢跑，动画空播）。</summary>
+    private async Task ToggleCategoryCollapse(string key)
+    {
+        var collapse = !_collapsedCats.Contains(key);   // 本次动作：true = 收起
+        var idx = CategorySectionOf(key).Index;
+        try
+        {
+            // 第二个参数是「是否展开」—— 与 collapse 相反，传反了就是收起时播展开（看着没反应）
+            await JS.InvokeVoidAsync("junigridJs.catToggle", "#jg-cat-body-" + idx, !collapse);
+        }
+        catch { }
+        if (collapse) _collapsedCats.Add(key);
+        else _collapsedCats.Remove(key);
+        // 不作废 Groups 缓存：折叠/展开只改显示，行序与分组都没变（见 RenderedGroups 里的实时读）
+        StateHasChanged();
+    }
+
+    // ── v1.3.51：长按拖拽的落点回调 ──
+    // 手势本体在 junigrid.core.js（pointerdown 按住 320ms → ghost 跟手 → 松手）。
+    // 这里只收两个字符串：源 key 与目标分类 key，映射与落库全在 C# 做：
+    //   "c:分类名"      = 分类段头 → 重排分类
+    //   "f:folder"      = 单个 mod 行
+    //   "g:顶层目录"    = 整合成一行的那一包（整包一起归）
+    // pos = "before"/"after"：落点在目标段头的上半还是下半。只有分类重排用得上
+    //       （只看"落在哪个头上"分不清插在它前面还是后面 —— 界面上画的就是那条缝）。
+    /// <summary>长按拖拽松手：源是分类 → 重排；源是 mod → 归入目标分类。</summary>
+    [JSInvokable]
+    public void OnLongPressDrop(string sourceKey, string targetCatKey, string pos = "")
+    {
+        if (string.IsNullOrEmpty(sourceKey)) return;
+
+        if (sourceKey.StartsWith("c:", StringComparison.Ordinal))
+        {
+            MoveCategory(sourceKey[2..], targetCatKey, pos == "before");
+            return;
+        }
+
+        var folders = FoldersOfDragKey(sourceKey);
+        if (folders.Count == 0) return;
+
+        var key = targetCatKey ?? "";
+        var wasCollapsed = key.Length > 0 && _collapsedCats.Contains(key);
+        AssignModsToCategory(folders, key);       // "" = 移出分类（丢到未分类段）
+        if (wasCollapsed)
+        {
+            // 丢进一个折叠着的分类里，至少把它弹开让人看见结果（同款弹簧）
+            _collapsedCats.Remove(key);
+            _ = JS.InvokeVoidAsync("junigridJs.catToggle", "#jg-cat-body-" + CategorySectionOf(key).Index, true);
+            StateHasChanged();
+        }
+    }
+
+    /// <summary>v1.3.51 自检：等列表画出来后合成一次「按下 → 抬起」，看手势有没有被拿起。
+    /// 只落在 mod 行自己身上（不落 drop），不会改分类数据；结果靠 OnDragProbe 的日志读。</summary>
+    private async Task RunDragSelfTestAsync()
+    {
+        try
+        {
+            await Task.Delay(1500);
+            if (_disposed) return;
+            // ComponentBase 只有 InvokeAsync(Func<Task>)，没有泛型版 ⇒ 结果先落到局部量里
+            string? r = null;
+            await InvokeAsync(async () => r = await JS.InvokeAsync<string>("junigridJs.dragSelfTest"));
+            AppLog.Info("Mods", "[拖动] 自检: " + (r ?? "(null)"));
+        }
+        catch (Exception ex) { AppLog.Warn("Mods", "[拖动] 自检失败: " + ex.Message); }
+    }
+
+    /// <summary>长按拖拽的阶段探针（来自 JS）：armed = 已拿起，drop = 松手落在某个分类上，
+    /// drop-miss = 松手时指针下没有分类段头。只写日志，让「拖不动」能被定位到具体一步。</summary>
+    [JSInvokable]
+    public void OnDragProbe(string stage, string detail)
+        => AppLog.Info("Mods", $"[拖动] {stage} {detail}");
+
+    /// <summary>拖拽源 → 这一行实际代表哪些目录。整合行是整包，散装行就一个。</summary>
+    private List<string> FoldersOfDragKey(string key)
+    {
+        if (key.StartsWith("f:", StringComparison.Ordinal))
+            return new List<string> { key[2..] };
+        if (key.StartsWith("g:", StringComparison.Ordinal))
+        {
+            var gk = key[2..];
+            return _mods.Where(x => string.Equals(GroupKeyOf(x), gk, StringComparison.OrdinalIgnoreCase))
+                        .Select(x => x.Folder).ToList();
+        }
+        return new List<string>();
+    }
+
+    /// <summary>把一个分类挪到另一个分类的前面/后面（重排 ModUserCategoryOrder）。
+    /// before 来自落点：拖到目标段头上半 = 插到它前面，下半 = 插到它后面。
+    /// v1.3.55：「未分类」也可以拖、也可以当落点 —— 它在名单里用空字符串占位（不占位 = 垫底）。
+    /// ⚠ 名单是「倒序显示」的（末尾那条显示在最上面），所以统一换成「可见顺序」算、算完倒序写回。</summary>
+    private void MoveCategory(string from, string to, bool before)
+    {
+        if (string.Equals(from, to, StringComparison.OrdinalIgnoreCase)) return;
+
+        var disp = VisibleSectionOrder();
+        var fi = disp.FindIndex(x => string.Equals(x, from, StringComparison.OrdinalIgnoreCase));
+        var ti = disp.FindIndex(x => string.Equals(x, to, StringComparison.OrdinalIgnoreCase));
+        if (fi < 0 || ti < 0) return;                        // 源/目标这两段现在没显示，没得挪
+
+        var next = new List<string>(disp);
+        next.RemoveAt(fi);
+        var anchor = next.FindIndex(x => string.Equals(x, to, StringComparison.OrdinalIgnoreCase));
+        if (anchor < 0) return;
+        var at = before ? anchor : anchor + 1;               // 目标已因移除可能前移一格，重新定位
+        if (at < 0) at = 0;
+        if (at > next.Count) at = next.Count;
+        next.Insert(at, from);
+
+        if (next.SequenceEqual(disp, StringComparer.OrdinalIgnoreCase)) return;   // 挪了个寂寞，不落盘也不重画
+        WriteCategoryOrder(next);
+    }
+
+    /// <summary>分类上移/下移一位 —— 长按拖拽之外的必经路径（也方便键盘/无鼠标场景）。</summary>
+    private void MoveCategoryStep(string key, int dir)
+    {
+        var disp = VisibleSectionOrder();
+        var i = disp.FindIndex(x => string.Equals(x, key, StringComparison.OrdinalIgnoreCase));
+        var j = i + (dir < 0 ? -1 : 1);
+        if (i < 0 || j < 0 || j >= disp.Count) return;
+        (disp[i], disp[j]) = (disp[j], disp[i]);
+        WriteCategoryOrder(disp);
+    }
+
+    /// <summary>段的「可见顺序」（= 名单倒序，含 "" = 未分类）。名单里没有、但屏上确实显示了
+    /// 的段（老分类、从没登记过的未分类段）按屏上的相对位置补进去 —— 否则一拖动就把它们丢了。</summary>
+    private List<string> VisibleSectionOrder()
+    {
+        var disp = Cfg.Current.ModUserCategoryOrder
+            .Where(x => x is not null)
+            .Reverse()
+            .ToList();
+
+        foreach (var sec in _categorySections)
+        {
+            if (disp.Contains(sec.Key, StringComparer.OrdinalIgnoreCase)) continue;
+            var idx = _categorySections.IndexOf(sec);
+            var at = disp.Count;
+            for (var k = idx + 1; k < _categorySections.Count; k++)   // 插在它下面第一个已知段之前
+            {
+                var j = disp.FindIndex(x => string.Equals(x, _categorySections[k].Key, StringComparison.OrdinalIgnoreCase));
+                if (j >= 0) { at = j; break; }
+            }
+            disp.Insert(at, sec.Key);
+        }
+        return disp;
+    }
+
+    /// <summary>把可见顺序倒序写回名单并存盘。</summary>
+    private void WriteCategoryOrder(List<string> visible)
+    {
+        var order = Cfg.Current.ModUserCategoryOrder;
+        order.Clear();
+        order.AddRange(visible.AsEnumerable().Reverse());
+        Cfg.Save(Cfg.Current);
+        _categoryRev++;
+        StateHasChanged();
+    }
+
+    /// <summary>把一串 mod（folder 列表）归入某个分类。拖动 mod 行末端放到分类段头时走这里。</summary>
+    private void AssignModsToCategory(IReadOnlyCollection<string> folders, string category)
+    {
+        var cfg = Cfg.Current;
+        foreach (var f in folders)
+        {
+            var key = _modsByFolder.TryGetValue(f, out var m) ? CategoryKeyOf(m) : f;
+            if (category.Length == 0) cfg.ModUserCategory.Remove(key);
+            else cfg.ModUserCategory[key] = category;
+        }
+        if (category.Length > 0 && !cfg.ModUserCategoryOrder.Contains(category, StringComparer.OrdinalIgnoreCase))
+            cfg.ModUserCategoryOrder.Add(category);
+        Cfg.Save(cfg);
+        _categoryRev++;
+        StateHasChanged();
+    }
+
+    private void OpenCategoryRename(string from)
+    {
+        _categoryMenu = null;
+        _categoryRenameFrom = from;
+        _categoryRenameDraft = from;
+        _categoryDialogError = null;
+    }
+
+    private void ConfirmCategoryRename()
+    {
+        var from = _categoryRenameFrom;
+        if (from is null) return;
+        var to = _categoryRenameDraft.Trim();
+        if (to.Length == 0) { _categoryDialogError = Loc.T("先输入一个分类名"); return; }
+        if (to.Length > 20) to = to[..20];
+        if (string.Equals(from, to, StringComparison.OrdinalIgnoreCase)) { _categoryRenameFrom = null; _categoryDialogError = null; return; }
+        var cfg = Cfg.Current;
+        foreach (var k in cfg.ModUserCategory
+                     .Where(kv => string.Equals(kv.Value, from, StringComparison.OrdinalIgnoreCase))
+                     .Select(kv => kv.Key).ToList())
+            cfg.ModUserCategory[k] = to;
+        var idx = cfg.ModUserCategoryOrder.FindIndex(x => string.Equals(x, from, StringComparison.OrdinalIgnoreCase));
+        if (idx >= 0)
+        {
+            if (!cfg.ModUserCategoryOrder.Contains(to, StringComparer.OrdinalIgnoreCase)) cfg.ModUserCategoryOrder[idx] = to;
+            else cfg.ModUserCategoryOrder.RemoveAt(idx);
+        }
+        else if (!cfg.ModUserCategoryOrder.Contains(to, StringComparer.OrdinalIgnoreCase))
+            cfg.ModUserCategoryOrder.Add(to);
+        Cfg.Save(cfg);
+        if (_collapsedCats.Remove(from)) _collapsedCats.Add(to);
+        _categoryRev++;
+        _categoryRenameFrom = null;
+        _categoryDialogError = null;
+        ShowNotice("ok", LocService.Tf("已重命名为「{0}」", to));
+        StateHasChanged();
+    }
+
+    private void DeleteCategory(string name)
+    {
+        _categoryMenu = null;
+        var cfg = Cfg.Current;
+        // 值可能是多选拼起来的 "a,b" —— 逐条拆开判断，只摘掉要删的那个名字，
+        // 其余分类原样留着（旧写法比整串，多选条目根本匹配不上，会留下悬空的分类名）。
+        foreach (var (k, v) in cfg.ModUserCategory.ToList())
+        {
+            var parts = ModCategoryUtil.Split(v);
+            if (!parts.Any(x => string.Equals(x, name, StringComparison.OrdinalIgnoreCase))) continue;
+            var rest = parts.Where(x => !string.Equals(x, name, StringComparison.OrdinalIgnoreCase)).ToArray();
+            if (rest.Length == 0) cfg.ModUserCategory.Remove(k);
+            else cfg.ModUserCategory[k] = ModCategoryUtil.Join(rest);
+        }
+        cfg.ModUserCategoryOrder.RemoveAll(x => string.Equals(x, name, StringComparison.OrdinalIgnoreCase));
+        Cfg.Save(cfg);
+        _collapsedCats.Remove(name);
+        _categoryRev++;
+        if (_categoryHover == name) _categoryHover = null;
+        ShowNotice("ok", LocService.Tf("已删除分类「{0}」，里面的 mod 已移到未分类", name));
+        StateHasChanged();
+    }
+
+    /// <summary>悬停导航杠：点亮这根杠，并把卡片挪到它旁边。卡片只能待在滚动区外面（否则被
+    /// overflow 裁掉），所以它的高度得由 JS 量出那根杠的位置再写进 CSS 变量 —— 以前卡片钉在
+    /// 整列的中部，悬停最上面那根杠时卡片却出现在屏幕中间。</summary>
+    private void HoverCategory(string key)
+    {
+        _categoryHover = key;
+        var i = _categorySections.FindIndex(x => string.Equals(x.Key, key, StringComparison.OrdinalIgnoreCase));
+        if (i >= 0) _ = JS.InvokeVoidAsync("junigridJs.setCatCardY", i);
+    }
+
+    /// <summary>点右侧导航：目标段可能还在渐进渲染之外（首帧只画 40 行）——先全画，
+    /// 渲染完再滚（见 OnAfterRenderAsync 里的 _pendingCategoryAnchor）。</summary>
+    private async Task ScrollToCategory(string key)
+    {
+        var anchor = "jg-cat-" + CategorySectionOf(key).Index;
+        // v1.3.48：段头本来就画出来了（前面那几十行里的段）就直接滚，别再把整份列表一次画完。
+        // 全量渲染 200+ 行实测两次占住 UI 线程约 350ms —— 点最上面那根杠换来的是这一下卡顿，
+        // 而落点本来就就在屏幕上，等于白闪。
+        var rendered = false;
+        try { rendered = await JS.InvokeAsync<bool>("junigridJs.hasElement", anchor); } catch { }
+        if (rendered)
+        {
+            try { await JS.InvokeVoidAsync("junigridJs.scrollToCategory", anchor); } catch { }
+            return;
+        }
+        _renderLimit = 0;
+        _pendingCategoryAnchor = anchor;
+        StateHasChanged();
+    }
+
+    /// <summary>按当前行序切出分类段（段名/数量/前几个 mod 名），顺带给右侧导航的序号。
+    /// 只统计当前视图里看得见的行 —— 筛选/搜索之后导航与列表说的是同一批东西。</summary>
+    private void BuildCategorySections(IReadOnlyList<ModGroup> groups)
+    {
+        _categorySections = new List<CategorySection>();
+        // v1.3.47：分类不再是一种排序方式 —— 这个函数只按「当前有没有分类」决定画不画，
+        // 不能再拿 _sortMode 当闸门（那样段头照画、右侧导航却永远是空的）。
+        foreach (var g in groups)
+        {
+            var key = CategoryOfGroup(g);
+            var sec = _categorySections.FirstOrDefault(x => string.Equals(x.Key, key, StringComparison.OrdinalIgnoreCase));
+            if (sec is null)
+            {
+                sec = new CategorySection { Key = key, Label = key.Length > 0 ? key : Loc.T("未分类"), Index = _categorySections.Count };
+                _categorySections.Add(sec);
+            }
+            sec.Count += g.Items.Count;
+            if (sec.Names.Count < 8)
+                sec.Names.Add(g.Key.Length > 0 ? g.Key : g.Items[0].Name);
+        }
+        // 一个自定义分类都没有时，「按分类」等价于全部未分类 —— 别摆一根只有「未分类」的导航杠
+        // 和一行孤零零的段头，直接按普通列表画。
+        if (_categorySections.Count == 1 && _categorySections[0].Key.Length == 0)
+        {
+            _categorySections.Clear();
+            foreach (var g in groups) g.SectionHeader = null;
+            return;
+        }
+
+        // v1.3.78：**没有任何 mod 的分类也要画段头**。
+        // 段头就是长按拖拽的落点（data-cat-key），空分类不画等于「新建了分类却拖不进去」
+        // —— 2026-11-07 用户反馈。补一个 Groups 为空的段即可：不占行、但能接 drop。
+        foreach (var c in ExistingCategories())
+            if (!_categorySections.Any(x => string.Equals(x.Key, c, StringComparison.OrdinalIgnoreCase)))
+                _categorySections.Add(new CategorySection { Key = c, Label = c, Index = _categorySections.Count });
+
+        // 补进来的空段排在末尾，要按「可见顺序」重排（ModUserCategoryOrder 倒序 = 最新建的在最上），
+        // 同时重编 Index —— 段体 DOM id（jg-cat-body-{Index}）和右侧导航都依赖它。
+        var visOrder = VisibleSectionOrder();
+        _categorySections = _categorySections
+            .OrderBy(s =>
+            {
+                var i = visOrder.FindIndex(x => string.Equals(x, s.Key, StringComparison.OrdinalIgnoreCase));
+                return i < 0 ? int.MaxValue : i;
+            })
+            .ToList();
+        for (var i = 0; i < _categorySections.Count; i++) _categorySections[i].Index = i;
+    }
+
     // v0.41.0：全选当前过滤结果（只选看得见的，避免误选被过滤掉的）
     private void SelectAll()
     {
@@ -4108,19 +5121,28 @@
     {
         _pendingDeleteMod = null;
         _pendingBatchDelete = false;
+        _pendingDeleteGroupFolders = null;
     }
 
     private void ConfirmDeleteMods()
     {
         var mod = _pendingDeleteMod;
         var batch = _pendingBatchDelete;
+        var groupFolders = _pendingDeleteGroupFolders;
         var toTrash = _deleteToTrash;
         _pendingDeleteMod = null;
         _pendingBatchDelete = false;
+        _pendingDeleteGroupFolders = null;
 
         if (mod is not null)
         {
             _ = StartDeleteAsync([mod.Folder], [mod.Name], toTrash);
+        }
+        else if (groupFolders is not null)
+        {
+            // 整合行删除：整包一起删。名字取第一个子包名（同页，名称一致）。
+            var names = groupFolders.Select(f => _modsByFolder.TryGetValue(f, out var mm) ? mm.Name : f).ToList();
+            _ = StartDeleteAsync(groupFolders, names, toTrash);
         }
         else if (batch)
         {
@@ -4407,7 +5429,9 @@
                     // 应用内两条路都不通（API 403 + 隐藏窗口也没拿到）→ 兜底开网页手动下载
                     UpdateService.OpenUrl(offsite
                         ?? $"https://www.nexusmods.com/stardewvalley/mods/{m.NexusModId}?tab=files");
-                    ShowNotice("err", LocService.Tr("应用内没能取到下载链接（可能是未登录或不支持），已为你打开下载页"));
+                    // v1.3.45：这是交接不是失败 —— 网页上点一下就能装上，别用红条
+                    // 把人劝退（2026-11-06 反馈：下载成功也出现下载失败的 toast）。
+                    ShowNotice("ok", LocService.Tr("应用内没能取到下载链接（可能是未登录或不支持），已为你打开下载页"));
                 }
                 else if (st.Status == "failed")
                 {
@@ -4476,6 +5500,8 @@
         // 这一段多长窗口就冻多长（点一下没反应、悬停动画全停）。所以先记账，再决定挪哪段。
         var oldFolder = m.Folder;
         var __t = System.Diagnostics.Stopwatch.GetTimestamp();
+        // 改名代次 +1：让正在跑的那轮后台扫描作废（见 _renameEpoch）
+        Interlocked.Increment(ref _renameEpoch);
         var err = ModSvc.SetDisabled(Cfg.Current.GamePath, m.Folder, disabled);
         var __renameMs = ElapsedMs(__t);
         if (err is not null) ShowNotice("err", err);
@@ -4526,6 +5552,8 @@
     /// <summary>不做依赖联动的底层启禁（联动递归用，避免无限循环）。</summary>
     private void SetDisabledDirect(ModEntry m, bool disabled)
     {
+        // 联动改名同样要作废在跑的后台扫描（见 _renameEpoch）
+        Interlocked.Increment(ref _renameEpoch);
         var err = ModSvc.SetDisabled(Cfg.Current.GamePath, m.Folder, disabled);
         if (err is not null) { AppLog.Warn("Mods", $"联动{(disabled ? "禁用" : "启用")} {m.Folder} 失败：{err}"); return; }
         MigrateFolderCaches(m.Folder, DisabledName(m.Folder, disabled), persist: false);
@@ -4545,6 +5573,7 @@
             ApplyRenameInMemory(ancOld, ancNew);
             MigrateDictKey(Cfg.Current.ModCovers, ancOld, ancNew);
             MigrateDictKey(Cfg.Current.ModCategories, ancOld, ancNew);
+            MigrateDictKey(Cfg.Current.ModUserCategory, ancOld, ancNew);
         }
     }
 
@@ -4564,6 +5593,8 @@
         if (_states.TryGetValue(folder, out var st)) { _states[newFolder] = st; _states.Remove(folder); }
         MigrateDictKey(Cfg.Current.ModCovers, folder, newFolder);
         MigrateDictKey(Cfg.Current.ModCategories, folder, newFolder);
+        // v1.3.46：自定义分类也按 folder 记 —— 启禁用会改文件夹名，不跟着搬这一行的分类就丢了
+        MigrateDictKey(Cfg.Current.ModUserCategory, folder, newFolder);
         // 兼容性预查那七本字典同样按 folder 索引。不跟着搬，拨一下开关就把那行的证据留在旧键上：
         // 「维护存疑」的徽标与计数当场消失、筛进去一片空（实机 2026-10-09 报）。封面与分类有读取侧
         // 的剥点兜底（GetCover / GetNexusCategory），预查这七本没有，所以只有它会整条筛空。
@@ -4758,9 +5789,38 @@
             ShowNotice("err", LocService.Tr("没有选中的 mod。"));
             return;
         }
-        var targets = selectedMods
+        // v1.3.59：同一页面的捆绑包在列表里是「一行」，但选择时整组子包都进了 _selected。
+        // 直接拿 _selected 当更新目标就会变成「勾了 1 行、提示更新 3 个」，而且同一个文件
+        // 会被并发下 3 次（2026-11-07 用户反馈）。先按顶层目录收敛成「一行一个代表」，
+        // 代表优先取带真实 N 网页号的那个（和列表里显示的那一行同一口径）。
+        // 混装包（子包各指各的页）与根目录散装 mod 不收敛，保持逐个更新。
+        var updatable = selectedMods
             .Where(m => m.NexusModId is not null || m.GitHubRepo is not null)
             .ToList();
+        var targets = new List<ModEntry>();
+        // v1.3.67：捆绑包不再并成一行，所以勾选它拿到的是每个子包 —— 全部作为目标，
+        // 同一页面的重复由下面的 seenPages 收口（子包各有各的页时，各自更新是对的）。
+        foreach (var g in updatable.GroupBy(GroupKeyOf, StringComparer.OrdinalIgnoreCase))
+            targets.AddRange(g);
+        // v1.3.60：同一 N 网页面的目标只留一个。
+        // 2026-11-07 03:27 实机：列表里「去月球」只有一行（合并包），点更新却提示
+        // 「并行更新 2 个 mod」—— 两个子包按顶层目录收敛后仍落在不同组里（一个带禁用点前缀、
+        // 一个不带，或旧副本没清掉），于是同一个 fileId 被排了两次。
+        // 更新是「把一个页面上的新文件装进去」，同一页面重复执行没有任何意义，
+        // 只会让用户看到两条任务、两次下载、两段进度。这里按页号再收一道。
+        var seenPages = new HashSet<int>();
+        var beforeDedupe = targets.Count;
+        targets = targets.Where(t =>
+        {
+            if (t.NexusModId is not int page || page <= 0) return true;
+            if (seenPages.Add(page)) return true;
+            AppLog.Info("Mods", $"[更新] 页面 {page} 已有更新目标，跳过重复条目：{t.Folder}");
+            return false;
+        }).ToList();
+        if (beforeDedupe != targets.Count)
+            AppLog.Info("Mods", $"[更新] 同一页面的重复目标已合并：{beforeDedupe} → {targets.Count}");
+        AppLog.Info("Mods", "[更新] 本次目标：" + string.Join(" | ",
+            targets.Select(t => $"{t.Folder}(nexus={t.NexusModId?.ToString() ?? "-"})")));
         if (targets.Count == 0)
         {
             // 注意：这里<b>不再</b>排除禁用的 mod。禁用只是磁盘上给目录加了点前缀，
@@ -5214,6 +6274,14 @@
         // 修法在下面 SmapiInstalledVersion：把版本串洗成上游认的形状，洗不出就报空（空是合法的）。
         // 分块留着只为缩小失败域；真再出现整块回 0 行，日志会点出第几块、多少条，不必二分追人。
         var sendable = needFetch.Where(m => KeysOf(m).Length > 0).ToList();
+        // 诊断：整批没有一个带 key 时，把"想查但没身份"的条目点名打出来 ——
+        // 否则日志只有「带 UpdateKeys 的 0」，看不出是谁、也看不出它凭什么没身份。
+        if (sendable.Count == 0 && needFetch.Count > 0)
+        {
+            AppLog.Warn("Mods", "[国内快道] 需发但没有更新身份的条目："
+                + string.Join(" | ", needFetch.Take(12).Select(m =>
+                    $"{m.Folder}(uid={m.UniqueID},nexus={m.NexusModId?.ToString() ?? "-"},gh={m.GitHubRepo ?? "-"},ver={m.Version})")));
+        }
 
         var versionById = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
         var urlById = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
@@ -5366,18 +6434,24 @@
 
     private async Task RunCheckPipeline(List<ModEntry> targets)
     {
+        // v1.3.45：检查耗时要能自己说话 —— 「检查更新怎么这么慢」以前只能靠猜。
+        var swCheck = System.Diagnostics.Stopwatch.StartNew();
+        long msFingerprint = 0, msPrecise = 0;
         // v1.08：smapi.io 快道与 Nexus 指纹批查并行跑（原先串行，白等一个网络往返）；
         // 预查结果在精查阶段开始前才真正需要。
         var smapiTask = SmapiBatchPrecheck(targets);
 
         var precise = targets;
+        var _fpReused = 0;   // 指纹复用（零请求）的行数 —— 进检查耗时日志
         Dictionary<int, string>? fpUpdatedAt = null;   // modId → 批量指纹的 updatedAt（精查成功后回写缓存用）
         if (NexusService.IsAuthenticated)
         {
             var nexusIds = targets.Where(m => m.NexusModId is not null).Select(m => m.NexusModId!.Value).ToList();
             if (nexusIds.Count > 0)
             {
+                var __fpSw = System.Diagnostics.Stopwatch.StartNew();
                 var fps = await Nexus.GetModFingerprintsBatchAsync(nexusIds);
+                msFingerprint = __fpSw.ElapsedMilliseconds;
                 if (fps is not null)
                 {
                     fpUpdatedAt = fps.ToDictionary(kv => kv.Key, kv => kv.Value.UpdatedAt);
@@ -5397,10 +6471,18 @@
                                 _coversDirty = true;
                             }
                             if (Cfg.Current.ModUpdateFingerprints.TryGetValue(id, out var cached)
-                                && string.Equals(cached.UpdatedAt, fp.UpdatedAt, StringComparison.Ordinal)
                                 && !string.IsNullOrWhiteSpace(cached.LatestFileVersion)
-                                && DateTime.UtcNow - cached.CheckedAtUtc < FingerprintMaxAge)
+                                && DateTime.UtcNow - cached.CheckedAtUtc < FingerprintMaxAge
+                                && (string.Equals(cached.UpdatedAt, fp.UpdatedAt, StringComparison.Ordinal)
+                                    // v1.3.45：updatedAt 变了、但页面 version 与上次精查到的 MAIN
+                                    // 文件版本仍然相同 ⇒ 多半只是改了简介/封面。照旧再打一次
+                                    // files.json 的话，一次检查要发一百多个请求、跑两分多钟
+                                    // （实测 189 个 mod：精查 127 个 = 114 秒，指纹批查 6.9 秒）。
+                                    // 同版本号直接复用；页面版本与文件版本不一致的（SVE 那种
+                                    // 页面写 1.2.2、文件是 2）不相等，照旧精查，不会漏。
+                                    || VersionUtil.Same(fp.Version, cached.LatestFileVersion)))
                             {
+                                _fpReused++;
                                 // 指纹一致 → 远端文件列表没变 → 上次精查的文件版本直接复用
                                 var cachedFid = cached.LatestFileId != 0 ? cached.LatestFileId : (long?)null;
                                 var show = NexusUpdateTruth.ShouldShowUpdate(Cfg.Current, m, cached.LatestFileVersion, cachedFid);
@@ -5462,6 +6544,26 @@
             precise = gitHubRest;
         }
 
+        var __preciseCount = precise.Count;
+        var __preciseSw = System.Diagnostics.Stopwatch.StartNew();
+        // v1.3.45：精查批量化。逐个 files.json 在 AUP 的 2 并发下要 1~2 分钟
+        // （2026-11-06 实测：133 个精查 114 秒）。GraphQL 的 modFiles 支持别名，
+        // 一次 POST 查 50 个 mod 的 MAIN 版本，四次请求就能判完绝大部分；
+        // 双源（还挂着 GitHub）与批查拿不到版本的仍走原来的逐个精查。
+        Dictionary<int, string>? batchMain = null;
+        long msBatchMain = 0;
+        var __preciseReal = 0;   // 真正单发 files.json 的数量（批查命中/指纹复用的不算）
+        if (precise.Count > 0 && NexusService.IsAuthenticated)
+        {
+            var batchIds = precise.Where(m => m.NexusModId is > 0 && m.GitHubRepo is null && !m.IsConvertedPack)
+                .Select(m => m.NexusModId!.Value).Distinct().ToList();
+            if (batchIds.Count > 1)
+            {
+                var __bSw = System.Diagnostics.Stopwatch.StartNew();
+                batchMain = await Nexus.GetLatestMainFileVersionsBatchAsync(batchIds);
+                msBatchMain = __bSw.ElapsedMilliseconds;
+            }
+        }
         if (precise.Count > 0)
         {
             // AUP 二审：原 32 路 files.json 精查过猛；工作项 3 路，网络层仍有 ApiGate=2 硬顶
@@ -5471,6 +6573,33 @@
             await Task.WhenAll(precise.Select(async m =>
             {
                 if (Leave.IsCancellationRequested) return;   // 人已离开 Mods 页 ⇒ 不再开新的精查
+                if (batchMain is not null && m.GitHubRepo is null && !m.IsConvertedPack
+                    && m.NexusModId is int bid && batchMain.TryGetValue(bid, out var bver))
+                {
+                    // 批查已给出 MAIN 版本 → 零额外请求判定。fileId 留空：更新下载时会重新解析。
+                    _lastCheckedUtc[m.Folder] = DateTime.UtcNow;
+                    var showB = NexusUpdateTruth.ShouldShowUpdate(Cfg.Current, m, bver, null);
+                    RememberRemoteVersion(m.Folder, bver, fileId: null);
+                    _states[m.Folder] = new ModUpdateState
+                    {
+                        Status = showB ? "available" : "latest",
+                        RemoteVersion = bver,
+                    };
+                    if (fpUpdatedAt is not null && fpUpdatedAt.TryGetValue(bid, out var uaB))
+                    {
+                        Cfg.Current.ModUpdateFingerprints[bid] = new ModUpdateFingerprintEntry
+                        {
+                            UpdatedAt = uaB,
+                            LatestFileVersion = bver,
+                            LatestFileId = 0,
+                            CheckedAtUtc = DateTime.UtcNow,
+                        };
+                        _fpDirty = true;
+                    }
+                    NotifyCheckProgress();
+                    return;
+                }
+                Interlocked.Increment(ref __preciseReal);
                 await semaphore.WaitAsync();
                 try { await CheckOnlyOne(m, byId, fpUpdatedAt); }
                 finally { semaphore.Release(); }
@@ -5490,6 +6619,14 @@
             _coversDirty = false;
             _fpDirty = false;
         }
+        msPrecise = __preciseSw.ElapsedMilliseconds;
+        // v1.3.45：这一行是「检查更新为什么慢」的唯一证据来源 —— 快道/指纹/精查各花多久、
+        // 精查了多少个（指纹复用的不进来）。以后慢就看这三个数，别再从界面体感猜。
+        AppLog.Info("Mods",
+            $"[检查] 完成 {targets.Count} 个：快道 {swCheck.ElapsedMilliseconds - msFingerprint - msPrecise}ms"
+            + $" · 指纹批查 {msFingerprint}ms（复用 {_fpReused}）· MAIN 批查 {msBatchMain}ms"
+            + $" · 精查 {__preciseCount} 个（实查 {__preciseReal}）{msPrecise}ms"
+            + $" · 合计 {swCheck.ElapsedMilliseconds}ms");
         // vNext：检查期间列表已可见（不再换骨架屏），人为保底 0.6s 延迟已删
         _checkingUpdates = false;
         StateHasChanged();
@@ -5542,6 +6679,12 @@
             }
             if (_smapiPrecheck is not null && _smapiPrecheck.TryGetValue(m.Folder, out var preVer))
             {
+                // v1.3.45：有 N 网页面号且已登录 ⇒ 快道永远只是「待确认 / 兜底」，不能收口。
+                // 页面 version 字段与最新 MAIN 文件的版本是两回事（2026-11-06 实机：SVE 页面
+                // 写 1.2.2，最新主文件却是「1.2.3 beta」/ 文件版本 2；快道判「已最新」，
+                // 更新被直接吞掉）。以前只有「快道说可更新」才去 Nexus 复核，「说已最新」
+                // 就 return —— curl 到的是页面作者手填的版本号，不是我们会装的那条文件。
+                var canPrecise = m.NexusModId is not null && NexusService.IsAuthenticated;
                 if (preVer is not null)
                 {
                     if (preVer.Length > 0)
@@ -5560,8 +6703,8 @@
                         // 而精查平均要几秒才回。实机 2026-10-12 因此先亮一批再灭到 2 个，
                         // 其中纹理框架 2.0.10 / 动态光照 1.0.42 是 smapi.io 按 UniqueID 命中了
                         // 别人的页（mods/6367、mods/40775），我们发的 key 是本包那页 53426。
-                        // 不收口的那些（没 N 网 id / 没配 Key）拿不到更强的证据，仍按快道落屏。
-                        if (!(showPre && m.NexusModId is not null && NexusService.IsAuthenticated))
+                        // 查不了精查的（没 N 网 id / 没配 Key）拿不到更强的证据，仍按快道落屏。
+                        if (!canPrecise)
                         {
                             st.RemoteVersion = preVer;
                             st.RemoteUrl = pendingUrl;
@@ -5570,7 +6713,7 @@
                             return;
                         }
                     }
-                    else
+                    else if (!canPrecise)
                     {
                         st.RemoteVersion = null;
                         st.Status = "latest";
@@ -5777,11 +6920,17 @@
         // 且 premium 被拦（免费账号误进流水线）也要给明确反馈，不再「没反应」
         var manualGh = states.Count(s => s.Status == "available");
         if (updated > 0 || failed > 0 || premiumBlocked > 0 || manualGh > 0)
-            ShowNotice(failed == 0 && premiumBlocked == 0 ? "ok" : "err",
-                LocService.Tf("已自动更新 {0} 个 Mod ✔", updated)
-                + (failed > 0 ? $"，{failed} 个失败（原因见各行提示）" : "")
+        {
+            // v1.3.45：红条只代表「真的失败」。premium（应用内没取到，已交给网页）和
+            // 发布页没挂包都属于「换个地方继续」，批量里只要有一个真失败才用红。
+            // 以前 premium > 0 也判红，于是「已自动更新 2 个 ✔」配一条红 toast，
+            // 读起来就是「下载失败」（2026-11-06 用户反馈）。
+            var head = updated > 0 ? LocService.Tf("已自动更新 {0} 个 Mod ✔", updated) : "";
+            var tail = (failed > 0 ? $"，{failed} 个失败（原因见各行提示）" : "")
                 + (premiumBlocked > 0 ? $"，{premiumBlocked} 个应用内没能自动下载（已打开网页，可手动下载）" : "")
-                + (manualGh > 0 ? $"，{manualGh} 个发布页未挂安装包，已打开下载页/可点行内 ⇧ 手动更新" : ""));
+                + (manualGh > 0 ? $"，{manualGh} 个发布页未挂安装包，已打开下载页/可点行内 ⇧ 手动更新" : "");
+            ShowNotice(failed > 0 ? "err" : "ok", (head + tail).TrimStart('，'));
+        }
 
         // vNext：人为保底 0.6s「加载观感」延迟已删 —— 更新中状态都在行内实时呈现
 
@@ -5924,7 +7073,7 @@
                                     SettleUpdateTask(task, false,
                                         LocService.Tr("应用内没取到直链：")
                                         + (string.IsNullOrWhiteSpace(dl.Error) ? LocService.Tr("未知原因") : dl.Error)
-                                        + LocService.Tr("（已改为打开网页）"));
+                                        + LocService.Tr("（已改为打开网页）"), announce: false);
                                     st.Status = "premium";
                                     st.Message = null;   // 极简：只在版本号后加紫色 ⇧ new 标签，不再显示黄色说明
                                     StateHasChanged(); return;
@@ -5965,6 +7114,18 @@
                         var updGameDir = Cfg.Current.GamePath;
                         string? err;
                         string? newVer;
+                        // v1.3.45：同一个 mod 的捆绑包 —— 点任意一个子包的更新 = 整包替换顶层目录。
+                        // 只换一个子包会让版本一半新一半旧（2026-11-06 实机：SVE 只更新了
+                        // Realistic Water，另外三个还停在 1.2.2）。条件：这个顶层目录里的所有
+                        // 子包都指向同一页；混装多个 mod 的顶层目录绝不能整包替换（会把别人的
+                        // 子包一起换掉）。旧版整包会进回收站，可还原。
+                        var topFolder = GroupKeyOf(m);
+                        var bundleSiblings = topFolder.Length == 0 ? new List<ModEntry>()
+                            : _mods.Where(x => GroupKeyOf(x) == topFolder
+                                && !ReferenceEquals(x, m)).ToList();
+                        var wholeBundle = topFolder.Length > 0 && bundleSiblings.Count > 0
+                            && bundleSiblings.All(x => x.NexusModId == m.NexusModId);
+                        var installTarget = wholeBundle ? topFolder : m.Folder;
                         using (Center.BeginLongRunning(task!))
                         {
                             task!.Installing = true;
@@ -5983,7 +7144,7 @@
                                 {
                                     (err, newVer) = await Task.Run(() =>
                                     {
-                                        var e = ModSvc.InstallUpdate(updGameDir, m.Folder, zip!, out var nv);
+                                        var e = ModSvc.InstallUpdate(updGameDir, installTarget, zip!, out var nv, nexusModId: m.NexusModId);
                                         return (e, nv);
                                     });
                                 }
@@ -6007,6 +7168,22 @@
                             // 刚装出来的那份 manifest —— 拿网站那一栏盖它，就是「鹕鸟镇 1.2.6 显示成 26」
                             // 那件事的第二个入口，只是这条道要更新完才走到。
                             NexusUpdateTruth.RecordInstall(Cfg.Current, m, m.NexusModId ?? 0, file.FileId, remoteVer ?? "");
+                            if (wholeBundle)
+                            {
+                                // 整包替换 = 同一页的每个子包都换成了这一条 MAIN 文件。
+                                // 账本不跟着写的话，下一次精查会拿各自的旧账把 ⇧ 又点亮。
+                                foreach (var s in bundleSiblings)
+                                {
+                                    NexusUpdateTruth.RecordInstall(Cfg.Current, s, m.NexusModId ?? 0,
+                                        file.FileId, remoteVer ?? "");
+                                    var sst = GetState(s.Folder);
+                                    sst.Status = "updated";
+                                    sst.Message = null;
+                                    sst.RemoteVersion = remoteVer;
+                                    sst.RemoteFileId = file.FileId;
+                                }
+                                RescanAndRestate();   // 顶层目录被整包换掉，子包版本号重新读盘
+                            }
                             if (!string.IsNullOrWhiteSpace(newVer)) m.Version = newVer!;
                             st.RemoteVersion = remoteVer;
                             st.RemoteFileId = file.FileId;
@@ -6096,7 +7273,7 @@
                                 {
                                     ghErr = await Task.Run(() =>
                                         ModSvc.InstallUpdate(ghGameDir, m.Folder, ghZip,
-                                            out ghNewVer, expectedUniqueId: ghExpect));
+                                            out ghNewVer, expectedUniqueId: ghExpect, nexusModId: m.NexusModId));
                                 }
                                 finally { InstallService.ExitInstallGate(); }
                             }
@@ -6284,13 +7461,16 @@
     }
 
     /// <summary>更新任务行的收尾：只在它还在跑的时候写终态 —— 已被用户在任务中心
-    /// 暂停/移除的行不该被我们改回 done（那会把「暂停」冲掉），移除的行更不该再落终态。</summary>
-    private void SettleUpdateTask(TaskItem? t, bool ok, string? msg)
+    /// 暂停/移除的行不该被我们改回 done（那会把「暂停」冲掉），移除的行更不该再落终态。
+    /// <para><paramref name="announce"/>=false：不弹「X 失败」toast。用于「应用内没取到
+    /// 直链，已改为打开网页」这种交接 —— 网页那条路随后还能把包接上，先弹一条红条
+    /// 会让人以为整件事失败了（2026-11-06 用户反馈：下载成功也出现下载失败的 toast）。</para></summary>
+    private void SettleUpdateTask(TaskItem? t, bool ok, string? msg, bool announce = true)
     {
         if (t is null) return;
         if (t.Status != "running") return;
         if (!Center.Contains(t)) return;
-        Center.Finish(t, ok, string.IsNullOrWhiteSpace(msg) ? null : msg);
+        Center.Finish(t, ok, string.IsNullOrWhiteSpace(msg) ? null : msg, announce);
     }
 
     /// <summary>

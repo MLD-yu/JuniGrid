@@ -611,3 +611,16 @@
 
 
 
+
+/* ═══ v1.3.74：分类弹窗的主按钮跟主题走 ═══
+   它复用了 .jg-remark-dialog 的版式，于是连备注弹窗那条 #17181c 的深灰黑按钮一起继承了 ——
+   在当前绿色主题下，旁边「取消」是浅绿底，这颗却是纯黑，看起来像"没上色"（2026-11-07 用户截图）。
+   备注弹窗保持原样，只把分类弹窗这一处换成主题墨色（亮色主题=深、暗色主题=浅，自动跟随）。 */
+.jg-dialog.jg-cat-dialog .jg-btn.primary {
+    background: var(--jg-ink); color: var(--jg-on-ink);
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+}
+.jg-dialog.jg-cat-dialog .jg-btn.primary:hover { background: var(--jg-ink-hover); }
+html[data-theme="dark"] .jg-dialog.jg-cat-dialog .jg-btn.primary {
+    background: var(--jg-ink); color: var(--jg-on-ink);
+}

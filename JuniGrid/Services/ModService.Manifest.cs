@@ -177,7 +177,7 @@ public sealed partial class ModService
     /// The target keeps its old name (so a ".Disabled" prefix survives).
     /// </summary>
     public string? InstallUpdate(string gamePath, string targetFolderName, string zipPath,
-        out string? newVersion, string? expectedUniqueId = null)
+        out string? newVersion, string? expectedUniqueId = null, int? nexusModId = null)
     {
         newVersion = null;
         string? temp = null;
@@ -260,6 +260,21 @@ public sealed partial class ModService
             }
 
             TryDelete(temp);
+            // v1.3.45：更新时把「这一包来自哪个 N 网页面」的边车带过去。整包替换（顶层目录）
+            // 时旧的 .junigrid.json 随旧版进了回收站，新包里没有 → 所有子包丢掉 NexusModId：
+            // 行菜单里的「mod 详情」消失、更新检查也认不出它（2026-11-06 实机：SVE 整包更新后
+            // 4 个子包全部掉身份）。旧目录有就抄一份；调用方知道页面号时再补写一份。
+            if (stagedOld is not null)
+            {
+                try
+                {
+                    var oldSidecar = Path.Combine(stagedOld, ".junigrid.json");
+                    if (File.Exists(oldSidecar))
+                        File.Copy(oldSidecar, Path.Combine(dest, ".junigrid.json"), overwrite: true);
+                }
+                catch (Exception __ex) { AppLog.Warn("ModService", "更新时迁移 .junigrid.json 失败：" + __ex.Message); }
+            }
+            if (nexusModId is > 0) WriteNexusIdSidecar(dest, nexusModId.Value);
             if (stagedOld is not null)
                 AppLog.Warn("Mods", $"[更新] 旧版已移入回收站保留：{Path.GetFileName(stagedOld)}（可在设置中还原或清理）");
             return null;

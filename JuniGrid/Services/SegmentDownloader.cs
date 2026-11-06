@@ -14,8 +14,26 @@ public static class SegmentDownloader
     private const long MinTotalBytes = 4L * 1024 * 1024;
     private const long MinBytesPerLane = 512L * 1024;
     private const long CheckpointBytes = 1024L * 1024;
-    private const int MaxLanes = 6;
+
+    /// <summary>车道数上限。2026-11-06 23:05 实机：同一个 97.6MB 文件、同一时段、同一个免费账号，
+    /// XDyno 用多连接跑到 0.75MB/s，我们 4 条连接只有 174KB/s（≈1/4.3）—— 晚高峰时 CDN 对
+    /// 单条 TCP 的让速非常明显，开更多连接是客户端唯一能做的事。原先上限 6 太保守。</summary>
+    private const int MaxLanes = 16;
     private const int LaneAttempts = 4;
+
+    /// <summary>慢速轮换的采样窗口：每 20 秒算一次这段时间的平均速度。</summary>
+    private const long SlowSampleMs = 20_000;
+
+    /// <summary>低于这个速度就认为「这个节点不正常」，换下一个。
+    /// <para>免费账号本身限速约 1MB/s，而本机历史正常值是 2.4~2.8MB/s；200KB/s 明显低于任何
+    /// 正常情形，不会被日常限速误触发。2026-11-06 晚高峰实机：同一账号、同一 CDN 主机，
+    /// 平时 2.8MB/s，当晚某个边缘节点只有 ~105KB/s —— 客户端唯一能自救的就是换个节点。</para></summary>
+    private const long SlowBytesPerSecond = 200 * 1024;
+
+    /// <summary>剩余不足这个量就不折腾换节点了（换节点要重新探测 + 重排连接，
+    /// 尾段那点字节不值得）。</summary>
+    private const long SlowMinRemainingBytes = 8L * 1024 * 1024;
+
     private static readonly ConcurrentDictionary<string, SemaphoreSlim> PathGates = new(StringComparer.OrdinalIgnoreCase);
 
     public static Func<bool>? EnabledHook;
@@ -28,10 +46,13 @@ public static class SegmentDownloader
         string? ExpectedMd5,
         DateTimeOffset? LastModified, long[] Cursors);
 
+    /// <param name="mirrors">同一文件的其余 CDN 节点 —— 当前节点持续慢速或直接失败时按顺序换过去。
+    /// <c>.seg</c> 按文件偏移记账，换节点不用从头下（已提交的 cursor 原样保留）。</param>
     /// <returns>true when the complete file is at destPath; false when caller should use single-stream fallback.</returns>
     public static async Task<bool> TryRunAsync(HttpClient http, string url, string destPath,
         int lanes, Action<string, double?, double?> report, CancellationToken ct = default,
-        string? expectedMd5 = null, Func<bool>? preservePartialOnCancellation = null)
+        string? expectedMd5 = null, Func<bool>? preservePartialOnCancellation = null,
+        IReadOnlyList<string>? mirrors = null)
     {
         if (lanes < 2) return false;
         lanes = Math.Clamp(lanes, 2, MaxLanes);
@@ -113,12 +134,19 @@ public static class SegmentDownloader
                 return true;
             }
 
-            using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct);
             long done = alreadyDone;
             var progressGate = new object();
             var clock = Stopwatch.StartNew();
             var lastAt = TimeSpan.Zero;
+            var lastSpeedAt = TimeSpan.Zero;
             long lastBytes = alreadyDone;
+
+            // ── 慢速轮换状态 ──
+            CancellationTokenSource? attemptCts = null;
+            var canRotate = false;
+            var slowTripped = false;
+            var sampleAtMs = 0L;
+            var sampleBytes = alreadyDone;
 
             void OnBytes(long add)
             {
@@ -132,32 +160,118 @@ public static class SegmentDownloader
                     if (now - lastAt < TimeSpan.FromSeconds(1) && snapshot != probe.Total) return;
                     lastAt = now;
                 }
-                var speed = (snapshot - lastBytes) / Math.Max(now.TotalSeconds, 0.001) / 1024.0 / 1024.0;
+                var speed = (snapshot - lastBytes)
+                            / Math.Max((now - lastSpeedAt).TotalSeconds, 0.05)
+                            / 1024.0 / 1024.0;
+                lastSpeedAt = now;
                 lastBytes = snapshot;
                 var pct = Math.Min(100.0, snapshot * 100.0 / probe.Total);
                 report($"正在下载（{lanes} 线并行）… {ResumableDownload.FormatBytes(snapshot)} / {ResumableDownload.FormatBytes(probe.Total)}", pct, speed);
             }
 
-            var tasks = new List<Task>(lanes);
-            for (var i = 0; i < lanes; i++)
+            // 慢速看门狗。为什么不能塞进 OnBytes：那条回调只在「有字节到达」时才被叫，
+            // 链路彻底卡死（0 字节，2026-11-06 实机 76% 处 0.00 M/s）时它一次都不响，
+            // 轮换就永远不会触发。定时器每 5 秒读一次游标，20 秒窗口算平均速度。
+            using var slowTimer = new System.Threading.Timer(_ =>
             {
-                var lane = i;
-                tasks.Add(LaneAsync(http, url, part, probe, starts[lane], ends[lane], lane,
-                    checkpoint, OnBytes, linked.Token));
-            }
+                if (!canRotate || slowTripped) return;
+                try
+                {
+                    var nowMs = clock.Elapsed.TotalMilliseconds;
+                    long snap;
+                    lock (progressGate) snap = done;
+                    if (nowMs - sampleAtMs < SlowSampleMs) return;
+                    var avg = (snap - sampleBytes) / Math.Max((nowMs - sampleAtMs) / 1000.0, 0.001);
+                    lock (progressGate)
+                    {
+                        sampleAtMs = (long)nowMs;
+                        sampleBytes = snap;
+                        if (avg >= SlowBytesPerSecond || probe.Total - snap <= SlowMinRemainingBytes) return;
+                        slowTripped = true;
+                    }
+                    AppLog.Warn("Download",
+                        $"当前节点持续 {avg / 1024:F0} KB/s（低于 {SlowBytesPerSecond / 1024} KB/s），换备用 CDN 节点");
+                    try { attemptCts?.Cancel(); } catch { }
+                }
+                catch { /* 看门狗自身绝不许把下载拖垮 */ }
+            }, null, 5000, 5000);
 
-            try { await Task.WhenAll(tasks).ConfigureAwait(false); }
-            catch
+            // 候选节点：主地址在前，API 返回的其余区域节点依次跟上。
+            var candidates = new List<string> { url };
+            if (mirrors is not null)
+                foreach (var m in mirrors)
+                    if (!string.IsNullOrWhiteSpace(m) && !candidates.Contains(m, StringComparer.Ordinal))
+                        candidates.Add(m);
+
+            var finished = false;
+            for (var ci = 0; ci < candidates.Count && !finished; ci++)
             {
-                try { linked.Cancel(); } catch { }
-                // User pause is the only cancellation path that retains the range data.
-                // A failed lane, timeout, task removal or replaced worker cleans it before fallback.
-                if (!ct.IsCancellationRequested || !ShouldPreserve(preservePartialOnCancellation))
+                var laneUrl = candidates[ci];
+                var laneProbe = probe;
+                if (ci > 0)
+                {
+                    // 换节点先重新探一次：不同区域节点的 ETag / 长度可能不一致，
+                    // 长度对不上说明那个节点给的是另一个文件，直接跳过。
+                    try { laneProbe = await ProbeAsync(http, laneUrl, ct).ConfigureAwait(false); }
+                    catch (OperationCanceledException) { throw; }
+                    catch { continue; }
+                    if (laneProbe.Total != probe.Total)
+                    {
+                        AppLog.Warn("Download", $"备用节点长度不符，跳过：{SafeHost(laneUrl)}（{laneProbe.Total} ≠ {probe.Total}）");
+                        continue;
+                    }
+                }
+
+                attemptCts?.Dispose();
+                attemptCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                var laneToken = attemptCts.Token;
+                lock (progressGate)
+                {
+                    canRotate = ci < candidates.Count - 1;
+                    slowTripped = false;
+                    sampleAtMs = clock.ElapsedMilliseconds;
+                    sampleBytes = done;
+                }
+
+                var tasks = new List<Task>(lanes);
+                for (var i = 0; i < lanes; i++)
+                {
+                    var lane = i;
+                    tasks.Add(LaneAsync(http, laneUrl, part, laneProbe, starts[lane], ends[lane], lane,
+                        checkpoint, OnBytes, laneToken));
+                }
+
+                try { await Task.WhenAll(tasks).ConfigureAwait(false); }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                {
+                    // 慢速看门狗掐的 —— 换下一个节点，已下的字节都还在 .seg 里。
+                    AppLog.Warn("Download", $"已换下慢速节点：{SafeHost(laneUrl)}");
+                }
+                catch (OperationCanceledException) { throw; }   // 用户暂停/取消：原样上抛
+                catch (Exception ex)
+                {
+                    // 节点废了（连接断 / ETag 变 / Range 不支持）。有下家就换，没有就照旧抛给外层兜底。
+                    if (!canRotate) throw;
+                    AppLog.Warn("Download", $"节点失败，换下一个镜像：{SafeHost(laneUrl)} · {ex.Message}");
+                    continue;
+                }
+
+                if (Enumerable.Range(0, lanes).All(i => checkpoint.Cursors[i] > ends[i]))
+                {
+                    finished = true;
+                    break;
+                }
+                if (!canRotate)
+                {
                     DeletePartial(part, statePath);
-                throw;
+                    return false;
+                }
+                report($"该节点太慢，正在切换备用 CDN…（{ResumableDownload.FormatBytes(done)} / {ResumableDownload.FormatBytes(probe.Total)}）",
+                    Math.Min(100.0, done * 100.0 / probe.Total), 0);
             }
+            attemptCts?.Dispose();
 
-            if (!Enumerable.Range(0, lanes).All(i => checkpoint.Cursors[i] > ends[i]))
+            if (!finished)
             {
                 DeletePartial(part, statePath);
                 return false;
@@ -307,6 +421,7 @@ public static class SegmentDownloader
     private static async Task LaneAsync(HttpClient http, string url, string path, ProbeInfo probe,
         long from, long to, int lane, Checkpoint checkpoint, Action<long> onBytes, CancellationToken ct)
     {
+        var laneClock = Stopwatch.StartNew();
         var cursor = checkpoint.GetCursor(lane);
         // v1.3.41：续传的唯一硬证据 —— 车道起点必须是「保存的 cursor」，不是本段开头 from。
         // 真机验证「暂停→继续只请求剩余区间」就看这一行（光标 = 从段首跳过了多少）。
@@ -329,6 +444,17 @@ public static class SegmentDownloader
                 cursor = checkpoint.GetCursor(lane); // 未提交的数据允许覆盖，绝不跳过未落盘字节
                 await Task.Delay(TimeSpan.FromMilliseconds(400 * attempt), ct).ConfigureAwait(false);
             }
+        }
+
+        // 每条车道的真实吞吐写进日志：下次「为什么比 XDyno 慢」时，这里能直接看出是
+        // 「单连接被限速」还是「车道数不够」（4 条 × 43KB/s 与 16 条 × 43KB/s 差 4 倍）。
+        if (cursor > to && cursor > from)
+        {
+            var secs = laneClock.Elapsed.TotalSeconds;
+            if (secs > 0.5)
+                AppLog.Info("Download",
+                    $"车道 {lane + 1} 完成：{ResumableDownload.FormatBytes(cursor - from)} / {secs:F1}s"
+                    + $" ≈ {ResumableDownload.FormatBytes((long)((cursor - from) / secs))}/s");
         }
     }
 

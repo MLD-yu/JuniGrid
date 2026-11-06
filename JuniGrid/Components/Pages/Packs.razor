@@ -276,7 +276,7 @@
                                           OnMenuToggle="() => ToggleCardMenu(pLocal.Slot)"
                                           OnMenuDetail="() => CardMenuAct(() => GoPackDetailPage(pLocal))"
                                           OnMenuFolder="() => CardMenuAct(() => OpenPackFolder(pLocal))"
-                                          OnMenuDelete="() => CardMenuAct(() => _ = DeletePack(pLocal))" />
+                                          OnMenuDelete="() => CardMenuAct(() => AskDeletePack(pLocal))" />
                         }
                     </div>
                 </section>
@@ -790,6 +790,28 @@
        菜单打开的那张卡由 CSS :has 抬到遮罩之上） *@
     <div class="jg-dd-overlay @(_menuSlot is not null ? "open" : "")" data-dd="pkcard" @onclick="CloseCardMenu"></div>
 
+    @* v1.3.81：删除内容包的确认 —— 以前三点菜单里点「删除」直接删掉，没有任何确认。
+       这一步会连包带覆盖账一起清掉，不可撤销，必须问一次。 *@
+    @if (_pendingDeletePack is { } del)
+    {
+        <div class="jg-modal-overlay" @onclick="() => _pendingDeletePack = null">
+            <div class="jg-modal" @onclick:stopPropagation>
+                <div class="jg-modal-title">@Loc.T("删除内容包")</div>
+                <div class="jg-modal-body">
+                    @Loc.F("确定删除「{0}」？包里的文件与覆盖记录会一并移除，这一步不能撤销。", del.PackName)
+                </div>
+                <div class="jg-modal-body" style="opacity:.6;font-size:12.5px;margin-top:6px">
+                    @Loc.T("已经盖进游戏本体的图不会自动恢复原版 —— 需要还原请用「全部还原」。")
+                </div>
+                <div class="jg-modal-actions">
+                    <button type="button" class="jg-pill-ghost" data-modal-close
+                            @onclick="() => _pendingDeletePack = null">@Loc.T("取消")</button>
+                    <button type="button" class="jg-pill-danger" @onclick="ConfirmDeletePack">@Loc.T("确定删除")</button>
+                </div>
+            </div>
+        </div>
+    }
+
     @if (_toast is not null)
     {
         <div class="jg-pt-toast">@_toast</div>
@@ -818,6 +840,9 @@
     private string SearchText { get; set; } = "";
     private bool _searchOpen;
     private bool _busy;
+    /// <summary>等着确认删除的内容包。2026-11-07 用户反馈：三点菜单里点「删除」直接就删了，
+    /// 没有任何确认 —— 这个操作会连包带覆盖账一起清掉，必须问一句。</summary>
+    private ContentOverrideService.PackGroup? _pendingDeletePack;
     /// <summary>进页面的第一屏还没算完。与 Mod / Nexus 页同款闸门：骨架屏期间真实列表不渲染，
     /// 否则人看到的是整页空白 —— 账本重读是同步的，跑完之前浏览器什么都画不出来。</summary>
     private bool _initialLoading = true;
@@ -1559,6 +1584,21 @@
         await ReloadAsync();
         _open = _groups.FirstOrDefault(g => g.Slot == p.Slot);
         _busy = false;
+        StateHasChanged();
+    }
+
+    /// <summary>先弹确认，再删（删除是不可逆操作，且会一并清掉覆盖账）。</summary>
+    private void AskDeletePack(ContentOverrideService.PackGroup p)
+    {
+        _menuSlot = null;
+        _pendingDeletePack = p;
+    }
+
+    private async Task ConfirmDeletePack()
+    {
+        var p = _pendingDeletePack;
+        _pendingDeletePack = null;
+        if (p is not null) await DeletePack(p);
         StateHasChanged();
     }
 

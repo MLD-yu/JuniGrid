@@ -315,6 +315,9 @@ public partial class MainWindow : Window
             var provider = services.BuildServiceProvider();
             Resources.Add("services", provider);
             App.Services = provider;
+            // 隐藏窗口截到的 nxm:// 直接走「网页一键安装」的回流管线：外部协议那条路
+            // 在屏幕外的 WebView2 里会被确认框挡住（没人点得到），链接会无声丢掉。
+            NexusWebDownloadService.NxmLinkDetected += App.DispatchNxm;
             Log("DI configured");
 
             // 启动恢复 OAuth2 持久会话（有 token 则挂上 Bearer，过期则后台刷新）
@@ -438,7 +441,11 @@ public partial class MainWindow : Window
                         try
                         {
                             var msg = e.TryGetWebMessageAsString();
-                            if (msg == "ui-ready") App.NotifyUiReady();
+                            if (msg == "ui-ready")
+                            {
+                                App.NotifyUiReady();
+                                ProbeJsApiAsync();   // v1.3.51：确认页面跑的是新 JS
+                            }
                             else if (msg is not null && msg.StartsWith("click:", StringComparison.Ordinal))
                             {
                                 // v1.3.17 点击探针：JS 在 document 捕获阶段发的，比任何
@@ -1068,6 +1075,34 @@ public partial class MainWindow : Window
     // Low 档同样会把浏览器进程内存大量换出磁盘，且不中断呈现，恢复即显最后一帧。
     // 宿主自身的工作集仍一并换出。
     private Microsoft.Web.WebView2.Wpf.WebView2CompositionControl? _wv2;
+
+    // v1.3.51 诊断：页面一就绪就问一句「新 JS 在不在」。
+    // index.html 里的 ?v= 没顶掉时 WebView2 会继续用缓存的旧 JS —— 那种情况下
+    // C# 调新加的 junigridJs.* 只会抛「Could not find …」，功能静默失效，日志里毫无痕迹。
+    private void ProbeJsApiAsync()
+    {
+        var core = _wv2?.CoreWebView2;
+        if (core is null) return;
+        // WebView2 的 ExecuteScriptAsync 只能在 UI 线程上调（换线程直接抛
+        // 「调用线程无法访问此对象」），所以走 Dispatcher 而不是 Task.Run。
+        _ = Dispatcher.InvokeAsync(async () =>
+        {
+            try
+            {
+                var json = await core.ExecuteScriptAsync(
+                    "JSON.stringify({" +
+                    "longPress: !!(window.junigridJs && window.junigridJs.longPressDragInit)," +
+                    "catToggle: !!(window.junigridJs && window.junigridJs.catToggle)," +
+                    "dragTarget: !!(window.junigridJs && window.junigridJs.dragTarget)" +
+                    "})");
+                AppLog.Info("Startup", "[JS] 接口探测: " + json);
+            }
+            catch (Exception ex)
+            {
+                AppLog.Warn("Startup", "[JS] 接口探测失败: " + ex.Message);
+            }
+        });
+    }
 
     private void EnterLowMemoryMode()
     {

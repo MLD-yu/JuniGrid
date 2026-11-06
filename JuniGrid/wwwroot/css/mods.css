@@ -93,6 +93,17 @@
 .jg-bundle-subs.open { visibility: visible; opacity: 1; height: auto; margin-top: 0; }
 /* 动画期间保持裁剪才有"掀开"的效果；但子包那行的 … 菜单要探出面板，只有菜单开着时放开 */
 .jg-bundle-subs:has(.jg-modmenu.open) { overflow: visible; }
+/* ─── v1.3.49：分类段体面板。与捆绑包同款手风琴：行永远在 DOM 里，折叠稳态由 .collapsed
+   的 height:0 藏住，展开/收起走 junigridJs.catToggle 的 GSAP 弹簧（height 0↔auto + autoAlpha）。
+   overflow:hidden 是动画期与稳态都要的裁剪；只有行尾 … 菜单开着时才放开，否则菜单被裁掉。 ─── */
+.jg-cat-body {
+    display: flex; flex-direction: column; gap: 6px;
+    visibility: visible; opacity: 1; height: auto; overflow: hidden;
+}
+.jg-cat-body.collapsed {
+    visibility: hidden; opacity: 0; height: 0; overflow: hidden;
+}
+.jg-cat-body:not(.collapsed):has(.jg-modmenu.open) { overflow: visible; }
 .jg-modrow-icon {
     width: 44px; height: 44px;
     border-radius: 8px;
@@ -724,3 +735,88 @@ html[data-theme="dark"] .jg-newver:hover:not(:disabled) {
 @media (prefers-reduced-motion: reduce) {
     .jg-tag-deleting { animation: none; }
 }
+
+/* ── v1.3.46：自定义分类 —— 分段标题、右侧导航、加入分类对话框 ── */
+.jg-cat-head { display: flex; align-items: center; gap: 8px; margin: 18px 2px 6px; padding: 0 2px; position: relative; }
+.jg-cat-head-name { font-size: 13px; font-weight: 700; color: var(--jg-text); }
+.jg-cat-head-n { font-size: 11.5px; color: var(--jg-text-3); }
+.jg-cat-head-more { margin-left: auto; border: 0; background: transparent; color: var(--jg-text-3); font-size: 15px; line-height: 1; cursor: pointer; padding: 2px 7px; border-radius: 6px; }
+.jg-cat-head-more:hover { background: var(--jg-hover); color: var(--jg-text); }
+.jg-cat-head-menu { position: absolute; right: 0; top: calc(100% + 4px); z-index: 40; background: var(--jg-glass-95); border: 1px solid var(--jg-line); border-radius: 10px; padding: 5px; box-shadow: 0 10px 30px rgba(0, 0, 0, .18); min-width: 150px; }
+.jg-cat-head-menu .jg-sort-item { display: block; width: 100%; text-align: left; }
+
+/* v1.3.48：杠列封顶 + 自己滚（overflow:hidden ⇒ 不出滚动条这根装饰，滚轮由 JS 接手）；
+   卡片留在列外面，纵向位置跟被悬停的那根杠（--jg-cat-card-y 由 JS 写）。
+   z-index 70 必须高过吸顶筛选栏的 60 —— 以前卡片压在它下面，悬停最上面几根杠时卡片被拦腰盖住。 */
+.jg-catnav { position: fixed; right: 4px; top: 50%; transform: translateY(-50%); z-index: 70; }
+.jg-catnav-list { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; padding: 8px 2px; max-height: calc(100vh - 96px); overflow: hidden; }
+/* v1.3.47：短杠只是画出来的线，点击热区放大到 28×16 —— 以前热区=线本身（14×3），
+   非得精准落在线上才点得动（实机反馈：悬停能看到名字，点击却没反应）。 */
+.jg-catnav-dash { flex: none; width: 28px; height: 16px; border: 0; padding: 0; background: transparent; cursor: pointer; display: flex; align-items: center; justify-content: flex-end; }
+.jg-catnav-dash::before { content: ""; display: block; width: 14px; height: 3px; border-radius: 2px; background: var(--jg-line-strong); opacity: .55; transition: width .15s ease, opacity .15s ease, background .15s ease; }
+.jg-catnav-dash:hover::before, .jg-catnav-dash.hot::before { width: 22px; opacity: 1; background: var(--jg-text); }
+.jg-catnav-card { position: absolute; right: 28px; top: var(--jg-cat-card-y, 50%); transform: translateY(-50%); min-width: 150px; max-width: 240px; padding: 10px 12px; background: var(--jg-glass-95); border: 1px solid var(--jg-line); border-radius: 12px; box-shadow: 0 12px 34px rgba(0, 0, 0, .2); backdrop-filter: blur(8px); pointer-events: none; }
+.jg-catnav-title { font-size: 12.5px; font-weight: 700; color: var(--jg-text); margin-bottom: 6px; display: flex; gap: 6px; }
+.jg-catnav-title span { font-weight: 500; color: var(--jg-text-3); }
+.jg-catnav-row { font-size: 12px; color: var(--jg-text-2); padding: 2px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.jg-catnav-more { font-size: 11.5px; color: var(--jg-text-3); margin-top: 4px; }
+
+.jg-cat-dialog { min-width: 340px; max-width: 420px; }
+.jg-cat-list { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 12px; }
+.jg-cat-pick { border: 1px solid var(--jg-line); background: var(--jg-well); color: var(--jg-text); border-radius: 999px; padding: 5px 12px; font-size: 12.5px; cursor: pointer; }
+.jg-cat-pick:hover { border-color: var(--jg-text); }
+.jg-cat-pick.muted { color: var(--jg-text-3); }
+.jg-cat-empty { font-size: 12px; color: var(--jg-text-3); }
+.jg-cat-err { font-size: 12px; color: #c0392b; margin-top: 6px; }
+html[data-theme="dark"] .jg-catnav-card { background: rgba(30, 32, 36, .92); }
+
+/* v1.3.46：分类选择弹窗 —— 照「存档」下拉的竖排列表（一行一个分类、选中整行高亮、右侧 ×、底部虚线＋） */
+/* v1.3.48：分类一多就把弹窗顶得老长 —— 改成名单自己滚（一行约 30px，一屏 8 行），
+   ＋ 与输入框在滚动区外面，永远钉在列表下面，不会跟着滚走。 */
+.jg-cat-menu { display: flex; flex-direction: column; gap: 2px; margin: 8px 0 0; max-height: 236px; overflow-y: auto; scrollbar-width: thin; }
+.jg-cat-menu .jg-profile-item { display: flex; align-items: center; border-radius: 8px; }
+.jg-cat-menu .jg-profile-item:hover:not(.active) { background: var(--jg-hover); }
+.jg-cat-menu .jg-profile-item.active { background: var(--jg-hover-strong); }
+.jg-cat-menu .jg-profile-item.active .jg-profile-name { font-weight: 600; color: var(--jg-text); }
+.jg-cat-foot { margin: 6px 0 12px; }
+
+/* v1.3.47：分类段头 = 手风琴 —— 可点、带箭头、双击名字重命名 */
+.jg-cat-head { cursor: pointer; user-select: none; padding: 6px 4px; margin: 10px 0 2px; border-radius: 8px; transition: background .12s ease; }
+.jg-cat-head:hover { background: var(--jg-hover); }
+.jg-cat-head:first-child { margin-top: 2px; }
+.jg-cat-chevron { width: 12px; height: 12px; flex: none; color: var(--jg-text-3); transition: transform .18s ease; }
+.jg-cat-head.collapsed .jg-cat-chevron { transform: rotate(-90deg); }
+.jg-cat-head-name { font-size: 13px; font-weight: 700; color: var(--jg-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.jg-cat-head.collapsed .jg-cat-head-name { color: var(--jg-text-2); }
+/* v1.3.51：长按拖拽（不需要手柄图标 —— 按住行/段头 320ms 就拿起来了）*/
+body.jg-dragging { user-select: none; cursor: grabbing; }
+body.jg-dragging .jg-modrow, body.jg-dragging .jg-cat-head { cursor: grabbing; }
+/* v1.3.80：拖动源 = 禁用态那种「灰蒙蒙」，不是纯黑白。
+   grayscale(1) 会把封面压成死灰、看着像图坏了（上一版被指"完全变黑"），
+   这里半去色 + 微微提亮 + 压一点对比，像盖了层雾；再配半透明。 */
+.jg-drag-src { opacity: .55; filter: grayscale(.55) brightness(1.06) contrast(.92); }
+.jg-drag-ghost {
+    position: fixed; z-index: 9500; pointer-events: none;
+    transform: translate(-50%, -120%);
+    max-width: 320px; padding: 8px 12px; border-radius: 10px;
+    background: var(--jg-glass-95); border: 1px solid var(--jg-line-strong);
+    box-shadow: 0 10px 28px rgba(0, 0, 0, .18);
+    font-size: 12.5px; font-weight: 600; color: var(--jg-text);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.jg-cat-head.drop-target { background: var(--jg-hover-strong); box-shadow: inset 0 0 0 1px var(--jg-outline); }
+
+/* v1.3.54：分类重排的落点用「一条横线」标出插在哪一格（不再整块高亮 ——
+   分类拖拽时整块亮起来看不出是插到它前面还是后面）。上半 = 线在上边缘，下半 = 线在下边缘。 */
+.jg-cat-head.drop-above::before,
+.jg-cat-head.drop-below::after {
+    content: ""; position: absolute; left: 0; right: 0; height: 2px; z-index: 3;
+    border-radius: 2px; background: var(--jg-accent);
+    box-shadow: 0 0 0 2px var(--jg-hover), 0 1px 6px color-mix(in srgb, var(--jg-accent) 55%, transparent);
+    pointer-events: none;
+}
+/* 线画在段头与相邻段体的 6px 缝里（别压到两边的卡片上） */
+.jg-cat-head.drop-above::before { top: -5px; }
+.jg-cat-head.drop-below::after { bottom: -4px; }
+/* 拖分类时把悬停底色关掉：光标必然压在某个段头上，留着底色就又变成"整块高亮"了 */
+body.jg-dragging-cat .jg-cat-head:hover { background: transparent; }

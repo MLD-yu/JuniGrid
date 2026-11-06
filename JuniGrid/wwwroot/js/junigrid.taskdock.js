@@ -152,6 +152,46 @@ junigridJs.taskDrop = function (panelSel, arrowSel, open) {
     }
 };
 
+// ─── v1.3.49：分类段手风琴（与 taskDrop 同款弹簧，但稳态类用 .collapsed）───
+// 段头点击后 Blazor 会翻 .collapsed，先在这里用 GSAP 播 height 0↔auto 的过渡；
+// 与 taskDrop 同样的时序约束：收起时 immediateRender 先挂内联高度，避免 CSS 的 height:0 抢跑。
+junigridJs.catToggle = function (panelSel, open) {
+    var panel = document.querySelector(panelSel);
+    if (!panel) return;
+    if (panel.__catTl) { panel.__catTl.kill(); panel.__catTl = null; }
+    if (!window.gsap) {
+        panel.style.visibility = open ? 'visible' : 'hidden';
+        panel.style.opacity = open ? '1' : '0';
+        panel.style.height = open ? 'auto' : '0px';
+        return;
+    }
+    if (open) {
+        panel.classList.remove('collapsed');
+        panel.__catTl = gsap.timeline({
+            onComplete: function () {
+                panel.style.height = '';
+                panel.style.visibility = '';
+                panel.style.opacity = '';
+                panel.__catTl = null;
+            }
+        })
+            .fromTo(panel,
+                { height: 0, autoAlpha: 0 },
+                { height: 'auto', autoAlpha: 1, duration: 0.5, ease: 'back.out(1.2)', easeReverse: 'power3.out' }, 0);
+    } else {
+        panel.__catTl = gsap.timeline({
+            onComplete: function () {
+                panel.classList.add('collapsed');
+                panel.style.height = '';
+                panel.style.visibility = '';
+                panel.style.opacity = '';
+                panel.__catTl = null;
+            }
+        })
+            .to(panel, { height: 0, autoAlpha: 0, duration: 0.32, ease: 'power2.in', immediateRender: true }, 0);
+    }
+};
+
 // ------------------ v0.2.2：任务管理悬浮窗拖动（拖动超过 5px 时吞掉本次点击） ------------------
 window.junigridJs.makeTaskDockDraggable = function (sel) {
     const el = document.querySelector(sel);

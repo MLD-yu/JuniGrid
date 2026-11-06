@@ -100,9 +100,14 @@ public static class NexusUpdateTruth
         return rec is null || string.IsNullOrWhiteSpace(rec.RemoteVersion) ? m.Version : rec.RemoteVersion;
     }
 
-    /// <summary>更新判定用的本地版本：账上记着「上一次装的是哪一条 N 网文件」，那条记录与远端返回值
+    /// <summary>更新判定用的本地版本：账上记着「上一次装的哪一条 N 网文件」，那条记录与远端返回值
     /// 同出一个字段，只有段数一致（同一套编号体系）时才拿它比大小；否则回到包内自述，
-    /// 让 <see cref="ShouldShowUpdate"/> 里那道「段数不同 = 不可比」的闸照常生效。</summary>
+    /// 让 <see cref="ShouldShowUpdate"/> 里那道「段数不同 = 不可比」的闸照常生效。
+    /// <para>v1.3.45：段数一致时取「账本」与「包内自述」较高者 —— 两边的偏差各有含义：
+    /// 账本比自述新 = 作者忘改 manifest（账本才是真装上的那条文件，旧实现就是靠它救的）；
+    /// 自述比账本新 = 账本过期（捆绑包安装只更新了一条子包记录 / 用户手工换过文件，
+    /// 2026-11-06 实机：Parchment 的 Example Pack 账本停在 1.14.0，盘上已经是 1.15.1，
+    /// 精查拿旧账比出「可更新」假徽标）。取较高的那个，两种偏差都落到「盘上到底是哪一版」。</para></summary>
     public static string LocalVersionToCompare(JuniGridConfig cfg, ModEntry m, string? remoteVersion)
     {
         var rec = GetInstallRecord(cfg, m);
@@ -110,7 +115,13 @@ public static class NexusUpdateTruth
             && !string.IsNullOrWhiteSpace(remoteVersion)
             && NumericSegments(rec.RemoteVersion) == NumericSegments(remoteVersion)
             && NumericSegments(rec.RemoteVersion) > 0)
+        {
+            var manifestVer = m.Version ?? "";
+            if (NumericSegments(manifestVer) == NumericSegments(rec.RemoteVersion)
+                && VersionUtil.IsNewer(manifestVer, rec.RemoteVersion))
+                return manifestVer;
             return rec.RemoteVersion;
+        }
         return EffectiveLocalVersion(cfg, m);
     }
 
@@ -124,6 +135,12 @@ public static class NexusUpdateTruth
             // 快道（smapi.io）只给版本号不给 fileId，这条是那种情况下唯一的判据 ——
             // 必须按语义比：N 网文件栏写 "1.4"、索引写 "1.4.0"，字面相等会把刚装的版认成旧版
             if (VersionUtil.Same(rec.RemoteVersion, remoteVersion)) return true;
+            // 本条目自己有安装记录 ⇒ 到此为止，下面三条是"没有记录"时的兜底证据。
+            // 不能让它们越过记录：换过 UniqueID 重新装成旧版时，配置里会同时留着旧 UID
+            // 的记录和"曾下载过这一版"的下载记录，继续往下走会把真更新判成"已装最新"
+            // （2026-11-05 实机 Farm Queue：当前记录 YuGe.FarmQueue=0.5.0，旧记录 189841=0.5.1
+            // 与 ModFileLastDownload 里那条一起把 0.5.1 吞掉了）。
+            return false;
         }
         // 启动器历史上下载过「这一条」MAIN 文件（ModFileLastDownload[fileId]），
         // 即使当时没写安装快照/没回写 manifest，也视为已拥有该文件

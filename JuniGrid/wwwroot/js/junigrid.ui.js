@@ -910,8 +910,8 @@ window.junigridJs.setScroll = function (sel, y) { var el = document.querySelecto
 // ── Motion characters-remaining 同款：备注弹窗剩余数字弹簧 ──
 // 每次输入数字 back.out 弹一下；满格（剩余 0）后尝试输入时弹得更明显（atLimit=true）。
 // 颜色分级（剩 ≤4 黄 / 剩 0 红）由 Blazor 按 class 驱动，这里只负责弹。
-window.junigridJs.remarkCountBump = function (atLimit) {
-    var el = document.querySelector('.jg-remark-count');
+window.junigridJs.remarkCountBump = function (atLimit, sel) {
+    var el = document.querySelector(sel || '.jg-remark-count');
     if (!el || !window.gsap) return;
     if (el.__bumpTl) el.__bumpTl.kill();
     el.__bumpTl = gsap.timeline()

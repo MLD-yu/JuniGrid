@@ -453,3 +453,227 @@ window.junigridJs.applyTheme = function (theme) {
     return t;
 };
 
+
+// ============================================================
+// v1.3.52：长按拖拽（pointer + mouse 双通道）
+//
+// 上一版只挂 pointer 事件，实机「长按没反应」：合成 pointerdown 都进不了处理器。
+// 而 WebView2 里 pointer 事件是否转发给页面并不由页面说了算，所以这次两种都挂 ——
+// 同一次物理按下会先后产生 pointerdown 与 mousedown，靠 `st` 去重（第一个把 st 占住，
+// 第二个直接忽略），不会重复计时。
+//
+// 全流程带内部计数器（dbg），dragSelfTest() 直接把数字读回来 —— 不再依赖 .NET 回调，
+// 回调本身失败也能在 err 里看到原因。
+//
+// DOM 契约：可拖元素 data-drag-key / data-drag-label；
+//          投放目标 .jg-cat-head[data-cat-key]（"" = 未分类段）
+// ============================================================
+(function () {
+    var HOLD = 320;      // 按住多久算「拿起」
+    var TOL = 8;         // 拿起前允许的抖动
+    var ref = null;      // DotNetObjectReference（C# 首帧交进来）
+    var st = null;       // 当前手势
+    var dbg = { down: 0, guard: 0, armed: 0, up: 0, drop: 0, miss: 0, err: '', ev: '' };
+
+    function clearHl() {
+        var prev = document.querySelectorAll('.jg-cat-head.drop-target, .jg-cat-head.drop-above, .jg-cat-head.drop-below');
+        for (var i = 0; i < prev.length; i++) {
+            prev[i].classList.remove('drop-target');
+            prev[i].classList.remove('drop-above');
+            prev[i].classList.remove('drop-below');
+        }
+    }
+    function headAt(x, y) {
+        var el = document.elementFromPoint(x, y);
+        return el && el.closest ? el.closest('.jg-cat-head[data-cat-key]') : null;
+    }
+
+    // 分类重排的落点 = 指针在目标段头的上半 / 下半 ⇒ 插到它前面 / 后面。
+    // 只看"落在哪个分类头上"没法表达顺序（放上半和放下半意思完全不同），
+    // 所以画一条横线标出插入缝，而不是把整块高亮。
+    function posInHead(h, y) {
+        var r = h.getBoundingClientRect();
+        return y < r.top + r.height / 2 ? 'before' : 'after';
+    }
+    function place(g, x, y) { g.style.left = x + 'px'; g.style.top = y + 'px'; }
+
+    // 调 .NET：把失败也记下来（上一版就是这里静默失败，看起来像"什么都没发生"）
+    function call(name, a, b, c) {
+        if (!ref) { dbg.err = 'no-ref'; return; }
+        try {
+            var p = c === undefined ? ref.invokeMethodAsync(name, a, b)
+                                    : ref.invokeMethodAsync(name, a, b, c);
+            if (p && p.catch) p.catch(function (e) { dbg.err = name + ':' + e; });
+        } catch (e) { dbg.err = name + ':sync:' + e; }
+    }
+
+    function reset() {
+        var s = st;
+        st = null;
+        if (scrollRaf) { cancelAnimationFrame(scrollRaf); scrollRaf = null; }
+        if (!s) return null;
+        clearTimeout(s.timer);
+        document.body.classList.remove('jg-dragging');
+        document.body.classList.remove('jg-dragging-cat');
+        if (s.el) s.el.classList.remove('jg-drag-src');
+        if (s.ghost && s.ghost.parentNode) s.ghost.parentNode.removeChild(s.ghost);
+        clearHl();
+        return s;
+    }
+
+    // v1.3.79：拖到上下边缘自动滚动 + 落点刷新
+    // 指针停在边缘不动时 onMove 根本不触发，所以用 rAF 自走；滚动后必须重算落点，
+    // 否则"滚了但高亮还停在原来那一行"。
+    var lastPt = { x: 0, y: 0 };
+    var scrollRaf = null;
+
+    function refreshDrop(x, y) {
+        if (!st || !st.armed) return;
+        if (st.ghost) place(st.ghost, x, y);
+        var h = headAt(x, y);
+        clearHl();
+        st.pos = '';
+        if (!h) return;
+        var tgt = h.getAttribute('data-cat-key');
+        if (st.key.indexOf('c:') === 0) {
+            // 分类重排：拖的是分类 → 画插入线（不画整块高亮）。
+            // 自己的头上不画；「未分类」段不参与排序，也不能当落点。
+            if (tgt === '' || tgt === st.key.slice(2)) return;
+            st.pos = posInHead(h, y);
+            h.classList.add(st.pos === 'before' ? 'drop-above' : 'drop-below');
+        } else {
+            // mod 归类：整段都要接（放这块区域里就行），所以整块点亮
+            h.classList.add('drop-target');
+        }
+    }
+
+    function autoScrollTick() {
+        if (!st || !st.armed) { scrollRaf = null; return; }
+        var sc = document.querySelector('.jg-main');
+        if (sc && sc.scrollHeight > sc.clientHeight + 1) {
+            var r = sc.getBoundingClientRect();
+            var EDGE = 100, MAX = 26;
+            var dy = 0;
+            if (lastPt.y < r.top + EDGE)
+                dy = -MAX * Math.min(1, (r.top + EDGE - lastPt.y) / EDGE);
+            else if (lastPt.y > r.bottom - EDGE)
+                dy = MAX * Math.min(1, (lastPt.y - (r.bottom - EDGE)) / EDGE);
+            if (dy !== 0) {
+                var before = sc.scrollTop;
+                sc.scrollTop = before + dy;
+                if (sc.scrollTop !== before) refreshDrop(lastPt.x, lastPt.y);
+            }
+        }
+        scrollRaf = requestAnimationFrame(autoScrollTick);
+    }
+
+    function arm() {
+        if (!st) return;
+        st.armed = true;
+        dbg.armed++;
+        document.body.classList.add('jg-dragging');
+        if (st.key.indexOf('c:') === 0) document.body.classList.add('jg-dragging-cat');
+        st.el.classList.add('jg-drag-src');
+        var g = document.createElement('div');
+        g.className = 'jg-drag-ghost';
+        g.textContent = st.el.getAttribute('data-drag-label') || '';
+        document.body.appendChild(g);
+        st.ghost = g;
+        place(g, st.x, st.y);
+        lastPt.x = st.x; lastPt.y = st.y;
+        if (!scrollRaf) scrollRaf = requestAnimationFrame(autoScrollTick);
+        call('OnDragProbe', 'armed', st.key);
+    }
+
+    function onDown(e) {
+        dbg.down++;
+        dbg.ev = e.type;
+        if (e.button !== 0) return;
+        if (st) return;                             // pointerdown / mousedown 去重
+        var t = e.target;
+        if (!t || !t.closest) { dbg.guard = -2; return; }
+        if (t.closest('button, input, select, textarea, a')) { dbg.guard = -3; return; }
+        var el = t.closest('[data-drag-key]');
+        if (!el) { dbg.guard = -4; return; }
+        var key = el.getAttribute('data-drag-key');
+        if (!key) { dbg.guard = -5; return; }
+        dbg.guard = 1;
+        st = { el: el, key: key, x: e.clientX, y: e.clientY, armed: false, ghost: null, timer: null };
+        st.timer = setTimeout(arm, HOLD);
+    }
+
+    function onMove(e) {
+        if (!st) return;
+        if (!st.armed) {
+            if (Math.abs(e.clientX - st.x) > TOL || Math.abs(e.clientY - st.y) > TOL) reset();
+            return;
+        }
+        if (e.cancelable) e.preventDefault();
+        lastPt.x = e.clientX; lastPt.y = e.clientY;
+        refreshDrop(e.clientX, e.clientY);
+    }
+
+    function onUp(e) {
+        if (!st) return;
+        dbg.up++;
+        var armed = st.armed, key = st.key;
+        var h = armed ? headAt(e.clientX, e.clientY) : null;
+        var tgt = h ? h.getAttribute('data-cat-key') : null;
+        // 落点在目标段头的上半 / 下半 ⇒ 插到前面 / 后面（只有分类重排用得上）
+        var pos = (tgt !== null && key.indexOf('c:') === 0)
+            ? posInHead(h, e.clientY) : '';
+        reset();
+        if (!armed) return;
+
+        // 拖完这一击不该顺手选中行 / 折叠分段 —— 一次捕获吞掉（带超时兜底，
+        // 有些落点不产生 click，留着的监听会吃掉下一次点击）
+        var swallow = function (ev) { ev.stopPropagation(); ev.preventDefault(); off(); };
+        var tid = setTimeout(off, 400);
+        function off() { clearTimeout(tid); window.removeEventListener('click', swallow, true); }
+        window.addEventListener('click', swallow, true);
+
+        if (tgt !== null && key) {
+            dbg.drop++;
+            call('OnDragProbe', 'drop', key + ' → ' + (tgt === '' ? '未分类' : tgt) + (pos ? ' @' + pos : ''));
+            call('OnLongPressDrop', key, tgt, pos);
+        } else {
+            dbg.miss++;
+            call('OnDragProbe', 'drop-miss', key);
+        }
+    }
+
+    // pointer 与 mouse 双挂（去重靠 st）
+    document.addEventListener('pointerdown', onDown, { passive: true });
+    document.addEventListener('mousedown', onDown, { passive: true });
+    document.addEventListener('pointermove', onMove, { passive: false });
+    document.addEventListener('mousemove', onMove, { passive: false });
+    document.addEventListener('pointerup', onUp, { passive: true });
+    document.addEventListener('mouseup', onUp, { passive: true });
+    document.addEventListener('pointercancel', function () { reset(); }, { passive: true });
+
+    window.junigridJs.longPressDragInit = function (dotNetRef) { ref = dotNetRef; };
+
+    // 自检：合成一次「按下 →（过长按阈值）→ 抬起」，只落在 mod 行自己身上（不改数据）。
+    // 直接回计数器，不依赖 .NET 回调。
+    window.junigridJs.dragSelfTest = function () {
+        return new Promise(function (resolve) {
+            dbg.down = dbg.armed = dbg.up = dbg.guard = 0;
+            dbg.err = '';
+            var el = document.querySelector('.jg-modrow[data-drag-key]');
+            if (!el) { resolve('no-target'); return; }
+            var r = el.getBoundingClientRect();
+            var x = r.left + r.width / 2, y = r.top + r.height / 2;
+            var o = { bubbles: true, cancelable: true, clientX: x, clientY: y,
+                      pointerId: 7, pointerType: 'mouse', isPrimary: true, button: 0 };
+            try { el.dispatchEvent(new PointerEvent('pointerdown', o)); } catch (e) { dbg.err = 'dispatch:' + e; }
+            setTimeout(function () {
+                try { document.dispatchEvent(new PointerEvent('pointerup', o)); } catch (e) { }
+                setTimeout(function () {
+                    resolve('rows=' + document.querySelectorAll('[data-drag-key]').length
+                        + ' down=' + dbg.down + ' guard=' + dbg.guard + ' armed=' + dbg.armed
+                        + ' up=' + dbg.up + ' ref=' + (ref ? 1 : 0) + (dbg.err ? ' err=' + dbg.err : ''));
+                }, 120);
+            }, 520);
+        });
+    };
+})();

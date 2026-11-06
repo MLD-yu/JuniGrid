@@ -263,6 +263,9 @@
   "确定删除所选mod？": "Delete the selected mods?",
   "移入mod回收站（不勾选将彻底删除）": "Move to the mod recycle bin (unchecked deletes permanently)",
   "确定删除": "Delete",
+  "删除内容包": "Delete content pack",
+  "确定删除「{0}」？包里的文件与覆盖记录会一并移除，这一步不能撤销。": "Delete \"{0}\"? The pack's files and its override records will both be removed. This cannot be undone.",
+  "已经盖进游戏本体的图不会自动恢复原版 —— 需要还原请用「全部还原」。": "Files already overlaid into the game will NOT be restored automatically — use \"Restore all\" for that.",
   "时间戳": "timestamp",
   "转换": "Convert",
   "安装缺失依赖": "Install missing dependencies",
@@ -1213,5 +1216,17 @@
   "已删除 {0} 份快照，{1} 份失败": "Deleted {0} snapshot(s), {1} failed",
   "准备中": "Preparing",
   "等待中": "Waiting",
-  "已完成": "Done"
+  "已完成": "Done",
+  "拖动排序分类": "Drag to reorder categories",
+  "拖到分类标签上归类": "Drag onto a category to file it there",
+  "已删除分类「{0}」，里面的 mod 已移到未分类": "Deleted category \"{0}\"; its mods moved to Uncategorised",
+  "分类": "Category",
+  "选择分类": "Choose a category",
+  "装好之后放进哪个分类": "Which category should it go into?",
+  "装好之后放进哪个分类（可多选；一个都不勾就是未分类）": "Which categories should it go into? (Pick as many as you like; pick none to leave it uncategorised.)",
+  "不分类，直接安装": "Install without a category",
+  "这类文件是素材/覆盖包，会直接盖到游戏 Content 里，不进入 Mod 列表 —— 分类不适用。": "This is an asset/override pack — it is copied into the game's Content folder and does not appear in the mod list, so categories do not apply.",
+  "继续安装": "Continue installing",
+  "上移一位": "Move up",
+  "下移一位": "Move down"
 }

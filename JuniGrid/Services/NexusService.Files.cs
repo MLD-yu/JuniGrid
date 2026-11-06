@@ -189,6 +189,49 @@ public sealed partial class NexusService
         catch { return null; }
     }
 
+    /// <summary>v1.3.45：批量取每个 mod 最新 MAIN 文件的版本号（GraphQL 别名，一次 50 个）。
+    /// <para>更新检查用它替代逐个 files.json —— AUP 限 2 并发时，127 个 mod 逐个查要
+    /// 1~2 分钟（2026-11-06 实测：精查 127 个 114 秒），批查只要四次请求。
+    /// fileId 不在批量结果里（GraphQL 的 <c>uid</c> 不是数字文件号）—— 真正点「更新」时
+    /// 下载通道会重新解析 MAIN 文件，不影响安装；「这一版装过了」靠版本号比对。</para>
+    /// <para>返回 null = 整批失败（调用方退回逐个精查）。没有 MAIN 或版本栏为空的 mod
+    /// 不在字典里 —— 这些仍要单独查。</para></summary>
+    public async Task<Dictionary<int, string>?> GetLatestMainFileVersionsBatchAsync(
+        IEnumerable<int> modIds, string gameDomain = "stardewvalley")
+    {
+        try
+        {
+            var ids = modIds.Where(id => id > 0).Distinct().ToList();
+            if (ids.Count == 0) return new Dictionary<int, string>();
+            if (await EnsureGameIdAsync(gameDomain) is not { } gameId) return null;
+            const int CHUNK = 50;
+            var result = new Dictionary<int, string>();
+            for (var i = 0; i < ids.Count; i += CHUNK)
+            {
+                var slice = ids.Skip(i).Take(CHUNK).ToList();
+                var parts = new List<string>(slice.Count);
+                for (var k = 0; k < slice.Count; k++)
+                    parts.Add("m" + k + ": modFiles(modId:" + slice[k] + ", gameId:\"" + gameId + "\") { version category }");
+                var d = await GraphQlAsync("{ " + string.Join(" ", parts) + " }");
+                if (d is null) return null;
+                for (var k = 0; k < slice.Count; k++)
+                {
+                    if (!d.Value.TryGetProperty("m" + k, out var arr) || arr.ValueKind != JsonValueKind.Array) continue;
+                    string? main = null;
+                    foreach (var row in arr.EnumerateArray())
+                    {
+                        if (!GetStr(row, "category").Equals("MAIN", StringComparison.OrdinalIgnoreCase)) continue;
+                        var v = GetStr(row, "version").Trim();
+                        if (v.Length > 0) main = v;
+                    }
+                    if (main is not null) result[slice[k]] = main;
+                }
+            }
+            return result;
+        }
+        catch { return null; }
+    }
+
     /// <summary>v0.69.0：mod 的更新日志（版本 → 变更行）。对应官网 LOGS 页签的 Changelogs。</summary>
     public async Task<List<NexusChangelog>?> GetChangelogsAsync(int modId)
     {
