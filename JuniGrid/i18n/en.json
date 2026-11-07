@@ -914,7 +914,7 @@
   "{0} · 社区没留链接 · 点徽标去 N 网搜替代品": "{0} - the community left no link; click the badge to search Nexus for a replacement",
   "{0} · 点徽标打开它的页面": "{0} - click the badge to open its page",
   "依赖被禁": "Dep disabled",
-  "{0} 依赖的 {1} 当前被禁用 —— 游戏里 SMAPI 会跳过 {0}（不是没装，是装着但关了）。点一下把依赖打开。": "{1} that {0} depends on is currently disabled - SMAPI will skip {0} in-game (it is installed, just switched off). Click to enable the dependency.",
+  "点击启动依赖": "Click to enable the dependency",
   "{0} 依赖的 {1} 是捆绑包里不单独成行的子包 —— 启用它的整包就行": "{1} that {0} depends on is a sub-package inside a bundle with no row of its own - just enable its whole bundle.",
   "（{0}）": "({0})",
   "非官方接手": "Unofficial successor",

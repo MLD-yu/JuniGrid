@@ -753,8 +753,11 @@
                                 @{ var offDeps = m.Disabled ? null : DisabledDeps(m); }
                                 @if (offDeps is { Count: > 0 })
                                 {
+                                    @* v1.3.2：提示压成一句。原来那句「XX 依赖的 YY 当前被禁用 —— 游戏里 SMAPI
+                                       会跳过 XX（不是没装，是装着但关了）。点一下把依赖打开。」横贯整屏，
+                                       鼠标一停就糊住半个列表；标签本身已经写了「依赖被禁」，提示只要说能点。 *@
                                     <span class="jg-tag broken"
-                                          data-tip='@Loc.F("{0} 依赖的 {1} 当前被禁用 —— 游戏里 SMAPI 会跳过 {0}（不是没装，是装着但关了）。点一下把依赖打开。", m.Name, string.Join("、", offDeps))'
+                                          data-tip='@Loc.T("点击启动依赖")'
                                           @onclick="() => EnableItsDependencies(m)" @onclick:stopPropagation="true">@Loc.T("依赖被禁")</span>
                                 }
                                 @* v1.2.5：SMAPI 社区兼容性库点名「在当前游戏版本上有问题」的 mod。
@@ -5082,7 +5085,11 @@
         }
         // 一个自定义分类都没有时，「按分类」等价于全部未分类 —— 别摆一根只有「未分类」的导航杠
         // 和一行孤零零的段头，直接按普通列表画。
-        if (_categorySections.Count == 1 && _categorySections[0].Key.Length == 0)
+        // ⚠ 必须连「有没有自定义分类」一起判：只有「未分类」在的时候才退化。否则
+        // 「分类都空着（mod 全在未分类）」也会走进来直接 return，空分类既没段头也没导航杠
+        // —— 2026-11-07 用户反馈「侧边栏不显示这个无 mod 的标签」。
+        if (ExistingCategories().Count == 0
+            && _categorySections.Count == 1 && _categorySections[0].Key.Length == 0)
         {
             _categorySections.Clear();
             foreach (var g in groups) g.SectionHeader = null;
@@ -5096,16 +5103,24 @@
             if (!_categorySections.Any(x => string.Equals(x.Key, c, StringComparison.OrdinalIgnoreCase)))
                 _categorySections.Add(new CategorySection { Key = c, Label = c, Index = _categorySections.Count });
 
-        // 补进来的空段排在末尾，要按「可见顺序」重排（ModUserCategoryOrder 倒序 = 最新建的在最上），
-        // 同时重编 Index —— 段体 DOM id（jg-cat-body-{Index}）和右侧导航都依赖它。
-        var visOrder = VisibleSectionOrder();
+        // 重排：**和有 mod 的段用同一个键**（ModUserCategoryOrder 倒序 = 最新建的在最上），
+        // 未分类永远垫底。2026-11-07 用户反馈「没 mod 的分类跑到下面去了，一加 mod 又跑回上面」+
+        // 「侧边栏不显示这个无 mod 的标签」—— 根因就是这里用了 VisibleSectionOrder（它靠
+        // _categorySections 的现有次序去补插，空段刚 add 在末尾，补出来自然排在最后），
+        // 和 picked 那边按 SectionRank 排的结果对不上。
+        var orderDesc = Cfg.Current.ModUserCategoryOrder
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Reverse()
+            .ToList();
         _categorySections = _categorySections
             .OrderBy(s =>
             {
-                var i = visOrder.FindIndex(x => string.Equals(x, s.Key, StringComparison.OrdinalIgnoreCase));
-                return i < 0 ? int.MaxValue : i;
+                if (s.Key.Length == 0) return int.MaxValue;              // 未分类永远最后
+                var i = orderDesc.FindIndex(x => string.Equals(x, s.Key, StringComparison.OrdinalIgnoreCase));
+                return i < 0 ? int.MaxValue - 1 : i;                     // 不在名单里的排倒数第二档
             })
             .ToList();
+        // 重编 Index —— 段体 DOM id（jg-cat-body-{Index}）和右侧导航都依赖它
         for (var i = 0; i < _categorySections.Count; i++) _categorySections[i].Index = i;
     }
 
@@ -5122,6 +5137,43 @@
         _pendingDeleteMod = null;
         _pendingBatchDelete = false;
         _pendingDeleteGroupFolders = null;
+    }
+
+    /// <summary>把「一组子包 folder」收敛成删除目标：整包全选时给**顶层目录**，
+    /// 让 ModDeleteService 一次 <c>Directory.Move</c> 把整个包搬走。
+    /// <para>2026-11-07 用户实机：某个子目录被占用时，逐个子目录 Move 会「删掉两个、剩一个」——
+    /// 包被拆散了，剩下的那个还因为顶层目录结构变了掉进未分类。要么整包成功、要么整包不动，
+    /// 就不能按子目录一个个来。</para>
+    /// <para>只有在该顶层目录下的<b>所有</b>子包都在删除名单里时才收敛（混装包只删其中一个时
+    /// 仍然逐个删，否则会误伤没被选中的兄弟）。</para></summary>
+    private List<string> WholeGroupTargets(List<string> folders)
+    {
+        var targets = new List<string>();
+        foreach (var byTop in folders.GroupBy(TopOf, StringComparer.OrdinalIgnoreCase))
+        {
+            var top = byTop.Key;
+            var asked = byTop.ToList();
+            if (top.Length == 0) { targets.AddRange(asked); continue; }
+
+            // 这个顶层目录下当前扫描到的全部子包
+            var members = _mods
+                .Where(m => string.Equals(GroupKeyOf(m), top, StringComparison.OrdinalIgnoreCase))
+                .Select(m => m.Folder)
+                .ToList();
+            // 散装 mod（GroupKeyOf = ""）不参与这个口径：它的 members 会是空，自然走下面逐个删
+            var wholeGroup = members.Count > 1
+                             && asked.Count == members.Count
+                             && asked.All(a => members.Contains(a, StringComparer.OrdinalIgnoreCase));
+            if (wholeGroup) targets.Add(top);
+            else targets.AddRange(asked);
+        }
+        return targets;
+    }
+
+    private static string TopOf(string folder)
+    {
+        var i = folder.IndexOf('/');
+        return i > 0 ? folder[..i] : "";
     }
 
     private void ConfirmDeleteMods()
@@ -5142,7 +5194,7 @@
         {
             // 整合行删除：整包一起删。名字取第一个子包名（同页，名称一致）。
             var names = groupFolders.Select(f => _modsByFolder.TryGetValue(f, out var mm) ? mm.Name : f).ToList();
-            _ = StartDeleteAsync(groupFolders, names, toTrash);
+            _ = StartDeleteAsync(WholeGroupTargets(groupFolders), names, toTrash);
         }
         else if (batch)
         {
@@ -5187,7 +5239,20 @@
             ? LocService.Tf("「{0}」", names.FirstOrDefault() ?? folders[0])
             : LocService.Tf("{0} 个 mod", folders.Count);
 
-        foreach (var f in folders) _deleting.Add(f);
+        foreach (var f in folders)
+        {
+            // 目标可能是顶层目录（整包一次删）—— 行是按子包 folder 记的，要展开才点亮「删除中」
+            if (_mods.Any(m => string.Equals(m.Folder, f, StringComparison.OrdinalIgnoreCase)))
+            {
+                _deleting.Add(f);
+                continue;
+            }
+            var kids = _mods.Where(m => f.Length > 0
+                                        && string.Equals(GroupKeyOf(m), f, StringComparison.OrdinalIgnoreCase))
+                            .Select(m => m.Folder).ToList();
+            if (kids.Count == 0) _deleting.Add(f);
+            else foreach (var k in kids) _deleting.Add(k);
+        }
         StateHasChanged();
 
         // v1.3.18：原来那句 toast 2.3 秒就没了，删一个几 GB 的包却要十几秒 ——
@@ -5223,7 +5288,9 @@
         }
         finally
         {
-            foreach (var f in folders) _deleting.Remove(f);
+            // 一次只跑一批（_delRunning 拦着），直接清空即可 —— 目标可能是顶层目录，
+            // 按 folders 逐个 Remove 清不掉之前展开进去的子包 folder。
+            _deleting.Clear();
             Interlocked.Exchange(ref _delRunning, 0);
             // 先收胶囊。它和结果 toast 是同一个固定落点，同时在场会叠成一坨。
             try { _ = JS.InvokeVoidAsync("junigridJs.busyPillHide"); } catch { }

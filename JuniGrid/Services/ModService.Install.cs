@@ -261,7 +261,7 @@ public sealed partial class ModService
             {
                 try { stagedDest = StageExistingToTrash(gamePath, dest); }
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-                { TryDelete(temp); return $"「{folderName}」正被占用，无法备份旧版，已放弃安装（旧版未动）"; }
+                { TryDelete(temp); return $"「{folderName}」正被占用，换不了新版，已放弃安装（旧版未动）。请先关闭游戏 / SMAPI，或其它打开着这个文件夹的程序，再重试"; }
             }
             // v0.71.9：同名【禁用】目录（.folderName）也要清掉 —— 旧逻辑只查不带点的 dest，
             // 禁用 mod（Mods/.X）+ 新下载（Mods/X）会同时存在，扫描出来就是同一个 mod 两行。
@@ -273,7 +273,7 @@ public sealed partial class ModService
                 {
                     if (stagedDest is not null) RestoreStaged(stagedDest, dest);
                     TryDelete(temp);
-                    return $"「.{folderName}」正被占用，无法备份旧版，已放弃安装（旧版未动）";
+                    return $"「.{folderName}」正被占用，换不了新版，已放弃安装（旧版未动）。请先关闭游戏 / SMAPI，或其它打开着这个文件夹的程序，再重试";
                 }
             }
             // v0.71.9：按 manifest UniqueID 兜底判重 —— 文件夹名不同但 UniqueID 相同
