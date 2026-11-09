@@ -28,6 +28,10 @@
 </div>
 <TaskDock />
 
+@* 首启引导：挂在 shell 同级、覆盖整个内容区。是否出现由组件自己按
+   Config.WelcomeGuideShown 判定（只弹一次），布局层不参与判断。 *@
+<WelcomeGuide />
+
 @code {
     protected override void OnInitialized()
     {

@@ -1,0 +1,50 @@
+@namespace JuniGrid.Components
+@* ─── 联系方式图标跑马灯（关于卡片 / 新手引导第 3 步共用） ──────────
+   结构照搬 React Bits 的 <LogoLoop />：一份 <ul> 序列，JS 量完宽度后
+   复制若干份铺满容器，靠 translate3d 一直左移；两端用 mask 柔化。
+   拖拽 / 惯性 / 入场浮起都在 junigrid.widgets.js 的 initLogoLoop 里。
+   ⚠ 图标都是「深色圆底 + 镂空字形」，只有爱发电是圆角方块（CSS 里圆形裁切），
+     N 网是黑灰描线（配色见 logo-nexus.svg 的文件头注释）；深色主题统一翻白，
+     这条规则在 theme.css 的 .jg-ll-item img 上。 *@
+
+<div class="jg-logoloop" aria-label='@Loc.T("联系方式")'>
+    <div class="jg-ll-track">
+        <ul class="jg-ll-seq">
+            @foreach (var l in Links)
+            {
+                <li class="jg-ll-item">
+                    @if (l.Copy is not null)
+                    {
+                        <a class="jg-ll-link" href="javascript:void(0)"
+                           data-copy="@l.Copy" data-copy-label='@Loc.T("邮箱已复制")'
+                           title="@l.Title">
+                            <img src="@l.Icon" alt="@l.Title" />
+                        </a>
+                    }
+                    else
+                    {
+                        <a class="jg-ll-link" href="@l.Href" target="_blank" rel="noreferrer noopener" title="@l.Title">
+                            <img src="@l.Icon" alt="@l.Title" />
+                        </a>
+                    }
+                </li>
+            }
+        </ul>
+    </div>
+</div>
+
+@code {
+    private sealed record Entry(string Title, string Href, string Icon, string? Copy = null);
+
+    private static readonly Entry[] Links =
+    {
+        new("GitHub", "https://github.com/MLD-yu/JuniGrid", "assets/logos/logo-github.svg"),
+        // Gmail 直接打开写好的新邮件页（收件人预填），不再走「复制邮箱」——
+        // 图标点下去就该跳站点，复制行为只留在群号那种「点一下带走」的地方。
+        new("Gmail", "https://mail.google.com/mail/?view=cm&fs=1&to=yu2109292229@gmail.com", "assets/logos/logo-gmail.svg"),
+        new("哔哩哔哩", "https://space.bilibili.com/385452339", "assets/logos/logo-bilibili.svg"),
+        new("抖音", "https://www.douyin.com/user/MS4wLjABAAAAFva5cHzXf-dy_N7_4sKzjVHRBXj7_mkQ9EzTUXI96QM?from_tab_name=main", "assets/logos/logo-douyin.svg?v=2"),
+        new("爱发电", "https://ifdian.net/a/JuniGrid", "assets/logos/logo-afdian.svg"),
+        new("Nexus Mods", "https://www.nexusmods.com/profile/MLD210", "assets/logos/logo-nexus.svg"),
+    };
+}

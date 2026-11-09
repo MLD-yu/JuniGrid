@@ -56,6 +56,10 @@ public sealed partial class InstallService
 
     /// <summary>
     /// 把一批本地压缩包装进 <c>Mods/</c>。返回成功安装的个数。
+    /// <para><paramref name="category"/>：装完把新落下的目录记进这个分类（多选用逗号拼，
+    /// 与详情页安装弹窗同一口径）。空 = 未分类，不改配置。本地包没有 NexusModId，
+    /// 所以按「装前/装后的 Mods 顶层目录差集」认领 —— 覆盖式安装与装进本体的包
+    /// 不会多出目录，那种情况不动分类。</para>
     /// <para>每个包在任务中心开一条 <c>kind="install"</c> 的行（与 Nexus 直装同款），
     /// 逐个串行写入 —— <see cref="_installGate"/> 本来就是全局串行，但显式串行还能保证
     /// 任务中心里的顺序与用户拖入顺序一致。</para>
@@ -66,7 +70,7 @@ public sealed partial class InstallService
     /// 重新判定更新）。这里再补一条 <c>PageRefresh.Request("mods")</c> 就是第二遍全盘扫，
     /// 白烧 IO。</para>
     /// </summary>
-    public async Task<int> InstallLocalPacksAsync(IReadOnlyList<string> paths)
+    public async Task<int> InstallLocalPacksAsync(IReadOnlyList<string> paths, string? category = null)
     {
         var cfg = _cfg.Current;
         if (string.IsNullOrWhiteSpace(cfg.GamePath)) return 0;
@@ -77,9 +81,12 @@ public sealed partial class InstallService
         var ok = 0;
         var failed = 0;
         var anyInstalled = false;
+        var wantedCat = (category ?? "").Trim();
 
         foreach (var pack in packs)
         {
+            // 这一包会新增哪些目录 = 装后差集。必须每包取一次（上一包已经落盘了）
+            var before = TopModFolders(cfg.GamePath);
             var fileName = Path.GetFileName(pack);
             var task = _center.Start(LocService.Tf("安装本地包：{0}", fileName), "install");
             Interlocked.Increment(ref _busyCount);
@@ -122,6 +129,8 @@ public sealed partial class InstallService
                 {
                     ok++;
                     anyInstalled = true;
+                    // 装完立刻认领：这一包新落下的顶层目录 → 用户选的那个分类
+                    if (wantedCat.Length > 0) AssignInstalledCategory(cfg.GamePath, before, wantedCat);
                     _center.Finish(task, true, LocService.Tf("安装完成：{0}", modName ?? fileName)
                         + (notes.Count > 0 ? " · " + string.Join(" · ", notes) : ""));
                 }
@@ -154,5 +163,37 @@ public sealed partial class InstallService
             NotifyPortraits();        // 本地包可能落进立绘素材目录，Mods 页重扫碰不到立绘缓存
         }
         return ok;
+    }
+
+    /// <summary>Mods 目录下现有的顶层文件夹（大小写不敏感）。
+    /// 本地包没有 NexusModId，认领「刚装的是谁」只能靠装前/装后的差集。</summary>
+    private static HashSet<string> TopModFolders(string gamePath)
+    {
+        var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            var mods = Path.Combine(gamePath, "Mods");
+            if (!Directory.Exists(mods)) return set;
+            foreach (var d in Directory.EnumerateDirectories(mods))
+                set.Add(Path.GetFileName(d));
+        }
+        catch (Exception ex) { AppLog.Warn("Install", "枚举 Mods 目录失败：" + ex.Message); }
+        return set;
+    }
+
+    /// <summary>把这一包新装出来的顶层目录记进分类。差集为空（覆盖式安装 / 装进本体 /
+    /// 装成立绘素材）就不动配置 —— 那些东西本来就不在 Mods 列表里，给它记分类没有意义。</summary>
+    private void AssignInstalledCategory(string gamePath, HashSet<string> before, string category)
+    {
+        var added = TopModFolders(gamePath).Where(d => !before.Contains(d)).ToList();
+        if (added.Count == 0) return;
+        var cfg = _cfg.Current;
+        foreach (var d in added) cfg.ModUserCategory[d] = category;
+        // 多选的每个分类都要进名单，否则第二个分类在列表里没有段位、会垫到最下面
+        foreach (var one in ModCategoryUtil.Split(category))
+            if (one.Length > 0 && !cfg.ModUserCategoryOrder.Contains(one, StringComparer.OrdinalIgnoreCase))
+                cfg.ModUserCategoryOrder.Add(one);
+        _cfg.Save(cfg);
+        AppLog.Info("LocalPack", $"归类：{category} ← {string.Join(", ", added)}");
     }
 }

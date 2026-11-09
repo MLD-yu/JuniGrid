@@ -100,6 +100,13 @@ public sealed partial class ModService
         if (written == 0 && adopted == 0 && skipped > 0)
             notes?.Add(LocService.Tr("内容已经在位，这次一个文件都没改"));
 
+        // 更新漏收的坑：v1 里有的文件 v2 删掉了，旧那份还躺在宿主目录里、账也还在，
+        // 哈希又恰好等于 AppliedSha256 —— 健康检查判「在位」，界面一切正常，游戏里却是半新半旧。
+        // 按「同一宿主 + 同一槽位」把这一版计划里没有的旧记录撤掉（= 还原原文件 + 销账）。
+        var dropped = DropStaleOverlayFiles(gamePath, cfg, plan, nexusModId, packName);
+        if (dropped > 0)
+            notes?.Add(LocService.Tf("清掉了 {0} 个上一版有、这一版已经没有的文件", dropped));
+
         cfg.Save(c);
         modName = packName;
         AppLog.Info("Mods", $"[覆盖包] {packName} → {Path.GetFileName(hostDir)}，共写入 {written} 个文件"
@@ -183,8 +190,10 @@ public sealed partial class ModService
 
     /// <summary>扫描时校验覆盖记录：磁盘上还是我们放上去的那一份吗？
     /// 宿主 mod 更新会把整个旧目录移进回收站再装新版，覆盖于是静默消失。
-    /// 这里<b>只报不修</b>：自动重放会盖掉上游可能已经改好的官方翻译，判断错了没人知道。
-    /// ByHost 给列表行的徽标用，StaleKeys 给清单弹窗逐行标红用。</summary>
+    /// <para>这里<b>只报不修</b>：扫描时磁盘上的变化分不清"上游升级"和"玩家自己改了这个文件"，
+    /// 一重放就把人家手改的内容盖掉。真正的自动重放放在<b>我们刚换过那个目录</b>的当下
+    /// （<see cref="ReapplyOverlaysForHost"/>），扫描只负责把剩下的报成失效。
+    /// ByHost 给列表行的徽标用，StaleKeys 给清单弹窗逐行标红用。</para></summary>
     public static OverlayReport OverlayHealth(string gamePath, JuniGridConfig cfg)
     {
         var byHost = new Dictionary<string, (int Total, int Stale)>(StringComparer.OrdinalIgnoreCase);
@@ -219,8 +228,12 @@ public sealed partial class ModService
     /// 槽位用 N 网 modId（本地包退回包名），所以同一个文件能被多个汉化包各占一条记录 ——
     /// 磁盘上那个文件同一时刻只可能是其中一份，其余的账和副本都留着，开关一拨就换上去。</summary>
     public static string OverlayKey(string host, string relPath, int? nexusModId, string packName)
-        => host + "|" + relPath + "|" + (nexusModId?.ToString()
-            ?? (string.IsNullOrWhiteSpace(packName) ? "legacy" : packName));
+        => host + "|" + relPath + "|" + OverlaySlot(nexusModId, packName);
+
+    /// <summary>来源槽位本身（键的第三段）。更新时要按「同一宿主 + 同一槽位」把上一版多出来的文件揪出来。</summary>
+    private static string OverlaySlot(int? nexusModId, string packName)
+        => nexusModId?.ToString()
+           ?? (string.IsNullOrWhiteSpace(packName) ? "legacy" : packName);
 
     /// <summary>这个 N 网 mod 是不是正以「覆盖包」的形式装着、而且此刻真的在位。
     /// 汉化包住在别人的目录里，Mods 列表没有它那一行，所以详情页那种「Mods\ 里有没有这个文件夹」
@@ -348,8 +361,13 @@ public sealed partial class ModService
         var local = rec.RelPath.Replace('/', Path.DirectorySeparatorChar);
         var dst = Path.GetFullPath(Path.Combine(hostDir, local));
         var bak = dst + OverlayBackupSuffix;
-        // 状态没变就别动盘：关着的那条再"关"一次会把当前在位的另一个包的文件换成原版
-        if (rec.Enabled == enabled) return null;
+        // 状态没变就别动盘：关着的那条再"关"一次会把当前在位的另一个包的文件换成原版。
+        // 但「开着」这一侧要再验一遍磁盘 —— 宿主更新把整个目录换掉了，账上却还写着
+        // Enabled=true。旧写法在这里直接 return，于是那句「打开一次开关就能重新应用」是假的：
+        // 界面显示"开"，用户点一下传进来的是 false，只是把账改成关，一个字节都没重新应用。
+        if (rec.Enabled == enabled
+            && (!enabled || (File.Exists(dst) && Sha256Of(dst) == rec.AppliedSha256)))
+            return null;
         try
         {
             if (enabled)
@@ -358,20 +376,21 @@ public sealed partial class ModService
                     ? null : Path.Combine(OverlayStoreDir(rec.StoreId), local);
                 if (keep is null || !File.Exists(keep))
                     return LocService.Tr("覆盖包的文件副本已丢失，无法重新开启。请重新安装这个覆盖包。");
-                if (File.Exists(dst) && !File.Exists(bak)) File.Copy(dst, bak);
+                // 备份的语义是「我们盖之前磁盘上的那份」。磁盘上这份要是<b>我们自己</b>放上去的，
+                // 备份它就是自我复制：禁用时照着它"还原"，等于把汉化再抄一遍（实机 2026-11-10：
+                // SVE 的 i18n/zh.json，`.junigrid_backup` 与 zh.json 逐字节相同，禁用后汉化仍在）。
+                var dstIsOurs = File.Exists(dst) && !string.IsNullOrEmpty(rec.AppliedSha256)
+                    && Sha256Of(dst) == rec.AppliedSha256;
+                if (!dstIsOurs && File.Exists(dst) && !File.Exists(bak)) File.Copy(dst, bak);
                 Directory.CreateDirectory(Path.GetDirectoryName(dst)!);
                 File.Copy(keep, dst, overwrite: true);
                 rec.AppliedSha256 = Sha256Of(dst);
                 // 抢占槽位：同一个文件上其它包的记录一律记成"关着"（账和副本都留着）
                 foreach (var sib in OverlaySiblings(c, rec, key)) c.Overlays[sib].Enabled = false;
             }
-            else if (File.Exists(bak))
+            else
             {
-                File.Copy(bak, dst, overwrite: true);   // 备份留着：下次开启时它才是"原版"
-            }
-            else if (File.Exists(dst) && string.IsNullOrEmpty(rec.OriginalSha256))
-            {
-                File.Delete(dst);                       // 这个文件本来就是覆盖包新增的
+                RestoreOverlayFile(rec, dst, bak);
             }
             rec.Enabled = enabled;
             if (save) cfg.Save(c);
@@ -382,6 +401,39 @@ public sealed partial class ModService
         {
             return LocService.Tr("文件正被占用，操作失败");
         }
+    }
+
+    /// <summary>把一条覆盖还原成「没有我们这层覆盖」的样子。
+    /// <para>关键在「原本有没有这个文件」：<see cref="OverlayRecord.OriginalSha256"/> 为空 =
+    /// 这个文件是我们写进去的，还原就是<b>删掉它</b>。以前禁用时先看 <c>.junigrid_backup</c>
+    /// 在不在，而那份备份可能是早期版本在开启覆盖时把【我们自己的文件】拷出来的 ——
+    /// 照着它"还原"等于把汉化再抄一遍。实机 2026-11-10：SVE 的 <c>i18n/zh.json</c>
+    /// 点了禁用，汉化和 <c>.junigrid_backup</c> 都还在（两者逐字节相同）。
+    /// 备份留着没有意义，一并清掉，别在游戏目录里留垃圾。</para>
+    /// <para>备份是<b>真原版</b>（内容既不是我们那份、也不是当前这份）时照旧还原它 ——
+    /// 宿主更新带来官方同名文件的那种情况，靠的就是这一条。</para></summary>
+    private static void RestoreOverlayFile(OverlayRecord rec, string dst, string bak)
+    {
+        var dstHash = File.Exists(dst) ? Sha256Of(dst) : null;
+        var bakHash = File.Exists(bak) ? Sha256Of(bak) : null;
+        if (string.IsNullOrEmpty(rec.OriginalSha256))
+        {
+            // 账上说「这个位置本来什么都没有」⇒ 还原 = 删掉。备份在这里同样没有意义
+            // （它不是原版，是误建或另一份同名文件），一并清掉，别在游戏目录里留残渣。
+            // 动手的前提是「磁盘上这份确实是覆盖留下的」：还是我们放的那份
+            // （哈希等于 AppliedSha256），或者备份与它逐字节相同（自我复制的证据）。
+            // 两样都不是 ⇒ 那是宿主更新或玩家自己放的文件，谁也别删。
+            var ours = dstHash is not null && !string.IsNullOrEmpty(rec.AppliedSha256)
+                && dstHash == rec.AppliedSha256;
+            var bakSameAsDst = bakHash is not null && dstHash is not null && bakHash == dstHash;
+            if (ours || bakSameAsDst)
+            {
+                if (dstHash is not null) File.Delete(dst);
+                if (bakHash is not null) File.Delete(bak);
+            }
+            return;
+        }
+        if (bakHash is not null) File.Copy(bak, dst, overwrite: true);   // 备份留着：下次开启时它才是"原版"
     }
 
     /// <summary>彻底撤销一条覆盖：还原原文件、删掉备份与副本、销账。
@@ -401,22 +453,12 @@ public sealed partial class ModService
         {
             // 先算同一个文件上还留着谁：还剩别人，备份和槽位就还要用，不能顺手清掉
             var sibs = OverlaySiblings(c, rec, key);
-            if (rec.Enabled)
-            {
-                if (bak is not null && File.Exists(bak))
-                {
-                    if (dst is not null) File.Copy(bak, dst, overwrite: true);
-                    if (sibs.Count == 0) File.Delete(bak);
-                }
-                else if (dst is not null && rec.OriginalSha256.Length == 0 && File.Exists(dst))
-                {
-                    File.Delete(dst);   // 原本没这个文件，是覆盖包新增的 → 删掉就是还原
-                }
-            }
-            else if (sibs.Count == 0 && bak is not null && File.Exists(bak))
-            {
-                File.Delete(bak);       // 删的是关着的那条，且这个文件上再没别的账 → 备份也没人用了
-            }
+            // 还原与「禁用」走同一套判据（见 RestoreOverlayFile）：关着的记录也可能还留着
+            // 我们那份文件 —— 早期版本禁用时会把误建的备份抄回磁盘，账上却是"已关闭"。
+            if (dst is not null && bak is not null)
+                RestoreOverlayFile(rec, dst, bak);
+            if (sibs.Count == 0 && bak is not null && File.Exists(bak))
+                File.Delete(bak);       // 这个文件上再没别的账 → 备份也没人用了
             if (!string.IsNullOrEmpty(rec.StoreId))
                 try { Directory.Delete(OverlayStoreDir(rec.StoreId), recursive: true); } catch { }
             c.Overlays.Remove(key);
@@ -427,6 +469,123 @@ public sealed partial class ModService
         {
             return LocService.Tr("文件正被占用，还原失败");
         }
+    }
+
+    /// <summary>更新时把「上一版有、这一版没有」的落点撤掉。没有这一步，"重装"永远只是"叠加"：
+    /// 作者在新版里删掉或改名的语言文件会永久留在宿主目录里，账也留着，哈希还等于
+    /// <see cref="OverlayRecord.AppliedSha256"/> ⇒ 界面判在位，游戏读到的是半新半旧的内容。
+    /// <para>只认同一个宿主 + 同一个槽位（同一个包），绝不碰别的汉化包盖在同一宿主上的记录。</para></summary>
+    private int DropStaleOverlayFiles(string gamePath, ConfigService cfg, OverlayPlan plan,
+        int? nexusModId, string packName)
+    {
+        var c = cfg.Current;
+        var keep = new HashSet<string>(plan.DstPaths ?? plan.RelPaths, StringComparer.OrdinalIgnoreCase);
+        var dropped = 0;
+        foreach (var k in GroupKeys(c, plan.Host, OverlaySlot(nexusModId, packName)))
+        {
+            if (!c.Overlays.TryGetValue(k, out var old)) continue;
+            if (keep.Contains(old.RelPath)) continue;
+            // 撤销而不是直接删账：备份里是真原版，得先把它放回去，那份内容才算真的没了
+            if (RevertOverlay(gamePath, k, cfg, save: false) is null) dropped++;
+        }
+        return dropped;
+    }
+
+    /// <summary>重放一条覆盖记录：把 AppData 里留的副本按当初的落点再拷回去。true = 这次真写了盘。
+    /// <para><paramref name="blocked"/> = 宿主里那个文件已经不见了、而这条记录原本是盖在它上面的
+    /// （<see cref="OverlayRecord.OriginalSha256"/> 非空）—— 作者改名或删掉了这个文件，盖上去只是
+    /// 一份没人读的孤儿文件，还会把"失效"伪装成"在位"。这种情况一律不写。</para>
+    /// <para>宿主更新后备份（<c>.junigrid_backup</c>）跟着旧目录一起没了，所以这里重新拿此刻的
+    /// 官方文件补一份当原版 —— 那份才是新的真原版。</para></summary>
+    private static bool ReapplyOverlayRecord(string gamePath, string key, JuniGridConfig c, out bool blocked)
+    {
+        blocked = false;
+        if (!c.Overlays.TryGetValue(key, out var rec)) return false;
+        var hostDir = ResolveHostDir(gamePath, rec.Host);
+        if (hostDir is null) { blocked = true; return false; }   // 宿主整个都没了：这条账已经是死的
+        var local = rec.RelPath.Replace('/', Path.DirectorySeparatorChar);
+        var hostRoot = Path.GetFullPath(hostDir) + Path.DirectorySeparatorChar;
+        var dst = Path.GetFullPath(Path.Combine(hostDir, local));
+        if (!dst.StartsWith(hostRoot, StringComparison.OrdinalIgnoreCase)) { blocked = true; return false; }
+        if (File.Exists(dst) && Sha256Of(dst) == rec.AppliedSha256) return false;   // 已经在位，不用重放
+        if (!File.Exists(dst) && rec.OriginalSha256.Length > 0) { blocked = true; return false; }
+        var copy = string.IsNullOrEmpty(rec.StoreId)
+            ? null : Path.Combine(OverlayStoreDir(rec.StoreId), local);
+        if (copy is null || !File.Exists(copy)) { blocked = true; return false; }   // 副本丢了，只能重装
+        try
+        {
+            var bak = dst + OverlayBackupSuffix;
+            if (File.Exists(dst) && !File.Exists(bak)) File.Copy(dst, bak);
+            Directory.CreateDirectory(Path.GetDirectoryName(dst)!);
+            File.Copy(copy, dst, overwrite: true);
+            rec.AppliedSha256 = Sha256Of(dst);
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            AppLog.Warn("Mods", $"[覆盖包] 重放失败（文件被占用）：{rec.Host}/{rec.RelPath} — {ex.Message}");
+            blocked = true;
+            return false;
+        }
+    }
+
+    /// <summary>宿主 mod 装完/更新完，把它名下「开着」的覆盖包自动盖回去。
+    /// <para>更新宿主是把整个旧目录移进回收站再放新版，我们盖上去的那些文件随之消失 ——
+    /// 而用户当初是开着这个覆盖包的，不该让他自己去拨开关。</para>
+    /// <para>只在<b>我们此刻刚换掉这个目录</b>时跑（<see cref="InstallNew"/> 收尾调用），
+    /// 不在每次扫描时无脑重放：扫描时磁盘上的变化分不清"上游升级"和"用户自己改了这个文件"，
+    /// 后者一重放就把玩家手改的内容盖掉了。</para>
+    /// <para>重放不了的（宿主里那个文件被作者改名/删了、副本丢了）保持 Enabled 不动，交给
+    /// <see cref="OverlayHealth"/> 报成失效 —— 那才是真的需要人来决定的事。</para></summary>
+    public static int ReapplyOverlaysForHost(string gamePath, string host, ConfigService cfg)
+    {
+        var c = cfg.Current;
+        if (c.Overlays.Count == 0) return 0;
+        var norm = NormalizeOverlayHost(host);
+        if (norm.Length == 0) return 0;
+        // 捆绑包：装的是顶层目录，覆盖账却记在 Mods/壳/子包 那一行，所以两个方向都按前缀收 ——
+        // 换整个壳时要盖回每个子包，换某个子包时也不能漏掉记在壳上那条。
+        var keys = c.Overlays
+            .Where(kv => kv.Value.Enabled)
+            .Where(kv =>
+            {
+                var h = NormalizeOverlayHost(kv.Value.Host);
+                return h.Equals(norm, StringComparison.OrdinalIgnoreCase)
+                    || h.StartsWith(norm + "/", StringComparison.OrdinalIgnoreCase)
+                    || norm.StartsWith(h + "/", StringComparison.OrdinalIgnoreCase);
+            })
+            .OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)
+            .Select(kv => kv.Key)
+            .ToList();
+        if (keys.Count == 0) return 0;
+        var applied = 0;
+        var blocked = 0;
+        foreach (var k in keys)
+        {
+            if (ReapplyOverlayRecord(gamePath, k, c, out var b)) applied++;
+            else if (b) blocked++;
+        }
+        if (applied > 0) cfg.Save(c);
+        if (applied > 0 || blocked > 0)
+            AppLog.Info("Mods", $"[覆盖包] 宿主 {norm} 换过版本，自动重放：{applied} 个文件已重新盖上"
+                + (blocked > 0 ? $"，{blocked} 个盖不上（宿主里已没有那个文件，或副本丢了）" : ""));
+        return applied;
+    }
+
+    /// <summary>手动「重新应用」一整组（界面按钮用）。返回 (真正写回的文件数, 盖不上的文件数) ——
+    /// 后者是宿主改了名 / 删了文件那种，必须如实告诉用户，否则按钮看着像没反应。</summary>
+    public (int Applied, int Blocked) ReapplyOverlayGroup(string gamePath, string host, string slot, ConfigService cfg)
+    {
+        var c = cfg.Current;
+        var applied = 0;
+        var blocked = 0;
+        foreach (var k in GroupKeys(c, host, slot))
+        {
+            if (ReapplyOverlayRecord(gamePath, k, c, out var b)) applied++;
+            else if (b) blocked++;
+        }
+        if (applied > 0) cfg.Save(c);
+        return (applied, blocked);
     }
 
     /// <summary>整包开关：一个汉化包可能盖了上百个文件（LewdDew 那种重打包 146 个），

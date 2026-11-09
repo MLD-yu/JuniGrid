@@ -155,8 +155,11 @@ junigridJs.taskDrop = function (panelSel, arrowSel, open) {
 // ─── v1.3.49：分类段手风琴（与 taskDrop 同款弹簧，但稳态类用 .collapsed）───
 // 段头点击后 Blazor 会翻 .collapsed，先在这里用 GSAP 播 height 0↔auto 的过渡；
 // 与 taskDrop 同样的时序约束：收起时 immediateRender 先挂内联高度，避免 CSS 的 height:0 抢跑。
-junigridJs.catToggle = function (panelSel, open) {
-    var panel = document.querySelector(panelSel);
+// v1.3.84：入参从「选择器」改成「元素 id」，并且用 getElementById 取元素 ——
+// 段体 id 由分类名映射而来（可能是中文/空格/引号），拼进 querySelector 会当选择器语法解析；
+// 更要紧的是 id 撞车时 querySelector 只会拿到第一个，点上空分类却折叠了别人那一段。
+junigridJs.catToggle = function (panelId, open) {
+    var panel = panelId ? document.getElementById(panelId) : null;
     if (!panel) return;
     if (panel.__catTl) { panel.__catTl.kill(); panel.__catTl = null; }
     if (!window.gsap) {
@@ -190,6 +193,25 @@ junigridJs.catToggle = function (panelSel, open) {
         })
             .to(panel, { height: 0, autoAlpha: 0, duration: 0.32, ease: 'power2.in', immediateRender: true }, 0);
     }
+};
+
+// ─── v1.3.86：图标选择器的懒加载 ───
+// 物品有 600 多件，一次全铺出来会卡，所以 C# 那边只画前 N 个。
+// 滚到快见底就回调 .NET 续一批 —— 用户不用点「显示更多」了。
+// 元素是对话框里的 .jg-icon-grid（每次开对话框都是新元素，标记跟着元素走，不用手动解绑）。
+junigridJs.iconGridInfinite = function (dotNetRef) {
+    var grid = document.querySelector('.jg-icon-grid');
+    if (!grid) return;
+    grid.__jgDotNet = dotNetRef;
+    if (grid.__jgBound) return;
+    grid.__jgBound = true;
+    grid.addEventListener('scroll', function () {
+        // 离底 200px 就续 —— 等真正到底再加载，用户会看到一闪而过的空白
+        if (grid.scrollTop + grid.clientHeight < grid.scrollHeight - 200) return;
+        var ref = grid.__jgDotNet;
+        if (!ref) return;
+        ref.invokeMethodAsync('LoadMoreIcons').catch(function () { /* 对话框已关 */ });
+    }, { passive: true });
 };
 
 // ------------------ v0.2.2：任务管理悬浮窗拖动（拖动超过 5px 时吞掉本次点击） ------------------

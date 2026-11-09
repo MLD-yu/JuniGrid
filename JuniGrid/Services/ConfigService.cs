@@ -486,6 +486,14 @@ public sealed class JuniGridConfig
     /// 首页游玩热力图的年份列表从这里起算到今年。</summary>
     public string? FirstRunDate { get; set; }
 
+    /// <summary>首次启动引导（三步欢迎弹窗）是否已经展示过。<b>只允许弹一次</b>：
+    /// 弹窗一出现就写 true 并落盘，之后无论用户是走完全程、直接关窗口还是程序崩了，
+    /// 都不会再出现。老用户的配置里没有这个字段 ⇒ 默认 false ⇒ 升级后同样只弹那一次。</summary>
+    public bool WelcomeGuideShown { get; set; }
+
+    /// <summary>引导展示时间（ISO-8601）。纯排障用：用户反馈「又弹了」时先看这条。</summary>
+    public string? WelcomeGuideShownAt { get; set; }
+
     // Nexus 封面缓存：mod 文件夹名 → 封面图 URL（检查更新时顺手存，列表秒开）
     public Dictionary<string, string> ModCovers { get; set; } = new();
 
@@ -543,6 +551,18 @@ public sealed class JuniGridConfig
     /// 默认开启 —— 即默认参与并赢得这场竞争。
     /// </summary>
     public bool EnableOneClickInstall { get; set; } = true;
+
+    /// <summary>
+    /// v1.3.84：允许用内置的 N 网网页（WebView2）去取下载链接。
+    /// <para>开着时：免费账号在「下载并安装」里，应用会开一个内置网页、自动按下 Slow download，
+    /// 把一次性直链取回来 —— 全程不需要用户操作（遇到人机验证才把窗口交出来）。</para>
+    /// <para>关掉时：不再开这个内置网页，免费账号改走<b>系统浏览器</b> —— 直接打开 Nexus 文件页，
+    /// 用户在页上点一次 Mod Manager Download，nxm 回流照样把包装进 Mods。Premium 账号走 API 直链，
+    /// 全程不受这个开关影响。给「不想让应用开内置网页 / 内存紧张 / 不信这个通道」的用户一个关机键，
+    /// 但关掉不等于不能下载（v1.3.85 之前这里会直接判失败，用户看到红星「安装失败」）。</para>
+    /// 默认开启（这是免费账号唯一的自动下载通道）。
+    /// </summary>
+    public bool EnableBuiltinWebDownload { get; set; } = true;
 
     /// <summary>
     /// v1.2.4：锁定游戏版本 —— 把 Steam 的 appmanifest_413150.acf 设为只读，
@@ -673,6 +693,11 @@ public sealed class JuniGridConfig
     /// <summary>自定义分类的展示顺序（创建顺序）。分类删空后这里可能残留一项 ——
     /// 渲染前按「字典里还有成员」过滤，不靠清理。</summary>
     public List<string> ModUserCategoryOrder { get; set; } = new();
+
+    /// <summary>分类 → 段头图标（2026-11-09）。值形如 <c>logo</c> / <c>portrait:Abigail</c> / <c>item:72</c>，
+    /// 解析见 <see cref="CategoryIconService"/>。没登记的分类一律显示游戏 Logo；
+    /// 键 = 分类名，"" = 未分类（它也能换图标）。</summary>
+    public Dictionary<string, string> ModCategoryIcon { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>vNext：更新检查指纹缓存 —— Nexus modId → (updatedAt 指纹, 上次精查到的最新 MAIN 文件版本, 精查时间)。
     /// 进 Mod 页先跑一次免 key 的 GraphQL 批量指纹比对：updatedAt 没变的 mod 直接复用缓存版本号

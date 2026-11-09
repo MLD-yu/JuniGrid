@@ -10,6 +10,7 @@
 @inject UpdateService Updater
 @inject IJSRuntime JS
 @inject NavigationManager Nav
+@implements IDisposable
 
 <div class="jg-page">
     <div class="jg-detail-topbar">
@@ -64,12 +65,16 @@
                 <div class="jg-dl4-actions">
                     @{
                         var alreadyInstalled = _installedFolder is not null || _smapiInstalled || _overlayInstalled;
+                        // v1.3.85：关掉「内置网页下载」+ 免费账号 = 软件内根本取不到直链，
+                        // 这颗按钮点下去只会开浏览器 —— 那就在标题上直说，别让人以为能软件内装。
+                        var browserOnly = !Cfg.Current.EnableOneClickInstall
+                            || (!Cfg.Current.EnableBuiltinWebDownload && !Cfg.Current.NexusIsPremium);
                         // v1.04.0：已装判定优先于一键安装开关 —— 无论开关与否，「Mod 列表已有该 mod」都要显示
                         var installLabel = _installing ? Loc.T("安装中…")
                             : _smapiLabel ?? (alreadyInstalled ? (HasUpdate ? Loc.T("更新")
                                 // 覆盖包装完不在 Mods 列表里，说「Mod 列表已有该 mod」是假的 → 只说已安装
                                 : _installedFolder is null ? Loc.T("已安装") : Loc.T("Mod 列表已有该 mod"))
-                            : !Cfg.Current.EnableOneClickInstall ? Loc.T("在浏览器安装") : Loc.T("安装"));
+                            : browserOnly ? Loc.T("在浏览器安装") : Loc.T("安装"));
                         // SMAPI 不需要例外：已装就禁用，跟其它 mod 一条规矩。换适配版是 Mod 页
                         // 那条按游戏版本选包的通道干的活，不在这里给一个点得动的口子。
                         var disableInstall = _installing || (alreadyInstalled && !HasUpdate);
@@ -222,7 +227,8 @@
                                     </button>
                                     <div class="jg-sort-menu">
                                         <div class="jg-cat-menu">
-                                            <div class="jg-profile-item @(_pickedCategory.Length == 0 ? "active" : "")">
+                                            <div class="jg-profile-item @(!_newCatOpen && _pickedCategory.Length == 0 ? "active" : "")">
+                                                @CategoryIconBadge("")
                                                 <button type="button" class="jg-profile-name"
                                                         @onclick='() => PickCategory("")'>@Loc.T("未分类")</button>
                                             </div>
@@ -231,7 +237,8 @@
                                                 var cc = c;
                                                 // 这里只负责「选」，不给删除按钮 —— 分类管理在 Mods 页做，
                                                 // 在下载弹窗里删分类是越界（2026-11-07 用户要求）。
-                                                <div class="jg-profile-item @(_pickedCategory == cc ? "active" : "")">
+                                                <div class="jg-profile-item @(!_newCatOpen && _pickedCategory == cc ? "active" : "")">
+                                                    @CategoryIconBadge(cc)
                                                     <button type="button" class="jg-profile-name"
                                                             @onclick="() => PickCategory(cc)">@cc</button>
                                                 </div>
@@ -247,13 +254,18 @@
                                             else
                                             {
                                                 @* ＋ 原地变成输入框（不再在下面多长一行），右侧是同一个字数计数器 *@
-                                                <div class="jg-remark-field">
-                                                    <input @ref="_newCatInput"
-                                                           class="jg-remark-input @(_newCatName.Length >= 16 ? "near-limit" : "")"
-                                                           maxlength="20" placeholder='@Loc.T("新分类名")'
-                                                           value="@_newCatName"
-                                                           @oninput="OnNewCatInput" @onkeydown="OnNewCatKeydown" />
-                                                    <span class="jg-remark-count jg-cat-count-new @(_newCatName.Length >= 20 ? "full" : _newCatName.Length >= 16 ? "warn" : "")">@(20 - _newCatName.Length)</span>
+                                                @* 前面那颗图标是"将用默认小鸡"的占位 —— 不然这一行比上面短一截，
+                                                   看起来像漏了；建好后可在 Mods 页点它换掉。 *@
+                                                <div class="jg-cat-newrow">
+                                                    @CategoryIconBadge(NewCatIconKey)
+                                                    <div class="jg-remark-field">
+                                                        <input @ref="_newCatInput"
+                                                               class="jg-remark-input @(_newCatName.Length >= 16 ? "near-limit" : "")"
+                                                               maxlength="20" placeholder='@Loc.T("新分类名")'
+                                                               value="@_newCatName"
+                                                               @oninput="OnNewCatInput" @onkeydown="OnNewCatKeydown" />
+                                                        <span class="jg-remark-count jg-cat-count-new @(_newCatName.Length >= 20 ? "full" : _newCatName.Length >= 16 ? "warn" : "")">@(20 - _newCatName.Length)</span>
+                                                    </div>
                                                 </div>
                                             }
                                         </div>
@@ -291,11 +303,12 @@
                         <div class="jg-modal jg-pick-modal" @onclick:stopPropagation>
                             <div class="jg-pick-title">@Loc.T("选择分类")</div>
                             <div class="jg-pick-sub">@_catPickFile.Name</div>
-                            <div class="jg-pick-cap">@Loc.T("装好之后放进哪个分类（可多选；一个都不选就是未分类）")</div>
+                            <div class="jg-pick-cap">@Loc.T("装好之后放进哪个分类（一个都不选就是未分类）")</div>
                             <div class="jg-pick-list jg-pick-sm jg-catpick-list">
                                 <div class="jg-cat-menu">
-                                    <div class="jg-profile-item @(_pickedCats.Count == 0 ? "active" : "")">
-                                        <button type="button" class="jg-profile-name" @onclick="() => _pickedCats.Clear()">
+                                    <div class="jg-profile-item @(!_newCatOpen && _pickedCat.Length == 0 ? "active" : "")">
+                                        @CategoryIconBadge("")
+                                        <button type="button" class="jg-profile-name" @onclick="ClearCatPick">
                                             @Loc.T("未分类")
                                         </button>
                                     </div>
@@ -303,8 +316,9 @@
                                     {
                                         var cc = c;
                                         // 同上：详情页只负责选，分类的增删都归 Mods 页管。
-                                        <div class="jg-profile-item @(_pickedCats.Contains(cc) ? "active" : "")">
-                                            <button type="button" class="jg-profile-name" @onclick="() => ToggleCatPick(cc)">@cc</button>
+                                        <div class="jg-profile-item @(!_newCatOpen && string.Equals(_pickedCat, cc, StringComparison.OrdinalIgnoreCase) ? "active" : "")">
+                                            @CategoryIconBadge(cc)
+                                            <button type="button" class="jg-profile-name" @onclick="() => PickCatPick(cc)">@cc</button>
                                         </div>
                                     }
                                 </div>
@@ -318,13 +332,16 @@
                                     else
                                     {
                                         @* ＋ 原地变成输入框，右侧是同一个字数计数器（与 Mods 页「加入分类」一致） *@
-                                        <div class="jg-remark-field">
-                                            <input @ref="_newCatInput"
-                                                   class="jg-remark-input @(_newCatName.Length >= 16 ? "near-limit" : "")"
-                                                   maxlength="20" placeholder='@Loc.T("新分类名")'
-                                                   value="@_newCatName"
-                                                   @oninput="OnNewCatInput" @onkeydown="OnNewCatKeydown" />
-                                            <span class="jg-remark-count jg-cat-count-new @(_newCatName.Length >= 20 ? "full" : _newCatName.Length >= 16 ? "warn" : "")">@(20 - _newCatName.Length)</span>
+                                        <div class="jg-cat-newrow">
+                                            @CategoryIconBadge(NewCatIconKey)
+                                            <div class="jg-remark-field">
+                                                <input @ref="_newCatInput"
+                                                       class="jg-remark-input @(_newCatName.Length >= 16 ? "near-limit" : "")"
+                                                       maxlength="20" placeholder='@Loc.T("新分类名")'
+                                                       value="@_newCatName"
+                                                       @oninput="OnNewCatInput" @onkeydown="OnNewCatKeydown" />
+                                                <span class="jg-remark-count jg-cat-count-new @(_newCatName.Length >= 20 ? "full" : _newCatName.Length >= 16 ? "warn" : "")">@(20 - _newCatName.Length)</span>
+                                            </div>
                                         </div>
                                     }
                                 </div>
@@ -332,8 +349,39 @@
                             <div class="jg-pick-actions">
                                 <button class="jg-pick-btn" @onclick="CloseCatPick">@Loc.T("取消")</button>
                                 <button class="jg-pick-btn primary" @onclick="ConfirmCatPick">
-                                    @(_pickedCats.Count == 0 ? Loc.T("不分类，直接安装") : Loc.T("继续安装"))
+                                    @(_pickedCat.Length == 0 ? Loc.T("不分类，直接安装") : Loc.T("继续安装"))
                                 </button>
+                            </div>
+                        </div>
+                    </div>
+                }
+
+                @* 2026-11-10：分类图标选择器 —— 和 Mods 页同一套（默认 / 角色 / 物品）。
+                   点分类行前面那颗图标就到这里；新建行选中的图先记草稿，建完分类才落盘。 *@
+                @if (_catIconPickOpen)
+                {
+                    var curIcon = CategoryIconSpec(_catIconPickKey);
+                    <div class="jg-dlg-overlay" @onclick="CloseCatIconPicker">
+                        <div class="jg-dialog jg-cat-icon-dialog" @onclick:stopPropagation>
+                            <div class="jg-remark-title">@Loc.F("给「{0}」选个图标", CatIconPickLabel())</div>
+                            <div class="jg-icon-tabs">
+                                <button class="jg-icon-tab @(_catIconTab == "default" ? "on" : "")" @onclick='() => SwitchCatIconTab("default")'>@Loc.T("默认")</button>
+                                <button class="jg-icon-tab @(_catIconTab == "portrait" ? "on" : "")" @onclick='() => SwitchCatIconTab("portrait")'>@Loc.T("角色")</button>
+                                <button class="jg-icon-tab @(_catIconTab == "item" ? "on" : "")" @onclick='() => SwitchCatIconTab("item")'>@Loc.T("物品")</button>
+                                @if (_catIconTab != "default")
+                                {
+                                    <input class="jg-remark-input jg-icon-search" placeholder='@Loc.T(_catIconTab == "item" ? "搜物品名" : "搜角色名")'
+                                           value="@_catIconSearch" @oninput="OnCatIconSearch" />
+                                }
+                            </div>
+                            <div class="jg-icon-grid">
+                                @foreach (var opt in CatIconOptions())
+                                {
+                                    @CatIconOptionButton(opt, curIcon)
+                                }
+                            </div>
+                            <div class="jg-dialog-actions">
+                                <button class="jg-btn" @onclick="CloseCatIconPicker">@Loc.T("关闭")</button>
                             </div>
                         </div>
                     </div>
@@ -675,10 +723,28 @@
         }
         if (firstRender)
         {
+            // 分类图标是后台解 XNB 一张张出的：出好一张就重画一次，否则第一次显示
+            // 某个角色头像图标时会一直挂着占位小方块（Mods 页早就这么做了）。
+            PackThumbService.Changed += OnIconThumbReady;
             // v0.72.1：.jg-main 是 MainLayout 的共享滚动容器 —— 从列表页滚到 y 再进详情，
             // 详情页会继承 y，一打开就停在半中间。详情页永远从顶部开始；
             // 返回列表的位置由 Mods 页 OpenDetail 存的快照恢复，两条路互不影响。
             try { await JS.InvokeVoidAsync("junigridJs.setScroll", ".jg-main", 0); } catch { }
+        }
+        // 图标选择器的懒加载：对话框一出现就把滚动监听挂上（DOM 没渲染出来时找不到网格）
+        if (_catIconPickOpen && !_catIconScrollBound)
+        {
+            _catIconScrollBound = true;
+            try
+            {
+                _catIconScrollRef ??= DotNetObjectReference.Create(this);
+                await JS.InvokeVoidAsync("junigridJs.iconGridInfinite", _catIconScrollRef);
+            }
+            catch (Exception ex)
+            {
+                _catIconScrollBound = false;
+                AppLog.Warn("ModDetail", "[图标] 懒加载监听挂载失败: " + ex.Message);
+            }
         }
         if (!_loading && _mod is not null)
         {
@@ -770,12 +836,13 @@
     private bool _catPickOpen;
     /// <summary>小弹窗里等着的那个文件（确认后接着装它）。</summary>
     private NexusFileInfo? _catPickFile;
-    /// <summary>小弹窗里勾中的分类们。空集合 = 未分类。
-    /// <para>2026-11-07 03:59 用户反馈：「默认选中未分类，而且必须选中一个，不能多选或者空选」。
-    /// 于是改成**默认一个都不勾、可以勾多个、也可以一个都不勾直接装**（= 未分类）。
-    /// 多选写进配置时用逗号拼起来（<see cref="ApplyInstalledCategory(IReadOnlyList{string})"/>），
-    /// 读取侧 <c>CategoryOfGroup</c> 认第一个 —— 列表里仍然只占一段，不会同一个 mod 画好几行。</para></summary>
-    private readonly HashSet<string> _pickedCats = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>小弹窗里选中的分类；"" = 未分类。
+    /// <para>2026-11-07 用户要求：默认不选、可以不选、也能当场新建。
+    /// <b>2026-11-09 晚用户口径：一个 mod 只能属于一个分类</b> —— 这里从多选改成单选：
+    /// 点一个新的换过去，再点当前这个退回未分类。配置类型仍是
+    /// <c>Dictionary&lt;string,string&gt;</c>，老配置里的 "9,10" 由
+    /// <see cref="ModCategoryUtil.First"/> 认第一个（列表本来就只占一段），改一次就收敛成单值。</para></summary>
+    private string _pickedCat = "";
 
     /// <summary>「新建分类」输入框展开着没 —— 两个弹窗（下载面板 / 单文件安装）共用。
     /// 2026-11-07 用户要求：就算一个自定义分类都没有，安装时也要能选分类、并且能当场新建。</summary>
@@ -787,6 +854,25 @@
     /// <summary>下一帧要把焦点送进「新分类名」输入框。元素刚插进 DOM 时直接 FocusAsync 还没渲染，
     /// 必须等 OnAfterRenderAsync。</summary>
     private bool _focusNewCatPending;
+
+    // ─── 2026-11-10：分类图标选择器（两个弹窗里点分类图标就地换）───
+    private bool _catIconPickOpen;
+    /// <summary>正在改图标的行：<see cref="NewCatIconKey"/> = 新建行草稿，其余 = 分类名（"" 是未分类）。</summary>
+    private string _catIconPickKey = "";
+    private string _catIconTab = "default";
+    private string _catIconSearch = "";
+    /// <summary>物品网格一次铺多少格（600+ 件一口气画会卡，滚到底再续）。</summary>
+    private int _catIconItemLimit = 140;
+    private const int CatIconBatch = 140;
+    /// <summary>滚动监听挂没挂（对话框一开就挂；元素随对话框销毁，关闭时复位）。</summary>
+    private bool _catIconScrollBound;
+    private DotNetObjectReference<ModDetail>? _catIconScrollRef;
+    /// <summary>新建分类的图标草稿 —— 用户点了图标但还没建分类，图先记这儿，建完一起落盘。</summary>
+    private string _newCatIcon = CategoryIconService.DefaultSpec;
+    private List<CategoryIconService.IconOption>? _catIconPortraits;
+    private string? _catIconPortraitsFor;
+    private List<CategoryIconService.IconOption>? _catIconItems;
+    private string? _catIconItemsFor;
 
     /// <summary>当前选中的版本是不是「内容覆盖」类（XNB 素材包）。见 <see cref="LooksLikeContentOverrideFile"/>。</summary>
     private bool PickedIsContentOverride =>
@@ -1131,10 +1217,11 @@
             }
             else if (err.Contains("premium", StringComparison.OrdinalIgnoreCase))
             {
-                // 打开文件页这件事已经在 InstallService.PremiumNeedsWebFallback 里做过了
-                // （那样任务面板的「↻ 重试」和「重新发起」两条路也才会开）—— 这里再开一次
-                // 就是两个标签页。
-                _installMsg = LocService.Tr("应用内没能自动取到下载链接（可能未登录 Nexus 网页）—— 已为你打开系统浏览器，点 Mod Manager Download 即可自动安装");
+                // 打开文件页这件事已经在 InstallService 里做过了（PremiumNeedsWebFallback /
+                // BuiltinWebOffFallback）—— 这里只负责说人话。
+                // v1.3.85：去掉「可能未登录 Nexus 网页」这个猜测 —— 关掉「内置网页下载」时也走这条，
+                // 那时跟登录毫无关系，一句猜错的解释比不说更糟。
+                _installMsg = LocService.Tr("应用内没能自动取到下载链接 —— 已为你打开系统浏览器，点 Mod Manager Download 即可自动安装");
             }
             else if (err == InstallService.AlreadyRunning)
             {
@@ -1177,6 +1264,15 @@
         if (!Cfg.Current.EnableOneClickInstall)
         {
             // 一键安装关着 → 直接给官网文件页，用户自己在浏览器点
+            MainWindow.OpenNexusOverlay($"https://www.nexusmods.com/stardewvalley/mods/{ModId}?tab=files");
+            return;
+        }
+        if (!Cfg.Current.EnableBuiltinWebDownload && !Cfg.Current.NexusIsPremium)
+        {
+            // v1.3.85：关掉「内置网页下载」+ 免费账号 —— 软件内本来就下不了（API 直链必然 403，
+            // 内置网页又被关掉）。再弹一层「选文件」只是让网络不好的人多等一次慢请求，
+            // 直接给文件页：点 Mod Manager Download，nxm 回流照样把这包装进 Mods。
+            _installMsg = LocService.Tr("已关闭「通过内置 N 网网页下载」—— 已在浏览器打开 N 网文件页，点 Mod Manager Download 即可自动安装");
             MainWindow.OpenNexusOverlay($"https://www.nexusmods.com/stardewvalley/mods/{ModId}?tab=files");
             return;
         }
@@ -1250,6 +1346,169 @@
     }
 
     // ─── v1.3.50：安装时的分类选择 ───
+    /// <summary>「新建分类」这一行的草稿图标键 —— 和真分类名区分开（分类名不会是控制字符）。</summary>
+    private const string NewCatIconKey = "\u0001new";
+
+    /// <summary>分类那一行前面的小图标，<b>点一下就能换</b>（和 Mods 页同一个选择器）。
+    /// 图标配置跟 Mods 页共用 <c>ModCategoryIcon</c>；没设过 = 默认小鸡，所以每行都有图。
+    /// <para>新建行传 <see cref="NewCatIconKey"/>：选中的图先进草稿，等分类真建出来才落盘。</para></summary>
+    private RenderFragment CategoryIconBadge(string category) => @<button
+        type="button" class="jg-cat-icon jg-cat-icon-row" data-tip='@Loc.T("点图标换一个")'
+        aria-label='@Loc.T("点图标换一个")'
+        @onclick="() => OpenCatIconPicker(category)" @onclick:stopPropagation="true">
+        @if (CategoryIconUrl(category) is { } u)
+        {
+            <img src="@u" alt="" draggable="false" loading="lazy" decoding="async" />
+        }
+        else
+        {
+            <span class="jg-cat-icon-ph"></span>
+        }
+    </button>;
+
+    /// <summary>这一行当前该显示哪个图标规格（新建行读草稿，其余读配置）。</summary>
+    private string CategoryIconSpec(string category)
+        => category == NewCatIconKey
+            ? CategoryIconService.NormalizeSpec(_newCatIcon)
+            : category.Length > 0
+              && Cfg.Current.ModCategoryIcon.TryGetValue(category, out var s)
+              && !string.IsNullOrWhiteSpace(s)
+                ? CategoryIconService.NormalizeSpec(s)
+                : CategoryIconService.DefaultSpec;
+
+    private string? CategoryIconUrl(string category)
+        => CategoryIconService.Url(CategoryIconSpec(category), Cfg.Current.GamePath);
+
+    // ─── 分类图标选择器（与 Mods 页同一套引擎，只是宿主换成了详情页）───
+    private void OpenCatIconPicker(string key)
+    {
+        _catIconPickKey = key;
+        _catIconTab = "default";
+        _catIconSearch = "";
+        _catIconItemLimit = 140;
+        _catIconPickOpen = true;
+        _catIconScrollBound = false;   // 对话框是新元素，滚动监听要重新挂
+        // 600 多件物品要解析两个 xnb：先把后台热起来，切到「物品」页签时基本就绪
+        ItemCatalogService.Prewarm(Cfg.Current.GamePath);
+    }
+
+    private void CloseCatIconPicker()
+    {
+        _catIconPickOpen = false;
+        _catIconScrollBound = false;
+    }
+
+    private string CatIconPickLabel()
+        => _catIconPickKey == NewCatIconKey
+            ? Loc.T("新分类")
+            : _catIconPickKey.Length > 0 ? _catIconPickKey : Loc.T("未分类");
+
+    private void SwitchCatIconTab(string tab)
+    {
+        if (_catIconTab == tab) return;
+        _catIconTab = tab;
+        _catIconSearch = "";
+        _catIconItemLimit = 140;
+    }
+
+    private void OnCatIconSearch(ChangeEventArgs e)
+    {
+        _catIconSearch = e.Value?.ToString() ?? "";
+        _catIconItemLimit = 140;       // 换了搜索词就从第一批重新铺
+    }
+
+    /// <summary>物品全量清单（搜索过滤后）。</summary>
+    private List<CategoryIconService.IconOption> CatIconItemSource()
+    {
+        var gp = Cfg.Current.GamePath;
+        if (_catIconItems is null || !string.Equals(_catIconItemsFor, gp, StringComparison.OrdinalIgnoreCase))
+        {
+            _catIconItems = CategoryIconService.Items(gp);
+            _catIconItemsFor = gp;
+        }
+        var q = _catIconSearch.Trim();
+        if (q.Length == 0) return _catIconItems;
+        return _catIconItems.Where(o => o.Name.Contains(q, StringComparison.OrdinalIgnoreCase)).ToList();
+    }
+
+    private int CatIconHiddenCount()
+        => _catIconTab != "item" ? 0 : Math.Max(0, CatIconItemSource().Count - _catIconItemLimit);
+
+    /// <summary>网格滚到底时由 <c>junigridJs.iconGridInfinite</c> 回调：再铺一批。</summary>
+    [JSInvokable]
+    public void LoadMoreIcons()
+    {
+        if (_disposed || !_catIconPickOpen || _catIconTab != "item") return;
+        if (CatIconHiddenCount() <= 0) return;
+        _catIconItemLimit += CatIconBatch;
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    private IEnumerable<CategoryIconService.IconOption> CatIconOptions()
+    {
+        switch (_catIconTab)
+        {
+            case "portrait":
+            {
+                var gp = Cfg.Current.GamePath;
+                if (_catIconPortraits is null || !string.Equals(_catIconPortraitsFor, gp, StringComparison.OrdinalIgnoreCase))
+                {
+                    _catIconPortraits = CategoryIconService.Portraits(gp);
+                    _catIconPortraitsFor = gp;
+                }
+                var q = _catIconSearch.Trim();
+                if (q.Length == 0) return _catIconPortraits;
+                return _catIconPortraits
+                    .Where(o => o.Name.Contains(q, StringComparison.OrdinalIgnoreCase)
+                                || o.Spec.Contains(q, StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+            }
+            case "item":
+                return CatIconItemSource().Take(_catIconItemLimit);
+            default:
+                return new[]
+                {
+                    new CategoryIconService.IconOption(CategoryIconService.DefaultSpec, Loc.T("星露谷小鸡"), "默认"),
+                };
+        }
+    }
+
+    private RenderFragment CatIconOptionButton(CategoryIconService.IconOption opt, string curSpec) => @<button
+        type="button" class="jg-icon-opt @(string.Equals(opt.Spec, curSpec, StringComparison.OrdinalIgnoreCase) ? "on" : "")"
+        data-tip="@opt.Name" @onclick="() => SetCatIcon(opt.Spec)">
+        <span class="jg-icon-opt-img">
+            @if (CategoryIconService.Url(opt.Spec, Cfg.Current.GamePath) is { } u)
+            {
+                <img src="@u" alt="" loading="lazy" decoding="async" />
+            }
+        </span>
+        <span class="jg-icon-opt-name">@opt.Name</span>
+    </button>;
+
+    /// <summary>选定即生效（点一下就走）。新建行只记草稿；已有分类直接写配置。
+    /// 选回默认（小鸡）等于清掉这一项 —— 配置里不留无意义的键。</summary>
+    private void SetCatIcon(string spec)
+    {
+        var normalized = CategoryIconService.NormalizeSpec(spec);
+        if (_catIconPickKey == NewCatIconKey)
+        {
+            _newCatIcon = normalized;
+            _catIconPickOpen = false;
+            _catIconScrollBound = false;
+            StateHasChanged();
+            return;
+        }
+        var cfg = Cfg.Current;
+        if (string.Equals(normalized, CategoryIconService.DefaultSpec, StringComparison.OrdinalIgnoreCase))
+            cfg.ModCategoryIcon.Remove(_catIconPickKey);
+        else
+            cfg.ModCategoryIcon[_catIconPickKey] = normalized;
+        Cfg.Save(cfg);
+        _catIconPickOpen = false;
+        _catIconScrollBound = false;
+        StateHasChanged();
+    }
+
     /// <summary>有没有「可选」的分类。只有默认（未分类）时这一层整个不出现 ——
     /// 一个只有「未分类」一项的下拉/弹窗，等于让用户白点一步。</summary>
     private bool HasCategoryChoices
@@ -1278,8 +1537,13 @@
     /// <summary>展开「新建分类」输入框（两个弹窗共用）。</summary>
     private void OpenNewCategoryInput()
     {
+        // 2026-11-09：进「新建」= 还没定分类 —— 小弹窗里上一次点中的行要一起取消高亮，
+        // 否则看着像「既选了 111 又在新建」。下拉那处不动 _pickedCategory：
+        // 它显示的是这个 mod 当前所在的分类（事实），不是待选值。
+        if (_catPickOpen) _pickedCat = "";
         _newCatOpen = true;
         _newCatName = "";
+        _newCatIcon = CategoryIconService.DefaultSpec;   // 每次开都从默认小鸡起（上次选的图不该跟过来）
         _focusNewCatPending = true;   // 渲染完由 OnAfterRenderAsync 送焦点
         StateHasChanged();
     }
@@ -1290,6 +1554,7 @@
     {
         _newCatOpen = false;
         _newCatName = "";
+        _newCatIcon = CategoryIconService.DefaultSpec;
         _focusNewCatPending = false;
     }
 
@@ -1301,28 +1566,37 @@
         try { await JS.InvokeVoidAsync("junigridJs.remarkCountBump", _newCatName.Length >= 20, ".jg-cat-count-new"); } catch { }
     }
 
-    private void OnNewCatKeydown(KeyboardEventArgs e)
+    private async Task OnNewCatKeydown(KeyboardEventArgs e)
     {
-        if (e.Key == "Enter") CreateCategoryAndPick();
+        if (e.Key == "Enter") await CreateCategoryAndPick();
         else if (e.Key == "Escape") { _newCatOpen = false; _newCatName = ""; }
     }
 
     /// <summary>新建分类并直接选中它 —— 用户点「＋」就是为了「装到这个新分类里」，
-    /// 让他在建完再点一次名字是多余的一步。</summary>
-    private void CreateCategoryAndPick()
+    /// 让他在建完再点一次名字是多余的一步。
+    /// <para>2026-11-10：以前这里直接把 <c>_pickCatOpen</c> 置 false —— 只改了 C# 状态，
+    /// 没走 <c>dropdownToggle</c>，gsap 写下的 inline style（autoAlpha/transform）还在，
+    /// 于是菜单看着并没关；等用户再点触发按钮，又当成「打开」重播一遍入场动画，
+    /// 表现就是「关了又开」。必须走 ClosePickCat() 让 JS 把动画和 inline style 一起收掉。</para></summary>
+    private async Task CreateCategoryAndPick()
     {
         var name = (_newCatName ?? "").Trim();
         if (name.Length == 0) { _newCatOpen = false; return; }
         var cfg = Cfg.Current;
         if (!cfg.ModUserCategoryOrder.Contains(name, StringComparer.OrdinalIgnoreCase))
             cfg.ModUserCategoryOrder.Add(name);
+        // 新建行上选过的图跟着分类一起落盘（选的是默认小鸡就不写键，保持配置干净）
+        var icon = CategoryIconService.NormalizeSpec(_newCatIcon);
+        if (!string.Equals(icon, CategoryIconService.DefaultSpec, StringComparison.OrdinalIgnoreCase))
+            cfg.ModCategoryIcon[name] = icon;
         Cfg.Save(cfg);
         _newCatOpen = false;
         _newCatName = "";
-        // 下载面板是单选、单文件安装是多选，两边都点亮它
+        _newCatIcon = CategoryIconService.DefaultSpec;
+        // 两个弹窗都是单选：新建出来的分类直接选中它
         _pickedCategory = name;
-        _pickedCats.Add(name);
-        _pickCatOpen = false;
+        _pickedCat = name;
+        await ClosePickCat();     // 内含 _pickCatOpen = false + JS 收起（含清 inline style）
         StateHasChanged();
     }
 
@@ -1352,6 +1626,9 @@
     {
         if (!_pickCatOpen) return;
         _pickCatOpen = false;
+        // 2026-11-09：选了已有分类/关下拉就把「新建分类」输入行一起收掉，
+        // 否则下次拉开下拉还是那个半截输入框（和 Mods 页一样的老坑）
+        ResetNewCategoryInput();
         try { await JS.InvokeVoidAsync("junigridJs.dropdownToggle", "#jgPickCat", false); } catch { }
     }
 
@@ -1369,36 +1646,48 @@
         ResetNewCategoryInput();
     }
 
-    /// <summary>小弹窗里勾/取消一个分类。</summary>
-    private void ToggleCatPick(string c)
+    /// <summary>小弹窗里选一个分类（单选）：点新的换过去，点当前这个退回未分类。
+    /// <para>2026-11-09：如果在「新建分类」输入行开着的时候点了已有分类，必须把新建行收掉，
+    /// 否则输入框留在那儿，看着像还要新建一个、和已经选中的分类打架。</para></summary>
+    private void PickCatPick(string c)
     {
-        if (!_pickedCats.Remove(c)) _pickedCats.Add(c);
+        if (_newCatOpen)
+        {
+            ResetNewCategoryInput();
+            _pickedCat = c;      // 新建行开着时点是「改用这个」，不做取消切换
+        }
+        else
+        {
+            _pickedCat = string.Equals(_pickedCat, c, StringComparison.OrdinalIgnoreCase) ? "" : c;
+        }
+    }
+
+    /// <summary>清回未分类。</summary>
+    private void ClearCatPick()
+    {
+        ResetNewCategoryInput();
+        _pickedCat = "";
     }
 
     /// <summary>「选分类」小弹窗确认 → 接着装那条文件。</summary>
     private async Task ConfirmCatPick()
     {
         var f = _catPickFile;
-        // 按 CategoryChoices 的顺序取，别用 HashSet 的枚举顺序 —— 分类列表顺序变了以后，
-        // 多选里「第一个」会变成列表里排第一的那个，行为才可预期。
-        var cats = CategoryChoices().Where(_pickedCats.Contains).ToList();
+        var cat = _pickedCat;
         _catPickOpen = false;
         _catPickFile = null;
-        _pickedCats.Clear();
+        _pickedCat = "";
         ResetNewCategoryInput();
         if (f is null) return;
-        await InstallFileCore(f, cats);
+        await InstallFileCore(f, cat);
     }
 
     /// <summary>装完之后把这一页装出来的目录归入所选分类。
     /// 键取顶层目录 —— 与 Mods 页的登记单位一致（捆绑包记顶层，散装记自己的文件夹）；
     /// 一个都不给 = 从分类表里摘掉。整段失败只记日志，绝不因为归类没写进去就说安装失败。
-    /// <para>多选用逗号拼进同一个字符串（<c>"9,10"</c>）：配置里 <c>ModUserCategory</c> 仍是
-    /// <c>Dictionary&lt;string,string&gt;</c>，老配置读到单值照旧；列表侧只认第一个（见
-    /// Mods 页的 <c>CategoryOfGroup</c>），所以同一个 mod 不会在列表里重复出现。</para></summary>
-    private void ApplyInstalledCategory(IReadOnlyList<string> cats)
-        => ApplyInstalledCategory(ModCategoryUtil.Join(cats));
-
+    /// <para>一个 mod 只属于一个分类（2026-11-09 晚用户口径），这里写的就是单个值。
+    /// 老配置里可能还留着 <c>"9,10"</c> 这种历史多值：读取侧（Mods 页 <c>CategoryOfGroup</c>）
+    /// 本来就只认第一个，用户下次在这页选一次分类就会被覆盖成单值。</para></summary>
     private void ApplyInstalledCategory(string category)
     {
         if (!HasCategoryChoices) return;      // 没有分类可选：不凭空往分类表里写东西
@@ -1473,6 +1762,12 @@
             {
                 // v1.3.44：已经在装同一个 mod 了 —— 提示一下就行，别报「安装失败」
                 _ = Toast(LocService.Tr("这个 mod 已经在安装中，进度见任务管理"), "ok");
+            }
+            else if (err.Contains("premium", StringComparison.OrdinalIgnoreCase))
+            {
+                // 服务已经替他开过系统浏览器（PremiumNeedsWebFallback / v1.3.85 的
+                // BuiltinWebOffFallback）—— 这是交接，不是失败，别用红色 toast 把人劝退。
+                _ = Toast(LocService.Tr("应用内没能自动取到下载链接 —— 已为你打开系统浏览器，点 Mod Manager Download 即可自动安装"), "ok");
             }
             else
             {
@@ -1817,17 +2112,17 @@
         {
             _catPickFile = f;
             // 2026-11-07：不再预选任何分类（以前会预选当前分类，甚至预选到「未分类」）。
-            // 一个都不勾、直接点「不分类，直接安装」就是未分类，和以前空选的语义一致。
-            _pickedCats.Clear();
+            // 一个都不选、直接点「不分类，直接安装」就是未分类，和以前空选的语义一致。
+            _pickedCat = "";
             ResetNewCategoryInput();
             _catPickOpen = true;
             StateHasChanged();
             return;
         }
-        await InstallFileCore(f, Array.Empty<string>());
+        await InstallFileCore(f, "");
     }
 
-    private async Task InstallFileCore(NexusFileInfo f, IReadOnlyList<string> cats)
+    private async Task InstallFileCore(NexusFileInfo f, string category)
     {
         if (_fileBusyId is not null) return;
         _fileBusyId = f.FileId;
@@ -1844,7 +2139,7 @@
                     .FirstOrDefault(m => m.NexusModId == ModId)?.Folder;
                 _overlayInstalled = _installedFolder is null
                     && ModService.OverlayAppliedForMod(Cfg.Current.GamePath, Cfg.Current, ModId);
-                ApplyInstalledCategory(cats);
+                ApplyInstalledCategory(category);
                 _fileMsg = LocService.Tf("已安装 {0}", f.Name);
                 await RefreshSmapiStateAsync(freshRead: true);
             }
@@ -1852,6 +2147,9 @@
                 _fileMsg = LocService.Tr("这个 mod 已经在安装中，进度见任务管理");
             else if (err is "已取消" or "已暂停")
                 _fileMsg = err == "已暂停" ? LocService.Tr("任务已暂停，可在任务中心继续") : null;
+            else if (err.Contains("premium", StringComparison.OrdinalIgnoreCase))
+                // 同上：浏览器已经开好了，这句话只是告知，不该带「安装失败：」前缀
+                _fileMsg = LocService.Tr("应用内没能自动取到下载链接 —— 已为你打开系统浏览器，点 Mod Manager Download 即可自动安装");
             else
                 _fileMsg = LocService.Tr("安装失败：") + err;
         }
@@ -1980,4 +2278,29 @@
     /// <summary>v1.04.0：文件大小格式化（详情页统计行「大小」；0 也显示成 0 B）。</summary>
     private static string FormatBytes(long b) => b >= 1_048_576 ? (b / 1_048_576.0).ToString("0.#") + " MB"
         : b >= 1024 ? (b / 1024.0).ToString("0.#") + " KB" : b + " B";
+
+    // ─── 分类图标（弹窗里那几行小图）───
+    private bool _iconThumbQueued;
+    private bool _disposed;
+
+    /// <summary>后台出一张图标就重画一次；合并 220ms，避免一次生成几十张时疯狂重渲染。</summary>
+    private void OnIconThumbReady()
+    {
+        if (_disposed || _iconThumbQueued) return;
+        _iconThumbQueued = true;
+        _ = InvokeAsync(async () =>
+        {
+            await Task.Delay(220);
+            _iconThumbQueued = false;
+            if (!_disposed) StateHasChanged();
+        });
+    }
+
+    public void Dispose()
+    {
+        _disposed = true;
+        PackThumbService.Changed -= OnIconThumbReady;
+        _catIconScrollRef?.Dispose();
+        _catIconScrollRef = null;
+    }
 }

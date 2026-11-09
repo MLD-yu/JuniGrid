@@ -1,0 +1,586 @@
+@namespace JuniGrid.Components
+@* ─── 首次启动引导 ───────────────────────────────────────────────
+   四步：① 配置游戏目录 / 缓存目录 → ② 加群 → ③ 关注作者 → ④ 欢迎。
+   出现条件只有一条：配置里还没有「看过」的记档（WelcomeGuideShown）。
+   新用户自然是没看过；从老版本升级上来的老用户配置里也没有这个字段，
+   所以也会看到一次 —— 这正是要的「老用户也弹一下」。
+
+   ⚠ 只弹一次是硬要求：弹窗一出现立刻写 WelcomeGuideShown=true 并落盘，
+   之后无论用户是点完三步、直接关窗口还是程序崩了，都不会再出现。
+   弹窗自身不提供「重新查看」，设置页也没有入口。
+   渲染位置见 MainLayout（挂在 shell 同级，覆盖整个 WebView 内容区）。 *@
+@inject ConfigService Cfg
+@inject GameService Game
+@inject StorageService Storage
+@inject PageRefreshService PageRefresh
+@inject IJSRuntime JS
+@implements IDisposable
+
+@if (_open)
+{
+    <div class="jg-wg-overlay">
+        <div class="jg-wg" role="dialog" aria-modal="true" aria-label='@Loc.T("新手引导")'>
+
+            @* ── 顶部指示条：选中项由 glider 托起，glider 的落点由 JS 量 ── *@
+            <div class="jg-wg-track" data-active="@_step">
+                <span class="jg-wg-glider" aria-hidden="true"></span>
+                @for (var i = 0; i < Steps.Length; i++)
+                {
+                    var n = i + 1;
+                    var status = n < _step ? "complete" : n == _step ? "active" : "upcoming";
+                    @* linear 语义：只能跳回已经走到过的步骤，不能往前偷看 *@
+                    var canJump = n != _step && n <= _reached;
+                    <button type="button" class="jg-wg-seg" data-status="@status"
+                            disabled="@(!canJump)"
+                            aria-current="@(n == _step ? "step" : null)"
+                            @onclick="() => GoTo(n)">
+                        <span class="jg-wg-badge" data-status="@status">
+                            @if (status == "complete")
+                            {
+                                <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                                    <path d="M2.4 7.3l3.1 3.1 6.1-6.6" stroke="currentColor" stroke-width="2"
+                                          stroke-linecap="round" stroke-linejoin="round"/>
+                                </svg>
+                            }
+                            else
+                            {
+                                @n
+                            }
+                        </span>
+                        <span class="jg-wg-title" data-status="@status">@Loc.T(Steps[i])</span>
+                    </button>
+                }
+            </div>
+
+            @* ── 内容区：高度由 junigrid.welcome.js 写在 style 上 ── *@
+            <div class="jg-wg-view">
+                <div class="jg-wg-pane" @key="_step">
+                    @switch (_step)
+                    {
+                        case 1:
+                            <div>
+                                <div class="jg-wg-h">@Loc.T("请配置游戏目录和缓存目录")</div>
+
+                                @* ── 游戏目录：输入框可直接编辑，右侧「浏览」是唯一的选择入口 ── *@
+                                <div class="jg-wg-field">
+                                    <div class="jg-wg-field-head">
+                                        <span class="jg-wg-label">@Loc.T("游戏目录")</span>
+                                    </div>
+                                    <div class="jg-wg-inputrow" data-invalid="@(_gameInvalid ? "" : null)">
+                                        <input type="text" class="jg-wg-input"
+                                               value="@_gamePath"
+                                               placeholder="@Loc.T(_detecting ? "正在识别游戏目录…" : "点右侧「浏览」选择游戏目录")"
+                                               spellcheck="false" autocomplete="off"
+                                               title="@_gamePath"
+                                               @oninput="OnGameInput"
+                                               @onchange="CommitGamePath"
+                                               @onkeydown="OnGameKeyDown" />
+                                        <button type="button" class="jg-wg-browse"
+                                                @onclick="PickGame">@Loc.T("浏览")</button>
+                                    </div>
+                                </div>
+
+                                @* ── 缓存目录：同样是输入框 + 浏览，离开输入框时才开始迁移 ── *@
+                                <div class="jg-wg-field">
+                                    <div class="jg-wg-field-head">
+                                        <span class="jg-wg-label">@Loc.T("缓存目录")</span>
+                                    </div>
+                                    <div class="jg-wg-inputrow">
+                                        <input type="text" class="jg-wg-input"
+                                               value="@_cacheInput"
+                                               placeholder="@Loc.T("点右侧「浏览」选择缓存目录")"
+                                               spellcheck="false" autocomplete="off"
+                                               disabled="@_migrating"
+                                               title="@_cacheInput"
+                                               @oninput="OnCacheInput"
+                                               @onchange="CommitCachePath"
+                                               @onkeydown="OnCacheKeyDown" />
+                                        <button type="button" class="jg-wg-browse" disabled="@_migrating"
+                                                @onclick="PickCache">@Loc.T(_migrating ? "迁移中…" : "浏览")</button>
+                                    </div>
+                                    <div class="jg-wg-hint">
+                                        @Loc.T("建议放在空间充足、且不会被 OneDrive 之类同步盘来回上传的磁盘上。换位置时已有内容会自动搬过去。")
+                                    </div>
+                                </div>
+                            </div>
+                            break;
+
+                        case 2:
+                            <div>
+                                <div class="jg-wg-qqhead">
+                                    <span class="jg-wg-qq"><img src="assets/qq.svg" alt="" draggable="false" /></span>
+                                    <div>
+                                        <div class="jg-wg-h">@Loc.T("欢迎加入 JuniGrid 交流群")</div>
+                                        <div class="jg-wg-p">@Loc.T("遇到问题、想抢先体验新版、或者想找 Mod 搭子，都欢迎进来聊。")</div>
+                                    </div>
+                                </div>
+
+                                <div class="jg-wg-groups">
+                                    @foreach (var g in Groups)
+                                    {
+                                        var copied = _lastCopied == g.Number;
+                                        <button type="button" class="jg-wg-group @(copied ? "copied" : "")"
+                                                title='@Loc.T("点击复制群号")'
+                                                @onclick="() => CopyGroup(g.Number)">
+                                            <span class="jg-wg-tag">@Loc.T(g.Tag)</span>
+                                            <span class="jg-wg-num">@g.Number</span>
+                                            <span class="jg-wg-copy">@Loc.T(copied ? "已复制" : "点击复制")</span>
+                                        </button>
+                                    }
+                                </div>
+                            </div>
+                            break;
+
+                        case 3:
+                            @* 关注作者：圆形头像 + 名字（ShinyText 扫光）+ 可拖拽的联系方式跑马灯。 *@
+                            <div class="jg-wg-author">
+                                <div class="jg-wg-portrait">
+                                    <img src="assets/author-avatar.jpg" alt="MLD" draggable="false" />
+                                </div>
+                                <div class="jg-wg-name">MLD</div>
+                                <SocialLoop />
+                            </div>
+                            break;
+
+                        default:
+                            <div class="jg-wg-welcome">
+                                <div class="jg-wg-h">@Loc.T("欢迎来到 JuniGrid")</div>
+                                <div class="jg-wg-p">
+                                    @Loc.T("如果大家在使用过程中有任何问题请联系作者哦~")
+                                </div>
+                            </div>
+                            break;
+                    }
+                </div>
+            </div>
+
+            @* ── 底部：返回 / 下一步 ── *@
+            <div class="jg-wg-footer">
+                <button type="button" class="jg-wg-back" data-hidden="@(_step <= 1 ? "" : null)" @onclick="Prev">
+                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                        <path d="M8.6 2.6L4.2 7l4.4 4.4" stroke="currentColor" stroke-width="1.8"
+                              stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                    <span>@Loc.T("上一步")</span>
+                </button>
+                <button type="button" class="jg-wg-next" @onclick="Next">
+                    <span>@Loc.T(_step >= Steps.Length ? "开始使用" : "下一步")</span>
+                    @if (_step >= Steps.Length)
+                    {
+                        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                            <path d="M2.4 7.3l3.1 3.1 6.1-6.6" stroke="currentColor" stroke-width="2"
+                                  stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                    }
+                    else
+                    {
+                        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                            <path d="M5.4 2.6L9.8 7l-4.4 4.4" stroke="currentColor" stroke-width="1.8"
+                                  stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                    }
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    /// <summary>四步的标签。文字直接写中文：Loc.T 以中文为 key 取英文。</summary>
+    private static readonly string[] Steps = { "配置环境", "加入交流群", "关注作者", "欢迎" };
+
+    /// <summary>交流群清单。Tag 走 Loc.T，所以英文界面下会显示 "Group 1"。</summary>
+    private static readonly (string Tag, string Number)[] Groups =
+    {
+        ("1 群", "327685379"),
+        ("2 群", "631232833"),
+        ("3 群", "817276781"),
+    };
+
+    private bool _open;
+    private int _step = 1;
+    private int _reached = 1;
+    private int _dir = 1;
+    private bool _needMount;
+    private bool _needAnim;
+
+    private string _gamePath = "";
+    private string _cachePath = "";
+    /// <summary>缓存目录输入框里正在编辑的文本 —— 只有离开输入框 / 回车时才真正迁移。</summary>
+    private string _cacheInput = "";
+    private bool _cacheCustom;
+    private bool _detecting;
+    private bool _migrating;
+    /// <summary>游戏目录输入框里填了个没有本体 exe 的路径：框线标红，等用户改。</summary>
+    private bool _gameInvalid;
+    private string? _lastCopied;
+
+    private bool GameOk => IsValidGamePath(_gamePath);
+
+    // 目录有效 = 里面真有 Stardew Valley.exe（与设置页同一把尺子）
+    private static bool IsValidGamePath(string? p)
+        => !string.IsNullOrWhiteSpace(p)
+           && Directory.Exists(p)
+           && File.Exists(Path.Combine(p, "Stardew Valley.exe"));
+
+    protected override void OnInitialized()
+    {
+        // 先把「本次到底弹不弹」告诉启动期排队门：赞助提示在等这个信号，
+        // 不声明的话它会按「引导不会出现」处理，200ms 后抢在前面弹出来。
+        if (Cfg.Current.WelcomeGuideShown)
+        {
+            StartupOverlayGate.DeclareWelcome(false);
+            return;
+        }
+        StartupOverlayGate.DeclareWelcome(true);
+
+        _gamePath = Cfg.Current.GamePath ?? "";
+        RefreshCachePath();
+
+        // 先记档再显示：这一行必须在任何 await 之前，否则用户在下一次启动前就关掉，
+        // 记档没写下去就又会弹一次。
+        MarkShown();
+
+        _ = ShowSoonAsync();
+    }
+
+    /// <summary>等启动动画与主窗淡入走完再出现 —— 别和 splash 抢第一眼。
+    /// 出现之后它就是唯一的全屏层：赞助提示被 <see cref="StartupOverlayGate"/> 挡在后面，
+    /// 会一直等到这里 <see cref="Close"/> 才上场，不需要反过来躲赞助。</summary>
+    private async Task ShowSoonAsync()
+    {
+        try
+        {
+            await Task.Delay(900);
+
+            await InvokeAsync(() =>
+            {
+                _open = true;
+                _needMount = true;
+                StateHasChanged();
+                // 自动检测必须在渲染上下文里发起：它第一行就 StateHasChanged，
+                // 从线程池的续体里直接调会撞上「当前线程不属于渲染器」。
+                // 探到就静默填上，探不到不打扰（用户自己点「浏览…」）。
+                if (string.IsNullOrWhiteSpace(_gamePath)) _ = DetectGame(save: true, silent: true);
+            });
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warn("Welcome", "引导展示失败: " + ex.Message);
+        }
+    }
+
+    /// <summary>唯一一次落盘：写下「已经看过」，此后任何启动都不再显示。</summary>
+    private void MarkShown()
+    {
+        var cfg = Cfg.Current;
+        if (cfg.WelcomeGuideShown) return;
+        cfg.WelcomeGuideShown = true;
+        cfg.WelcomeGuideShownAt = DateTime.Now.ToString("O");
+        try { Cfg.Save(cfg); } catch (Exception ex) { AppLog.Warn("Welcome", "记档写入失败: " + ex.Message); }
+        AppLog.Info("Welcome", "首次启动引导已展示（此后不再出现）");
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!_open) return;
+        if (_needMount)
+        {
+            _needMount = false;
+            try { await JS.InvokeVoidAsync("junigridJs.welcomeMount"); } catch { }
+            BindStepFx();
+            return;
+        }
+        if (_needAnim)
+        {
+            _needAnim = false;
+            try { await JS.InvokeVoidAsync("junigridJs.welcomeStep", _dir); } catch { }
+            BindStepFx();
+        }
+    }
+
+    /// <summary>
+    /// 第 3 步的跑马灯要在 DOM 换好之后才绑定：@key="_step" 每次切步都会重建
+    /// 整个 pane，旧元素连同它的 rAF 一起被丢掉，所以每步都得重来。
+    /// 其余步骤查不到选择器，调用是空转 —— 不做判断比写判断更不容易漏。
+    /// </summary>
+    private void BindStepFx()
+    {
+        _ = JS.InvokeVoidAsync("junigridJs.initLogoLoop", ".jg-wg-author .jg-logoloop");
+    }
+
+    private void RefreshCachePath()
+    {
+        var root = Cfg.Current.CacheRoot;
+        _cacheCustom = !string.IsNullOrWhiteSpace(root);
+        _cachePath = _cacheCustom ? root! : StoragePaths.DefaultCacheRoot;
+        _cacheInput = _cachePath;
+    }
+
+    // ── 步骤切换 ──
+
+    private void Next()
+    {
+        if (_step >= Steps.Length) { Close(); return; }
+
+        // 第 1 步拦一下：手填/选了个没有本体 exe 的目录，别带着错值往下走
+        if (_step == 1 && !string.IsNullOrWhiteSpace(_gamePath) && !GameOk)
+        {
+            _gameInvalid = true;
+            StateHasChanged();
+            _ = JS.InvokeVoidAsync("junigridJs.toast",
+                LocService.Tr("这个目录里没有 Stardew Valley.exe，请重新选择"), "err");
+            return;
+        }
+        GoTo(_step + 1);
+    }
+
+    private void Prev() => GoTo(_step - 1);
+
+    private void GoTo(int n)
+    {
+        n = Math.Clamp(n, 1, Steps.Length);
+        if (n == _step) return;
+        _dir = n > _step ? 1 : -1;
+        _step = n;
+        _reached = Math.Max(_reached, n);
+        _needAnim = true;
+        StateHasChanged();
+    }
+
+    private void Close()
+    {
+        _open = false;
+        StateHasChanged();
+        // 全屏层让出来了：放行排队门，赞助提示可以上。
+        StartupOverlayGate.WelcomeFinished();
+    }
+
+    /// <summary>组件销毁（布局重建 / 窗口关闭）也要放行排队门，
+    /// 否则赞助提示会一直等一个永远不会结束的引导。</summary>
+    public void Dispose() => StartupOverlayGate.WelcomeFinished();
+
+    // ── 第 1 步：游戏目录（输入框 + 浏览） ──
+
+    private void OnGameInput(ChangeEventArgs e)
+    {
+        _gamePath = e.Value?.ToString() ?? "";
+        if (_gameInvalid) _gameInvalid = false;
+    }
+
+    private void OnGameKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter") CommitGamePath();
+    }
+
+    /// <summary>离开输入框 / 回车时落库。填错不覆盖已有配置，只把框线标红并提示。</summary>
+    private void CommitGamePath()
+    {
+        var p = NormalizePath(_gamePath);
+
+        if (p.Length == 0)
+        {
+            _gamePath = "";
+            _gameInvalid = false;
+            if (!string.IsNullOrWhiteSpace(Cfg.Current.GamePath)) ApplyGamePath("");
+            else StateHasChanged();
+            return;
+        }
+
+        _gamePath = p;
+        if (!IsValidGamePath(p))
+        {
+            _gameInvalid = true;
+            _ = JS.InvokeVoidAsync("junigridJs.toast",
+                LocService.Tr("这个目录里没有 Stardew Valley.exe，请重新选择"), "err");
+            StateHasChanged();
+            return;
+        }
+
+        _gameInvalid = false;
+        if (!string.Equals(p, NormalizePath(Cfg.Current.GamePath), StringComparison.OrdinalIgnoreCase))
+            ApplyGamePath(p);
+        else StateHasChanged();
+    }
+
+    private void PickGame()
+    {
+        // 从输入框当前填的目录开始浏览（没有/无效就交回系统默认），别让用户从别的盘找起
+        var picked = FolderPicker.Pick(LocService.Tr("选择 Stardew Valley 游戏目录"), _gamePath);
+        if (picked is null) return;
+
+        if (!IsValidGamePath(picked))
+        {
+            _ = JS.InvokeVoidAsync("junigridJs.toast",
+                LocService.Tr("请选择包含 Stardew Valley.exe 的游戏目录"), "err");
+            return;
+        }
+        ApplyGamePath(picked);
+    }
+
+    private void ApplyGamePath(string path)
+    {
+        _gamePath = path;
+        _gameInvalid = false;
+        var cfg = Cfg.Current;
+        cfg.GamePath = path;
+        try { Cfg.Save(cfg); } catch { }
+        // 首页版本卡、侧栏启动按钮都按 GamePath 算，改完让它们重读
+        PageRefresh.Request("version");
+        StateHasChanged();
+    }
+
+    private async Task DetectGame(bool save, bool silent = false)
+    {
+        if (_detecting) return;
+        _detecting = true;
+        StateHasChanged();
+        try
+        {
+            var detected = await Game.DetectGamePathAsync(Cfg.Current.SteamAppId, refresh: true);
+            if (!string.IsNullOrWhiteSpace(detected) && IsValidGamePath(detected))
+            {
+                // 检测的续体在线程池上：落库与重绘都挪回渲染线程，
+                // 否则 ApplyGamePath 里的 StateHasChanged 会抛「不属于渲染器」。
+                await InvokeAsync(() =>
+                {
+                    // 检测期间用户自己填了 / 选了目录：保留用户的选择，别拿检测结果盖掉
+                    var userPicked = !string.IsNullOrWhiteSpace(_gamePath) || !string.IsNullOrWhiteSpace(Cfg.Current.GamePath);
+                    if (userPicked)
+                    {
+                        if (!string.IsNullOrWhiteSpace(Cfg.Current.GamePath)) _gamePath = Cfg.Current.GamePath!;
+                        StateHasChanged();
+                        return;
+                    }
+
+                    if (save) ApplyGamePath(detected);
+                    else { _gamePath = detected; StateHasChanged(); }
+                });
+            }
+            else if (!silent)
+            {
+                _ = JS.InvokeVoidAsync("junigridJs.toast",
+                    LocService.Tr("没找到游戏目录，点「浏览…」手动选一下"), "err");
+            }
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warn("Welcome", "自动检测游戏目录失败: " + ex.Message);
+        }
+        finally
+        {
+            _detecting = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    // ── 第 1 步：缓存目录（输入框 + 浏览） ──
+
+    private void OnCacheInput(ChangeEventArgs e) => _cacheInput = e.Value?.ToString() ?? "";
+
+    private void OnCacheKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter") _ = CommitCachePath();
+    }
+
+    /// <summary>离开输入框 / 回车时比对：没变就什么都不做，变了才整体迁移。
+    /// 清空 = 回到默认位置。</summary>
+    private async Task CommitCachePath()
+    {
+        if (_migrating) return;
+
+        var raw = NormalizePath(_cacheInput);
+        if (string.IsNullOrWhiteSpace(raw) ||
+            string.Equals(raw, NormalizePath(_cachePath), StringComparison.OrdinalIgnoreCase))
+        {
+            // 回到默认：只有本来就是自定义路径时才有必要迁移
+            if (string.IsNullOrWhiteSpace(raw) && _cacheCustom) await MigrateCache(null);
+            else { _cacheInput = _cachePath; StateHasChanged(); }
+            return;
+        }
+
+        await MigrateCache(raw);
+    }
+
+    private async Task PickCache()
+    {
+        // 输入框失焦会先触发一次迁移，此时再点「浏览」两个迁移会打架
+        if (_migrating)
+        {
+            _ = JS.InvokeVoidAsync("junigridJs.toast", LocService.Tr("正在迁移缓存目录，请稍候"));
+            return;
+        }
+        // 同样从输入框当前的位置开始浏览
+        var picked = FolderPicker.Pick(LocService.Tr("选择缓存目录"), _cacheInput);
+        if (picked is null) return;
+        await MigrateCache(picked);
+    }
+
+    /// <summary>改缓存根 = 连内容一起搬（下载/SMAPI/WebView2/Mods 备份/版本缓存）。
+    /// root 传 null 表示回到默认位置。</summary>
+    private async Task MigrateCache(string? root)
+    {
+        if (_migrating) return;
+        _migrating = true;
+        StateHasChanged();
+        try
+        {
+            var msg = await Storage.MigrateCacheRootAsync(root);
+
+            // 被 CacheRootRejection 拦下时不动配置，也就没「生效」——
+            // 用它来判断 toast 该报成功还是失败，同时把输入框退回当前位置。
+            var applied = string.Equals(Cfg.Current.CacheRoot ?? "", root ?? "", StringComparison.OrdinalIgnoreCase);
+            var failed = !applied || msg.StartsWith(LocService.Tr("迁移缓存目录失败："), StringComparison.Ordinal);
+
+            RefreshCachePath();
+            _ = JS.InvokeVoidAsync("junigridJs.toast", msg, failed ? "err" : "ok");
+        }
+        catch (Exception ex)
+        {
+            _cacheInput = _cachePath;
+            _ = JS.InvokeVoidAsync("junigridJs.toast",
+                LocService.Tr("更改缓存目录失败：") + ex.Message, "err");
+        }
+        finally
+        {
+            _migrating = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    /// <summary>路径归一化：去引号 / 首尾空白，展开成绝对路径，去尾部斜杠。</summary>
+    private static string NormalizePath(string? raw)
+    {
+        var s = (raw ?? "").Trim().Trim('"').Trim();
+        if (s.Length == 0) return "";
+        try { s = Path.GetFullPath(s); } catch { return s; }
+        if (s.Length > 3) s = s.TrimEnd('\\', '/');
+        return s;
+    }
+
+    // ── 第 2 步：复制群号 ──
+
+    private async Task CopyGroup(string number)
+    {
+        var ok = false;
+        // 首选 WPF 剪贴板：Blazor 跑在 UI 线程上，不依赖浏览器权限与手势
+        try { System.Windows.Clipboard.SetText(number); ok = true; }
+        catch (Exception ex) { AppLog.Warn("Welcome", "剪贴板写入失败，改走 JS: " + ex.Message); }
+
+        if (!ok)
+        {
+            try { ok = await JS.InvokeAsync<bool>("junigridJs.copyText", number); } catch { }
+        }
+
+        if (ok)
+        {
+            _lastCopied = number;
+            _ = JS.InvokeVoidAsync("junigridJs.toast", LocService.Tf("已复制群号 {0}", number), "ok");
+        }
+        else
+        {
+            _ = JS.InvokeVoidAsync("junigridJs.toast", LocService.Tr("复制失败，请手动记下群号"), "err");
+        }
+        StateHasChanged();
+    }
+}

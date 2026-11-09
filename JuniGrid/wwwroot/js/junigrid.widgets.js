@@ -428,75 +428,194 @@ junigridJs.initCursorGrid = function (selector) {
     });
 };
 
-// ── 关于卡片：LogoLoop 图标跑马灯（React Bits 移植）──
+// ── 关于卡片 / 引导第 3 步：LogoLoop 图标跑马灯（React Bits 移植）──
+// 原版是个完整的物理引擎（wave/arc/orbit/放大镜……），这里只用得上 line 这一种：
+// 匀速平移 + 两端柔化 + 悬停暂停 + 可拖拽甩动 + 入场逐个浮起。
+// 速度单位是 px/s，和 React Bits 的 speed 同量纲，别改成 CSS animation ——
+// 拖拽和惯性都要能接管 offset，交给 CSS 就没法接了。
 junigridJs.initLogoLoop = function (selector) {
-    var SPEED = 35, TAU = 0.25;
+    var SPEED = 34;          // px/s
+    var TAU = 0.25;          // 速度趋近的时间常数（指数补间，越大越黏）
+    var GLIDE_TAU = 0.8;     // 松手后惯性的衰减
+    var DRAG_SLOP = 6;       // 超过这个位移才算拖拽，否则仍是点击
+    var MAX_FLING = 2400;
+
     document.querySelectorAll(selector || '.jg-logoloop').forEach(function (container) {
         if (container.dataset.loopBound) return;
         container.dataset.loopBound = '1';
+
         var track = container.querySelector('.jg-ll-track');
         var seq = container.querySelector('.jg-ll-seq');
         if (!track || !seq) return;
 
-        var seqW = 0, offset = 0, velocity = 0, target = SPEED;
-        var raf = 0, last = null, hovered = false;
+        var seqW = 0, offset = 0, velocity = 0;
+        var raf = 0, last = 0, hovered = false, glide = false;
+        var drag = null, suppressClick = 0, intro = !container.dataset.noIntro;
 
+        // 容器宽度 = 一份序列 + 下一个图标的一段（「全部图标 + 第一个」），
+        // 两侧各再留一条柔化带宽的空 padding：这样柔化带只吃掉空白，
+        // 边上的图标不会被咬掉半只（早先写死宽度，最左/最右总有一只半隐）。
+        function sizeToContent() {
+            var first = seq.children[0];
+            if (!first || seqW <= 0) return;
+            var cs = getComputedStyle(container);
+            var gap = parseFloat(getComputedStyle(first).marginRight) || 0;
+            var pitch = first.getBoundingClientRect().width + gap;
+            var fade = parseFloat(cs.getPropertyValue('--jg-ll-fade')) || 18;
+            var want = Math.ceil(seqW + pitch) + fade * 2;
+            var limit = container.parentElement ? container.parentElement.clientWidth : 0;
+            var width = (limit > 0 ? Math.min(want, limit) : want) + 'px';
+            if (container.style.width !== width) container.style.width = width;
+        }
+
+        // 一份序列不够铺满容器就接着复制；复制出来的对辅助技术隐藏。
         function measure() {
-            seqW = seq.getBoundingClientRect().width;
-            if (seqW <= 0) return;
-            var need = Math.max(2, Math.ceil(container.clientWidth / seqW) + 2);
-            var copies = track.querySelectorAll('.jg-ll-seq');
+            var w = seq.getBoundingClientRect().width;
+            if (w <= 0) return;
+            seqW = w;
+            sizeToContent();
+            var need = Math.max(2, Math.ceil(container.clientWidth / w) + 1);
+            var copies = Array.prototype.slice.call(track.querySelectorAll('.jg-ll-seq'));
+            for (var k = copies.length; k > need; k--) track.removeChild(copies[k - 1]);
             for (var i = copies.length; i < need; i++) {
                 var c = seq.cloneNode(true);
                 c.setAttribute('aria-hidden', 'true');
+                // ⚠ 克隆标记不能叫 data-copy：那是「点一下复制」的通用钩子，
+                // 文档级委托会 closest('[data-copy]') 一路找上去，于是点克隆里的任何图标
+                // 都变成「已复制 1」，href 还被 preventDefault 掉。
+                c.dataset.loopClone = '1';
                 track.appendChild(c);
             }
         }
+
+        function applyIntro() {
+            // 逐个浮起：位移与延迟都写在行内，入场结束后清掉，别影响 hover 的 transform
+            var items = seq.children;
+            for (var i = 0; i < items.length; i++) {
+                items[i].style.transitionDelay = (i * 55) + 'ms';
+            }
+            container.removeAttribute('data-intro');
+            setTimeout(function () {
+                for (var j = 0; j < items.length; j++) items[j].style.transitionDelay = '';
+            }, 700 + items.length * 55);
+        }
+
         function frame(ts) {
-            // 元素被 Blazor 移除 → 自停（参考 nexus.js grainientInit 的 isConnected 检查）
-            if (!container.isConnected) { cancelAnimationFrame(raf); return; }
-            if (last === null) last = ts;
-            var dt = Math.max(0, ts - last) / 1000;
+            // 元素被 Blazor 换掉 → 自停（同 nexus.js grainientInit 的 isConnected 检查）
+            if (!container.isConnected) { cancelAnimationFrame(raf); raf = 0; return; }
+            if (!last) last = ts;
+            var dt = Math.min(0.05, Math.max(0, ts - last) / 1000);
             last = ts;
-            var want = hovered ? 0 : SPEED;
-            velocity += (want - velocity) * (1 - Math.exp(-dt / TAU));
+
+            var target = hovered || drag ? 0 : SPEED;
+            var tau = glide ? GLIDE_TAU : TAU;
+            velocity += (target - velocity) * (1 - Math.exp(-dt / tau));
+            if (glide && Math.abs(velocity - target) < 2) glide = false;
+            if (Math.abs(velocity - target) < 0.01) velocity = target;
+
             if (seqW > 0) {
                 offset = ((offset + velocity * dt) % seqW + seqW) % seqW;
-                track.style.transform = 'translate3d(' + (-offset) + 'px, 0, 0)';
+                track.style.transform = 'translate3d(' + (-offset).toFixed(2) + 'px,0,0)';
             }
             raf = requestAnimationFrame(frame);
         }
+
+        function wake() {
+            if (raf || !container.isConnected) return;
+            last = 0;
+            raf = requestAnimationFrame(frame);
+        }
+
         container.addEventListener('pointerenter', function () { hovered = true; });
-        container.addEventListener('pointerleave', function () { hovered = false; });
-        container.addEventListener('click', function (e) {
-            var copy = e.target.closest('[data-copy]');
-            if (!copy) return;
-            e.preventDefault();
-            var text = copy.getAttribute('data-copy');
-            function toast() {
-                var t = document.querySelector('.jg-copy-toast');
-                if (!t) {
-                    t = document.createElement('div');
-                    t.className = 'jg-copy-toast';
-                    document.body.appendChild(t);
-                }
-                t.textContent = '邮箱已复制';
-                t.classList.add('show');
-                clearTimeout(t._timer);
-                t._timer = setTimeout(function () { t.classList.remove('show'); }, 1800);
-            }
-            if (navigator.clipboard && navigator.clipboard.writeText) {
-                navigator.clipboard.writeText(text).then(toast, toast);
-            } else {
-                var ta = document.createElement('textarea');
-                ta.value = text; document.body.appendChild(ta); ta.select();
-                try { document.execCommand('copy'); } catch (err) { }
-                document.body.removeChild(ta);
-                toast();
-            }
+        container.addEventListener('pointerleave', function () {
+            hovered = false;
+            if (drag) endDrag(null, true);
         });
-        if (window.ResizeObserver) new ResizeObserver(measure).observe(container);
-        measure(); // 立即量一次；图片加载完成后再校准
+
+        // 拖 / 甩：横向位移超过阈值才接管，纵向让页面自己滚
+        container.addEventListener('pointerdown', function (e) {
+            if (e.pointerType === 'mouse' && e.button !== 0) return;
+            drag = { id: e.pointerId, x: e.clientX, y: e.clientY, active: false, from: offset, samples: [] };
+        });
+        container.addEventListener('pointermove', function (e) {
+            var d = drag;
+            if (!d || e.pointerId !== d.id) return;
+            var along = e.clientX - d.x;
+            var across = e.clientY - d.y;
+            if (!d.active) {
+                if (Math.abs(along) < DRAG_SLOP) return;
+                if (Math.abs(across) > Math.abs(along)) { drag = null; return; }
+                d.active = true;
+                glide = false;
+                velocity = 0;
+                container.setAttribute('data-dragging', '');
+                try { container.setPointerCapture(e.pointerId); } catch (err) { }
+            }
+            offset = d.from - along;
+            offset = ((offset % seqW) + seqW) % seqW;
+            d.samples.push([performance.now(), e.clientX]);
+            while (d.samples.length > 2 && performance.now() - d.samples[0][0] > 100) d.samples.shift();
+            if (seqW > 0) track.style.transform = 'translate3d(' + (-offset).toFixed(2) + 'px,0,0)';
+        });
+
+        function endDrag(e, cancelled) {
+            var d = drag;
+            if (!d || (e && e.pointerId !== d.id)) return;
+            drag = null;
+            if (!d.active) return;
+            container.removeAttribute('data-dragging');
+            try { container.releasePointerCapture(d.id); } catch (err) { }
+            suppressClick = performance.now() + 400;
+            var v = 0;
+            var s = d.samples;
+            if (!cancelled && s.length > 1) {
+                var dt = (s[s.length - 1][0] - s[0][0]) / 1000;
+                if (dt > 0.008) v = -(s[s.length - 1][1] - s[0][1]) / dt;
+                v = Math.max(-MAX_FLING, Math.min(MAX_FLING, v));
+            }
+            velocity = Math.abs(v) > 30 ? v : 0;
+            glide = Math.abs(v) > 30;
+            wake();
+        }
+        container.addEventListener('pointerup', function (e) { endDrag(e, false); });
+        container.addEventListener('pointercancel', function (e) { endDrag(e, true); });
+        container.addEventListener('lostpointercapture', function (e) { endDrag(e, true); });
+
+        // 拖完松手时浏览器还会补一个 click：别让它把链接打开。
+        // 复制（[data-copy]）统一交给文件末尾那条 document 级委托，这里不重复处理。
+        container.addEventListener('click', function (e) {
+            if (performance.now() < suppressClick) {
+                e.preventDefault();
+                e.stopPropagation();
+                suppressClick = 0;
+            }
+        }, true);
+
+        // 观察「父容器」而不是自己，并且把测量丢到下一帧再做 —— 两条都为同一个坑：
+        // measure() 末尾会按内容写 container.style.width（见 sizeToContent），如果在
+        // RO 回调里直接跑，就是「在被观察的元素自己身上改尺寸」，Chromium 会立刻抛
+        // "ResizeObserver loop completed with undelivered notifications"（控制台红字，
+        // 界面本身不受影响）。宽度真正的来源是父容器；回调里只排队，不碰布局。
+        var measureQueued = false;
+        function queueMeasure() {
+            if (measureQueued) return;
+            measureQueued = true;
+            requestAnimationFrame(function () {
+                measureQueued = false;
+                if (!container.isConnected) return;
+                measure(); wake();
+            });
+        }
+        if (window.ResizeObserver && container.parentElement)
+            new ResizeObserver(queueMeasure).observe(container.parentElement);
+
+        // 进场：先量，再解除 data-intro 让各项依次浮起
+        if (intro) {
+            container.setAttribute('data-intro', '');
+            requestAnimationFrame(function () { measure(); applyIntro(); });
+        } else {
+            measure();
+        }
         var imgs = seq.querySelectorAll('img');
         imgs.forEach(function (im) {
             if (!im.complete) {
@@ -504,7 +623,34 @@ junigridJs.initLogoLoop = function (selector) {
                 im.addEventListener('error', measure, { once: true });
             }
         });
-        setTimeout(measure, 500); // 兜底
-        raf = requestAnimationFrame(frame);
+        setTimeout(measure, 500);
+        wake();
     });
 };
+
+// 复制文本 + toast：群号、邮箱共用一条路。
+// 先走同步的 DOM 选区 + execCommand（在点击手势里必定有效，也不看权限），
+// 不成功再退回 navigator.clipboard；toast 一律立刻弹 —— 别让 UI 卡在一个
+// 可能永远不 resolve 的 Promise 上（WebView2 里没手势时就是这种情况）。
+junigridJs.copyWithToast = function (text, label) {
+    if (!text) return;
+    var ok = false;
+    try { ok = junigridJs.copyText(text); } catch (e) { ok = false; }
+    if (!ok && navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).catch(function () { });
+    }
+    junigridJs.toast(label || ('已复制 ' + text), 'ok');
+};
+
+// 任何带 data-copy 的元素（群号胶囊、邮箱图标）点一下复制 —— 文档级委托，
+// 这样 Blazor 换掉 DOM 也不用重新绑定。
+// 只认「自己就有 data-copy 文本」的那个节点：值为空、或只是跑马灯克隆标记时直接放行，
+// 别把链接的跳转吞掉（克隆标记已改叫 data-loop-clone，这里再挡一道）。
+document.addEventListener('click', function (e) {
+    var hit = e.target && e.target.closest ? e.target.closest('[data-copy]') : null;
+    if (!hit || hit.hasAttribute('data-loop-clone')) return;
+    var text = hit.getAttribute('data-copy');
+    if (!text) return;
+    e.preventDefault();
+    junigridJs.copyWithToast(text, hit.getAttribute('data-copy-label'));
+});

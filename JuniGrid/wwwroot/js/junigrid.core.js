@@ -476,24 +476,74 @@ window.junigridJs.applyTheme = function (theme) {
     var dbg = { down: 0, guard: 0, armed: 0, up: 0, drop: 0, miss: 0, err: '', ev: '' };
 
     function clearHl() {
-        var prev = document.querySelectorAll('.jg-cat-head.drop-target, .jg-cat-head.drop-above, .jg-cat-head.drop-below');
-        for (var i = 0; i < prev.length; i++) {
-            prev[i].classList.remove('drop-target');
-            prev[i].classList.remove('drop-above');
-            prev[i].classList.remove('drop-below');
-        }
+        var prev = document.querySelectorAll('.jg-cat-head.drop-target');
+        for (var i = 0; i < prev.length; i++) prev[i].classList.remove('drop-target');
     }
     function headAt(x, y) {
         var el = document.elementFromPoint(x, y);
         return el && el.closest ? el.closest('.jg-cat-head[data-cat-key]') : null;
     }
 
-    // 分类重排的落点 = 指针在目标段头的上半 / 下半 ⇒ 插到它前面 / 后面。
-    // 只看"落在哪个分类头上"没法表达顺序（放上半和放下半意思完全不同），
-    // 所以画一条横线标出插入缝，而不是把整块高亮。
-    function posInHead(h, y) {
-        var r = h.getBoundingClientRect();
-        return y < r.top + r.height / 2 ? 'before' : 'after';
+    // ── 2026-11-09：分类重排的落点改成「缝」模型（原先是段头上半/下半各画一条线） ──
+    // 相邻两段之间只有一个插入点，但上半画在段头顶边 -5px、下半画在下边 -4px，
+    // 两条线相距 3px 且都在同一条 12px 的缝里 —— 折叠时看着就是两条几乎并排的线，
+    // 拖动时线还会在缝里跳。
+    // 现在先把屏上的段收成表，再把指针换算成「第 j 条缝」(j = 0..n，含列表首尾)，
+    // 同一条缝永远同一个 y：折叠时只有跨过一整段才跳一格；展开时段很高，
+    // 上半 → 段前缝、下半 → 段后缝，两条线隔着整块内容，自然分得开。
+    function catSections() {
+        var heads = document.querySelectorAll('.jg-modrows > .jg-cat-head[data-cat-key]');
+        var out = [];
+        for (var i = 0; i < heads.length; i++) {
+            var h = heads[i], b = h.nextElementSibling;
+            if (!b || !b.classList || !b.classList.contains('jg-cat-body')) b = null;
+            var rh = h.getBoundingClientRect();
+            var rb = b ? b.getBoundingClientRect() : rh;
+            out.push({
+                key: h.getAttribute('data-cat-key'),
+                top: rh.top, bottom: Math.max(rh.bottom, rb.bottom),
+                left: rh.left, right: rh.right
+            });
+        }
+        return out;
+    }
+
+    function catDropAt(y) {
+        var secs = catSections();
+        if (!secs.length) return null;
+        // 指针跑出列表（顶栏 / 底部工具条）就别再吸附最近的一段 ——
+        // 否则在别处误松手会把分类甩到第一位
+        if (y < secs[0].top - 24 || y > secs[secs.length - 1].bottom + 24) return null;
+        var i = 0;
+        while (i < secs.length && y >= secs[i].bottom) i++;
+        var idx = i, before;
+        if (idx >= secs.length) { idx = secs.length - 1; before = false; }   // 掉到列表末尾
+        else {
+            var hh = secs[idx].bottom - secs[idx].top;
+            before = y < secs[idx].top + hh / 2;
+        }
+        var j = before ? idx : idx + 1;                     // 缝序号
+        var ly;
+        if (j <= 0) ly = secs[0].top - 6;                   // 列表最上面
+        else if (j >= secs.length) ly = secs[secs.length - 1].bottom + 6;   // 列表最下面
+        else ly = (secs[j - 1].bottom + secs[j].top) / 2;   // 两段之间的缝，取正中
+        return { key: secs[idx].key, before: before, y: ly, left: secs[0].left, right: secs[0].right };
+    }
+
+    // 落点线是一个独立的 fixed 元素，不再寄在段头的 ::before/::after 上 ——
+    // 那两条伪元素只能贴在段头自己的上下边，碰不到"上一段的内容底边"。
+    var lineEl = null;
+    function hideLine() { if (lineEl) lineEl.style.display = 'none'; }
+    function showLine(y, left, right) {
+        if (!lineEl) {
+            lineEl = document.createElement('div');
+            lineEl.className = 'jg-cat-dropline';
+            document.body.appendChild(lineEl);
+        }
+        lineEl.style.display = 'block';
+        lineEl.style.left = Math.round(left) + 'px';
+        lineEl.style.width = Math.max(1, Math.round(right - left)) + 'px';
+        lineEl.style.top = Math.round(y - 1) + 'px';
     }
     function place(g, x, y) { g.style.left = x + 'px'; g.style.top = y + 'px'; }
 
@@ -510,6 +560,7 @@ window.junigridJs.applyTheme = function (theme) {
     function reset() {
         var s = st;
         st = null;
+        hideLine();
         if (scrollRaf) { cancelAnimationFrame(scrollRaf); scrollRaf = null; }
         if (!s) return null;
         clearTimeout(s.timer);
@@ -530,21 +581,24 @@ window.junigridJs.applyTheme = function (theme) {
     function refreshDrop(x, y) {
         if (!st || !st.armed) return;
         if (st.ghost) place(st.ghost, x, y);
-        var h = headAt(x, y);
         clearHl();
         st.pos = '';
-        if (!h) return;
-        var tgt = h.getAttribute('data-cat-key');
         if (st.key.indexOf('c:') === 0) {
-            // 分类重排：拖的是分类 → 画插入线（不画整块高亮）。
-            // 自己的头上不画；「未分类」段不参与排序，也不能当落点。
-            if (tgt === '' || tgt === st.key.slice(2)) return;
-            st.pos = posInHead(h, y);
-            h.classList.add(st.pos === 'before' ? 'drop-above' : 'drop-below');
-        } else {
-            // mod 归类：整段都要接（放这块区域里就行），所以整块点亮
-            h.classList.add('drop-target');
+            // 分类重排：拖的是分类 → 在「缝」上画一条插入线（不画整块高亮）。
+            // 「未分类」段照样能当落点（2026-11-07 用户反馈：别的分类拖不到它上下）。
+            var d = catDropAt(y);
+            st.dropSet = !!d;
+            if (!d) { hideLine(); return; }
+            st.dropKey = d.key;
+            st.dropBefore = d.before;
+            st.pos = d.before ? 'before' : 'after';
+            showLine(d.y, d.left, d.right);
+            return;
         }
+        // mod 归类：整段都要接（放这块区域里就行），所以整块点亮
+        hideLine();
+        var h = headAt(x, y);
+        if (h) h.classList.add('drop-target');
     }
 
     function autoScrollTick() {
@@ -582,6 +636,7 @@ window.junigridJs.applyTheme = function (theme) {
         place(g, st.x, st.y);
         lastPt.x = st.x; lastPt.y = st.y;
         if (!scrollRaf) scrollRaf = requestAnimationFrame(autoScrollTick);
+        refreshDrop(st.x, st.y);          // 拿起来的当下就把落点算出来，别等第一次 move
         call('OnDragProbe', 'armed', st.key);
     }
 
@@ -598,7 +653,8 @@ window.junigridJs.applyTheme = function (theme) {
         var key = el.getAttribute('data-drag-key');
         if (!key) { dbg.guard = -5; return; }
         dbg.guard = 1;
-        st = { el: el, key: key, x: e.clientX, y: e.clientY, armed: false, ghost: null, timer: null };
+        st = { el: el, key: key, x: e.clientX, y: e.clientY, armed: false, ghost: null, timer: null,
+               dropSet: false, dropKey: null, dropBefore: false };
         st.timer = setTimeout(arm, HOLD);
     }
 
@@ -617,11 +673,15 @@ window.junigridJs.applyTheme = function (theme) {
         if (!st) return;
         dbg.up++;
         var armed = st.armed, key = st.key;
-        var h = armed ? headAt(e.clientX, e.clientY) : null;
-        var tgt = h ? h.getAttribute('data-cat-key') : null;
-        // 落点在目标段头的上半 / 下半 ⇒ 插到前面 / 后面（只有分类重排用得上）
-        var pos = (tgt !== null && key.indexOf('c:') === 0)
-            ? posInHead(h, e.clientY) : '';
+        var tgt = null, pos = '';
+        if (armed && key.indexOf('c:') === 0) {
+            // 分类重排：落点就是最后一次刷新算出来的那条缝 —— 不再用指针位置重算一遍，
+            // 否则「线的位置」和「实际插到哪」可能因为最后一段距离对不上。
+            if (st.dropSet) { tgt = st.dropKey; pos = st.dropBefore ? 'before' : 'after'; }
+        } else if (armed) {
+            var h = headAt(e.clientX, e.clientY);
+            tgt = h ? h.getAttribute('data-cat-key') : null;
+        }
         reset();
         if (!armed) return;
 
@@ -650,6 +710,10 @@ window.junigridJs.applyTheme = function (theme) {
     document.addEventListener('pointerup', onUp, { passive: true });
     document.addEventListener('mouseup', onUp, { passive: true });
     document.addEventListener('pointercancel', function () { reset(); }, { passive: true });
+    // 拖拽途中滚轮 / 触控板滚动时不会有 mousemove，落点线会留在原地 —— 滚动就重算一次
+    document.addEventListener('scroll', function () {
+        if (st && st.armed) refreshDrop(lastPt.x, lastPt.y);
+    }, true);
 
     window.junigridJs.longPressDragInit = function (dotNetRef) { ref = dotNetRef; };
 

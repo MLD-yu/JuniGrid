@@ -184,6 +184,22 @@ public sealed partial class InstallService
         return string.IsNullOrWhiteSpace(reason) ? msg : msg + "（" + reason + "）";
     }
 
+    /// <summary>设置里关掉「通过内置 N 网网页下载」时的出口：不开内置窗口，直接把文件页交给系统浏览器。
+    /// <para>为什么不再是失败：这个开关只表达「别偷偷开内置网页」。旧版（v1.3.84）把它做成了硬失败 ——
+    /// 抛一句「已关闭…免费账号无法自动获取下载链接」，用户看到红 toast「安装失败」，明明浏览器那边
+    /// 一步就能装上（2026-11-09 用户反馈：关掉之后本该直接弹浏览器去 N 网点下载）。</para>
+    /// <para>返回值必须带 <c>premium：</c> 前缀 —— 调用方（详情页 / 任务面板 / 更新流水线）就是靠这个
+    /// 关键字认「已经替他开过网页了，别再开一次，也别把这句话拼成『安装失败』」。</para>
+    /// </summary>
+    internal static string BuiltinWebOffFallback(int modId, long fileId, Action<string> open)
+    {
+        // fileId = 0：还不知道要装哪一条（详情页那颗「安装」可能还没走进文件列表），
+        // 那就只落文件页，让用户在页面上自己挑。
+        open($"https://www.nexusmods.com/stardewvalley/mods/{modId}?tab=files"
+             + (fileId > 0 ? $"&file_id={fileId}" : ""));
+        return LocService.Tr("premium：已关闭「通过内置 N 网网页下载」，已改为在系统浏览器打开文件页 —— 点 Mod Manager Download 即可自动安装");
+    }
+
     /// <summary>
     /// 【更新 / 依赖】也要走的一条取链通道：API 直链 → 免费账号 403 时自动转应用内隐藏窗口。
     /// <para>为什么单独抽出来：一键直装（<see cref="InstallModDirectAsync"/>）里内联了同样的
@@ -191,7 +207,8 @@ public sealed partial class InstallService
     /// <c>NeedsPremium</c> 就直接放弃 —— 于是同一个 mod，点「安装」能在应用内下完，
     /// 点「更新」却跳外部浏览器，用户看到的是两套行为。</para>
     /// <para>返回的 <see cref="NexusDownloadResult.NeedsPremium"/> 只有在【两条路都不通】
-    /// 时才为 true，调用方据此决定退不退回打开网页。</para>
+    /// 或【设置里关掉了「通过内置 N 网网页下载」】时才为 true，调用方据此决定退不退回打开网页
+    /// （后者不开内置窗口，直接走系统浏览器）。</para>
     /// </summary>
     public async Task<NexusDownloadResult> ResolveDownloadUrlAsync(
         int modId, long fileId,
@@ -202,6 +219,14 @@ public sealed partial class InstallService
         var dl = await _nexus.GetDownloadUrlAsync(modId, fileId, ct, patient: true);
         if (dl.Url is not null) return dl;
         if (!dl.NeedsPremium) return dl;   // 网络/其他错误：别去开窗口，原样交给调用方
+
+        // v1.3.85：设置里关掉「通过内置 N 网网页下载」→ 不开内置窗口，但也【不是失败】：
+        // 返回 NeedsPremium = true 交给调用方开系统浏览器（更新 / 依赖 / 批量更新都靠这个标志）。
+        // 旧版这里返回 false + 一条长解释，调用方只会把它当普通错误显示成红 toast，
+        // 用户明明只关了「内置网页」，却被告知「取不到下载链接」。
+        if (!_cfg.Current.EnableBuiltinWebDownload)
+            return new NexusDownloadResult(null,
+                LocService.Tr("已关闭「通过内置 N 网网页下载」"), true);
 
         report?.Invoke(LocService.Tr("正在通过应用内页面获取下载（不需要操作）…"), null, null);
         // 应用内取链最长 100 秒（要等一个被节流过的倒计时周期），这期间没有任何进度可报。
@@ -280,6 +305,18 @@ public sealed partial class InstallService
         // 转调 SMAPI 专属通道：GitHub 官方安装包静默安装（与首页 SMAPI 更新同管线）。
         if (modId == SmapiNexusId)
             return await InstallSmapiFromNexusEntryAsync();
+
+        // v1.3.85：这个开关的初衷就是「没 Premium + 网络过不了人机验证」的人 —— 关掉时
+        // 软件内本来也拿不到直链（免费账号的 API 直链必然 403），再白跑一趟慢网络请求
+        // 只会让人干等十几秒。直接把 N 网文件页交给系统浏览器，用户在页上点
+        // Mod Manager Download，nxm 回流照样装进 Mods（2026-11-09 用户明确要求：
+        // 关掉就要「顺畅地弹浏览器」，不要报失败、也不要先卡在取链那一步）。
+        // Premium 账号不受影响：它们走 API 直链，压根不需要内置网页。
+        if (!cfg.EnableBuiltinWebDownload && !cfg.NexusIsPremium)
+        {
+            AppLog.Info("Download", $"内置网页下载已关 + 非 Premium → 直接交浏览器 mod={modId} file={fileId?.ToString() ?? "-"}");
+            return BuiltinWebOffFallback(modId, fileId ?? 0, UpdateService.OpenUrl);
+        }
 
         var taskTitle = await ResolveModTitleAsync(modId, null);
         // 带号入场：这个 mod 上一次失败/暂停的那一行就地重开，而不是在任务管理里
@@ -362,6 +399,16 @@ public sealed partial class InstallService
                     // 首选节点抽风时整条下载只能从头重试）
                     var dl = await _nexus.GetDownloadUrlsAsync(modId, file.FileId, ct, patient: true);
                     ct.ThrowIfCancellationRequested();
+                    if (dl.NeedsPremium && !_cfg.Current.EnableBuiltinWebDownload)
+                    {
+                        // v1.3.85：关掉内置网页 ≠ 不给下载。旧版这里直接 throw 一条「已关闭…」，
+                        // 用户看到红 toast「安装失败」，其实开关只表达「别偷偷开内置窗口」。
+                        // 现在退回系统浏览器打开文件页 —— 页上点 Mod Manager Download，nxm 回流
+                        // 照样把包装进 Mods（这就是 v1.3.84 之前的老行为）。
+                        _center.Finish(task, false,
+                            LocService.Tr("已关闭「通过内置 N 网网页下载」，已改为在浏览器打开文件页"), announce: false);
+                        return BuiltinWebOffFallback(modId, file.FileId, UpdateService.OpenUrl);
+                    }
                     if (dl.NeedsPremium)
                     {
                         // v1.2.10：免费账号的直链必然 403。先走应用内的隐藏窗口
@@ -615,7 +662,9 @@ public sealed partial class InstallService
                 ct.ThrowIfCancellationRequested();
                 if (dl.Url is null)
                 {
-                    _center.Finish(task, false, dl.NeedsPremium
+                    // 原因就写在 dl.Error 里（登录墙 / 关掉了内置网页…）—— 以前一律甩
+                    // 「可能需要登录 Nexus 网页版」，关掉开关的用户会被这句猜错方向的话误导。
+                    _center.Finish(task, false, string.IsNullOrWhiteSpace(dl.Error)
                         ? LocService.Tr("应用内没能取到下载链接（可能需要登录 Nexus 网页版）")
                         : LocService.Tr("获取下载地址失败：") + dl.Error);
                     return dl.Error;

@@ -177,7 +177,8 @@ public sealed partial class ModService
     /// The target keeps its old name (so a ".Disabled" prefix survives).
     /// </summary>
     public string? InstallUpdate(string gamePath, string targetFolderName, string zipPath,
-        out string? newVersion, string? expectedUniqueId = null, int? nexusModId = null)
+        out string? newVersion, string? expectedUniqueId = null, int? nexusModId = null,
+        ConfigService? cfg = null)
     {
         newVersion = null;
         string? temp = null;
@@ -277,6 +278,9 @@ public sealed partial class ModService
             if (nexusModId is > 0) WriteNexusIdSidecar(dest, nexusModId.Value);
             if (stagedOld is not null)
                 AppLog.Warn("Mods", $"[更新] 旧版已移入回收站保留：{Path.GetFileName(stagedOld)}（可在设置中还原或清理）");
+            // 旧目录整个被换掉了，它名下开着的覆盖包（汉化 / 贴图覆盖）要跟着盖回去 ——
+            // 与 InstallNew 尾部同一件事，两条更新入口都得走。
+            if (cfg is not null) ReapplyOverlaysForHost(gamePath, targetFolderName, cfg);
             return null;
         }
         catch (Exception ex)

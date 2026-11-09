@@ -19,7 +19,7 @@ namespace JuniGrid.Services;
 /// </summary>
 public static class PackThumbService
 {
-    public enum Kind { Portrait, Sprite, Sheet }
+    public enum Kind { Portrait, Sprite, Sheet, Tile, Frame }
 
     /// <summary>生成完成（一张或多张）。页面订阅后 InvokeAsync(StateHasChanged)。</summary>
     public static event Action? Changed;
@@ -60,14 +60,34 @@ public static class PackThumbService
     /// <summary>拿缩略图 URL。源不存在或未就绪返回 null（后者已排入后台生成，页面画占位）。</summary>
     public static string? Get(string? xnbPath, Kind kind) => GetCore(xnbPath, kind, large: false);
 
+    /// <summary>物品图鉴表里<b>单独一格</b>（16×16）的图标 —— 分类图标选择器用。
+    /// <para><paramref name="index"/> 是物品的 ParentSheetIndex（= 原版物品 id，0 起），
+    /// 表宽固定 24 格。游戏原版 <c>Maps/springobjects</c> 以及绝大多数物品表都是这个规格。</para></summary>
+    public static string? GetTile(string? xnbPath, int index, int outSize = 64)
+        => index < 0 ? null : GetCore(xnbPath, Kind.Tile, large: false, tile: index, tileOut: outSize);
+
+    /// <summary>任意网格图集里<b>单独一格</b> —— 动物行走图（16×16 / 4 列）这类
+    /// 不是物品图鉴规格的表用它。<paramref name="cols"/> 是每行格数，
+    /// <paramref name="cell"/> 是格子边长（星露谷的动物、行走图都是正方格）。</summary>
+    public static string? GetFrame(string? xnbPath, int frame, int cols, int cell = 16, int outSize = 64)
+        => frame < 0 || cols <= 0 ? null
+            : GetCore(xnbPath, Kind.Frame, large: false, tile: frame, tileOut: outSize,
+                tileCols: cols, tileCell: cell);
+
     /// <summary>拿大图 URL（版本弹窗「点击放大」用）：与缩略图同管线、同裁剪规则，
     /// 只是输出尺寸更大 —— 立绘 384、行走图 ×10、整表收进 512 盒。键空间带 L 前缀，与缩略图互不覆盖。</summary>
     public static string? GetLarge(string? xnbPath, Kind kind) => GetCore(xnbPath, kind, large: true);
 
-    private static string? GetCore(string? xnbPath, Kind kind, bool large)
+    private static string? GetCore(string? xnbPath, Kind kind, bool large, int tile = -1, int tileOut = 64,
+        int tileCols = 24, int tileCell = 16)
     {
         if (string.IsNullOrWhiteSpace(xnbPath) || !File.Exists(xnbPath)) return null;
-        var key = KeyOf(xnbPath, kind, large);
+        // 单格图标要带上「第几格 / 出多大」—— 同一张表会被切成几十个不同图标，
+        // 只按路径做键会让它们互相覆盖（都返回第一格那张图）。
+        var key = KeyOf(xnbPath, kind, large)
+                  + (kind == Kind.Frame
+                      ? $"|{tileCols}x{tileCell}t{tile}@{tileOut}"
+                      : tile >= 0 ? $"|t{tile}@{tileOut}" : "");
         if (_memory.TryGetValue(key, out var hit)) return hit;
 
         // 磁盘缓存快路径：直接出 URL，不进生成队列
@@ -95,7 +115,7 @@ public static class PackThumbService
                 {
                     // 排到自己时可能已被别的请求生成完 —— 再查一次，别做重复功
                     if (_memory.TryGetValue(key, out _)) return;
-                    var url = Generate(key, kind, xnbPath, cacheFile, large);
+                    var url = Generate(key, kind, xnbPath, cacheFile, large, tile, tileOut, tileCols, tileCell);
                     if (url is not null)
                     {
                         Remember(key, url);
@@ -121,15 +141,10 @@ public static class PackThumbService
 
     // ───────────────────── 内部 ─────────────────────
 
-    private static string? Generate(string key, Kind kind, string src, string cacheFile, bool large)
+    private static string? Generate(string key, Kind kind, string src, string cacheFile, bool large,
+        int tile = -1, int tileOut = 64, int tileCols = 24, int tileCell = 16)
     {
-        var tex = XnbDecoder.TryDecode(src);
-        // 字体图集是单通道遮罩块（不是 Color），上面那条路必然解不出 —— 只有这里能救它，
-        // 所以素材页的字体卡从"灰 Aa 占位"变成真字形表。
-        if (tex is null) tex = XnbDecoder.TryDecodeFont(src);
-        // 包里混进来的 PNG 副本也认（旧版本存过 PNG 包编码前的源则没有，这里只兜 XNB 解不出的情况）
-        if (tex is null && src.EndsWith(".png", StringComparison.OrdinalIgnoreCase))
-            tex = PixelKit.DecodePng(src);
+        var tex = Decode(src);
         if (tex is null) return null;
 
         byte[] png;
@@ -140,6 +155,28 @@ public static class PackThumbService
                 var cell = Math.Min(64, Math.Min(tex.Width, tex.Height));
                 var outSize = large ? 384 : 128;
                 png = PixelKit.CropScalePng(tex, 0, 0, cell, cell, outSize, outSize);
+                break;
+            }
+            case Kind.Tile:
+            {
+                // 物品图鉴：24 列 × 16px 的网格。索引 = 物品的 ParentSheetIndex（原版物品 id）。
+                const int cell = 16, cols = 24;
+                var sx = (tile % cols) * cell;
+                var sy = (tile / cols) * cell;
+                if (sx + cell > tex.Width || sy + cell > tex.Height) return null;
+                var px = Math.Clamp(tileOut, 16, 256);
+                png = PixelKit.CropScalePng(tex, sx, sy, cell, cell, px, px);
+                break;
+            }
+            case Kind.Frame:
+            {
+                // 通用网格：动物行走图（16×16、每行 4 格）、角色贴图等。
+                // 格子按左上角起算，出界就认失败 —— 宁可空着也不返回一张错位的图。
+                var sx = (tile % tileCols) * tileCell;
+                var sy = (tile / tileCols) * tileCell;
+                if (sx + tileCell > tex.Width || sy + tileCell > tex.Height) return null;
+                var px = Math.Clamp(tileOut, 8, 256);
+                png = PixelKit.CropScalePng(tex, sx, sy, tileCell, tileCell, px, px);
                 break;
             }
             case Kind.Sprite:
@@ -181,6 +218,86 @@ public static class PackThumbService
         }
         catch (Exception ex) { AppLog.Warn("PackThumbs", "写缓存失败: " + ex.Message); }
         return UrlOf(cacheFile) ?? "data:image/png;base64," + Convert.ToBase64String(png);
+    }
+
+    /// <summary>同一张表只解码一次。物品图鉴要被切成几百个图标，每切一格都重新解一遍
+    /// 240KB 的 LZX 纹理，光解码就能把 CPU 拖满（700 格 ≈ 十几秒空转）。
+    /// 按「路径 + mtime + 长度」缓存最近几张解码结果 —— 一格的裁切只要几毫秒。</summary>
+    private static readonly ConcurrentDictionary<string, DecodedTexture> _sourceCache = new(StringComparer.Ordinal);
+    private static readonly ConcurrentQueue<string> _sourceOrder = new();
+    private const int SourceCap = 4;
+
+    /// <summary>这一格在图集里到底画没画东西。原版 <c>Data/Objects</c> 里留着一些 1.6 的
+    /// 废弃条目（比如 id 30 的 Lumber），图集里对应格子是全透明的 —— 选中它们只会得到一个
+    /// 空白图标，所以列清单时先筛掉。解不出来的表一律当"有"，不误伤。</summary>
+    public static bool HasVisiblePixels(string? xnbPath, int index, int cols = 24, int cell = 16)
+    {
+        if (string.IsNullOrWhiteSpace(xnbPath) || !File.Exists(xnbPath) || index < 0) return true;
+        var tex = Decode(xnbPath);
+        if (tex is null) return true;
+        var sx = (index % cols) * cell;
+        var sy = (index / cols) * cell;
+        if (sx + cell > tex.Width || sy + cell > tex.Height) return false;
+        for (var y = 0; y < cell; y++)
+        {
+            var row = (sy + y) * tex.Width;
+            for (var x = 0; x < cell; x++)
+                if (tex.PixelsRgba[(row + sx + x) * 4 + 3] > 8) return true;
+        }
+        return false;
+    }
+
+    /// <summary>这格是不是 1.6 的「已删除物品」占位图：图集里画的是一圈灰色虚线空框。
+    /// 它<b>有</b>像素（所以 <see cref="HasVisiblePixels"/> 会放行），但选出来就是一个
+    /// 空框 —— 判据是整格只有一种颜色、且是灰的（R=G=B）。实测原版只有一件（Lumber）。</summary>
+    public static bool IsPlaceholderCell(string? xnbPath, int index, int cols = 24, int cell = 16)
+    {
+        if (string.IsNullOrWhiteSpace(xnbPath) || !File.Exists(xnbPath) || index < 0) return false;
+        var tex = Decode(xnbPath);
+        if (tex is null) return false;
+        var sx = (index % cols) * cell;
+        var sy = (index / cols) * cell;
+        if (sx + cell > tex.Width || sy + cell > tex.Height) return false;
+
+        var seen = new HashSet<int>();
+        for (var y = 0; y < cell; y++)
+        {
+            var row = (sy + y) * tex.Width;
+            for (var x = 0; x < cell; x++)
+            {
+                var o = (row + sx + x) * 4;
+                if (tex.PixelsRgba[o + 3] <= 8) continue;
+                int r = tex.PixelsRgba[o], g = tex.PixelsRgba[o + 1], b = tex.PixelsRgba[o + 2];
+                if (Math.Abs(r - g) > 6 || Math.Abs(g - b) > 6) return false;   // 有彩色 ⇒ 真图案
+                seen.Add((r << 16) | (g << 8) | b);
+                if (seen.Count > 2) return false;
+            }
+        }
+        return seen.Count > 0;
+    }
+
+    private static DecodedTexture? Decode(string src)
+    {
+        string stat;
+        try { stat = $"{File.GetLastWriteTimeUtc(src):O}|{new FileInfo(src).Length}"; }
+        catch { stat = "err"; }
+        var ck = stat + "|" + src;
+        if (_sourceCache.TryGetValue(ck, out var hit)) return hit;
+
+        var tex = XnbDecoder.TryDecode(src);
+        // 字体图集是单通道遮罩块（不是 Color），上面那条路必然解不出 —— 只有这里能救它，
+        // 所以素材页的字体卡从"灰 Aa 占位"变成真字形表。
+        if (tex is null) tex = XnbDecoder.TryDecodeFont(src);
+        // 包里混进来的 PNG 副本也认（旧版本存过 PNG 包编码前的源则没有，这里只兜 XNB 解不出的情况）
+        if (tex is null && src.EndsWith(".png", StringComparison.OrdinalIgnoreCase))
+            tex = PixelKit.DecodePng(src);
+        if (tex is null) return null;
+
+        _sourceCache[ck] = tex;
+        _sourceOrder.Enqueue(ck);
+        while (_sourceCache.Count > SourceCap && _sourceOrder.TryDequeue(out var old))
+            _sourceCache.TryRemove(old, out _);
+        return tex;
     }
 
     private static string KeyOf(string path, Kind kind, bool large)

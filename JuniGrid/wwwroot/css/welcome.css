@@ -1,0 +1,520 @@
+/* ============================================================
+   新手引导（首次启动弹窗 · 三步 stepper）
+   ------------------------------------------------------------
+   视觉来源：React Bits 的 <Stepper /> —— 毛玻璃面板 + 顶部数字指示条
+   （选中项由一块会滑动的「滑块」托起）+ 底部 返回 / 下一步。
+   这里用 Blazor + CSS 变量重写，不引入 React：
+     · 颜色全部走 base.css 的语义令牌，深浅主题自然两副面孔；
+     · 面板高度与滑块位置由 junigrid.welcome.js 量出来后动画，
+       纯 CSS 做不到「高度跟着内容长」的补间。
+   z-index 9800：压住标题栏(5000)、任务中心(9999)与页面内的下拉遮罩(9000)，
+   低于页面级弹窗(99990+)与 toast(99999) —— toast 要能浮在引导上面。
+   ============================================================ */
+
+.jg-wg-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 9800;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background: rgba(14, 16, 20, 0.42);
+    -webkit-backdrop-filter: blur(3px);
+    backdrop-filter: blur(3px);
+    animation: jg-wg-overlay-in 220ms ease-out both;
+}
+
+html[data-theme="dark"] .jg-wg-overlay { background: rgba(0, 0, 0, 0.55); }
+
+@keyframes jg-wg-overlay-in { from { opacity: 0; } to { opacity: 1; } }
+
+@keyframes jg-wg-panel-in {
+    from { opacity: 0; transform: translateY(12px) scale(0.972); }
+    to   { opacity: 1; transform: none; }
+}
+
+/* ── 面板：外框（毛玻璃）+ 内容 ── */
+.jg-wg {
+    /* 弹性曲线：比 cubic-bezier 更接近真弹簧，与 React Bits 那颗 spring 同源 */
+    --jg-wg-spring: linear(0, 0.0603, 0.2033, 0.3821, 0.5633, 0.7258, 0.8584, 0.9574,
+        1.0242, 1.0634, 1.0809, 1.0828, 1.0747, 1.0613, 1.046, 1.0313, 1.0186, 1.0085,
+        1.0012, 0.9965, 0.994, 0.9931, 0.9933, 0.9941, 0.9953, 0.9966, 0.9978, 0.9988, 1);
+    position: relative;
+    width: min(560px, 100%);
+    max-height: calc(100vh - 48px);
+    /* 窗口被拖得很矮时面板自身滚动，而不是把底部按钮顶出画面 */
+    overflow: hidden auto;
+    padding: 8px;
+    border-radius: 22px;
+    background: var(--jg-glass-95);
+    -webkit-backdrop-filter: blur(26px) saturate(1.6);
+    backdrop-filter: blur(26px) saturate(1.6);
+    box-shadow:
+        0 30px 70px -26px rgba(16, 18, 24, 0.5),
+        0 4px 14px -6px rgba(16, 18, 24, 0.2);
+    color: var(--jg-text);
+    animation: jg-wg-panel-in 340ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+html[data-theme="dark"] .jg-wg {
+    box-shadow:
+        0 34px 80px -28px rgba(0, 0, 0, 0.85),
+        0 4px 16px -8px rgba(0, 0, 0, 0.6);
+}
+
+/* 描边用伪元素：inset 阴影不占布局，圆角跟面板走 */
+.jg-wg::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    z-index: 3;
+    border-radius: inherit;
+    box-shadow: inset 0 0 0 1px var(--jg-line), inset 0 1px 0 rgba(255, 255, 255, 0.75);
+    pointer-events: none;
+}
+
+html[data-theme="dark"] .jg-wg::after {
+    box-shadow: inset 0 0 0 1px var(--jg-line), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+/* ── 顶部指示条 ── */
+.jg-wg-track {
+    position: relative;
+    display: flex;
+    gap: 4px;
+    padding: 4px;
+    border-radius: 16px;
+    background: var(--jg-well);
+}
+
+.jg-wg-glider {
+    position: absolute;
+    top: 0;
+    left: 0;
+    z-index: 0;
+    border-radius: 12px;
+    background: var(--jg-card);
+    box-shadow:
+        inset 0 0 0 1px var(--jg-line),
+        0 4px 12px -6px rgba(20, 22, 28, 0.35);
+    opacity: 0;
+    pointer-events: none;
+}
+
+html[data-theme="dark"] .jg-wg-glider {
+    background: color-mix(in srgb, var(--jg-card) 88%, #ffffff);
+    box-shadow:
+        inset 0 0 0 1px var(--jg-line-strong),
+        inset 0 1px 0 rgba(255, 255, 255, 0.06),
+        0 6px 16px -8px rgba(0, 0, 0, 0.9);
+}
+
+.jg-wg-seg {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    flex: 1 1 auto;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    min-width: 0;
+    height: 42px;
+    padding: 0 10px;
+    border: 0;
+    border-radius: 12px;
+    background: none;
+    color: inherit;
+    font-family: inherit;
+    cursor: pointer;
+    transition: background-color 0.18s ease;
+}
+
+.jg-wg-seg:disabled { cursor: default; }
+
+@media (hover: hover) {
+    .jg-wg-seg:not(:disabled):hover { background: var(--jg-hover); }
+}
+
+.jg-wg-badge {
+    display: grid;
+    flex: none;
+    place-items: center;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    box-shadow: inset 0 0 0 1px var(--jg-line-strong);
+    color: var(--jg-text-4);
+    font-size: 11.5px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+    transition: background-color 0.18s ease, box-shadow 0.18s ease, color 0.18s ease;
+}
+
+.jg-wg-badge[data-status="active"] {
+    box-shadow: inset 0 0 0 1.5px var(--jg-text);
+    color: var(--jg-text);
+}
+
+.jg-wg-badge[data-status="complete"] {
+    background: var(--jg-ink);
+    box-shadow: none;
+    color: var(--jg-on-ink);
+}
+
+.jg-wg-title {
+    overflow: hidden;
+    color: var(--jg-text-4);
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1.2;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    transition: color 0.2s ease;
+}
+
+.jg-wg-title[data-status="active"],
+.jg-wg-title[data-status="complete"] { color: var(--jg-text); }
+
+/* ── 内容区：高度由 JS 写在 .jg-wg-view 的 style 上，这里只负责裁切 ── */
+.jg-wg-view {
+    position: relative;
+    margin-top: 6px;
+    overflow: hidden;
+}
+
+.jg-wg-pane { padding: 12px 12px 0; }
+
+/* ── 文案 ── */
+.jg-wg-h {
+    font-size: 15.5px;
+    font-weight: 700;
+    letter-spacing: 0.01em;
+    line-height: 1.4;
+}
+
+.jg-wg-p {
+    margin: 8px 0 0;
+    color: var(--jg-text-2);
+    font-size: 12.8px;
+    line-height: 1.72;
+}
+
+/* ── 第 1 步：目录配置 ── */
+.jg-wg-field {
+    margin-top: 12px;
+    padding: 11px 13px 12px;
+    border-radius: 14px;
+    background: var(--jg-well);
+}
+
+.jg-wg-field-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.jg-wg-label {
+    font-size: 12.5px;
+    font-weight: 700;
+}
+
+/* 目录 = 一个可直接编辑的输入框 + 右侧「浏览」，不再单独放路径文本和按钮组 */
+.jg-wg-inputrow {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 7px;
+}
+
+.jg-wg-input {
+    flex: 1 1 auto;
+    min-width: 0;
+    height: 36px;
+    padding: 0 11px;
+    border: 1px solid var(--jg-line-strong);
+    border-radius: 10px;
+    background: var(--jg-card);
+    color: var(--jg-text);
+    font-family: inherit;
+    font-size: 12.2px;
+    line-height: 36px;
+    text-overflow: ellipsis;
+    transition: border-color 0.16s ease, box-shadow 0.16s ease, background 0.16s ease;
+}
+
+.jg-wg-input::placeholder { color: var(--jg-text-4); }
+
+.jg-wg-input:hover:not(:disabled) { border-color: color-mix(in srgb, var(--jg-text-4) 60%, var(--jg-line-strong)); }
+
+.jg-wg-input:focus {
+    outline: none;
+    border-color: color-mix(in srgb, var(--jg-accent) 55%, var(--jg-line-strong));
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--jg-accent) 14%, transparent);
+}
+
+.jg-wg-input:disabled { opacity: 0.6; cursor: default; }
+
+/* 填了没有本体 exe 的目录：框线转红，等用户改或点「浏览」 */
+.jg-wg-inputrow[data-invalid] .jg-wg-input {
+    border-color: color-mix(in srgb, var(--jg-danger) 62%, transparent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--jg-danger) 12%, transparent);
+}
+
+.jg-wg-browse {
+    flex: none;
+    height: 36px;
+    padding: 0 15px;
+    border: 1px solid var(--jg-line-strong);
+    border-radius: 10px;
+    background: var(--jg-card);
+    color: var(--jg-text);
+    font-family: inherit;
+    font-size: 12.2px;
+    font-weight: 600;
+    line-height: 1;
+    cursor: pointer;
+    transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+@media (hover: hover) {
+    .jg-wg-browse:not(:disabled):hover {
+        border-color: color-mix(in srgb, var(--jg-text-4) 55%, var(--jg-line-strong));
+        background: var(--jg-hover);
+    }
+}
+
+.jg-wg-browse:active:not(:disabled) { transform: scale(0.98); }
+.jg-wg-browse:disabled { opacity: 0.5; cursor: default; }
+
+.jg-wg-hint {
+    margin-top: 9px;
+    color: var(--jg-text-3);
+    font-size: 11.5px;
+    line-height: 1.72;
+}
+
+/* ── 第 2 步：加群 ── */
+.jg-wg-qqhead {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+}
+
+.jg-wg-qq {
+    flex: none;
+    width: 34px;
+    height: 34px;
+    margin-top: 2px;
+    color: #12b7f5;   /* QQ 官方蓝：深浅主题下都认得出 */
+}
+
+.jg-wg-qq img {
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+
+.jg-wg-groups {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 14px;
+}
+
+.jg-wg-group {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 10px 14px;
+    border: 1px solid var(--jg-line);
+    border-radius: 13px;
+    background: var(--jg-well);
+    color: inherit;
+    font-family: inherit;
+    text-align: left;
+    cursor: pointer;
+    transition: background 0.16s ease, border-color 0.16s ease, transform 0.12s ease;
+}
+
+.jg-wg-group:hover {
+    border-color: var(--jg-line-strong);
+    background: var(--jg-hover);
+}
+
+.jg-wg-group:active { transform: scale(0.992); }
+
+.jg-wg-tag {
+    flex: none;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: var(--jg-card);
+    box-shadow: inset 0 0 0 1px var(--jg-line);
+    color: var(--jg-text-2);
+    font-size: 11px;
+    font-weight: 700;
+}
+
+.jg-wg-num {
+    flex: 1;
+    font-size: 15px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.04em;
+}
+
+.jg-wg-copy {
+    flex: none;
+    color: var(--jg-text-4);
+    font-size: 11.5px;
+    transition: color 0.16s ease;
+}
+
+.jg-wg-group:hover .jg-wg-copy { color: var(--jg-text-2); }
+.jg-wg-group.copied .jg-wg-copy { color: color-mix(in srgb, var(--jg-accent) 80%, var(--jg-text)); }
+
+/* ── 第 3 步：欢迎 ── */
+.jg-wg-welcome { padding: 6px 0 2px; }
+
+.jg-wg-welcome .jg-wg-h { font-size: 17px; }
+
+/* ── 第 3 步：关注作者 ──
+   圆形头像 + 名字的 ShinyText 扫光 + 下面一排可拖拽的联系方式图标。
+   头像只留照片本身：不加描边、不加投影（用户要求「只保留一个图片」）。 */
+.jg-wg-author {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 4px 0 2px;
+    text-align: center;
+}
+
+.jg-wg-portrait {
+    position: relative;
+    flex: none;
+    width: 106px;
+    height: 106px;
+    border-radius: 50%;
+    overflow: hidden;
+    background: var(--jg-card);
+}
+
+.jg-wg-portrait img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    -webkit-user-drag: none;
+}
+
+/* ShinyText：渐变裁切 + 背景位移，深浅主题自动换明暗。
+   底色直接用正文色（保证任何时候都读得清），扫过去的那道光比底色亮一档：
+   浅色主题下退成灰、深色主题下是纯白，两边都不会「亮到看不见字」。 */
+.jg-wg-name {
+    --jg-wg-glint: color-mix(in srgb, var(--jg-text) 42%, #ffffff);
+    margin-top: 14px;
+    background-image: linear-gradient(100deg,
+        var(--jg-text) 0%, var(--jg-text) 32%,
+        var(--jg-wg-glint) 46%, var(--jg-wg-glint) 54%,
+        var(--jg-text) 68%, var(--jg-text) 100%);
+    background-size: 260% 100%;
+    /* 必须平铺：渐变的首尾同色，接缝看不出来；不平铺的话背景一移位，
+       落在图外的字形会被裁成透明（第一版就是这么把 M 裁没的） */
+    background-repeat: repeat-x;
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    color: transparent;
+    font-size: 21px;
+    font-weight: 800;
+    letter-spacing: 0.22em;
+    /* 字距让最后一格变成右侧留白，补回来才是视觉居中 */
+    text-indent: 0.22em;
+    line-height: 1.2;
+    animation: jg-wg-shine 3.2s linear infinite;
+}
+
+html[data-theme="dark"] .jg-wg-name { --jg-wg-glint: #ffffff; }
+
+@keyframes jg-wg-shine {
+    from { background-position: 160% center; }
+    to   { background-position: -60% center; }
+}
+
+/* 引导里的跑马灯沿用基础宽度（全部图标 + 第一个），只调上下留白 */
+.jg-wg-author .jg-logoloop {
+    margin-top: 20px;
+    padding: 4px var(--jg-ll-fade);   /* 横向那条留给两端的柔化带，别收掉 */
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .jg-wg-name { animation: none; background-image: none; -webkit-text-fill-color: var(--jg-text); color: var(--jg-text); }
+}
+
+/* ── 底部按钮 ── */
+.jg-wg-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 16px 12px 6px;
+}
+
+.jg-wg-back,
+.jg-wg-next {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 38px;
+    padding: 0 14px;
+    border: 0;
+    border-radius: 12px;
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1;
+    cursor: pointer;
+    transition: filter 0.16s ease, background 0.16s ease, transform 0.12s ease;
+}
+
+.jg-wg-back {
+    background: transparent;
+    color: var(--jg-text-2);
+}
+
+.jg-wg-back:hover { background: var(--jg-hover); }
+
+.jg-wg-back[data-hidden] {
+    visibility: hidden;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.jg-wg-next {
+    margin-left: auto;
+    padding-right: 12px;
+    background: var(--jg-ink);
+    box-shadow: 0 6px 16px -8px rgba(0, 0, 0, 0.45);
+    color: var(--jg-on-ink);
+}
+
+.jg-wg-next:hover { filter: brightness(1.08); }
+html[data-theme="dark"] .jg-wg-next:hover { filter: brightness(1.12); }
+
+.jg-wg-back:active,
+.jg-wg-next:active { transform: scale(0.97); }
+
+/* 窄窗口：标题让位给数字，免得三段文字挤成一团 */
+@media (max-width: 460px) {
+    .jg-wg-title { display: none; }
+    .jg-wg-seg { gap: 0; }
+    .jg-wg-pane { padding: 10px 8px 0; }
+    .jg-wg-footer { padding: 14px 8px 4px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .jg-wg-overlay,
+    .jg-wg { animation-duration: 1ms; }
+}

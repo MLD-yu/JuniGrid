@@ -343,6 +343,9 @@ public sealed partial class ModService
             // 「已安装」识别与更新检查就断了 —— 边车兜底；重装/更新时随目录被新版覆盖。
             if (nexusModId is int nid)
                 WriteNexusIdSidecar(dest, nid);
+            // 这台宿主刚被我们换过版本：名下开着的覆盖包（汉化 / 贴图覆盖）要跟着盖回去，
+            // 否则它们会在换目录时静默消失，只能等用户自己去拨开关。见 ReapplyOverlaysForHost。
+            if (cfg is not null) ReapplyOverlaysForHost(gamePath, folderName, cfg);
             return null;
         }
         catch (OperationCanceledException)

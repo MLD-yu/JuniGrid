@@ -173,6 +173,28 @@ public class PremiumExitTests
         var msg = InstallService.PremiumNeedsWebFallback(20581, 35407, _ => { });
         Assert.True(msg.Contains("premium", StringComparison.OrdinalIgnoreCase), "返回=" + msg);
     }
+
+    [Fact]
+    public void BuiltinWebOffExit_AlsoHandsOverTheFilesPageUrl()
+    {
+        // v1.3.85：关掉「通过内置 N 网网页下载」不再算失败 —— 走同一个出口把文件页交给系统浏览器。
+        // 标记也必须是 premium：详情页 / 任务面板 / 更新流水线都靠这个关键字认「网页已经开过了」，
+        // 少了它用户看到的又会是红条「安装失败」。
+        string? opened = null;
+        var msg = InstallService.BuiltinWebOffFallback(1915, 52234, u => opened = u);
+        Assert.Equal("https://www.nexusmods.com/stardewvalley/mods/1915?tab=files&file_id=52234", opened);
+        Assert.True(msg.Contains("premium", StringComparison.OrdinalIgnoreCase), "返回=" + msg);
+    }
+
+    [Fact]
+    public void BuiltinWebOffExit_WithoutFileId_LandsOnTheFilesTabOnly()
+    {
+        // 详情页那颗「安装」还不知道要装哪一条（fileId = 0）—— 不能拼出 &file_id=0
+        // 这种假参数，只落文件页让用户自己挑。
+        string? opened = null;
+        InstallService.BuiltinWebOffFallback(1915, 0, u => opened = u);
+        Assert.Equal("https://www.nexusmods.com/stardewvalley/mods/1915?tab=files", opened);
+    }
 }
 
 /// <summary>覆盖通道的宿主判定：只采信包自己的内部路径，且不许把「包自己的标题」当成没装的前置。

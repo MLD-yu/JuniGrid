@@ -261,6 +261,14 @@
                 </span>
                 <span class="jg-switch"><span class="jg-switch-knob"></span></span>
             </div>
+            @* v1.3.84：内置网页取链的总闸。关掉后不再开 WebView2 窗口，
+               免费账号也就拿不到直链（Premium 走 API，不受影响）。 *@
+            <div class="jg-switch-row @(_builtinWeb ? "on" : "")" @onclick="ToggleBuiltinWeb">
+                <span style="display:flex;align-items:center;gap:8px">
+                    <span>@Loc.T("通过内置 N 网网页下载")</span>
+                </span>
+                <span class="jg-switch"><span class="jg-switch-knob"></span></span>
+            </div>
         </div>
     </div>
 
@@ -489,44 +497,42 @@
         <div class="jg-about">
             <div class="jg-about-main">
                 <div class="jg-about-leftcol">
-                    <div class="jg-about-title-row">
-                        <span class="jg-pixel-title">JuniGrid</span>
-                        <span class="jg-about-title-side">
-                            <span class="jg-shiny">· v@(AppInfo.Version)</span>
-                            <span class="jg-about-desc">Your helper for Stardew Valley.</span>
-                        </span>
-                    </div>
-                    <div class="jg-author-row">
-                        <span>@Loc.T("作者：")</span>
-                        <img src="assets/author-avatar.jpg" alt="MLD avatar" class="jg-author-avatar" />
-                        <span class="jg-pixel-name">MLD</span>
-                    </div>
-                    <div class="jg-logoloop" aria-label='@Loc.T("联系方式")'>
-                        <div class="jg-ll-track">
-                            <ul class="jg-ll-seq">
-                                <li class="jg-ll-item">
-                                    <a class="jg-ll-link" href="https://github.com/MLD-yu" target="_blank" rel="noreferrer noopener" title="GitHub">
-                                        <img src="assets/logos/logo-github.svg" alt="GitHub" />
-                                    </a>
-                                </li>
-                                <li class="jg-ll-item">
-                                    <a class="jg-ll-link" href="javascript:void(0)" data-copy="yu2109292229@gmail.com" title="Gmail">
-                                        <img src="assets/logos/logo-gmail.svg" alt="Gmail" />
-                                    </a>
-                                </li>
-                                <li class="jg-ll-item">
-                                    <a class="jg-ll-link" href="https://space.bilibili.com/385452339" target="_blank" rel="noreferrer noopener" title='@Loc.T("哔哩哔哩")'>
-                                        <img src="assets/logos/logo-bilibili.svg" alt='@Loc.T("哔哩哔哩")' />
-                                    </a>
-                                </li>
-                                <li class="jg-ll-item">
-                                    <a class="jg-ll-link" href="https://www.douyin.com/user/MS4wLjABAAAAFva5cHzXf-dy_N7_4sKzjVHRBXj7_mkQ9EzTUXI96QM?from_tab_name=main" target="_blank" rel="noreferrer noopener" title='@Loc.T("抖音")'>
-                                        <img src="assets/logos/logo-douyin.svg?v=2" alt='@Loc.T("抖音")' />
-                                    </a>
-                                </li>
-                            </ul>
+                    @* 标题 / 作者竖着排在左边，加群区靠一条短竖线隔在右边；下面才是图标跑马灯 *@
+                    <div class="jg-about-top">
+                        <div class="jg-about-id">
+                            <div class="jg-about-title-row">
+                                <span class="jg-pixel-title">JuniGrid</span>
+                                <span class="jg-about-title-side">
+                                    <span class="jg-shiny">· v@(AppInfo.Version)</span>
+                                    <span class="jg-about-desc">Your helper for Stardew Valley.</span>
+                                </span>
+                            </div>
+                            <div class="jg-author-row">
+                                <span>@Loc.T("作者：")</span>
+                                <img src="assets/author-avatar.jpg" alt="MLD avatar" class="jg-author-avatar" />
+                                <span class="jg-pixel-name">MLD</span>
+                            </div>
+                        </div>
+                        <span class="jg-about-vline" aria-hidden="true"></span>
+                        @* 加群入口：QQ 图标 + 群名当标题，三个群号竖排一行一个；点一下复制 *@
+                        <div class="jg-qqblock">
+                            <div class="jg-qqblock-head">
+                                <img src="assets/qq.svg" alt="" draggable="false" />
+                                <span>@Loc.T("JuniGrid 交流群")</span>
+                            </div>
+                            <div class="jg-qqblock-list">
+                                @foreach (var g in QqGroups)
+                                {
+                                    <button type="button" class="jg-qqchip"
+                                            data-copy="@g.Number" data-copy-label='@LocService.Tf("已复制群号 {0}", g.Number)'
+                                            title='@Loc.T("点击复制群号")'>
+                                        <b>@Loc.T(g.Tag)</b>@g.Number
+                                    </button>
+                                }
+                            </div>
                         </div>
                     </div>
+                    <SocialLoop />
                 </div>
                 <div class="jg-sponsor">
                     <div class="jg-sponsor-title">@Loc.T("赞助支持：")</div>
@@ -601,6 +607,14 @@
 
 @code {
     private SteamProfile _steam = SteamProfile.None;
+
+    /// <summary>关于卡片里的交流群：与新手引导共用同一份清单（改号只改这里和 WelcomeGuide）。</summary>
+    private static readonly (string Tag, string Number)[] QqGroups =
+    {
+        ("1 群", "327685379"),
+        ("2 群", "631232833"),
+        ("3 群", "817276781"),
+    };
 
     // i18n：语言下拉（复用 .jg-sort-dd 结构 + dropdownToggle 的 GSAP 动画）。
     // 选中 → 持久化并触发 Loc.OnChanged，本页就地重渲染。
@@ -948,6 +962,8 @@
 
     private string _gamePath = "";
     private bool _oneClickInstall;
+    /// <summary>v1.3.84：内置 N 网网页取链总闸（默认开）。</summary>
+    private bool _builtinWeb;
     private bool _autoInstall;
 
     // ─── v1.2.4：游戏版本锁定（阻止 Steam 自动更新，玩旧版用）───
@@ -1344,8 +1360,11 @@
 
     private void ChangeCacheRoot()
     {
-        var dlg = new Microsoft.Win32.OpenFolderDialog { Title = LocService.Tr("选择缓存目录") };
-        if (dlg.ShowDialog() == true) _pendingRoot = dlg.FolderName;
+        // 从当前生效的缓存目录开始浏览（没换过就是默认位置），别让用户从别的盘找起
+        var picked = FolderPicker.Pick(LocService.Tr("选择缓存目录"),
+            Cfg.Current.CacheRoot ?? StoragePaths.DefaultCacheRoot);
+        if (picked is null) return;
+        _pendingRoot = picked;
     }
 
     private void CancelChangeRoot() => _pendingRoot = null;
@@ -1414,6 +1433,7 @@
         NexusWeb.SignedInChanged += OnNexusWebSignInChanged;
         await LoadAccountsAsync();
         _gamePath = Cfg.Current.GamePath;        _oneClickInstall = Cfg.Current.EnableOneClickInstall;
+        _builtinWeb = Cfg.Current.EnableBuiltinWebDownload;
         // 重 IO 丢后台：ProbeManifest 扫 Steam 清单 + ListStagedPackages 过 52 个版本包，
         // 同步跑会把首屏整个卡住（「点设置进半天」就是这里）
         _ = Task.Run(() =>
@@ -1483,6 +1503,16 @@
         if (!_nexusPremium) return;
         _autoInstall = !_autoInstall;
         SaveAutoInstall();
+    }
+
+    /// <summary>v1.3.84：内置网页取链开关。关掉只是不再开窗口 —— Premium 的 API 直链照旧走。</summary>
+    private void ToggleBuiltinWeb()
+    {
+        _builtinWeb = !_builtinWeb;
+        var cfg = Cfg.Current;
+        cfg.EnableBuiltinWebDownload = _builtinWeb;
+        Cfg.Save(cfg);
+        StateHasChanged();
     }
 
     private void ToggleShowAdult()
@@ -1571,21 +1601,17 @@
 
     private void Pick()
     {
-        var dlg = new Microsoft.Win32.OpenFolderDialog
+        // 从输入框当前填的目录开始浏览
+        var picked = FolderPicker.Pick(LocService.Tr("选择 Stardew Valley 游戏目录"), _gamePath);
+        if (picked is null) return;
+        _gamePath = picked;
+        if (IsValidGamePath(_gamePath))
         {
-            Title = LocService.Tr("选择 Stardew Valley 游戏目录")
-        };
-        if (dlg.ShowDialog() == true)
+            SaveGamePath();
+        }
+        else
         {
-            _gamePath = dlg.FolderName;
-            if (IsValidGamePath(_gamePath))
-            {
-                SaveGamePath();
-            }
-            else
-            {
-                _ = JS.InvokeVoidAsync("junigridJs.toast", LocService.Tr("请选择包含 Stardew Valley.exe 的游戏目录"), "err");
-            }
+            _ = JS.InvokeVoidAsync("junigridJs.toast", LocService.Tr("请选择包含 Stardew Valley.exe 的游戏目录"), "err");
         }
     }
 

@@ -522,9 +522,11 @@ public sealed class NexusWebDownloadService
     /// <summary>重载页面重试几次。两次足够：真遇到 Cloudflare/限流时再多也是白搭。</summary>
     private const int MaxReloads = 2;
 
-    /// <summary>忍耐期：页面刚打开的前 10 秒不因「验证 / 登录」判定去弹窗。
+    /// <summary>忍耐期：页面刚打开的前 10 秒不因「登录」判定去弹窗。
     /// 实测 N 网首屏经常先给一张 Cloudflare 中间页（Just a moment…），3~8 秒才自己放行；
-    /// 太早 Reveal 会让用户对着一个下一秒就消失的挑战页发呆。</summary>
+    /// 太早 Reveal 会让用户对着一个下一秒就消失的挑战页发呆。
+    /// <para>2026-11-08：这个宽限<b>不再压人机验证</b>（见 <see cref="ChallengeRevealDelaySeconds"/>）——
+    /// 验证页一旦真卡住，用户就得多等这 10 秒，纯属白等。</para></summary>
     private const int GraceSeconds = 10;
 
     /// <summary>验证页卡住时重载页面的次数。
@@ -535,16 +537,16 @@ public sealed class NexusWebDownloadService
     /// 交浏览器）。留一次兜住「偶发死循环」，剩下的时间交给浏览器那条稳的路。</para></summary>
     private const int MaxChallengeReloads = 1;
 
-    /// <summary>验证页刚出现时的「完全静默」时长：这段时间里一次的探针都不打。
-    /// <para>2026-11-07 03:47 对照实验：用真实 profile（<c>E:\junigrid\nexus-web\profile</c>）、
-    /// 同样的离屏位置、同样的 <c>ShowActivated=false</c>、同样的启动参数、同样挂着 CDP，
-    /// 一个独立测试窗口 <b>8 秒就自己过了</b>——它和正式流程唯一的差别是探针脚本的重量：
-    /// 测试窗口只读 <c>document.title</c>，而正式探针要读 <c>innerText</c> 8000 字、
-    /// 遍历 <c>iframe</c>、调 <c>getBoundingClientRect()</c>，每 1.5 秒一轮，每一轮都强制
-    /// 整页重新布局。CF 的挑战脚本靠 rAF + 精确计时跑 Web Worker，被这样反复打断很容易
-    /// 卡在半路（实机就是「一直转圈、永远不放行」）。所以先闭嘴 8 秒，按测试窗口那种
-    /// 「没人打扰」的节奏让它自己跑完；过不了再走重载/交接的老路。</para></summary>
-    private const int ChallengeQuietSeconds = 8;
+    /// <summary>看到验证页之后多久把窗口交给用户。
+    /// <para>2026-11-08 22:44（用户反馈「人机验证窗口出现得太慢」）：以前这里是两道闸
+    /// —— 10 秒忍耐期（<see cref="GraceSeconds"/>）+ 8 秒「完全静默」—— 实机日志
+    /// <c>18.7s 开始取链 → 20.1s 探到验证页 → 37.7s 窗口才出现</c>，中间 19 秒用户对着
+    /// 什么都没有的界面，只能以为卡死。现在只留一个去抖：挑战页连续存在 1.5 秒就弹窗，
+    /// 既避开一闪而过的 CF 中间页，又不至于让人空等。</para>
+    /// <para>原来那 8 秒静默的用意（别用重探针脚本打断 CF 的挑战）没丢 —— 挪到弹窗<b>之后</b>，
+    /// 由 <see cref="HiddenHost.Reveal"/> 设一段静默期，那时用户已经在看着页面了。</para>
+    /// <para>验证页上一闪而过的情况仍然不弹：探针判定挑战页消失后会立刻收窗（连续 3 次探不到）。</para></summary>
+    private const double ChallengeRevealDelaySeconds = 1.5;
 
     /// <summary>验证窗口交到用户手上之后，给他多久自己过。这段时间里不重载、不清 cookie、
     /// 也不偷偷转浏览器 —— 他正在看着那个转圈的页面，任何自作主张都会把页面换掉。
@@ -710,8 +712,9 @@ public sealed class NexusWebDownloadService
         private bool _browserHandoff;
         /// <summary>验证页卡住后已经重载过几次（见 <see cref="MaxChallengeReloads"/>）。</summary>
         private int _challengeReloads;
-        /// <summary>这一轮挑战页是否已经给过「完全静默」的时间（见 <see cref="ChallengeQuietSeconds"/>）。</summary>
-        private bool _challengeQuieted;
+        /// <summary>本轮第一次探到验证页的时刻 —— 弹窗去抖用（见 <see cref="ChallengeRevealDelaySeconds"/>）。
+        /// 挑战页消失或重载页面时清空，下一轮重新计时。</summary>
+        private DateTime? _challengeSeenAtUtc;
         /// <summary>验证窗口是什么时候交到用户手上的（用户自己过的计时起点）。</summary>
         private DateTime _challengeRevealAtUtc;
 
@@ -1300,69 +1303,50 @@ public sealed class NexusWebDownloadService
                     AppLog.Info("NexusWeb", "页面状态 " + sig);
                 }
 
-                // 忍耐期只压「人机验证」：N 网的首屏经常先给一张 Cloudflare 中间页
+                // 忍耐期只压「登录」：N 网的首屏经常先给一张 Cloudflare 中间页
                 // （"Just a moment…"），3~8 秒后自己放行。这期间弹窗只会让用户对着
                 // 一张下一秒就消失的页面发呆，而窗口还 Topmost 悬在整个屏幕上。
                 var inGrace = (DateTime.UtcNow - started).TotalSeconds < GraceSeconds;
 
                 // ── 人机验证：这是【唯一】会让窗口出现在用户眼前的情形 ──
-                if (probe.Challenge && !inGrace)
+                // 2026-11-08：不再吃 GraceSeconds 的 10 秒宽限 —— 那个宽限是给「登录墙判断」用的，
+                // 拿它压验证页只会让用户对着空界面干等（见 ChallengeRevealDelaySeconds 的说明）。
+                if (probe.Challenge)
                 {
                     _cfMisses = 0;
                     _sawChallenge = true;
                     sawChallenge = true;
                     _challengeActive = true;
+                    _challengeSeenAtUtc ??= DateTime.UtcNow;
 
-                    if (probe.NeedsClick)
+                    // 去抖：挑战页连续存在一小会儿才弹窗。一闪而过的 CF 中间页不值得
+                    // 把置顶窗口甩到用户脸上；真卡住的则要立刻给他看。
+                    if ((DateTime.UtcNow - _challengeSeenAtUtc.Value).TotalSeconds < ChallengeRevealDelaySeconds)
                     {
-                        // 页面上有可见的 Turnstile 复选框 —— 只有这种才值得把窗口交给用户点。
-                        if (_revealedHint != "cf")
-                        {
-                            Reveal("cf", "Nexus 要求人机验证 —— 请在弹出的窗口里点一下完成，之后会自动继续");
-                            interactive = true;
-                        }
-                        // 手动计时起点：复选框可能被系统画在 iframe 里、点完变成「转圈」形态，
-                        // 那时会掉到下面的自动分支去 —— 不能让那条路读到默认值直接判超时。
-                        if (_challengeRevealAtUtc == default) _challengeRevealAtUtc = DateTime.UtcNow;
-                        await Task.Delay(1500, ct);
+                        await Task.Delay(300, ct);
                         continue;
                     }
 
-                    // 自动校验页（只有转圈）。
-                    // 2026-11-07 02:14 实机：这个页面在应用内窗口里会一直转圈（普通浏览器秒过，
-                    // 内置窗口过不去 —— CF 对嵌入式浏览器 + 调试通道的判定不同），刷新循环每 20 秒
-                    // 一次、永远不收敛。以前这里会显形让用户「点一下」，可页面上根本没有可点的东西；
-                    // 再往后就是干等满 5 分钟。
-                    // 2026-11-07 03:47 对照实验推翻了这个结论：同样的 profile / 位置 / 参数 / CDP，
-                    // 独立窗口 8 秒就过，唯一差别是探针没那么重。所以先给一段完全静默（见
-                    // ChallengeQuietSeconds），别再一上来就用重脚本打断挑战。
-                    if (!_challengeQuieted)
-                    {
-                        _challengeQuieted = true;
-                        _quietUntilUtc = DateTime.UtcNow.AddSeconds(ChallengeQuietSeconds);
-                        AppLog.Info("NexusWeb",
-                            $"检测到 Cloudflare 验证页（页面上没有需要点的控件），静默 {ChallengeQuietSeconds}s 让它自己完成");
-                        _report?.Invoke("Nexus 正在验证浏览器（不需要操作）…", null, null);
-                        _autoHintSent = true;
-                        await Task.Delay(500, ct);
-                        continue;
-                    }
-                    // 静默过后它还在转圈 → 直接交给用户。
-                    // 「如果是人机验证，为什么不直接弹窗让咱们自己验证？」（2026-11-07 03:52）
-                    // —— 对，这才是这条通道该有的样子。挑战页虽然没有可点的复选框，但
-                    // 托管挑战确实存在「窗口要有焦点 / 页面要被真人碰一下」才放行的情况，
-                    // 那是我们替不了的；而背着用户偷偷转去浏览器，等于把主动权也拿走了。
-                    // 所以：静默期一过就显形，让用户看着它转、必要时点一下页面。
+                    // 交窗。两种形态走同一处 —— 差别只在提示文案：
+                    //  · 有可见 Turnstile 复选框 → 必须用户点一下；
+                    //  · 只有转圈（自动校验）→ 也把窗口给他。2026-11-07 03:52 用户原话
+                    //    「如果是人机验证，为什么不直接弹窗让咱们自己验证？」：托管挑战确有
+                    //    「窗口要有焦点 / 要被真人碰一下」才放行的情形，那是我们替不了的，
+                    //    而背着用户偷偷转去浏览器等于把主动权也拿走了。
                     if (_revealedHint != "cf")
                     {
-                        Reveal("cf", "Nexus 要验证一下浏览器 —— 窗口已弹出，等它转完会自动继续；"
-                                   + "要是停着不动，点一下页面任意位置");
+                        var needClick = probe.NeedsClick;
+                        Reveal("cf", needClick
+                            ? "Nexus 要求人机验证 —— 请在弹出的窗口里点一下完成，之后会自动继续"
+                            : "Nexus 要验证一下浏览器 —— 窗口已弹出，等它转完会自动继续；"
+                              + "要是停着不动，点一下页面任意位置");
                         interactive = true;
+                        _autoHintSent = true;
                         _challengeRevealAtUtc = DateTime.UtcNow;
-                        _report?.Invoke("Nexus 要验证浏览器 —— 请在弹出的窗口里等一下它转完", null, null);
-                        AppLog.Info("NexusWeb",
-                            $"验证页静默 {ChallengeQuietSeconds}s 后仍未放行，弹窗交给用户自己过");
-                        await Task.Delay(1200, ct);
+                        AppLog.Info("NexusWeb", needClick
+                            ? $"检测到人机验证（有可点的 Turnstile）→ 弹窗交给用户点"
+                            : $"检测到 Cloudflare 验证页（只有转圈）→ 弹窗交给用户看着，窗口内静默让它自己跑");
+                        await Task.Delay(800, ct);
                         continue;
                     }
 
@@ -1385,7 +1369,11 @@ public sealed class NexusWebDownloadService
                             _report?.Invoke($"验证没通过，正在重试（第 {_challengeReloads} 次）…", null, null);
                             started = DateTime.UtcNow;
                             _autoHintSent = false;
-                            _challengeQuieted = false;   // 新一轮挑战也先给静默，别一上来就探
+                            _challengeSeenAtUtc = null;   // 新一轮挑战重新走去抖
+                            // 手动计时也要重来：窗口一直在屏幕上，这个起点还是上一次弹窗的时刻，
+                            // 不清就会「重载完 2 秒」直接判超时、把刚给用户的第二次机会白扔掉
+                            // （2026-11-09 00:14 自测日志：重载后 2s 就跳到「改开系统浏览器」）。
+                            _challengeRevealAtUtc = DateTime.UtcNow;
                             _core?.Navigate(PageUrl);
                             await Task.Delay(800, ct);
                             continue;
@@ -1428,6 +1416,7 @@ public sealed class NexusWebDownloadService
                     sawChallenge = false;
                     _autoHintSent = false;
                     _challengeActive = false;
+                    _challengeSeenAtUtc = null;   // 挑战页退了，下一张重新计时
                     started = DateTime.UtcNow;
                 }
 
@@ -1589,7 +1578,9 @@ public sealed class NexusWebDownloadService
             _report?.Invoke(hint, null, null);
             // 交窗之后先静默几秒：让 CF 的托管挑战在没有脚本注入的干净环境里跑一次，
             // 很多挑战就是这样自己过的（用户的原话：「有时不用点就通过了」）。
-            _quietUntilUtc = DateTime.UtcNow.AddSeconds(6);
+            // 2026-11-08：这段静默从「弹窗前的 8 秒」搬到这里 —— 窗口已经上屏，用户看得见进度，
+            // 而探针仍然不打断挑战。4 秒够了：静默越久，验证过了之后窗口在屏幕上多留的时间越长。
+            _quietUntilUtc = DateTime.UtcNow.AddSeconds(4);
             if (!firstTime || _window is null) return;
             try
             {

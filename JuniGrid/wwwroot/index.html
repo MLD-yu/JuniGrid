@@ -10,14 +10,16 @@
     <link rel="stylesheet" href="css/base.css?v=1.2.13" />
     <link rel="stylesheet" href="css/shell.css?v=1.3.74" />
     <link rel="stylesheet" href="css/home.css?v=1.2.11" />
-    <link rel="stylesheet" href="css/mods.css?v=1.3.80" />
+    <link rel="stylesheet" href="css/mods.css?v=20261110i" />
     <link rel="stylesheet" href="css/portraits.css?v=1.2.11" />
     <link rel="stylesheet" href="css/effects.css?v=1.3.27" />
-    <link rel="stylesheet" href="css/detail.css?v=1.3.81" />
+    <link rel="stylesheet" href="css/detail.css?v=1.3.82" />
     <link rel="stylesheet" href="css/nexus.css?v=1.2.11" />
-    <link rel="stylesheet" href="css/misc.css?v=1.3.27" />
+    <link rel="stylesheet" href="css/misc.css?v=1.3.34" />
     <link rel="stylesheet" href="css/swipe-row.css?v=1.2.11" />
     <link rel="stylesheet" href="css/packs.css?v=1.2.11" />
+    <!-- 首启引导（三步 stepper）：独立文件，类名全部 jg-wg-*，与其它页零交叉 -->
+    <link rel="stylesheet" href="css/welcome.css?v=1.0.9" />
     <link rel="stylesheet" href="css/theme.css?v=1.2.11" />
     <link rel="stylesheet" href="css/violet.css?v=1.2.11" />
 
@@ -86,8 +88,47 @@
         // "There is no pending async call with ID N"。它不影响数据、页面照常，
         // 但这个浮层是给【启动失败】用的，不该被这种一次性互操作残留触发。
         const BENIGN = /no pending async call with ID/i;
-        function showErr(msg) {
+
+        // 这个浮层原本只服务【启动失败】：Blazor 没挂上、脚本没加载。
+        // 但 error / unhandledrejection 是全局的 —— 运行期任何一次第三方脚本或注入脚本的
+        // 未捕获异常都会把它顶出来（实测：scrollIntoView 收到 block:'/center/'），
+        // 用户看到「JuniGrid 启动出错 — 重新加载」，以为程序坏了。所以挂载完成后
+        //（.jg-shell 出现）只写控制台，不再弹条幅；控制台仍留 stack，排查不受影响。
+        let booted = false;
+
+        // scrollIntoView 的 block / inline 只接受 'start' | 'center' | 'end' | 'nearest'
+        //（ScrollLogicalPosition）—— 传 '/center/'（正则字面量被 String() 成 "/center/"）
+        // 或别的脏值，在 WebIDL 字典转换阶段就抛 TypeError，压根进不到渲染。
+        // 这层守卫把能救的归一化（剥掉首尾斜杠）、救不回的退回 'nearest'，顺带兜住
+        // behavior；仍失败就退化成无参调用，不让它冒成 unhandledrejection。
+        (function () {
+            const orig = Element.prototype.scrollIntoView;
+            if (!orig) return;
+            const POS = ['start', 'center', 'end', 'nearest'];
+            const BEH = ['auto', 'instant', 'smooth'];
+            function pick(v, allowed, fallback) {
+                if (v == null) return undefined;
+                let s = String(v).trim();
+                if (s.charAt(0) === '/' && s.charAt(s.length - 1) === '/') s = s.slice(1, -1);
+                return allowed.indexOf(s) >= 0 ? s : fallback;
+            }
+            Element.prototype.scrollIntoView = function (arg) {
+                if (!arg || typeof arg !== 'object') return orig.call(this, arg);
+                const opts = {};
+                if (arg.behavior != null) opts.behavior = pick(arg.behavior, BEH, 'auto');
+                if (arg.block != null) opts.block = pick(arg.block, POS, 'nearest');
+                if (arg.inline != null) opts.inline = pick(arg.inline, POS, 'nearest');
+                try { return orig.call(this, opts); }
+                catch (e) {
+                    console.warn('[jg] scrollIntoView 参数被兜底：' + (e && e.message));
+                    return orig.call(this);
+                }
+            };
+        })();
+
+        function showErr(msg, detail) {
             if (BENIGN.test(msg)) return;
+            if (booted) { console.error('[jg] 运行期错误（不弹条幅）：', msg, detail || ''); return; }
             const el = document.getElementById('blazor-error-ui');
             if (!el) return;
             document.getElementById('err-msg').textContent = msg;
@@ -95,9 +136,20 @@
         }
 
         window.addEventListener('error', e =>
-            showErr('JS 错误: ' + (e.message || '未知') + ' @ ' + (e.filename || '?') + ':' + (e.lineno || '?')));
+            showErr('JS 错误: ' + (e.message || '未知') + ' @ ' + (e.filename || '?') + ':' + (e.lineno || '?'), e.error && e.error.stack));
         window.addEventListener('unhandledrejection', e =>
-            showErr('Promise 拒绝: ' + (e.reason?.message || e.reason || '未知')));
+            showErr('Promise 拒绝: ' + (e.reason?.message || e.reason || '未知'), e.reason && e.reason.stack));
+
+        // 挂载完成的判定用 MutationObserver（即时生效），不等 5s 超时那一跳
+        (function () {
+            const app = document.getElementById('app');
+            if (!app) return;
+            if (app.querySelector('.jg-shell')) { booted = true; return; }
+            const mo = new MutationObserver(function () {
+                if (app.querySelector('.jg-shell')) { booted = true; mo.disconnect(); }
+            });
+            mo.observe(app, { childList: true, subtree: true });
+        })();
 
         setTimeout(() => {
             // Blazor 挂载成功的标志：.jg-shell 出现在 #app 里
@@ -126,16 +178,17 @@
          "junigridJs was undefined" 未观察异常）。gsap 本地化 + 引擎最后加载，竞态归零
          （Flip/ScrollTrigger 插件已无引用，已清理移除）。
          （原 interop.js 已按功能拆分；core 必须最先 —— 它定义 window.junigridJs 基础对象） -->
-    <script src="js/junigrid.core.js?v=1.3.79"></script>
+    <script src="js/junigrid.core.js?v=1.3.86"></script>
     <script src="js/junigrid.splash.js?v=1.2.9"></script>
     <script src="js/junigrid.ui.js?v=1.3.27"></script>
+    <script src="js/junigrid.welcome.js?v=1.0.1"></script>
     <script src="js/junigrid.portraits.js?v=1.2.9"></script>
     <script src="js/junigrid.switch.js?v=1.2.9"></script>
     <script src="js/junigrid.detail.js?v=1.2.9"></script>
     <script src="js/junigrid.scroll.js?v=1.3.51"></script>
     <script src="js/junigrid.nexus.js?v=1.2.9"></script>
-    <script src="js/junigrid.taskdock.js?v=1.3.51"></script>
-    <script src="js/junigrid.widgets.js?v=1.2.9"></script>
+    <script src="js/junigrid.taskdock.js?v=1.3.86"></script>
+    <script src="js/junigrid.widgets.js?v=1.3.6"></script>
     <script src="js/junigrid.trans.js?v=1.2.9"></script>
     <script src="js/junigrid.packs.js?v=1.2.9"></script>
     <script>junigridJs.splashInit();</script>

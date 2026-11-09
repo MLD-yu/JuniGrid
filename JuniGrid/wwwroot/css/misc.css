@@ -349,6 +349,23 @@
     display: flex;
     flex-direction: column;
     gap: 10px;
+}/* 顶部一行：左边「标题 + 作者」竖排，右边加群区，中间一条短竖线 */
+.jg-about-top {
+    display: flex;
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 10px 18px;
+}.jg-about-id {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-width: 0;
+}.jg-about-vline {
+    flex: none;
+    align-self: stretch;
+    width: 1px;
+    min-height: 34px;
+    background: var(--jg-line-strong);
 }/* 赞助支持区 */
 .jg-sponsor {
     flex: 0 0 auto;
@@ -482,17 +499,24 @@
 }.jg-cursor-grid > :not(.jg-cgrid-canvas) {
     position: relative;
     z-index: 1;
-}/* LogoLoop：联系图标跑马灯 */
+}/* LogoLoop：联系图标跑马灯（两端柔化 + 可拖拽甩动）
+   宽度由 junigrid.widgets.js 量出来：一份序列 + 下一个图标那么长（「全部图标 + 第一个」），
+   两侧再各留一条 --jg-ll-fade 宽的空白 —— 柔化带只吃空白，不会把边上的图标咬掉半只。 */
 .jg-logoloop {
+    --jg-ll-fade: 18px;
     position: relative;
     overflow: hidden;
     margin-top: 2px;
-    padding: 6px 0;
-    width: 300px;
+    padding: 6px var(--jg-ll-fade);
+    box-sizing: border-box;
+    width: 100%;
     max-width: 100%;
-    -webkit-mask-image: linear-gradient(to right, transparent 0, #000 40px, #000 calc(100% - 40px), transparent 100%);
-    mask-image: linear-gradient(to right, transparent 0, #000 40px, #000 calc(100% - 40px), transparent 100%);
-}.jg-ll-track {
+    cursor: grab;
+    touch-action: pan-y;
+    -webkit-mask-image: linear-gradient(to right, transparent 0, #000 var(--jg-ll-fade), #000 calc(100% - var(--jg-ll-fade)), transparent 100%);
+    mask-image: linear-gradient(to right, transparent 0, #000 var(--jg-ll-fade), #000 calc(100% - var(--jg-ll-fade)), transparent 100%);
+}.jg-logoloop[data-dragging],
+.jg-logoloop[data-dragging] * { cursor: grabbing; }.jg-ll-track {
     display: flex;
     width: max-content;
     will-change: transform;
@@ -505,18 +529,74 @@
     padding: 0;
 }.jg-ll-item {
     flex: 0 0 auto;
-    margin-right: 32px;
+    margin-right: 30px;
     display: inline-flex;
     align-items: center;
+    transition: opacity .5s ease, transform .55s cubic-bezier(.22, 1, .36, 1);
+}/* 入场：容器挂 data-intro 时先沉下去，JS 量完再摘掉 → 逐个浮起 */
+.jg-logoloop[data-intro] .jg-ll-item {
+    opacity: 0;
+    transform: translateY(9px);
 }.jg-ll-item img {
     height: 24px;
     width: auto;
     display: block;
     object-fit: contain;
+    border-radius: 50%;
     pointer-events: none;
     -webkit-user-drag: none;
     transition: transform .3s cubic-bezier(.4, 0, .2, 1);
-}.jg-ll-item:hover img { transform: scale(1.25); }/* 复制邮箱 toast */
+}.jg-ll-item:hover img { transform: scale(1.25); }/* 关于卡片里的加群区：QQ 图标 + 群名当标题，三个群号竖排一行一个 */
+.jg-qqblock {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+}.jg-qqblock-head {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--jg-text);
+}.jg-qqblock-head img {
+    flex: none;
+    width: 18px;
+    height: 18px;
+    display: block;
+}.jg-qqblock-list {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 5px;
+}.jg-qqchip {
+    appearance: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    min-width: 152px;
+    padding: 3px 10px;
+    border: 1px solid var(--jg-line);
+    border-radius: 999px;
+    background: var(--jg-well);
+    color: var(--jg-text-2);
+    font: inherit;
+    font-size: 11.5px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.5;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: background .16s ease, border-color .16s ease, color .16s ease;
+}.jg-qqchip b {
+    font-weight: 700;
+    opacity: .6;
+}.jg-qqchip:hover {
+    border-color: var(--jg-line-strong);
+    background: var(--jg-hover);
+    color: var(--jg-text);
+}.jg-qqchip:active { transform: scale(.97); }/* 复制邮箱 toast */
 .jg-copy-toast {
     position: fixed;
     left: 50%;

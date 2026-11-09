@@ -296,12 +296,15 @@
         <div class="jg-chips" role="group" style="align-items:center">
         @foreach (var f in _filterOptions)
         {
+            // 「覆盖包」的红点：有失效或新版本的包时亮，点进去第一眼就能看到是哪几个。
+            var overlayAlert = f.Key == "overlay" && OverlayAttentionCount > 0;
+            var dot = (f.Key == "updatable" && FailedCheckCount > 0) || overlayAlert;
             <button class="jg-chip @(!_showTrash && _filter == f.Key ? "active" : "")"
-                    style="@(f.Key == "updatable" && FailedCheckCount > 0 ? "position:relative" : "")"
+                    style="@(dot ? "position:relative" : "")"
                     data-tip="@FilterTip(f.Key)"
                     @onclick="() => SetFilter(f.Key)">
                 @Loc.T(f.Label)<span style="opacity:.7;font-weight:400"> · @CountFor(f.Key)</span>
-                @if (f.Key == "updatable" && FailedCheckCount > 0)
+                @if (dot)
                 {
                     @* v1.08：有检查失败的 mod → 可更新标签右上角小红点 *@
                     <span style="position:absolute;top:-3px;right:-3px;width:8px;height:8px;border-radius:50%;background:#e81123;box-shadow:0 0 0 2px var(--jg-bg)"></span>
@@ -545,7 +548,193 @@
             }
         </div>
     }
-    <div class="jg-modrows" style="@(_initialLoading || _showTrash ? "display:none" : "")">
+    @* ── 覆盖包视图：汉化补丁 / 贴图覆盖不住在 Mods\ 里，没有自己的行，
+       这里是它们唯一的全局入口。行 = 一个包（不是一条逐文件记录）。
+       2026-11-09 用户要求：整块照 Mod 行的样子做 —— 点行 = 选中（可多选），
+       行尾是启停开关；批量条里给 启用 / 禁用 / 删除 / 批量更新。
+       三改（同日）：**一段 = 一个宿主 mod**，段头就是那个 mod 的封面 + 真名
+       （「Farm Queue · 2 个」），点一下折叠；没装宿主的一律归「未安装宿主 mod」。
+       已失效的行只留「打开 N 网页面」和「删除」，重试走批量条的「启用」。 ── *@
+    @if (!_showTrash && _filter == "overlay" && !_initialLoading)
+    {
+        var sections = OverlaySections();
+        <div class="jg-modrows jg-overlayrows" style="margin-top:2px">
+            @if (sections.Count == 0)
+            {
+                <div class="jg-card" style="font-size:13px;opacity:.7">
+                    @Loc.T("没有覆盖包。汉化补丁、贴图覆盖这类包会出现在这里。")
+                </div>
+            }
+            @foreach (var sec in sections)
+            {
+                @* 2026-11-09 四改：段头补上「全选这个宿主下的覆盖包」复选框（三态），
+                   与 mod 分类段头同一颗 .jg-cat-check —— 否则想整段启用/删除只能一个个点。
+                   位置也照那边：折叠箭头改为最右，复选框贴在计数后面。 *@
+                var secSel = OverlaySectionSelectState(sec);
+                @* 2026-11-09 三改：段头 = 一个宿主 mod 的封面 + 真名（跟 mod 分类段头同一套观感），
+                   点一下折叠。不带图标选择器和「…」菜单：分组是按宿主算出来的，不是用户编辑的分类，
+                   给编辑入口只会让人以为能改名、能拖 mod 进来。 *@
+                <div class="jg-cat-head jg-ov-sechead @(sec.Collapsed ? "collapsed" : "")"
+                     data-tip="@(sec.Collapsed ? Loc.T("点击展开这一组") : Loc.T("点击收起这一组"))"
+                     @onclick="() => ToggleOverlaySection(sec.Key)">
+                    @if (sec.Cover is not null)
+                    {
+                        <img class="jg-ov-secicon" src="@sec.Cover" alt="" loading="lazy" />
+                    }
+                    else
+                    {
+                        <span class="jg-ov-secmark"></span>
+                    }
+                    <span class="jg-cat-head-name">@sec.Label</span>
+                    <span class="jg-cat-head-n">@Loc.F("{0} 个", sec.Items.Count)</span>
+                    <button class="jg-cat-check @(secSel == 2 ? "on" : secSel == 1 ? "some" : "")"
+                            role="checkbox" aria-checked="@(secSel == 2 ? "true" : secSel == 1 ? "mixed" : "false")"
+                            data-tip='@Loc.T("全选这一组覆盖包")' aria-label='@Loc.T("全选这一组覆盖包")'
+                            @onclick="() => ToggleOverlaySectionSelectAll(sec)" @onclick:stopPropagation="true">
+                        <svg viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                            @if (secSel == 2)
+                            {
+                                <path d="M2.6 6.3L4.8 8.4L9.4 3.6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                            }
+                            else if (secSel == 1)
+                            {
+                                <path d="M3 6h6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+                            }
+                        </svg>
+                    </button>
+                    <span class="jg-ov-secard">
+                        <svg viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                            <path d="M3.5 4.5L6 7l2.5-2.5" stroke="currentColor" stroke-width="1.6"
+                                  stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                    </span>
+                </div>
+                @* 段体与 mod 分类同一套 .jg-cat-body：折叠稳态靠 .collapsed，动画走 catToggle *@
+                <div class="jg-cat-body @(sec.Collapsed ? "collapsed" : "")" id="@OverlaySecAnchor(sec.Key)">
+                @foreach (var g in sec.Items)
+                {
+                var okey = OverlayKey(g);
+                var picked = _overlaySelected.Contains(okey);
+                var rec = g.Rec;
+                var gone = g.Stale > 0;
+                var title = OverlayTitle(rec);
+                var canOpen = rec.NexusModId is int;
+                var host = OverlayHostInfo(g.Host);
+                var hostMod = HostIndex().TryGetValue(ModService.NormalizeOverlayHost(g.Host), out var hm) ? hm : null;
+                // 能跳到哪个 id：装着的用本地条目，没装的用账本反查出来的那个
+                var hostJumpId = host.Installed ? hostMod?.NexusModId : host.NexusModId;
+                // 行尾要用的三个值在这里算好：Razor 只允许在循环体顶层写语句，
+                // 写进 <div> 里会被当普通文本输出（编译报「不存在名称 swOn」就是这个）
+                var swOn = !gone && g.AnyOn;
+                var ovMenu = OverlayMenuId(g);
+                @* 整行点击 = 选中（与 mod 行同一套 .selected 高亮）。行尾那几个控件各自
+                   stopPropagation，点开关/删除不会顺手把行选上。 *@
+                <div class="jg-modrow @(picked ? "selected" : "")" @key="okey" data-al
+                     @onclick="() => ToggleOverlaySelect(g)">
+                    @if (!string.IsNullOrEmpty(rec.PackCover))
+                    {
+                        <img class="jg-modrow-icon" src="@rec.PackCover" alt="" loading="lazy" />
+                    }
+                    else
+                    {
+                        <div class="jg-modrow-icon jg-modrow-icon-fallback">
+                            @(title.Length > 0 ? title[..1].ToUpperInvariant() : "?")
+                        </div>
+                    }
+                    <div class="jg-modrow-text">
+                        <div class="jg-modrow-title">
+                            <span class="name">@title</span>
+                            <span class="divider">|</span>
+                            <span class="ver">@(g.Keys.Count == 1 ? rec.RelPath : Loc.F("{0} 个文件", g.Keys.Count))</span>
+                            @* 只在混合段（未安装宿主 / 头像）里标宿主：宿主 mod 那几段，
+                               段头已经是「封面 + 名字」，行里再挂一遍纯属噪音。
+                               2026-11-10：这块现在是入口 —— 点名字去宿主 mod 详情页
+                               （装着的进本地详情，没装的去 N 网页面，都没有就不可点）。 *@
+                            @if (sec.ShowHostOnRows)
+                            {
+                                @OverlayHostTag(hostMod, host, hostJumpId)
+                            }
+                            @if (gone)
+                            {
+                                @* tooltip 只留一句：以前那段把「原因 + 该怎么做」全写进去了，
+                                   悬停出来是一条横贯整行的长条（截图 2026-11-10），读都不想读。
+                                   怎么做已经由右边的开关本身表达了（关着，点一下重盖）。 *@
+                                <span class="jg-tag danger"
+                                      data-tip='@Loc.T("可能已经失效或者被删除了")'>@Loc.T("已失效")</span>
+                            }
+                            @if (g.HasUpdate)
+                            {
+                                <button type="button" class="jg-newver"
+                                        title='@Loc.F("N 网已有新版本 {0}，点击更新", g.NewVersion)'
+                                        @onclick="() => UpdateOverlayAsync(g)" @onclick:stopPropagation="true">
+                                    <span class="jg-newver-label">@Loc.T("新版本")</span>
+                                    <span class="jg-newver-num">@g.NewVersion</span>
+                                </button>
+                            }
+                        </div>
+                        <div class="jg-modrow-desc">
+                            @Loc.T(g.AnyOn ? "已启用" : "已停用")
+                            @if (rec.AppliedAtUtc > DateTime.MinValue)
+                            {
+                                <text> · </text>
+                                @rec.AppliedAtUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm")
+                            }
+                        </div>
+                    </div>
+                    <div class="jg-modrow-end" @onclick:stopPropagation>
+                        @* 2026-11-09 四改：开关永远都在。
+                           没失效的：开 = 在位，点一下关掉（还原原文件）。
+                           失效的：**显示成"关"**（它现在确实没盖上），点它就是按留的副本
+                           重新盖一次 —— 以前这里干脆不给开关，用户只能选中这行再去下面
+                           批量条点「启用」，两步且要猜。 *@
+                        <button type="button" class="jg-modrow-switch jg-squish-host @(swOn ? "on" : "")" role="switch"
+                                aria-checked="@swOn"
+                                data-tip="@(gone
+                                    ? Loc.T("这个覆盖包已失效（宿主里没有它要盖的文件了）—— 开关是关的，点一下按留下的副本重新盖")
+                                    : (g.AnyOn ? Loc.T("关闭即停用此覆盖包") : Loc.T("打开即启用此覆盖包")))"
+                                @onclick="() => OnOverlaySwitch(g)">
+                            <span class="jg-switch"><span class="jg-switch-knob"></span></span>
+                        </button>
+                        @* 打开 N 网页面 / mod 详情 / 打开文件夹 / 重新应用 / 删除 全收进「…」，
+                           跟 mod 行同一套结构（.jg-modmenu + .jg-sort-menu，关闭靠页面底部那层
+                           .jg-dd-overlay，翻转定位靠 fitModMenu 复用同一个 _menuFolder）。 *@
+                        <div class="jg-sort-dd jg-modmenu @(_menuFolder == ovMenu ? "open" : "")" data-dd="modmenu">
+                            <button class="jg-rowbtn jg-modmenu-btn" data-tip='@Loc.T("更多操作")'
+                                    aria-label='@Loc.T("更多操作")'
+                                    @onclick="() => ToggleMenu(ovMenu)">
+                                <svg class="jg-rowbtn-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                                    <circle cx="12" cy="5" r="1.9"/>
+                                    <circle cx="12" cy="12" r="1.9"/>
+                                    <circle cx="12" cy="19" r="1.9"/>
+                                </svg>
+                            </button>
+                            <div class="jg-sort-menu">
+                                @if (gone)
+                                {
+                                    <button class="jg-sort-item" @onclick="() => MenuAct(() => ReapplyOverlaysGroup(g))">@Loc.T("重新应用")</button>
+                                }
+                                @if (canOpen)
+                                {
+                                    <button class="jg-sort-item" @onclick="() => MenuAct(() => GoOverlayDetail(rec))">@Loc.T("打开 N 网页面")</button>
+                                }
+                                @if (hostMod is { NexusModId: not null } hostDetail)
+                                {
+                                    <button class="jg-sort-item" @onclick="() => MenuAct(() => _ = OpenDetail(hostDetail))">@Loc.T("宿主 mod 详情")</button>
+                                }
+                                @* 「打开文件所在位置」不再给：这个包本身不住在 Mods 里，
+                                   打开的是宿主 mod 的目录 —— 用户要看宿主文件，直接点宿主名字
+                                   或「宿主 mod 详情」更直接，多这一项只会让人以为能在这里找到包本体。 *@
+                                <button class="jg-sort-item danger" @onclick="() => MenuAct(() => RevertOverlayGroup(g))">@Loc.T("删除")</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                }
+                </div>
+            }
+        </div>
+    }
+    <div class="jg-modrows" style="@(_initialLoading || _showTrash || _filter == "overlay" ? "display:none" : "")">
         @foreach (var sec in RenderedGroups())
         {
             @* v1.3.46：「按分类」视图的分段标题。id 给右侧导航做平滑滚动落点。
@@ -555,35 +744,82 @@
                data-drag-key 每段都有（v1.3.55：「未分类」也能拖 —— 想让它在最上面就拖上去）。 *@
             @if (sec.HasHeader)
             {
-            <div class="jg-cat-head @(sec.Collapsed ? "collapsed" : "")" id="jg-cat-@sec.Index"
+            var headSel = CategorySelectState(sec.Key);
+            <div class="jg-cat-head @(sec.Collapsed ? "collapsed" : "")" id="@CatHeadAnchor(sec.Key)"
                  data-cat-key="@sec.Key"
                  data-drag-key="@("c:" + sec.Key)"
                  data-drag-label="@sec.Label"
-                 @onclick='() => ToggleCategoryCollapse(sec.Key)'>
+                 data-tip="@(sec.Collapsed ? Loc.T("点击展开这个分类") : Loc.T("点击收起这个分类"))"
+                 @onclick="() => ToggleCategoryCollapse(sec.Key)">
+                @* 2026-11-09：分类图标 —— 素材全部取自游戏本体（Logo / 角色大头照 / 物品图鉴），
+                   22px 方框 + object-fit:contain 装图，横的竖的都不会被切掉一块。
+                   没设置过 = 游戏 Logo。换图标在右侧「…」菜单里。 *@
+                @* 2026-11-10：图标本身就是按钮 —— 点一下直接换图标（"换个图标"菜单项留着当第二条路）。 *@
+                <button class="jg-cat-icon" data-tip='@Loc.T("点击更换分类图标")'
+                        aria-label='@Loc.T("点击更换分类图标")'
+                        @onclick="() => OpenIconPicker(sec.Key)" @onclick:stopPropagation="true">
+                    @if (CategoryIconUrl(sec.Key) is { } iconUrl)
+                    {
+                        <img src="@iconUrl" alt="" draggable="false" loading="lazy" decoding="async" />
+                    }
+                    else
+                    {
+                        <span class="jg-cat-icon-ph"></span>
+                    }
+                </button>
                 <span class="jg-cat-head-name" title='@Loc.T("双击重命名分类")'
                       @ondblclick="() => OpenCategoryRename(sec.Key)"
                       @ondblclick:stopPropagation="true">@sec.Label</span>
-                <svg class="jg-cat-chevron" viewBox="0 0 12 12" fill="none" aria-hidden="true">
-                    <path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
-                </svg>
-                @if (sec.Key.Length > 0)
+                <span class="jg-cat-head-n">@Loc.F("{0} 个", sec.Groups.Sum(g => g.Items.Count))</span>
+                @* 2026-11-10：交互回到用户要的样子 —— 段头主体点哪儿都能展开/收起；
+                   右侧原先那颗折叠箭头改成<b>全选复选框</b>（全选 / 部分 / 空 三态），
+                   两件事各占一块，互不干扰。 *@
+                <button class="jg-cat-check @(headSel == 2 ? "on" : headSel == 1 ? "some" : "")"
+                        role="checkbox" aria-checked="@(headSel == 2 ? "true" : headSel == 1 ? "mixed" : "false")"
+                        data-tip='@Loc.T("全选这个分类下的 mod")'
+                        aria-label='@Loc.T("全选这个分类下的 mod")'
+                        @onclick="() => ToggleCategorySelectAll(sec.Key)"
+                        @onclick:stopPropagation="true">
+                    <svg viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                        @if (headSel == 2)
+                        {
+                            <path d="M2.6 6.3L4.8 8.4L9.4 3.6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                        }
+                        else if (headSel == 1)
+                        {
+                            <path d="M3 6h6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+                        }
+                    </svg>
+                </button>
+                @* 2026-11-09：未分类也给「…」菜单 —— 它现在能排在任意位置，光靠长按拖拽
+                   没鼠标就没法调；菜单里只留上移/下移（重命名、删除对未分类没意义）。 *@
+                <button class="jg-cat-head-more" data-tip='@Loc.T("分类操作")' aria-label='@Loc.T("分类操作")'
+                        @onclick="() => ToggleCategoryMenu(sec.Key)"
+                        @onclick:stopPropagation="true">…</button>
+                @if (_categoryMenu == sec.Key)
                 {
-                    <button class="jg-cat-head-more" data-tip='@Loc.T("分类操作")' aria-label='@Loc.T("分类操作")'
-                            @onclick="() => ToggleCategoryMenu(sec.Key)"
-                            @onclick:stopPropagation="true">…</button>
-                    @if (_categoryMenu == sec.Key)
-                    {
-                        <div class="jg-cat-head-menu" @onclick:stopPropagation="true">
-                            <button class="jg-sort-item" @onclick="() => MoveCategoryStep(sec.Key, -1)">@Loc.T("上移一位")</button>
-                            <button class="jg-sort-item" @onclick="() => MoveCategoryStep(sec.Key, +1)">@Loc.T("下移一位")</button>
-                            <button class="jg-sort-item" @onclick="() => OpenCategoryRename(sec.Key)">@Loc.T("重命名分类")</button>
+                    @* 2026-11-10：拆成「换个图标 + 重命名分类」两项太碎 —— 合成一个「编辑」，
+                       对话框里名字和图标一起改（图标本来也是分类的属性）。 *@
+                    <div class="jg-cat-head-menu" @onclick:stopPropagation="true">
+                        @if (sec.Key.Length > 0)
+                        {
+                            <button class="jg-sort-item" @onclick="() => OpenCategoryEdit(sec.Key)">@Loc.T("编辑")</button>
+                        }
+                        <button class="jg-sort-item" @onclick="() => MoveCategoryStep(sec.Key, -1)">@Loc.T("上移一位")</button>
+                        <button class="jg-sort-item" @onclick="() => MoveCategoryStep(sec.Key, +1)">@Loc.T("下移一位")</button>
+                        @if (sec.Key.Length > 0)
+                        {
                             <button class="jg-sort-item danger" @onclick="() => DeleteCategory(sec.Key)">@Loc.T("删除分类（不删 mod）")</button>
-                        </div>
-                    }
+                        }
+                    </div>
                 }
             </div>
+
             }
-            <div class="jg-cat-body @(sec.Collapsed ? "collapsed" : "")" id="jg-cat-body-@sec.Index">
+            @* 隐式段（不分段视图）没有可折叠的段头，给个固定 id 就够 —— 不能和
+               「未分类」段共用令牌，那样又会撞同一个 id。 *@
+            <div class="jg-cat-body @(sec.Collapsed ? "collapsed" : "")"
+                 id="@(sec.HasHeader ? CatBodyAnchor(sec.Key) : "jg-cat-body-flat")">
             @foreach (var group in sec.Groups)
             {
             // v1.3.67：捆绑包**恢复展开式父行**（「（3 个）」+ 每个子包一行）。
@@ -973,14 +1209,29 @@
         @if (_categoryHover is not null && CategorySectionOf(_categoryHover) is { } hov)
         {
             <div class="jg-catnav-card">
-                <div class="jg-catnav-title">@hov.Label</div>
+                @* 2026-11-10：卡片左边也放分类图标 —— 右侧那根杠只有 14px 线、卡片里原先只有名字，
+                   光看「222」根本记不住是哪个分类（用户实机反馈）。图标 20px 方框 + contain，
+                   跟段头那颗是同一张图、同一套缓存。 *@
+                <div class="jg-catnav-title">
+                    <span class="jg-catnav-icon">
+                        @if (CategoryIconUrl(hov.Key) is { } hovIcon)
+                        {
+                            <img src="@hovIcon" alt="" draggable="false" />
+                        }
+                        else
+                        {
+                            <span class="jg-cat-icon-ph"></span>
+                        }
+                    </span>
+                    <span class="jg-catnav-name">@hov.Label</span>
+                </div>
             </div>
         }
     </div>
 }
 
 @* ── 批量操作悬浮条（左键多选后出现）── *@
-@if (_selected.Count > 0)
+@if (_selected.Count > 0 && _filter != "overlay")
 {
     @* v0.42.0：纯图标按钮（SVG 文件）+ 胶囊提示（data-tip，禁用按钮也有）+ 全选在最前 *@
     var anyUpdatable = _selected.Any(f => _modsByFolder.TryGetValue(f, out var mm) && CanBatchUpdate(mm));
@@ -1027,6 +1278,52 @@
 </div>
 }
 
+@* ── 覆盖包多选后的批量条：与 mod 那条同一套外观，只是动作换成
+   启用 / 禁用 / 删除 / 批量更新（覆盖包没有分类、备注这些概念）。 ── *@
+@if (!_showTrash && _filter == "overlay" && _overlaySelected.Count > 0)
+{
+    var ovSel = SelectedOverlayGroups();
+    var ovAnyOn = ovSel.Any(g => g.AnyOn);
+    @* 失效的也算"可以启用"：对它们点启用就是按留的副本重新盖一次（见 BatchSetOverlayEnabled），
+       否则选中一批全开着但已经失效的包时，这颗按钮是灰的，用户没有别的重试入口。 *@
+    var ovAnyOff = ovSel.Any(g => !g.AnyOn || g.Stale > 0);
+    var ovAnyUpd = ovSel.Any(g => g.HasUpdate && g.Rec.NexusModId is int && g.UpdateFileId != 0);
+    <div class="jg-batchbar-anchor">
+    <div class="jg-batchbar">
+        <span class="jg-batchbar-count">@Loc.F("已选择 {0} 个", ovSel.Count)</span>
+        <button class="jg-mini-btn jg-ico" data-tip='@Loc.T("全选")' @onclick="SelectAllOverlays">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M4 5.5h4M4 12h4M4 18.5h4"/>
+                <path d="M10 4.5l1.8 1.8L15.5 2.6"/>
+                <path d="M10 11l1.8 1.8 3.7-3.7"/>
+                <path d="M10 17.5l1.8 1.8 3.7-3.7"/>
+            </svg>
+        </button>
+        <button class="jg-mini-btn jg-ico"
+                data-tip='@(ovAnyUpd ? Loc.T("批量更新") : Loc.T("选中的覆盖包没有可自动更新的来源"))'
+                disabled="@(!ovAnyUpd)" @onclick="BatchOverlayUpdate">
+            <img src="assets/actions/batch-update.svg" alt="" draggable="false" />
+        </button>
+        <button class="jg-mini-btn jg-ico" data-tip='@Loc.T("启用（已失效的会重新盖一次）")'
+                disabled="@(!ovAnyOff)" @onclick="() => BatchSetOverlayEnabled(false)">
+            <img src="assets/actions/enable.svg" alt="" draggable="false" />
+        </button>
+        <button class="jg-mini-btn jg-ico" data-tip='@Loc.T("禁用")'
+                disabled="@(!ovAnyOn)" @onclick="() => BatchSetOverlayEnabled(true)">
+            <img src="assets/actions/disable.svg" alt="" draggable="false" />
+        </button>
+        <button class="jg-mini-btn danger-outline jg-ico" data-tip='@Loc.T("删除")' @onclick="AskOverlayBatchDelete">
+            <img src="assets/actions/delete.svg" alt="" draggable="false" />
+        </button>
+        <button class="jg-mini-btn jg-ico" data-tip='@Loc.T("取消选择")' @onclick="ClearOverlaySelection">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+                <path d="M6 6l12 12M18 6L6 18"/>
+            </svg>
+        </button>
+    </div>
+</div>
+}
+
 @* ── 备注/重命名弹窗（给 mod 起中文备注，列表里显示成 备注(原名)）── *@
 @if (_remarkFolder is not null)
 {
@@ -1059,12 +1356,15 @@
                v1.3.48：分类多到一定高度就自己滚（弹窗不再被标签顶长），＋ 和输入框钉在列表下面
                跟着滚走的是分类行，不是这两个出口；输入框平时不出现，点了 ＋ 才出来并直接进焦点。 *@
             <div class="jg-cat-menu">
-                <div class="jg-profile-item @(CommonCategory() == "" ? "active" : "")">
+                <div class="jg-profile-item @(!_categoryNewOpen && CommonCategory() == "" ? "active" : "")">
+                    @CatIconButton("", "jg-cat-icon-row")
                     <button class="jg-profile-name" @onclick="() => AssignSelectedCategory(null)">@Loc.T("未分类")</button>
                 </div>
                 @foreach (var c in ExistingCategories())
                 {
-                    <div class="jg-profile-item @(CommonCategory() == c ? "active" : "")">
+                    <div class="jg-profile-item @(!_categoryNewOpen && CommonCategory() == c ? "active" : "")">
+                        @* 2026-11-10：每行前面带分类图标（默认小鸡），点图标就地换 —— 不用先加进去再回头改 *@
+                        @CatIconButton(c, "jg-cat-icon-row")
                         <button class="jg-profile-name" @onclick="() => AssignSelectedCategory(c)">@c</button>
                         <button class="jg-profile-del" data-tip='@Loc.T("删除这个分类（mod 回到未分类，不删 mod）")'
                                 aria-label='@Loc.T("删除这个分类")'
@@ -1082,11 +1382,15 @@
                 }
                 else
                 {
-                    <div class="jg-remark-field">
-                        <input class="jg-remark-input @(_categoryNewName.Length >= 16 ? "near-limit" : "")" maxlength="20"
-                               placeholder='@Loc.T("新分类名")' value="@_categoryNewName"
-                               @oninput="OnCategoryNameInput" @onkeydown="OnCategoryNameKeydown" />
-                        <span class="jg-remark-count jg-cat-count-new @(_categoryNewName.Length >= 20 ? "full" : _categoryNewName.Length >= 16 ? "warn" : "")">@(20 - _categoryNewName.Length)</span>
+                    @* 2026-11-10：新建行前面也有一颗图标（默认小鸡），点它就能挑 —— 建出来直接带着图 *@
+                    <div class="jg-cat-newrow">
+                        @CatIconButton(NewCatIconKey, "jg-cat-icon-row")
+                        <div class="jg-remark-field">
+                            <input class="jg-remark-input @(_categoryNewName.Length >= 16 ? "near-limit" : "")" maxlength="20"
+                                   placeholder='@Loc.T("新分类名")' value="@_categoryNewName"
+                                   @oninput="OnCategoryNameInput" @onkeydown="OnCategoryNameKeydown" />
+                            <span class="jg-remark-count jg-cat-count-new @(_categoryNewName.Length >= 20 ? "full" : _categoryNewName.Length >= 16 ? "warn" : "")">@(20 - _categoryNewName.Length)</span>
+                        </div>
                     </div>
                 }
             </div>
@@ -1105,12 +1409,96 @@
     </div>
 }
 
-@* v1.3.46：分类重命名（只改分组名，不动 mod） *@
-@if (_categoryRenameFrom is not null)
+@* 2026-11-09：本地导入（拖放 / 从文件安装）—— 装之前先选分类。
+   形状与「加入分类」一致：一行一个分类、带图标，也可以现场 ＋ 新建一个。
+   ⚠ 2026-11-09 晚（用户口径）：**一个 mod 只属于一个分类** —— 这里改成单选，
+   点另一个就是换过去，再点一下当前那个就是取消（回到未分类）。
+   与它不同的是：这里点分类只是勾选，按「继续安装」才装；取消 = 这一批不装。 *@
+@if (_localPackPickOpen)
 {
     <div class="jg-dlg-overlay" @onclick:stopPropagation>
+        <div class="jg-dialog jg-remark-dialog jg-cat-dialog jg-lppick-dialog">
+            <div class="jg-remark-title">@Loc.T("安装到哪个分类？")</div>
+            <div class="jg-lppick-sub">
+                @Loc.F("待安装 {0} 个压缩包 · 选一个分类，不选就是未分类", _localPackPending.Count)
+            </div>
+            <div class="jg-cat-menu">
+                <div class="jg-profile-item @(!_localPackNewOpen && _localPackCat.Length == 0 ? "active" : "")">
+                    @CatIconButton("", "jg-cat-icon-row")
+                    <button class="jg-profile-name" @onclick="ClearLocalPackCat">@Loc.T("未分类")</button>
+                </div>
+                @foreach (var c in ExistingCategories())
+                {
+                    var cc = c;
+                    <div class="jg-profile-item @(!_localPackNewOpen && string.Equals(_localPackCat, cc, StringComparison.OrdinalIgnoreCase) ? "active" : "")">
+                        @CatIconButton(cc, "jg-cat-icon-row")
+                        <button class="jg-profile-name" @onclick="() => PickLocalPackCat(cc)">@cc</button>
+                    </div>
+                }
+            </div>
+            <div class="jg-cat-foot">
+                @if (!_localPackNewOpen)
+                {
+                    <button class="jg-profile-addcap" data-tip='@Loc.T("新建分类")' aria-label='@Loc.T("新建分类")'
+                            @onclick="FocusLocalPackNewInput"><span class="plus">＋</span></button>
+                }
+                else
+                {
+                    <div class="jg-cat-newrow">
+                        @CatIconButton(LocalNewCatIconKey, "jg-cat-icon-row")
+                        <div class="jg-remark-field">
+                            <input class="jg-remark-input" maxlength="20"
+                                   placeholder='@Loc.T("新分类名")' value="@_localPackNewName"
+                                   @oninput="OnLocalPackNewInput" @onkeydown="OnLocalPackNewKeydown" />
+                        </div>
+                    </div>
+                }
+            </div>
+            @if (_localPackDialogError is not null)
+            {
+                <div class="jg-cat-err">@_localPackDialogError</div>
+            }
+            <div class="jg-dialog-actions">
+                <button class="jg-btn" @onclick="CancelLocalPackPick">@Loc.T("取消")</button>
+                @if (_localPackNewOpen)
+                {
+                    <button class="jg-btn primary" @onclick="CreateLocalPackCategory">@Loc.T("新建并勾选")</button>
+                }
+                else
+                {
+                    <button class="jg-btn primary" @onclick="ConfirmLocalPackCategory">
+                        @(_localPackCat.Length == 0 ? Loc.T("不分类，直接安装") : Loc.T("继续安装"))
+                    </button>
+                }
+            </div>
+        </div>
+    </div>
+}
+
+@* 2026-11-10：编辑分类 —— 名字和图标一起改。
+   原来菜单里「换个图标」和「重命名分类」是两项，用户要合成一个「编辑」：
+   图标本来就是分类的一个属性，分开改反而像两件事。 *@
+@if (_categoryRenameFrom is not null)
+{
+    var editKey = _categoryRenameFrom;
+    <div class="jg-dlg-overlay" @onclick:stopPropagation>
         <div class="jg-dialog jg-remark-dialog jg-cat-dialog">
-            <div class="jg-remark-title">@Loc.F("重命名分类「{0}」", _categoryRenameFrom)</div>
+            <div class="jg-remark-title">@Loc.F("编辑分类「{0}」", editKey)</div>
+            <div class="jg-cat-edit">
+                <button class="jg-cat-icon jg-cat-icon-big" data-tip='@Loc.T("点图标换一个")'
+                        aria-label='@Loc.T("点图标换一个")'
+                        @onclick="() => OpenIconPicker(editKey)">
+                    @if (CategoryIconUrl(editKey) is { } editIcon)
+                    {
+                        <img src="@editIcon" alt="" draggable="false" />
+                    }
+                    else
+                    {
+                        <span class="jg-cat-icon-ph"></span>
+                    }
+                </button>
+                <span class="jg-cat-edit-hint">@Loc.T("点图标换一个")</span>
+            </div>
             <div class="jg-remark-field">
                 <input class="jg-remark-input @(_categoryRenameDraft.Length >= 16 ? "near-limit" : "")" maxlength="20"
                        placeholder='@Loc.T("新分类名")' value="@_categoryRenameDraft"
@@ -1124,6 +1512,39 @@
             <div class="jg-dialog-actions">
                 <button class="jg-btn" @onclick="() => { _categoryRenameFrom = null; _categoryDialogError = null; }">@Loc.T("取消")</button>
                 <button class="jg-btn primary" @onclick="ConfirmCategoryRename">@Loc.T("保存")</button>
+            </div>
+        </div>
+    </div>
+}
+
+@* 2026-11-09：分类图标选择器 —— 素材全部取自游戏本体：Logo / 角色大头照 / 物品图鉴。
+   选完立刻落盘（点一下就走，没有"确定"），关闭走遮罩或底部按钮。 *@
+@if (_iconPickOpen)
+{
+    var curIcon = IconSpecOf(_iconPickKey);
+    <div class="jg-dlg-overlay" @onclick="CloseIconPicker">
+        <div class="jg-dialog jg-cat-icon-dialog" @onclick:stopPropagation>
+            <div class="jg-remark-title">@Loc.F("给「{0}」选个图标", IconCategoryLabel(_iconPickKey))</div>
+            <div class="jg-icon-tabs">
+                <button class="jg-icon-tab @(_iconTab == "default" ? "on" : "")" @onclick='() => SwitchIconTab("default")'>@Loc.T("默认")</button>
+                <button class="jg-icon-tab @(_iconTab == "portrait" ? "on" : "")" @onclick='() => SwitchIconTab("portrait")'>@Loc.T("角色")</button>
+                <button class="jg-icon-tab @(_iconTab == "item" ? "on" : "")" @onclick='() => SwitchIconTab("item")'>@Loc.T("物品")</button>
+                @if (_iconTab != "default")
+                {
+                    <input class="jg-remark-input jg-icon-search" placeholder='@Loc.T(_iconTab == "item" ? "搜物品名" : "搜角色名")'
+                           value="@_iconSearch" @oninput="OnIconSearch" />
+                }
+            </div>
+            @* 2026-11-10：一次只铺一批，滚到底自动续 —— 不再有「显示更多」按钮
+               （600 多件物品点按钮点到手酸）。滚动监听在 junigrid.taskdock.js。 *@
+            <div class="jg-icon-grid">
+                @foreach (var opt in IconOptions())
+                {
+                    @IconOptionButton(opt, curIcon)
+                }
+            </div>
+            <div class="jg-dialog-actions">
+                <button class="jg-btn" @onclick="CloseIconPicker">@Loc.T("关闭")</button>
             </div>
         </div>
     </div>
@@ -1174,6 +1595,25 @@
     }
 
 
+
+    @* ── 覆盖包批量删除确认：会把盖上去的文件还原成原版，并删掉留下的副本 ── *@
+    @if (_pendingOverlayDelete is not null)
+    {
+        <div class="jg-modal-overlay" @onclick="CancelOverlayBatchDelete">
+            <div class="jg-modal" @onclick:stopPropagation>
+                <div class="jg-modal-title">@Loc.T("删除覆盖包")</div>
+                <div class="jg-modal-body">
+                    @Loc.F("确定删除所选的 {0} 个覆盖包？", _pendingOverlayDelete.Count)
+                    <br /><br />
+                    @Loc.T("盖上去的文件会还原成原版，JuniGrid 留下的副本也会删掉；宿主 mod 本身不受影响。")
+                </div>
+                <div class="jg-modal-actions">
+                    <button type="button" class="jg-pill-ghost" @onclick="CancelOverlayBatchDelete">@Loc.T("取消")</button>
+                    <button type="button" class="jg-pill-danger" @onclick="ConfirmOverlayBatchDelete">@Loc.T("确定删除")</button>
+                </div>
+            </div>
+        </div>
+    }
 
     @* ── v1.5.5：回收站的还原冲突确认 —— 说清楚「现有的可能是新版」，执意才顶替 ── *@
     @if (_pendingRestore is not null)
@@ -1317,25 +1757,30 @@
                                     </div>
                                 </div>
                                 @* 开关就是启用/停用本身：关掉时把原文件放回去、开着时从我们留的副本再放上去，
-                                   不需要重新下载汉化包。已失效的那行打开开关等于重新应用一次。
+                                   不需要重新下载汉化包。失效的那行不给开关 —— 它此刻是"开"的，
+                                   拨一下只会把它关掉（用户以为在重新应用，其实什么都没盖）；
+                                   与全局列表一致：失效只剩「删除」和（有页面时的）打开 N 网。
                                    宿主必须是 button + .jg-modrow-switch（display:flex）：写成裸 span 的话
                                    .jg-switch 那颗轨道也是 inline，40x22 宽高不生效，实机只剩一个黑点
                                    （同 portraits.css 那条 2026-09-30 的坑）。 *@
-                                <button type="button" class="jg-modrow-switch jg-squish-host @(g.AnyOn ? "on" : "")" role="switch"
-                                        aria-checked="@g.AnyOn" data-tip="@Loc.T("打开即启用此覆盖包")"
-                                        @onclick="() => ToggleOverlayGroup(g, !g.AnyOn)" @onclick:stopPropagation="true">
-                                    <span class="jg-switch"><span class="jg-switch-knob"></span></span>
-                                </button>
+                                @if (!gone)
+                                {
+                                    <button type="button" class="jg-modrow-switch jg-squish-host @(g.AnyOn ? "on" : "")" role="switch"
+                                            aria-checked="@g.AnyOn" data-tip="@Loc.T("打开即启用此覆盖包")"
+                                            @onclick="() => ToggleOverlayGroup(g, !g.AnyOn)" @onclick:stopPropagation="true">
+                                        <span class="jg-switch"><span class="jg-switch-knob"></span></span>
+                                    </button>
+                                }
                                 @* 已失效的那行不叫"还原"：宿主目录被重装过，磁盘上那份就是上游新版，
                                    没有东西可以还原，点它只是把这条账销掉。 *@
                                 <button type="button" class="jg-pill-ghost"
-                                        @onclick="() => RevertOverlayGroup(g)">@(gone ? Loc.T("清除记录") : Loc.T("删除"))</button>
+                                        @onclick="() => RevertOverlayGroup(g)">@Loc.T("删除")</button>
                             </div>
                         }
                     </div>
-                    @* 只留这一句：宿主 mod 更新把覆盖端走，是唯一会让人"以为覆盖还在生效"的坑。
+                    @* 只留这一句：宿主 mod 更新会把覆盖端走，是唯一会让人"以为覆盖还在生效"的坑。
                        说的是覆盖包，不是汉化 —— 这条通道贴图包、兼容包也走。 *@
-                    <div style="margin-top:8px;font-size:12px;opacity:.6">@Loc.T("宿主 mod 更新过一次的话覆盖包会失效，打开一次开关就能重新应用。")</div>
+                    <div style="margin-top:8px;font-size:12px;opacity:.6">@Loc.T("宿主 mod 更新后，覆盖包会跟着自动重新盖上。这里显示失效的，是宿主里已经找不到那个文件（作者改了名或删掉了），需要重新下载新版本的覆盖包。")</div>
                 </div>
                 @* 这里不放「全部删除」：那颗金色主按钮 + 无确认 = 一眼被当成"保存/确定"，
                    按下去就把宿主 mod 上所有覆盖包（汉化本体）全删了。逐行的「删除」够用。 *@
@@ -2351,6 +2796,9 @@
         // 这条不叫"失效"：它含的是 SMAPI 清单给的维护状态（需非官方版/有替代版/已过期…），
         // 实测这些 mod 大多照样被 SMAPI 正常加载，叫"失效"会让人以为不能用。
         ("broken",    "维护存疑"),
+        // 覆盖包（汉化补丁、贴图覆盖那种）不住在 Mods\ 里，没有自己的行，
+        // 这条筛选是它们唯一的全局入口 —— 不点进去就只能靠宿主行上那枚「覆盖 ×N」才知道它们存在。
+        ("overlay",   "覆盖包"),
     };
 
     /// <summary>筛选项的悬停解释：只有容易被误读的那条需要。</summary>
@@ -2361,9 +2809,10 @@
         _ => null,
     };
 
-    /// <summary>「找问题」的三个状态筛选（见 v1.3.56）：这些视图不按分类分段，
-    /// 结果平铺 —— 否则「可更新 2」还要先躲开一堆分类段头才看得见那两行。</summary>
-    private bool IsStatusFilter => _filter is "updatable" or "missing" or "broken";
+    /// <summary>「找问题」的状态筛选（见 v1.3.56）：这些视图不按分类分段，
+    /// 结果平铺 —— 否则「可更新 2」还要先躲开一堆分类段头才看得见那两行。
+    /// v1.9.x：覆盖包同样是"找东西"的视图，而且它压根不是 ModEntry，不能进分类分段。</summary>
+    private bool IsStatusFilter => _filter is "updatable" or "missing" or "broken" or "overlay";
 
     /// <summary>已装 UniqueID 集合（v1.2.3：指向 ReindexMods 维护的缓存，不再每次访问全表重建）。</summary>
     private HashSet<string> InstalledUids => _installedUids;
@@ -2390,6 +2839,11 @@
                     break;
                 case "broken":
                     q = q.Where(IsBroken);
+                    break;
+                // 覆盖包不是 ModEntry，行由 AllOverlayGroups() 单独渲染 ——
+                // 这里必须返回空集，否则底下的 mod 列表会在覆盖包视图里继续画一遍。
+                case "overlay":
+                    q = Enumerable.Empty<ModEntry>();
                     break;
             }
             if (!string.IsNullOrWhiteSpace(SearchText))
@@ -2423,6 +2877,7 @@
         "missing" => CountRows(_mods.Where(m => MissingDeps(m).Count > 0 || StaleDeps(m).Count > 0
             || SmapiTooOldNeed(m) is not null)),
         "broken" => CountRows(_mods.Where(IsBroken)),
+        "overlay" => AllOverlayGroups().Count,
         _ => 0,
     };
 
@@ -2597,32 +3052,374 @@
     /// <summary>一个「包」在某个宿主上的一组覆盖记录。汉化重打包会一次产生上百条逐文件记录
     /// （LewdDew 那个是 146 条），卡片必须一行一个包，开关和删除对整组生效。</summary>
     private sealed record OverlayGroup(string Host, string Slot, List<string> Keys,
-        OverlayRecord Rec, bool AnyOn, int Stale);
+        OverlayRecord Rec, bool AnyOn, int Stale)
+    {
+        /// <summary>N 网上有比这里更新的 MAIN 文件。判不了（没装过记录 / 没登录 / 网络失败）
+        /// 一律为 false —— 红点是"要你处理"的信号，猜不出来就不许亮。</summary>
+        public bool HasUpdate { get; init; }
+        public string? NewVersion { get; init; }
+        /// <summary>N 网那条新 MAIN 的 fileId —— 「更新」按钮直接按它装，不走"最新 MAIN"再猜一次。</summary>
+        public long UpdateFileId { get; init; }
+    }
+
+    /// <summary>覆盖包全局分组（跨宿主）。<see cref="OverlayGroups"/> 是它在「某个宿主」上的切片。
+    /// <para>按「归一化宿主 + 槽位」分组：禁用态在磁盘上是 <c>.Top</c>，不归一化会让同一个包
+    /// 在 Top 与 .Top 下各成一行。槽位是 <c>N{modId}</c> 或包名，同一个槽位盖在两家宿主上时
+    /// 是两组 —— 它们是两份独立的落盘，必须能分别开关。</para></summary>
+    private IReadOnlyList<OverlayGroup> AllOverlayGroups()
+    {
+        if (_overlayCache is not null && _overlayCacheRev == _overlayRev) return _overlayCache;
+        var list = Cfg.Current.Overlays
+            .GroupBy(kv => (Host: ModService.NormalizeOverlayHost(kv.Value.Host),
+                            Slot: ModService.OverlaySlotOf(kv.Key)))
+            .Select(g =>
+            {
+                var first = g.First().Value;
+                var baseRec = new OverlayGroup(
+                    first.Host,
+                    g.Key.Slot,
+                    g.Select(kv => kv.Key).OrderBy(k => k, StringComparer.OrdinalIgnoreCase).ToList(),
+                    first,
+                    g.Any(kv => kv.Value.Enabled),
+                    g.Count(kv => _overlayHealth.StaleKeys.Contains(kv.Key)));
+                return _overlayUpdates.TryGetValue(g.Key.Slot, out var up) && up.Has
+                    ? baseRec with { HasUpdate = true, NewVersion = up.Ver, UpdateFileId = up.FileId }
+                    : baseRec;
+            })
+            // 失效的最要紧，其次有新版，其余按名字 —— 红点点开第一眼就该看见要处理的那几行。
+            .OrderBy(g => g.Stale > 0 ? 0 : g.HasUpdate ? 1 : 2)
+            .ThenBy(g => g.Rec.PackTitle.Length > 0 ? g.Rec.PackTitle : g.Rec.PackName,
+                StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        _overlayCache = list;
+        _overlayCacheRev = _overlayRev;
+        return list;
+    }
+
+    private IReadOnlyList<OverlayGroup>? _overlayCache;
+    private int _overlayCacheRev = -1;
+    /// <summary>覆盖包视图的失效戳：账、副本、健康度、版本检查结论任一变化都要 ++。</summary>
+    private int _overlayRev;
+
+    // ── 覆盖包分组（2026-11-09 三改：一个宿主 mod 一段）────────────────────
+    /// <summary>覆盖包列表的一段 = 一个宿主 mod。
+    /// <para><see cref="Label"/> 是宿主 mod 的真名（不是目录名），<see cref="Cover"/> 是它的封面 ——
+    /// 段头就是「封面 + 名字」，跟分类段头一个样子：用户看到的是「Farm Queue 3 个」，
+    /// 不是「宿主 mod 27 个」。没装宿主的那一段没有封面，名字写「未安装宿主 mod」。</para>
+    /// <para><see cref="ShowHostOnRows"/>：宿主是逐段唯一的，段头已经说明白了，行里再挂一遍
+    /// 就是噪音；只有「未安装宿主 mod / 头像」这种混合段才需要逐行标出它原本盖在哪个目录上。</para></summary>
+    private sealed record OverlaySection(string Key, string Label, string? Cover,
+        List<OverlayGroup> Items, bool Collapsed, bool ShowHostOnRows);
+
+    /// <summary>已折叠的分组。与 <see cref="_collapsedCats"/> 分开存：那边是 mod 分类，
+    /// 键空间是用户的分类名，混进来会让「未安装宿主 mod」这种名字被当成真分类。</summary>
+    private readonly HashSet<string> _collapsedOverlaySecs = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>按宿主 mod 分段：装着的宿主各占一段（封面 + 名字），
+    /// 没装宿主的一律归到最后一段「未安装宿主 mod」。
+    /// <para>「头像」不是第四种分类，而是「没装宿主、但确实是立绘/头像素材」的那些包 ——
+    /// 它们塞进「未安装」段会让人以为是自己把 host mod 删了；有宿主的头像包照旧归宿主那一段。</para>
+    /// <para>有失效或新版的段排前面：红点点开第一眼就该看见要处理的那几个宿主。</para>
+    /// <para>空段不画：一个「0 个」的段头只会让人以为丢了东西。</para></summary>
+    private IReadOnlyList<OverlaySection> OverlaySections()
+    {
+        var sections = new List<OverlaySection>();
+        var portraits = new List<OverlayGroup>();
+        var orphans = new List<OverlayGroup>();
+
+        foreach (var grp in AllOverlayGroups()
+                     .GroupBy(g => ModService.NormalizeOverlayHost(g.Host), StringComparer.OrdinalIgnoreCase))
+        {
+            var items = grp.ToList();
+            if (grp.Key.Length > 0 && HostIndex().TryGetValue(grp.Key, out var m))
+            {
+                // 段内顺序沿用 AllOverlayGroups 的「失效 → 新版 → 名字」，GroupBy 保序
+                sections.Add(new OverlaySection("h:" + grp.Key, RemarkName(m), GetCover(m), items,
+                    _collapsedOverlaySecs.Contains("h:" + grp.Key), false));
+            }
+            else if (items.All(IsPortraitOverlay))
+            {
+                portraits.AddRange(items);
+            }
+            else
+            {
+                orphans.AddRange(items);
+            }
+        }
+
+        // 有问题的段排前面，其余按名字 —— 段数可能二十来个，不排就只能靠找
+        sections = sections
+            .OrderBy(s => s.Items.Any(g => g.Stale > 0) ? 0 : s.Items.Any(g => g.HasUpdate) ? 1 : 2)
+            .ThenBy(s => s.Label, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        void Add(string key, string label, string? cover, List<OverlayGroup> items, bool hostOnRows)
+        {
+            if (items.Count == 0) return;
+            sections.Add(new OverlaySection(key, label, cover, items,
+                _collapsedOverlaySecs.Contains(key), hostOnRows));
+        }
+        Add("portrait", LocService.Tr("头像"), null, portraits, true);
+        Add("nohost", LocService.Tr("未安装宿主 mod"), null, orphans, true);
+        return sections;
+    }
+
+    /// <summary>混合段里逐行标注「这个包盖在哪个目录上」。宿主没装就写目录名 ——
+    /// 段头已经说了没装，行里再写一遍「未安装宿主 mod」等于什么都没说。</summary>
+    private string OverlayRowHostLabel(string host)
+    {
+        var norm = ModService.NormalizeOverlayHost(host);
+        if (norm.Length == 0) return LocService.Tr("没有指定宿主");
+        var seg = norm.Split('/')[^1];
+        return seg.Length > 0 ? seg : norm;
+    }
+
+    /// <summary>这份覆盖包是不是「头像 / 立绘」类。<b>看落点，不看包名猜</b>：
+    /// 真正决定它属于哪一类的是它盖了宿主里的哪个目录，名字只作兜底
+    /// （汉化包里也有包名带 Portrait 其实翻的是文案的）。</summary>
+    private bool IsPortraitOverlay(OverlayGroup g)
+    {
+        foreach (var k in g.Keys)
+        {
+            if (!Cfg.Current.Overlays.TryGetValue(k, out var r)) continue;
+            var rel = r.RelPath.Replace('\\', '/').ToLowerInvariant();
+            if (rel.Contains("portrait")) return true;
+        }
+        var name = (OverlayTitle(g.Rec) + "|" + g.Host).ToLowerInvariant();
+        return name.Contains("portrait") || name.Contains("立绘") || name.Contains("头像");
+    }
+
+    /// <summary>段体 id。键里现在是宿主目录名（可能带 <c>:</c> <c>/</c> 和方括号），
+    /// 直接拼进 id 不合法；catToggle 用 getElementById 取，所以只需唯一、不含空白。</summary>
+    private static string OverlaySecAnchor(string key)
+    {
+        var sb = new System.Text.StringBuilder("jg-ov-sec-");
+        foreach (var ch in key)
+            sb.Append(char.IsLetterOrDigit(ch) ? ch : '_');
+        return sb.ToString();
+    }
+
+    /// <summary>段头点击：折叠/展开这一组。与 <see cref="ToggleCategoryCollapse"/> 同一套时序
+    /// （先让 JS 播手风琴，动画回来再落状态，否则 CSS 的 height:0 会抢跑）。</summary>
+    private async Task ToggleOverlaySection(string key)
+    {
+        var collapse = !_collapsedOverlaySecs.Contains(key);
+        try { await JS.InvokeVoidAsync("junigridJs.catToggle", OverlaySecAnchor(key), !collapse); }
+        catch { }
+        if (collapse) _collapsedOverlaySecs.Add(key);
+        else _collapsedOverlaySecs.Remove(key);
+        StateHasChanged();
+    }
+
+    /// <summary>账/健康度/开关/删除之后调用 —— 下一帧重算覆盖包分组。</summary>
+    private void InvalidateOverlayCache() => _overlayRev++;
+
+    /// <summary>筛选按钮上那颗红点的依据：有失效的，或者有新版本的。
+    /// <para>只算「包」不算文件：一个汉化重打包上百年逐文件记录，按条数报会把 1 个包说成 146。</para></summary>
+    private int OverlayAttentionCount => AllOverlayGroups().Count(g => g.Stale > 0 || g.HasUpdate);
+
+    /// <summary>覆盖包的「有没有新版」。
+    /// <para>与 Mods 行不同：覆盖包不在 <c>Mods\</c> 里，没有 <see cref="ModEntry"/>，
+    /// 所以 <c>HasUpdate</c> 那条链（要求 <c>_thisEntry</c>）对它恒为 false。
+    /// 这里换成「N 网最新 MAIN 文件」比「本机装这个覆盖包时记下的那条文件」：
+    /// 安装时 <c>InstallService</c> 走 <c>RecordInstallByModId</c> 写了一条
+    /// <c>ModNexusInstalls</c>（键是包名），FileId/文件版本都在里面。</para>
+    /// <para>判不了就不报：没有安装记录、版本号为空、未登录、请求失败 —— 全部静默。
+    /// 红点只用于"确实该处理"，宁可漏报也不许误报。</para></summary>
+    private async Task CheckOverlayUpdatesAsync()
+    {
+        if (_disposed || !NexusService.IsAuthenticated) return;
+        var groups = AllOverlayGroups();
+        var changed = false;
+        foreach (var g in groups)
+        {
+            if (_disposed) return;
+            if (g.Rec.NexusModId is not int modId || modId <= 0) continue;
+            if (_overlayUpdates.ContainsKey(g.Slot)) continue;
+            // 本地那一版：这个 N 网页面上最近一次安装记录。取不到就没有比大小的基准。
+            var local = Cfg.Current.ModNexusInstalls.Values
+                .Where(r => r is not null && r.NexusModId == modId
+                            && !string.IsNullOrWhiteSpace(r.RemoteVersion))
+                .OrderByDescending(r => r.InstalledAtUtc)
+                .FirstOrDefault();
+            if (local is null) continue;
+            try
+            {
+                var latest = await Nexus.GetLatestMainFileAsync(modId);
+                if (latest is null || string.IsNullOrWhiteSpace(latest.Version)) continue;
+                // fileId 相同 = 装的就是这一条，作者可能只是改了文件名/版本号写法
+                if (latest.FileId != 0 && local.FileId != 0 && latest.FileId == local.FileId)
+                {
+                    _overlayUpdates[g.Slot] = (false, null, 0);
+                    changed = true;
+                    continue;
+                }
+                var has = VersionUtil.IsNewer(latest.Version, local.RemoteVersion);
+                _overlayUpdates[g.Slot] = (has, has ? latest.Version : null, has ? latest.FileId : 0);
+                changed = true;
+            }
+            catch (Exception ex)
+            {
+                // 未登录 / 网络 / API 限流：不写结论，下次进页或重扫会再试
+                AppLog.Warn("Overlays", $"[覆盖包] 版本检查失败（{g.Slot}）：{ex.Message}");
+            }
+        }
+        if (!changed) return;
+        InvalidateOverlayCache();
+        await InvokeAsync(StateHasChanged);
+    }
+
+    /// <summary>槽位 → 版本检查结论。FileId 只在新版那一格有意义（更新按钮按它直装）。</summary>
+    private readonly Dictionary<string, (bool Has, string? Ver, long FileId)> _overlayUpdates
+        = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>覆盖包的「更新」：直接装 N 网那条新 MAIN 文件。
+    /// <para>覆盖包的更新本质就是"再装一次"——<c>ApplyOverlay</c> 用 <c>N{modId}</c> 作槽位，
+    /// 新旧包落同一条记录，旧的副本目录会被 <c>DropReplacedStore</c> 清掉。
+    /// 不提供这个按钮的话，用户只能去详情页 04 Files 里找出那条新文件 —— 而覆盖包在
+    /// Mods\ 里没有行，详情页顶部那颗 CTA 又因为 <c>HasUpdate</c> 恒 false 而显示"已安装"且禁用。</para>
+    /// <para>⚠ 上一版有、这一版没有的文件不会被这次的落盘清掉（<c>ApplyOverlay</c> 只遍历新包
+    /// 的文件表）。遇到"作者删了几个语言副本"的情况会留残骸，那是另一处要补的清理。</para></summary>
+    private async Task UpdateOverlayAsync(OverlayGroup g)
+    {
+        if (g.Rec.NexusModId is not int modId) return;
+        if (g.UpdateFileId == 0)
+        {
+            // 没拿到 fileId（版本是比出来的、但文件表没给 id）→ 回详情页让用户挑
+            GoOverlayDetail(g.Rec);
+            return;
+        }
+        try
+        {
+            var err = await Installer.InstallModDirectAsync(modId, g.UpdateFileId, OverlayTitle(g.Rec));
+            if (err is null)
+            {
+                _ = JS.InvokeVoidAsync("junigridJs.toast", Loc.T("已开始更新这个覆盖包，进度见任务中心"), "ok");
+                // 装完再查一轮，把结论刷成"已是最新"
+                _overlayUpdates.Remove(g.Slot);
+                InvalidateOverlayCache();
+                _ = GuardedFireAndForget(CheckOverlayUpdatesAsync(), "覆盖包版本复查");
+            }
+            else if (err.Contains("premium", StringComparison.OrdinalIgnoreCase))
+                _ = JS.InvokeVoidAsync("junigridJs.toast",
+                    Loc.T("应用内没能自动取到下载链接 —— 已为你打开系统浏览器，点 Mod Manager Download 即可自动安装"), "err");
+            else
+                _ = JS.InvokeVoidAsync("junigridJs.toast", Loc.T("更新失败：") + err, "err");
+        }
+        catch (Exception ex)
+        {
+            _ = JS.InvokeVoidAsync("junigridJs.toast", Loc.T("更新失败：") + ex.Message, "err");
+        }
+    }
 
     private List<OverlayGroup> OverlayGroups()
     {
         if (_overlayHost is null) return new List<OverlayGroup>();
-        return Cfg.Current.Overlays
-            .Where(kv => ModService.NormalizeOverlayHost(kv.Value.Host)
+        return AllOverlayGroups()
+            .Where(g => ModService.NormalizeOverlayHost(g.Host)
                 .Equals(_overlayHost, StringComparison.OrdinalIgnoreCase))
-            .GroupBy(kv => ModService.OverlaySlotOf(kv.Key), StringComparer.OrdinalIgnoreCase)
-            .Select(g => new OverlayGroup(
-                g.First().Value.Host,
-                g.Key,
-                g.Select(kv => kv.Key).OrderBy(k => k, StringComparer.OrdinalIgnoreCase).ToList(),
-                g.First().Value,
-                g.Any(kv => kv.Value.Enabled),
-                g.Count(kv => _overlayHealth.StaleKeys.Contains(kv.Key))))
-            .OrderBy(x => x.Rec.PackTitle.Length > 0 ? x.Rec.PackTitle : x.Rec.PackName,
-                StringComparer.OrdinalIgnoreCase)
             .ToList();
     }
 
     private void ToggleOverlayGroup(OverlayGroup g, bool on)
     {
         var err = ModSvc.SetOverlayGroupEnabled(Cfg.Current.GamePath, g.Host, g.Slot, on, Cfg);
-        if (err is not null) _ = JS.InvokeVoidAsync("junigridJs.toast", err, "err");
-        else _ = RescanInBackground();
+        if (err is not null)
+        {
+            _ = JS.InvokeVoidAsync("junigridJs.toast", err, "err");
+            return;
+        }
+        // 打开一个包时，把盖着同一批文件的另一个包关掉 —— 两组写同一个文件，
+        // 谁后盖谁赢，留着两个"已启用"只是骗人（汉化包的 zh.json 就是这种）。
+        var alsoOff = on ? DisableConflictingOverlays(g) : new List<string>();
+        InvalidateOverlayCache();
+        _ = RescanInBackground();
+        if (alsoOff.Count > 0)
+            _ = JS.InvokeVoidAsync("junigridJs.toast",
+                Loc.F("已启用「{0}」，同时停用了盖着同一批文件的「{1}」",
+                    OverlayTitle(g.Rec), string.Join("」「", alsoOff)), "ok");
+    }
+
+    /// <summary>行尾那颗开关：正常包 = 开/关；失效包 = 按副本重新盖一次。
+    /// <para>失效时开关一律画成"关"（它确实没盖上），点它就是重放 —— 以前这里不给开关，
+    /// 用户得先选中这行、再去底部批量条点「启用」，两步且要猜。</para></summary>
+    private void OnOverlaySwitch(OverlayGroup g)
+    {
+        if (g.Stale > 0) ReapplyOverlaysGroup(g);
+        else ToggleOverlayGroup(g, !g.AnyOn);
+    }
+
+    /// <summary>单个包的「重新应用」：宿主换过版本后按 AppData 里留的副本再盖一遍。
+    /// <para>两种结果必须分开报：盖不上的那几个正是「宿主里已经没有那个文件」
+    /// （作者改名/删了），统一说"已重新应用"会让用户以为好了，游戏里其实还是原样。</para></summary>
+    private void ReapplyOverlaysGroup(OverlayGroup g)
+    {
+        try
+        {
+            var (applied, blocked) = ModSvc.ReapplyOverlayGroup(Cfg.Current.GamePath, g.Host, g.Slot, Cfg);
+            var msg = applied > 0
+                ? (blocked > 0
+                    ? Loc.F("已重新应用 {0} 个文件，还有 {1} 个盖不上（宿主里已经找不到它们）", applied, blocked)
+                    : Loc.F("已重新应用 {0} 个文件", applied))
+                : (blocked > 0
+                    ? Loc.F("这 {0} 个文件在宿主里已经找不到，盖不上去 —— 作者可能改了名或删掉了", blocked)
+                    : Loc.T("这些文件本来就在位，没有需要重新盖的"));
+            _ = JS.InvokeVoidAsync("junigridJs.toast", msg, applied > 0 ? "ok" : "err");
+            AppLog.Info("Overlays", $"[覆盖包] 重新应用「{OverlayTitle(g.Rec)}」：盖上 {applied}，盖不上 {blocked}");
+        }
+        catch (Exception ex)
+        {
+            // 以前这里没有兜底：服务层一抛异常，点击就"一点反应都没有"（界面不动、也没 toast）。
+            _ = JS.InvokeVoidAsync("junigridJs.toast", Loc.T("重新应用失败：") + ex.Message, "err");
+            AppLog.Warn("Overlays", $"[覆盖包] 重新应用「{OverlayTitle(g.Rec)}」异常：{ex}");
+        }
+        InvalidateOverlayCache();
+        RescanAndRestate();
+    }
+
+    /// <summary>行内「…」菜单的键。用 <c>ov|</c> 前缀跟 mod 行的 folder 共用同一个
+    /// <see cref="_menuFolder"/> —— 于是翻转定位（fitModMenu）、点空白处关闭（.jg-dd-overlay）
+    /// 这些现成机制不用再实现一遍。</summary>
+    private static string OverlayMenuId(OverlayGroup g) => "ov|" + OverlayKey(g);
+
+    /// <summary>段头那颗复选框的三态：0 = 一个没选，1 = 选了一部分，2 = 整段全选。</summary>
+    private int OverlaySectionSelectState(OverlaySection sec)
+    {
+        var n = sec.Items.Count(g => _overlaySelected.Contains(OverlayKey(g)));
+        return n == 0 ? 0 : n >= sec.Items.Count ? 2 : 1;
+    }
+
+    private void ToggleOverlaySectionSelectAll(OverlaySection sec)
+    {
+        var all = sec.Items.All(g => _overlaySelected.Contains(OverlayKey(g)));
+        foreach (var g in sec.Items)
+        {
+            var k = OverlayKey(g);
+            if (all) _overlaySelected.Remove(k);
+            else _overlaySelected.Add(k);
+        }
+        _pendingOverlayDelete = null;
+        StateHasChanged();
+    }
+
+    /// <summary>关掉那些和目标包写同一批文件的其它包，返回被关掉的名字。
+    /// 判据与批量启用那条完全一致（<see cref="OverlayTargetKeys"/>），两条路不会走出两种结果。</summary>
+    private List<string> DisableConflictingOverlays(OverlayGroup keep)
+    {
+        var names = new List<string>();
+        var mine = OverlayTargetKeys(keep);
+        if (mine.Count == 0) return names;
+        var keepKey = OverlayKey(keep);
+        // 上面刚改过一条记录：先作废缓存再列，AnyOn 才是改完之后的值。
+        InvalidateOverlayCache();
+        foreach (var other in AllOverlayGroups())
+        {
+            if (OverlayKey(other) == keepKey || !other.AnyOn) continue;
+            if (!OverlayTargetKeys(other).Overlaps(mine)) continue;
+            if (ModSvc.SetOverlayGroupEnabled(Cfg.Current.GamePath, other.Host, other.Slot, false, Cfg) is null)
+                names.Add(OverlayTitle(other.Rec));
+        }
+        return names;
     }
 
     private void RevertOverlayGroup(OverlayGroup g)
@@ -2632,7 +3429,335 @@
         var err = ModSvc.RevertOverlayGroup(Cfg.Current.GamePath, g.Host, g.Slot, Cfg);
         _ = JS.InvokeVoidAsync("junigridJs.toast",
             err ?? (gone ? Loc.T("已清除该覆盖记录") : Loc.T("已还原被覆盖的文件")), err is null ? "ok" : "err");
-        if (err is null) RescanAndRestate();   // v1.3.15：后台扫，别冻界面
+        if (err is null)
+        {
+            _overlayUpdates.Remove(g.Slot);   // 包都没了，它的版本结论也不该留在红点里
+            _overlaySelected.Remove(OverlayKey(g));
+            InvalidateOverlayCache();
+            RescanAndRestate();   // v1.3.15：后台扫，别冻界面
+        }
+    }
+
+    // ── 覆盖包多选 / 批量（2026-11-09：照 Mod 行那套做） ────────────────────
+
+    /// <summary>当前勾选的覆盖包，键 = 归一化宿主名 + '|' + 槽位。</summary>
+    private readonly HashSet<string> _overlaySelected = new(StringComparer.OrdinalIgnoreCase);
+    private List<OverlayGroup>? _pendingOverlayDelete;
+
+    private static string OverlayKey(OverlayGroup g)
+        => ModService.NormalizeOverlayHost(g.Host) + "|" + g.Slot;
+
+    /// <summary>选中的包，顺序 = 列表顺序（"只启用排在最前的那个"就是按这个顺序取）。</summary>
+    private List<OverlayGroup> SelectedOverlayGroups()
+        => AllOverlayGroups().Where(g => _overlaySelected.Contains(OverlayKey(g))).ToList();
+
+    private void ToggleOverlaySelect(OverlayGroup g)
+    {
+        var k = OverlayKey(g);
+        if (!_overlaySelected.Remove(k)) _overlaySelected.Add(k);
+        _pendingOverlayDelete = null;
+        StateHasChanged();
+    }
+
+    private void ClearOverlaySelection()
+    {
+        _overlaySelected.Clear();
+        StateHasChanged();
+    }
+
+    private void SelectAllOverlays()
+    {
+        var all = AllOverlayGroups();
+        if (all.Count > 0 && _overlaySelected.Count >= all.Count) _overlaySelected.Clear();
+        else foreach (var g in all) _overlaySelected.Add(OverlayKey(g));
+        StateHasChanged();
+    }
+
+    /// <summary>这个包会改写宿主里的哪些文件 —— 互斥判据用它。
+    /// <para>两组落在同一个文件上时，无论谁后盖都会把前一个顶掉（汉化包的 zh.json 就这德行），
+    /// 所以这种包"只能启用一个"：批量启用时只留排在最前面的那个。</para></summary>
+    private HashSet<string> OverlayTargetKeys(OverlayGroup g)
+    {
+        var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var k in g.Keys)
+        {
+            if (!Cfg.Current.Overlays.TryGetValue(k, out var r)) continue;
+            set.Add(ModService.NormalizeOverlayHost(r.Host) + "|" + r.RelPath);
+        }
+        return set;
+    }
+
+    private async Task BatchSetOverlayEnabled(bool disabled)
+    {
+        var groups = SelectedOverlayGroups();
+        if (groups.Count == 0) return;
+
+        var ok = 0;
+        var reapplied = 0;
+        var blocked = 0;
+        var skipped = new List<OverlayGroup>();
+        string? err = null;
+        try
+        {
+            // 启用时才需要收敛：同一批文件只能有一个包在位。
+            var targets = new List<OverlayGroup>();
+            if (disabled)
+            {
+                targets.AddRange(groups);
+            }
+            else
+            {
+                var claimed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var g in groups)
+                {
+                    var files = OverlayTargetKeys(g);
+                    if (files.Any(claimed.Contains)) { skipped.Add(g); continue; }
+                    claimed.UnionWith(files);
+                    targets.Add(g);
+                }
+            }
+
+            foreach (var g in targets)
+            {
+                // 失效的包：对它们来说「启用」就是按留的副本重新盖一次。
+                if (!disabled && g.Stale > 0)
+                {
+                    var (a, b) = ModSvc.ReapplyOverlayGroup(Cfg.Current.GamePath, g.Host, g.Slot, Cfg);
+                    reapplied += a;
+                    blocked += b;
+                    if (a > 0) ok++;      // 一个文件都没盖上就不算"启用成功"，只记进 blocked
+                    continue;
+                }
+                err = ModSvc.SetOverlayGroupEnabled(Cfg.Current.GamePath, g.Host, g.Slot, !disabled, Cfg);
+                if (err is not null) break;
+                ok++;
+            }
+            // 被跳过、但本来开着的：它盖的是同一批文件，磁盘上现在已经是别人的版本了。
+            // 一起关掉，"只启用一个"才算真的做到（否则界面会显示两个都开着）。
+            if (!disabled)
+            {
+                foreach (var g in skipped.Where(x => x.AnyOn))
+                    ModSvc.SetOverlayGroupEnabled(Cfg.Current.GamePath, g.Host, g.Slot, false, Cfg);
+            }
+            AppLog.Info("Overlays",
+                $"[覆盖包] 批量{(disabled ? "停用" : "启用")}：包 {ok}，重放文件 {reapplied}，盖不上 {blocked}，跳过 {skipped.Count}");
+        }
+        catch (Exception ex)
+        {
+            // 这里以前没有兜底：服务层一抛异常，用户看到的就是"点了没反应"（没有 toast、界面不动）。
+            err = Loc.T("操作失败：") + ex.Message;
+            AppLog.Warn("Overlays", $"[覆盖包] 批量{(disabled ? "停用" : "启用")}异常：{ex}");
+        }
+
+        string? msg;
+        if (err is not null) msg = err;
+        else if (!disabled && ok == 0 && blocked > 0)
+            msg = Loc.T("选中的覆盖包一个都没能盖回去 —— 宿主里已经没有它们要盖的那些文件了");
+        else if (!disabled && ok == 0 && reapplied == 0 && blocked == 0)
+            msg = Loc.T("选中的覆盖包本来就已经在位，没有需要重新盖的");
+        else
+        {
+            var parts = new List<string>
+            {
+                disabled ? Loc.F("已停用 {0} 个覆盖包", ok) : Loc.F("已启用 {0} 个覆盖包", ok),
+            };
+            if (reapplied > 0) parts.Add(Loc.F("重新盖回 {0} 个文件", reapplied));
+            if (blocked > 0) parts.Add(Loc.F("{0} 个文件在宿主里已经找不到", blocked));
+            if (!disabled && skipped.Count > 0)
+                parts.Add(Loc.F("{0} 个盖着同一批文件，只保留排在最前的那个", skipped.Count));
+            msg = string.Join("；", parts);
+        }
+        _ = JS.InvokeVoidAsync("junigridJs.toast", msg, err is null ? "ok" : "err");
+        InvalidateOverlayCache();
+        RescanAndRestate();
+        await InvokeAsync(StateHasChanged);
+    }
+
+    /// <summary>批量更新：逐个按「N 网最新 MAIN」装一遍。覆盖包的更新本质就是再装一次，
+    /// 所以只能串行 —— 并行装同一个宿主上的两个包会互相盖。
+    /// 没有 fileId 的（版本是比出来的、但没拿到文件表）不进批量，交给行上的「新版本」跳详情页。</summary>
+    private async Task BatchOverlayUpdate()
+    {
+        var targets = SelectedOverlayGroups()
+            .Where(g => g.HasUpdate && g.Rec.NexusModId is int && g.UpdateFileId != 0)
+            .ToList();
+        if (targets.Count == 0)
+        {
+            _ = JS.InvokeVoidAsync("junigridJs.toast", LocService.Tr("选中的覆盖包没有可自动更新的来源"), "err");
+            return;
+        }
+        var started = 0;
+        foreach (var g in targets)
+        {
+            try
+            {
+                var err = await Installer.InstallModDirectAsync(
+                    g.Rec.NexusModId!.Value, g.UpdateFileId, OverlayTitle(g.Rec));
+                if (err is null)
+                {
+                    started++;
+                    _overlayUpdates.Remove(g.Slot);   // 装完重查，别拿旧结论继续亮红点
+                }
+                else AppLog.Warn("Overlays", $"[覆盖包] 批量更新「{OverlayTitle(g.Rec)}」失败：{err}");
+            }
+            catch (Exception ex)
+            {
+                AppLog.Warn("Overlays", $"[覆盖包] 批量更新异常：{ex.Message}");
+            }
+        }
+        _ = JS.InvokeVoidAsync("junigridJs.toast",
+            started > 0 ? Loc.F("已开始更新 {0} 个覆盖包，进度见任务中心", started)
+                        : Loc.T("更新没能开始，点行上的「新版本」去详情页手动挑文件"),
+            started > 0 ? "ok" : "err");
+        InvalidateOverlayCache();
+        _ = GuardedFireAndForget(CheckOverlayUpdatesAsync(), "覆盖包版本复查");
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private void AskOverlayBatchDelete()
+    {
+        var sel = SelectedOverlayGroups();
+        if (sel.Count == 0) return;
+        _pendingOverlayDelete = sel;
+        StateHasChanged();
+    }
+
+    private void CancelOverlayBatchDelete()
+    {
+        _pendingOverlayDelete = null;
+        StateHasChanged();
+    }
+
+    private void ConfirmOverlayBatchDelete()
+    {
+        var list = _pendingOverlayDelete;
+        _pendingOverlayDelete = null;
+        if (list is null) return;
+
+        var ok = 0;
+        string? err = null;
+        foreach (var g in list)
+        {
+            err = ModSvc.RevertOverlayGroup(Cfg.Current.GamePath, g.Host, g.Slot, Cfg);
+            if (err is not null) break;
+            ok++;
+            _overlayUpdates.Remove(g.Slot);
+            _overlaySelected.Remove(OverlayKey(g));
+        }
+        _ = JS.InvokeVoidAsync("junigridJs.toast",
+            err ?? Loc.F("已删除 {0} 个覆盖包", ok), err is null ? "ok" : "err");
+        InvalidateOverlayCache();
+        RescanAndRestate();
+        StateHasChanged();
+    }
+
+    // ── 覆盖包 → 宿主 mod 的显示信息 ────────────────────────────
+
+    private Dictionary<string, ModEntry>? _hostsByNorm;
+
+    /// <summary>宿主目录名（归一化后，去掉禁用点前缀）→ 那个 mod。
+    /// 覆盖记录的 Host 是目录名，禁用态是 <c>.X</c>，所以必须走同一个归一化函数。</summary>
+    private Dictionary<string, ModEntry> HostIndex()
+    {
+        if (_hostsByNorm is not null) return _hostsByNorm;
+        var d = new Dictionary<string, ModEntry>(StringComparer.OrdinalIgnoreCase);
+        foreach (var m in _mods)
+        {
+            var k = ModService.NormalizeOverlayHost(m.Folder);
+            if (k.Length > 0) d.TryAdd(k, m);
+        }
+        return _hostsByNorm = d;
+    }
+
+    /// <summary>行内那颗「宿主标签」的内容：封面 + 名字；宿主没装就说清楚。
+    /// <para>只说 <c>Host</c> 那个目录名的话，用户看到 <c>[CP] Custom Menu Background</c>
+    /// 得自己去列表里找是谁 —— 有封面和真名才认得出盖在哪个 mod 上。</para>
+    /// <para><c>NexusModId</c>：宿主没装时从安装账本反查出来的 id，标签靠它变成可点
+    /// （装着的宿主取本地条目自己的 id，不用查账本）。</para></summary>
+    private (string Label, string? Cover, bool Installed, int? NexusModId) OverlayHostInfo(string host)
+    {
+        var norm = ModService.NormalizeOverlayHost(host);
+        if (norm.Length == 0) return (LocService.Tr("没有指定宿主"), null, false, null);
+        if (HostIndex().TryGetValue(norm, out var m))
+            return (RemarkName(m), GetCover(m), true, m.NexusModId);
+        // 没装：标签上写的是宿主目录名，不是「未安装宿主 mod」—— 段头已经说了没装，
+        // 这里再写一遍等于什么都没说；用户要认的正是「它原来盖在谁身上」。
+        return (OverlayRowHostLabel(host), null, false, HostNexusIdOf(norm));
+    }
+
+    /// <summary>宿主没装的时候，从安装账本里把它当初的 N 网 id 找回来。
+    /// <para>覆盖包盖过的宿主绝大多数是我们自己装上去的，账本里留着「文件夹名 → id」，
+    /// 目录被删/改名之后这条记录还在 —— 所以名字点一下仍然能到它的页面。</para>
+    /// <para>匹配按可信度：全名 → 路径末段（账本里捆绑包子包的键是 <c>Top/Sub</c>）。
+    /// 末段撞出两个不同 id 时一律当没查到：给错页面比不给入口更糟。</para></summary>
+    private int? HostNexusIdOf(string norm)
+    {
+        if (norm.Length == 0) return null;
+        var table = Cfg.Current.ModNexusInstalls;
+        if (table.TryGetValue(norm, out var exact) && exact is { NexusModId: > 0 })
+            return exact.NexusModId;
+
+        var leaf = norm.Split('/')[^1];
+        int? hit = null;
+        foreach (var kv in table)
+        {
+            if (kv.Value is not { NexusModId: > 0 }) continue;
+            var key = kv.Key.Replace('\\', '/').TrimEnd('/');
+            if (!string.Equals(key, norm, StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(key.Split('/')[^1], leaf, StringComparison.OrdinalIgnoreCase)) continue;
+            if (hit is not null && hit != kv.Value.NexusModId) return null;
+            hit = kv.Value.NexusModId;
+        }
+        return hit;
+    }
+
+    /// <summary>行内「宿主标签」整块。能跳到就画成按钮，跳不了就保持纯标签 ——
+    /// 一个点了没反应的东西，比一眼看出不可点更让人恼火。
+    /// <para>按钮套 <c>.jg-tag</c>：标签那套底色/圆角/内边距都在，这里只补按钮的样式重置
+    /// （见 mods.css 的 <c>.jg-hosttag-nav</c>）。</para></summary>
+    private RenderFragment OverlayHostTag(ModEntry? hostMod,
+        (string Label, string? Cover, bool Installed, int? NexusModId) host, int? jumpId) => @<text>
+        @if (jumpId is not null)
+        {
+            <button type="button" class="jg-tag jg-hosttag jg-hosttag-nav"
+                    data-missing="@(host.Installed ? null : "")"
+                    data-tip="@(host.Installed
+                        ? Loc.F("盖在「{0}」上 · 点一下打开这个 mod 的详情页", host.Label)
+                        : Loc.F("宿主「{0}」没装了 · 点一下打开它的 N 网页面", host.Label))"
+                    @onclick="() => OpenOverlayHost(hostMod, jumpId)"
+                    @onclick:stopPropagation="true">
+                @if (host.Cover is not null)
+                {
+                    <img src="@host.Cover" alt="" loading="lazy" />
+                }
+                <span class="jg-hosttag-name">@host.Label</span>
+            </button>
+        }
+        else
+        {
+            <span class="jg-tag jg-hosttag" data-missing="@(host.Installed ? null : "")"
+                  data-tip="@Loc.T("宿主 mod 没装或已不在 Mods 里，这个覆盖包现在不会生效")">
+                @if (host.Cover is not null)
+                {
+                    <img src="@host.Cover" alt="" loading="lazy" />
+                }
+                <span class="jg-hosttag-name">@host.Label</span>
+            </span>
+        }
+    </text>;
+
+    /// <summary>点宿主名字 = 去宿主那里。装着的进本应用详情页（能直接更新/看文件），
+    /// 没装的只能去 N 网页面 —— 本地没有它的行，这里就是唯一入口。</summary>
+    private void OpenOverlayHost(ModEntry? hostMod, int? nexusModId)
+    {
+        if (hostMod is { NexusModId: not null })
+        {
+            _ = OpenDetail(hostMod);
+            return;
+        }
+        if (nexusModId is not int id) return;
+        CloseOverlayList();
+        Nav.NavigateTo($"mod/{id}");
     }
 
     // summary 是 markdown（"broken, use [unofficial version](https://…)"）。徽标悬停已经不抄整段了，
@@ -2833,8 +3958,13 @@
     private void SetFilter(string key)
     {
         _filter = key;
+        // 覆盖包的勾选只在覆盖包视图里有效：切走就清掉，免得底部批量条跟着跑到别的视图里。
+        if (key != "overlay") _overlaySelected.Clear();
         // v1.1.4：切换过滤后由 OnAfterRender 的 animatedListInit 重绑新行观察器。
         // 视口内的行当场展开不闪动，视口外的行滚动进入时播特效 —— 与首屏一致。
+        // 覆盖包的版本检查是网络操作：进页那次可能未登录/没过网，点进来时补一轮。
+        // 已有结论的槽位会被跳过，所以反复点这个 chip 不会反复打 API。
+        if (key == "overlay") _ = GuardedFireAndForget(CheckOverlayUpdatesAsync(), "覆盖包版本检查");
     }
 
     // v0.36.0：mod 列表 AnimatedList 滚动效果（进入视口 scale/opacity + 顶底渐变）
@@ -2859,6 +3989,24 @@
             }
             // 自检：合成一次按下/抬起，把手势有没有起来写进日志（不改任何数据）
             _ = RunDragSelfTestAsync();
+        }
+
+        // 2026-11-10：图标选择器的懒加载 —— 对话框一出现就把滚动监听挂上。
+        // 只能在这里挂：DOM 没渲染出来时 document.querySelector 拿不到网格，
+        // 而 @if 里的对话框不是每次渲染都重建（挂在 OnAfterRender 才稳）。
+        if (_iconPickOpen && !_iconScrollBound)
+        {
+            _iconScrollBound = true;
+            try
+            {
+                _iconScrollRef ??= DotNetObjectReference.Create(this);
+                await JS.InvokeVoidAsync("junigridJs.iconGridInfinite", _iconScrollRef);
+            }
+            catch (Exception ex)
+            {
+                _iconScrollBound = false;
+                AppLog.Warn("Mods", "[图标] 懒加载监听挂载失败: " + ex.Message);
+            }
         }
 
         // v1.3.29 渐进渲染：这一帧只画了前 _renderLimit 行 → 放一帧让浏览器先画出来，
@@ -3503,22 +4651,34 @@
             // 的磁盘时间」，把几个老 mod 归进新标签时新标签反而沉到底下。
             // v1.3.56：状态筛选（可更新/缺依赖/维护存疑）是「找东西」的视图 —— 这几个 chip 的
             // 结果通常只有几条，按分类再切段只会把结果藏进一堆段头里，直接平铺。
-            if (HasUserCategories() && !IsStatusFilter)
+            // v1.3.83：**搜索时也不分段** —— 搜「pov」一条没有，屏幕上却还立着三个空段头
+            // （2026-11-07 用户截图）。搜到的几行本来就该挨在一起看。
+            // v1.3.84：分段与否由 BuildCategorySections 明确返回，别再靠「清空登记表 + 改
+            // SectionHeader」的副作用退场 —— 那个副作用会被紧跟着的 display 循环覆盖回去，
+            // 于是「段头照画、登记表却是空的」：所有段拿到同一个兜底序号，段体 id 全部撞车，
+            // 点空分类就会把有 mod 的那一段折叠掉（2026-11-08 实机）。
+            var segmented = false;
+            if (HasUserCategories() && !IsStatusFilter && string.IsNullOrWhiteSpace(SearchText))
             {
-                var catOrder = Cfg.Current.ModUserCategoryOrder;
-                // 名单是倒序存的（末尾 = 显示最上）。v1.3.55：「未分类」也算一段、也能拖 ——
-                // 它在名单里用空字符串占位，占不到位置就垫底（老配置的行为）。
-                // 名单里没有的自定义分类排在已知分类之下、未分类之上，同档按名字收口。
+                // 段序唯一口径：CategoryDisplayOrder()（屏上从上到下）。这里以前自己算了一套
+                // 「名单序号倒排 + 未分类垫底」，和拖动的 VisibleSectionOrder 口径不一致 ——
+                // 拖未分类算出来和原样完全相等，被当成「挪了个寂寞」丢掉（2026-11-09 用户反馈）。
+                var dispOrder = CategoryDisplayOrder();
                 int SectionRank(string c)
-                    => catOrder.FindLastIndex(x => string.Equals(x ?? "", c, StringComparison.OrdinalIgnoreCase)) + 1;
+                {
+                    var i = dispOrder.FindIndex(x => string.Equals(x, c, StringComparison.OrdinalIgnoreCase));
+                    return i < 0 ? int.MaxValue : i;         // 没登记的段排最后
+                }
                 units = units
-                    .OrderByDescending(u => SectionRank(CategoryOfUnit(u)))
-                    .ThenBy(u => CategoryOfUnit(u).Length == 0 ? 1 : 0)
+                    .OrderBy(u => SectionRank(CategoryOfUnit(u)))
                     .ThenBy(u => CategoryOfUnit(u), StringComparer.OrdinalIgnoreCase)
                     .ToList();
 
-                BuildCategorySections(units);
-
+                // ⚠ 先把行序排好再问能不能分段：登记表按「段在屏幕上出现的先后」定同名分类的次序
+                segmented = BuildCategorySections(units);
+            }
+            if (segmented)
+            {
                 var display = new List<ModGroup>(units.Count + _categorySections.Count);
                 string? lastCat = null;
                 foreach (var u in units)
@@ -3545,8 +4705,9 @@
                 }
                 units = display;
             }
-            else
+            if (!segmented)
             {
+                // 平铺视图：一个段头都不画
                 _categorySections = new List<CategorySection>();
                 foreach (var u in units)
                 {
@@ -3672,18 +4833,23 @@
         // 不补的话新建的分类在列表里根本画不出来、也就没法把 mod 拖进去
         // —— 2026-11-07 用户反馈「分类标签里没有任何 mod 就不要再隐藏了，否则没办法拖动进去」。
         // 只补段头不补行：Count 保持 0，段体为空。
-        foreach (var c in ExistingCategories())
+        // v1.3.83：与 BuildCategorySections 同一条口径 —— 只有「全部 + 没搜索」才补，
+        // 否则搜索/状态筛选下会凭空多出一排空段头（用户截图那个场景）。
+        if (_filter == "all" && string.IsNullOrWhiteSpace(SearchText))
         {
-            if (sections.Any(s => string.Equals(s.Key, c, StringComparison.OrdinalIgnoreCase))) continue;
-            var meta = CategorySectionOf(c);
-            sections.Add(new CatSection
+            foreach (var c in ExistingCategories())
             {
-                Key = c,
-                Label = meta.Label,
-                Index = meta.Index,
-                Collapsed = _collapsedCats.Contains(c),
-                HasHeader = true,
-            });
+                if (sections.Any(s => string.Equals(s.Key, c, StringComparison.OrdinalIgnoreCase))) continue;
+                var meta = CategorySectionOf(c);
+                sections.Add(new CatSection
+                {
+                    Key = c,
+                    Label = meta.Label,
+                    Index = meta.Index,
+                    Collapsed = _collapsedCats.Contains(c),
+                    HasHeader = true,
+                });
+            }
         }
         // 补进来的排在末尾，按段序重排（Index 来自 _categorySections，已按「最新建的在最上」编好）
         if (sections.Count > 1)
@@ -3958,6 +5124,9 @@
             });
         });
         Installer.OnChanged += OnInstallerChanged;
+        // 2026-11-09：分类图标是 XNB 现裁现缓存，头几张出来时 URL 还是 null ——
+        // 生成完一批就重画一次（内部已合并，不会一张一画）
+        PackThumbService.Changed += OnThumbsChanged;
         // v1.06.7：顶栏点「当前页」Mod 管理图标 → 重新扫描 + 重新检查更新
         PageRefresh.OnRefresh += OnPageRefresh;
         // v1.8.x：本地压缩包送达（WPF 拖放 / 文件对话框）→ 取走并安装
@@ -3990,7 +5159,16 @@
                     continue;
                 }
                 await InvokeAsync(StateHasChanged);
-                var installed = await Installer.InstallLocalPacksAsync(batch);
+                // 2026-11-09：装之前先问一句放哪个分类（选完再装；取消 = 这一批不装）。
+                // 拖放和「从文件安装」两条入口都汇到这里，所以只在这一处问。
+                // 单选："" = 未分类，null = 取消。
+                var cat = await AskLocalPackCategoryAsync(batch);
+                if (cat is null)
+                {
+                    await JS.InvokeVoidAsync("junigridJs.toast", Loc.T("已取消这次本地包导入"), "err");
+                    continue;
+                }
+                var installed = await Installer.InstallLocalPacksAsync(batch, cat);
                 var failed = batch.Count - installed;
                 var msg = failed <= 0
                     ? Loc.F("已安装 {0} 个本地包", installed)
@@ -4051,6 +5229,159 @@
             return;
         }
         Delivery.Deliver(packs);   // 与拖放走同一条路：入队 → Delivered → 本页取走
+    }
+
+    // ─── 2026-11-09：本地导入 → 选择分类 ────────────────────────────────
+    // 原来拖进来 / 从文件安装的包一律落进「未分类」，事后还得回列表里一个个拖。
+    // 现在装之前先弹一次（与下载安装那套同一个形状）：选一个分类（可不选 = 未分类）；
+    // 取消 = 这一批压根不装。
+    // ⚠ 2026-11-09 晚：用户明确「一个 mod 只能属于一个分类」，所以这里从多选改成单选。
+    private bool _localPackPickOpen;
+    /// <summary>正在等确认的那一批压缩包（弹窗期间留着，取消时直接丢掉）。</summary>
+    private IReadOnlyList<string> _localPackPending = Array.Empty<string>();
+    /// <summary>本次选中的分类；"" = 未分类。单选 —— 点新的就换过去，点当前这个就是取消。</summary>
+    private string _localPackCat = "";
+    private bool _localPackNewOpen;
+    private string _localPackNewName = "";
+    private string _localPackNewIcon = CategoryIconService.DefaultSpec;
+    /// <summary>图标选择器借用「分类键」定位当前在改谁；本地导入的新建行还没有名字，
+    /// 用另一个不可能与真实分类名冲突的哨兵值（别复用 NewCatIconKey ——
+    /// 那是「加入分类」弹窗的草稿，两个弹窗的草稿不能串）。</summary>
+    private const string LocalNewCatIconKey = "\u0001lpnew";
+    private string? _localPackDialogError;
+    /// <summary>弹窗 → 安装流程的交接：null = 取消，其余 = 选中的分类（"" = 未分类）。</summary>
+    private TaskCompletionSource<string?>? _localPackPickTcs;
+
+    /// <summary>弹出「安装到哪个分类」，等用户点确认/取消。取消返回 null。</summary>
+    private Task<string?> AskLocalPackCategoryAsync(IReadOnlyList<string> batch)
+    {
+        _localPackPending = batch;
+        _localPackCat = "";
+        _localPackNewOpen = false;
+        _localPackNewName = "";
+        _localPackNewIcon = CategoryIconService.DefaultSpec;
+        _localPackDialogError = null;
+        _localPackPickOpen = true;
+        var tcs = new TaskCompletionSource<string?>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        _localPackPickTcs = tcs;
+        _ = InvokeAsync(StateHasChanged);
+        return tcs.Task;
+    }
+
+    /// <summary>单选：点一个新的就换过去，点当前这个就取消（回到未分类）。
+    /// <para>2026-11-09 用户截图：点了 ＋ 打开「新分类名」输入行，又回头点已有分类，
+    /// 新建行没被收掉 —— 底部按钮还停在「新建并勾选」，点下去只报「先输入一个分类名」，
+    /// 选好的分类也用不上。所以从这里选分类必须先把新建行收干净。</para></summary>
+    private void PickLocalPackCat(string c)
+    {
+        if (_localPackNewOpen)
+        {
+            // 新建行开着时点是「改用这个分类」，不做「再点一下取消」的切换（否则会莫名跳回未分类）
+            CloseLocalPackNewRow();
+            _localPackCat = c;
+        }
+        else
+        {
+            _localPackCat = string.Equals(_localPackCat, c, StringComparison.OrdinalIgnoreCase) ? "" : c;
+        }
+        _localPackDialogError = null;
+    }
+
+    /// <summary>选「未分类」。</summary>
+    private void ClearLocalPackCat()
+    {
+        CloseLocalPackNewRow();
+        _localPackCat = "";
+        _localPackDialogError = null;
+    }
+
+    /// <summary>收起「新分类名」输入行（名字、图标、错误提示一起清）。</summary>
+    private void CloseLocalPackNewRow()
+    {
+        _localPackNewOpen = false;
+        _localPackNewName = "";
+        _localPackNewIcon = CategoryIconService.DefaultSpec;
+    }
+
+    /// <summary>确认安装：把单选的那个分类交出去，"" = 未分类。</summary>
+    private void ConfirmLocalPackCategory() => CloseLocalPackPick(_localPackCat);
+
+    private void CancelLocalPackPick() => CloseLocalPackPick(null);
+
+    private void CloseLocalPackPick(string? result)
+    {
+        _localPackPickOpen = false;
+        _localPackPending = Array.Empty<string>();
+        _localPackCat = "";
+        _localPackNewOpen = false;
+        _localPackNewName = "";
+        _localPackNewIcon = CategoryIconService.DefaultSpec;
+        _localPackDialogError = null;
+        var tcs = _localPackPickTcs;
+        _localPackPickTcs = null;
+        StateHasChanged();
+        tcs?.TrySetResult(result);
+    }
+
+    private void FocusLocalPackNewInput()
+    {
+        if (_localPackNewOpen)
+        {
+            _ = JS.InvokeVoidAsync("junigridJs.focusElement", ".jg-lppick-dialog .jg-remark-input");
+            return;
+        }
+        // 2026-11-09 用户截图：点了 ＋ 之后上一次点中的分类还亮着，看着像「既选了 111 又在新建」。
+        // 进「新建」= 还没定分类，把待选值清掉，行高亮也一起收（见上方 !_localPackNewOpen 判断）。
+        _localPackCat = "";
+        _localPackNewOpen = true;
+        _localPackNewName = "";
+        _localPackNewIcon = CategoryIconService.DefaultSpec;
+        _localPackDialogError = null;
+    }
+
+    private void OnLocalPackNewInput(ChangeEventArgs e)
+    {
+        _localPackNewName = e.Value?.ToString() ?? "";
+        _localPackDialogError = null;
+    }
+
+    private void OnLocalPackNewKeydown(Microsoft.AspNetCore.Components.Web.KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter") CreateLocalPackCategory();
+        else if (e.Key == "Escape") { CloseLocalPackNewRow(); _localPackDialogError = null; }
+    }
+
+    /// <summary>弹窗里现场建分类：建完直接选中它，剩下的等用户点「继续安装」。</summary>
+    private void CreateLocalPackCategory()
+    {
+        var name = _localPackNewName.Trim();
+        if (name.Length == 0) { _localPackDialogError = Loc.T("先输入一个分类名"); return; }
+        if (name.Length > 20) name = name[..20];
+        if (ExistingCategories().Any(c => string.Equals(c, name, StringComparison.OrdinalIgnoreCase)))
+        {
+            // 名字和已有分类撞了：当成「就选它」，不再建重复项
+            _localPackCat = name;
+            CloseLocalPackNewRow();
+            _localPackDialogError = null;
+            StateHasChanged();
+            return;
+        }
+        var cfg = Cfg.Current;
+        if (!cfg.ModUserCategoryOrder.Contains(name, StringComparer.OrdinalIgnoreCase))
+            cfg.ModUserCategoryOrder.Add(name);
+        // 新建行选过的图跟着分类一起落盘（默认小鸡就不写键，配置里不留无意义项）
+        var icon = CategoryIconService.NormalizeSpec(_localPackNewIcon);
+        if (!string.Equals(icon, CategoryIconService.DefaultSpec, StringComparison.OrdinalIgnoreCase))
+            cfg.ModCategoryIcon[name] = icon;
+        Cfg.Save(cfg);
+        _categoryRev++;
+        _localPackCat = name;
+        _localPackNewOpen = false;
+        _localPackNewName = "";
+        _localPackNewIcon = CategoryIconService.DefaultSpec;
+        _localPackDialogError = null;
+        StateHasChanged();
     }
 
     /// <summary>顶栏刷新信号（只有已停留在本页时才会触发）。
@@ -4120,11 +5451,19 @@
     public void Dispose()
     {
         _disposed = true;
+        // 本地导入的分类弹窗还开着就离页了：把等待中的安装流程放掉，别让它永远挂在 Task 上
+        try { _localPackPickTcs?.TrySetResult(null); } catch { }
+        _localPackPickTcs = null;
+        _localPackPickOpen = false;
         // 长按拖拽的 JS 回调引用：本页销毁后就别再往一个死组件上回调
         try { _dragRef?.Dispose(); } catch { }
         _dragRef = null;
+        // 图标选择器的滚动回调同理
+        try { _iconScrollRef?.Dispose(); } catch { }
+        _iconScrollRef = null;
         try { LeaveCts.Cancel(); } catch { }
         Installer.OnChanged -= OnInstallerChanged;
+        PackThumbService.Changed -= OnThumbsChanged;
         PageRefresh.OnRefresh -= OnPageRefresh;
         Delivery.Delivered -= OnLocalPackDelivered;
         // vNext：留下扫描快照 —— 从其它页回来时先用它秒显列表，后台再重扫磁盘
@@ -4278,6 +5617,9 @@
         // 计数都是空的，看着像这功能没生效。首屏就单独预查一次 —— 免 Key、一次批量请求、
         // 10 分钟会话缓存，不碰 Nexus 精查那条链路。
         _ = KickoffCompatPrecheck();
+        // 覆盖包不住在 Mods\ 里，mod 行那条 HasUpdate 链（要求 _thisEntry）对它们恒为 false。
+        // 单独查一轮喂筛选条红点与「覆盖包」视图；未登录/网络失败全部静默，不误报。
+        _ = GuardedFireAndForget(CheckOverlayUpdatesAsync(), "覆盖包版本检查");
         if (ActiveProfileName != "默认"
             && AllProfiles.Any(p => p.Name == ActiveProfileName))
         {
@@ -4440,6 +5782,8 @@
         _rowsLoaded = true;
         _modsByFolder = new Dictionary<string, ModEntry>(_mods.Count, StringComparer.OrdinalIgnoreCase);
         foreach (var m in _mods) _modsByFolder[m.Folder] = m;
+        // 覆盖包行上的「宿主标签」用另一张按归一化目录名的索引，列表一变就得重建。
+        _hostsByNorm = null;
         // v1.2.3：已装 UID 集合随重扫一并重建 —— MissingDeps/筛选计数/分组在渲染期被高频
         // 调用，旧写法每次访问 InstalledUids 都全表重建 HashSet（每页渲染 O(N²) 次分配）。
         _installedUids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -4469,6 +5813,9 @@
         _overlayHealth = Cfg.Current.Overlays.Count > 0
             ? ModService.OverlayHealth(Cfg.Current.GamePath, Cfg.Current)
             : new ModService.OverlayReport(new(), new());
+        // 健康度换了 ⇒ 覆盖包视图（含筛选红点）必须重算。以前这个账只在弹窗里读，
+        // 现在筛选条也要读它，忘了这一句红点就会一直停在上一轮的结论上。
+        InvalidateOverlayCache();
         // 缺失依赖的展示名后台解析，列表行才显示得出"是哪个 mod"而不是裸 UID。
         // 只在出现还没问出结果的 UID 时才真发请求（见 _depNameNoMatch），重扫不会反复打网络。
         var __rC = __rsw.ElapsedMilliseconds;
@@ -4591,6 +5938,11 @@
     /// 两者共用同一个对话框，但作用范围不能混。</summary>
     private List<string> _categoryTargets = new();
     private string _categoryNewName = "";
+    /// <summary>新建分类时前面那颗图标（默认小鸡）。挑的图在"新建并加入"时跟着落盘。</summary>
+    private string _categoryNewIcon = CategoryIconService.DefaultSpec;
+    /// <summary>图标选择器借用「分类键」来定位当前在改谁；新建分类还没有名字，
+    /// 就用这个不可能与真实分类名冲突的哨兵值占位。</summary>
+    private const string NewCatIconKey = "\u0001new";
     /// <summary>「新分类名」输入框开没开 —— 平时不开，点 ＋ 才出现（v1.3.48）。</summary>
     private bool _categoryNewOpen;
     /// <summary>＋ 刚按下、输入框还没渲染出来 ⇒ 下一帧再把焦点送进去（autofocus 属性实测不生效）。</summary>
@@ -4629,14 +5981,46 @@
     /// <summary>一组（捆绑包或独立 mod）归哪个分类；"" = 未分类。</summary>
     private string CategoryOfUnit(ModGroup g) => CategoryOfGroup(g);
 
+    /// <summary>单个 mod 归哪个分类（与列表那一行同一口径：捆绑包按顶层目录登记）。
+    /// 段头「点一下全选」用它从当前视图里挑出这一段的成员。</summary>
+    private string CategoryOfMod(ModEntry m)
+        => Cfg.Current.ModUserCategory.TryGetValue(CategoryKeyOf(m), out var c) ? FirstCategory(c) : "";
+
+
     /// <summary>有没有任何已登记的自定义分类（含空分类）。没有时列表不画分段、右侧不出导航。</summary>
     private bool HasUserCategories()
         => Cfg.Current.ModUserCategoryOrder.Any(x => !string.IsNullOrWhiteSpace(x))
            || Cfg.Current.ModUserCategory.Values.Any(v => !string.IsNullOrWhiteSpace(v));
 
+    /// <summary>分类的登记信息。查不到时给一个「未登记」的占位（<c>Index = -1</c>）：
+    /// 它只用于取标签与排序（<c>Index &lt; 0</c> 排最后），绝不能退回 0 —— 0 是真实存在的
+    /// 第一段，退回去就等于「把这一段当成第一段」，折叠/滚动会打到别人身上。</summary>
     private CategorySection CategorySectionOf(string key)
         => _categorySections.FirstOrDefault(x => string.Equals(x.Key, key, StringComparison.OrdinalIgnoreCase))
-           ?? new CategorySection { Key = key, Label = key.Length > 0 ? key : Loc.T("未分类"), Index = 0 };
+           ?? new CategorySection { Key = key, Label = key.Length > 0 ? key : Loc.T("未分类"), Index = -1 };
+
+    // ── 分类段的 DOM id ────────────────────────────────────────────────
+    // v1.3.84：段头/段体的 id 不再用 _categorySections 里的序号。
+    // 那段序号是「渲染这一刻」的排序结果，一旦登记表和屏上画的对不上（空分类没登记、
+    // 平铺兜底把登记表清了、段序重排），两段就会共用同一个 id；catToggle/滚动全是
+    // querySelector/getElementById 按 id 找一个元素 —— 撞车就是「点这个空分类，把有 mod
+    // 的那一段折叠了」（2026-11-08 实机，id 全是 jg-cat-body-0）。
+    // 分类名是用户输入（中文、空格、引号都可能有），不能直接拼进 id 与选择器，
+    // 所以按名字发一个令牌 k1/k2…，一次会话内稳定、绝不重复。
+    private readonly Dictionary<string, string> _catDomIds = new(StringComparer.OrdinalIgnoreCase);
+    private int _catDomSeq;
+
+    /// <summary>分类名 → 稳定 DOM 令牌（同一分类永远同一个令牌，与段序无关）。</summary>
+    private string CatDomId(string key)
+    {
+        if (_catDomIds.TryGetValue(key, out var id)) return id;
+        id = "k" + (++_catDomSeq).ToString();
+        _catDomIds[key] = id;
+        return id;
+    }
+
+    private string CatHeadAnchor(string key) => "jg-cat-" + CatDomId(key);
+    private string CatBodyAnchor(string key) => "jg-cat-body-" + CatDomId(key);
 
     /// <summary>已有分类。v1.3.48：顺序与列表分段/右侧导航一致 —— 新建的在最前
     /// （ModUserCategoryOrder 是建分类时追加的，倒过来读就是最新在前）。之前弹窗是正序，
@@ -4699,6 +6083,7 @@
         _categoryDialogOpen = true;
         _categoryNewName = "";
         _categoryNewOpen = false;
+        _categoryNewIcon = CategoryIconService.DefaultSpec;
         _categoryDialogError = null;
     }
 
@@ -4709,6 +6094,7 @@
         _categoryDialogOpen = true;
         _categoryNewName = "";
         _categoryNewOpen = false;
+        _categoryNewIcon = CategoryIconService.DefaultSpec;
         _categoryDialogError = null;
     }
 
@@ -4719,6 +6105,7 @@
         _categoryDialogOpen = true;
         _categoryNewName = "";
         _categoryNewOpen = false;
+        _categoryNewIcon = CategoryIconService.DefaultSpec;
         _categoryDialogError = null;
     }
 
@@ -4758,7 +6145,16 @@
         var name = _categoryNewName.Trim();
         if (name.Length == 0) { _categoryDialogError = Loc.T("先输入一个分类名"); return; }
         if (name.Length > 20) name = name[..20];
+        var icon = _categoryNewIcon;
         AssignSelectedCategory(name);
+        // 新建行前面那颗图标：建的时候一起落盘（还是默认小鸡就不写配置 —— 默认值不占键）
+        if (!string.Equals(icon, CategoryIconService.DefaultSpec, StringComparison.OrdinalIgnoreCase)
+            && Cfg.Current.ModUserCategoryOrder.Contains(name, StringComparer.OrdinalIgnoreCase))
+        {
+            Cfg.Current.ModCategoryIcon[name] = icon;
+            Cfg.Save(Cfg.Current);
+        }
+        _categoryNewIcon = CategoryIconService.DefaultSpec;
     }
 
     private void AssignSelectedCategory(string? category)
@@ -4793,17 +6189,267 @@
 
     private void ToggleCategoryMenu(string key) => _categoryMenu = _categoryMenu == key ? null : key;
 
+    // ─────────────────────── 2026-11-09：分类图标 ───────────────────────
+    // 图标值只存一个短字符串（logo / portrait:Abigail / item:72），真图由
+    // CategoryIconService 从游戏本体 XNB 现裁现缓存 —— 配置里不塞 base64，
+    // 换游戏目录、换贴图包都会自动跟着变。
+
+    private bool _iconPickOpen;
+    /// <summary>正在改图标的分类（"" = 未分类，它是合法值，所以用单独的 open 标记而不是 null 判空）。</summary>
+    private string _iconPickKey = "";
+    private string _iconTab = "default";
+    private string _iconSearch = "";
+    /// <summary>角色清单按游戏目录缓存一次：每次渲染都去枚举 148 个文件太浪费。</summary>
+    private List<CategoryIconService.IconOption>? _iconPortraits;
+    private string? _iconPortraitsFor;
+    /// <summary>物品全量清单（700+ 件，首次解析 xnb 约 100ms，之后走缓存）。</summary>
+    private List<CategoryIconService.IconOption>? _iconItems;
+    private string? _iconItemsFor;
+    /// <summary>物品网格一次画多少格 —— 700 个 &lt;img&gt; 一口气铺出来会卡，滚到底再续。</summary>
+    private int _iconItemLimit = 140;
+    private const int IconItemBatch = 140;
+    /// <summary>滚动监听挂没挂（对话框一开就挂；元素随对话框销毁，关闭时复位）。</summary>
+    private bool _iconScrollBound;
+    private DotNetObjectReference<Mods>? _iconScrollRef;
+    private bool _thumbRefreshQueued;
+
+    private string IconSpecOf(string key)
+        => key == NewCatIconKey
+            ? CategoryIconService.NormalizeSpec(_categoryNewIcon)
+            : key == LocalNewCatIconKey
+                ? CategoryIconService.NormalizeSpec(_localPackNewIcon)
+                : Cfg.Current.ModCategoryIcon.TryGetValue(key, out var s)
+                    ? CategoryIconService.NormalizeSpec(s)
+                    : CategoryIconService.DefaultSpec;
+
+    /// <summary>段头那颗图标的 URL（还没生成好时返回 null，先画占位）。</summary>
+    private string? CategoryIconUrl(string key)
+        => CategoryIconService.Url(IconSpecOf(key), Cfg.Current.GamePath);
+
+    private string IconCategoryLabel(string key)
+        => key == NewCatIconKey ? Loc.T("新分类")
+           : key == LocalNewCatIconKey ? Loc.T("新分类")
+           : key.Length > 0 ? key : Loc.T("未分类");
+
+    private void OpenIconPicker(string key)
+    {
+        _iconPickKey = key;
+        _iconTab = "default";
+        _iconSearch = "";
+        _iconItemLimit = 140;
+        _iconPickOpen = true;
+        _iconScrollBound = false;     // 对话框是新元素，滚动监听要重新挂
+        _categoryMenu = null;
+        // 700 多件物品要解析两个 xnb：后台先热一遍，等用户点「物品」页签时基本上已经好了
+        ItemCatalogService.Prewarm(Cfg.Current.GamePath);
+    }
+
+    private void CloseIconPicker()
+    {
+        _iconPickOpen = false;
+        _iconScrollBound = false;
+    }
+
+    private void SwitchIconTab(string tab)
+    {
+        if (_iconTab == tab) return;
+        _iconTab = tab;
+        _iconSearch = "";
+        _iconItemLimit = 140;
+    }
+
+    private void OnIconSearch(ChangeEventArgs e)
+    {
+        _iconSearch = e.Value?.ToString() ?? "";
+        _iconItemLimit = 140;          // 换了搜索词就从第一批重新铺
+    }
+
+    /// <summary>当前页签下没画出来的条目数（只有物品页签会截断）。</summary>
+    private int IconHiddenCount()
+    {
+        if (_iconTab != "item") return 0;
+        var all = IconItemSource().Count;
+        return Math.Max(0, all - _iconItemLimit);
+    }
+
+    /// <summary>JS 那边滚到底时回调：再铺一批（顺便把额度封顶，避免越滚越多次空调用）。</summary>
+    [JSInvokable]
+    public void LoadMoreIcons()
+    {
+        if (_disposed || !_iconPickOpen || _iconTab != "item") return;
+        if (IconHiddenCount() <= 0) return;
+        _iconItemLimit += IconItemBatch;
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    /// <summary>物品全量清单（搜索过滤后）。</summary>
+    private List<CategoryIconService.IconOption> IconItemSource()
+    {
+        var gp = Cfg.Current.GamePath;
+        if (_iconItems is null || !string.Equals(_iconItemsFor, gp, StringComparison.OrdinalIgnoreCase))
+        {
+            _iconItems = CategoryIconService.Items(gp);
+            _iconItemsFor = gp;
+        }
+        var q = _iconSearch.Trim();
+        if (q.Length == 0) return _iconItems;
+        return _iconItems
+            .Where(o => o.Name.Contains(q, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+    }
+
+    private IEnumerable<CategoryIconService.IconOption> IconOptions()
+    {
+        switch (_iconTab)
+        {
+            case "portrait":
+            {
+                var gp = Cfg.Current.GamePath;
+                if (_iconPortraits is null || !string.Equals(_iconPortraitsFor, gp, StringComparison.OrdinalIgnoreCase))
+                {
+                    _iconPortraits = CategoryIconService.Portraits(gp);
+                    _iconPortraitsFor = gp;
+                }
+                var q = _iconSearch.Trim();
+                if (q.Length == 0) return _iconPortraits;
+                return _iconPortraits
+                    .Where(o => o.Name.Contains(q, StringComparison.OrdinalIgnoreCase)
+                                || o.Spec.Contains(q, StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+            }
+            case "item":                return IconItemSource().Take(_iconItemLimit);
+            default:
+                // 2026-11-09：木牌 Logo 选项已删（400×220 的横条缩进方框只剩一条糊影，
+                // 谁也不会真选它）——「默认」页签只剩那只鸡，也就是不设图标时的样子。
+                return new[]
+                {
+                    new CategoryIconService.IconOption(CategoryIconService.DefaultSpec, Loc.T("星露谷小鸡"), "默认"),
+                };
+        }
+    }
+
+    /// <summary>「加入分类」列表里每行前面那颗图标（点一下就地换图标）。
+    /// 没设过的分类走默认小鸡 —— 所以新建出来的分类天然带着小鸡图标。</summary>
+    private RenderFragment CatIconButton(string key, string extraClass) => @<button
+        type="button" class="jg-cat-icon @extraClass" data-tip='@Loc.T("点图标换一个")'
+        aria-label='@Loc.T("点图标换一个")'
+        @onclick="() => OpenIconPicker(key)" @onclick:stopPropagation="true">
+        @if (CategoryIconUrl(key) is { } u)
+        {
+            <img src="@u" alt="" draggable="false" loading="lazy" decoding="async" />
+        }
+        else
+        {
+            <span class="jg-cat-icon-ph"></span>
+        }
+    </button>;
+
+    private RenderFragment IconOptionButton(CategoryIconService.IconOption opt, string curSpec) => @<button        type="button" class="jg-icon-opt @(string.Equals(opt.Spec, curSpec, StringComparison.OrdinalIgnoreCase) ? "on" : "")"
+        data-tip="@opt.Name" @onclick="() => SetCategoryIcon(opt.Spec)">
+        <span class="jg-icon-opt-img">
+            @if (CategoryIconService.Url(opt.Spec, Cfg.Current.GamePath) is { } u)
+            {
+                <img src="@u" alt="" loading="lazy" decoding="async" />
+            }
+        </span>
+        <span class="jg-icon-opt-name">@opt.Name</span>
+    </button>;
+
+    /// <summary>选定即落盘（点一下就走）。选回默认（小鸡）等于清掉这一项 —— 配置里不留下无意义的键。</summary>
+    private void SetCategoryIcon(string spec)
+    {
+        var normalized = CategoryIconService.NormalizeSpec(spec);
+        // 还在"新建分类"这一步：图先记在草稿上，等「新建并加入」时跟分类名一起落盘
+        if (_iconPickKey == NewCatIconKey)
+        {
+            _categoryNewIcon = normalized;
+            _iconPickOpen = false;
+            _iconScrollBound = false;
+            StateHasChanged();
+            return;
+        }
+        // 本地导入弹窗里的新建行 —— 另一份草稿，别串到「加入分类」那一份去
+        if (_iconPickKey == LocalNewCatIconKey)
+        {
+            _localPackNewIcon = normalized;
+            _iconPickOpen = false;
+            _iconScrollBound = false;
+            StateHasChanged();
+            return;
+        }
+        var cfg = Cfg.Current;
+        if (string.Equals(normalized, CategoryIconService.DefaultSpec, StringComparison.OrdinalIgnoreCase))
+            cfg.ModCategoryIcon.Remove(_iconPickKey);
+        else
+            cfg.ModCategoryIcon[_iconPickKey] = normalized;
+        Cfg.Save(cfg);
+        _iconPickOpen = false;
+        _iconScrollBound = false;
+        StateHasChanged();
+    }
+
+    /// <summary>XNB 解码是后台跑的一张一张出图：这里合并成"一批画一次"，
+    /// 否则打开角色页签会连着重画一百多次（每次都要遍历整页）。</summary>
+    private void OnThumbsChanged()
+    {
+        if (_disposed || _thumbRefreshQueued) return;
+        _thumbRefreshQueued = true;
+        _ = InvokeAsync(async () =>
+        {
+            await Task.Delay(220);
+            _thumbRefreshQueued = false;
+            if (!_disposed) StateHasChanged();
+        });
+    }
+
+    /// <summary>段头复选框的三态：0 = 一个没选、1 = 选了一部分、2 = 全选。
+    /// 口径与 <see cref="ToggleCategorySelectAll"/> 完全一致（都只看当前视图里的行），
+    /// 否则会出现"框里打了勾、点一下却变成全不选"的错位。</summary>
+    private int CategorySelectState(string key)
+    {
+        var total = 0;
+        var picked = 0;
+        foreach (var m in FilteredMods)
+        {
+            if (!string.Equals(CategoryOfMod(m), key, StringComparison.OrdinalIgnoreCase)) continue;
+            total++;
+            if (_selected.Contains(m.Folder)) picked++;
+        }
+        return total == 0 || picked == 0 ? 0 : picked == total ? 2 : 1;
+    }
+
+    /// <summary>勾上右侧复选框 = 全选 / 取消全选这一分类下的 mod。
+    /// 只认<b>当前视图</b>里的行：搜索/筛选之后屏幕上有什么就选什么，
+    /// 不把看不见的行也偷偷塞进选区（批量操作说的是"你看到的这些"）。</summary>
+    private void ToggleCategorySelectAll(string key)
+    {
+        _categoryMenu = null;
+        var set = FilteredMods
+            .Where(m => string.Equals(CategoryOfMod(m), key, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        if (set.Count == 0) { StateHasChanged(); return; }
+        var all = set.All(m => _selected.Contains(m.Folder));
+        foreach (var m in set)
+        {
+            if (all) _selected.Remove(m.Folder);
+            else _selected.Add(m.Folder);
+        }
+        StateHasChanged();
+    }
+
     /// <summary>点段头：展开/收起这一段（只重排列表，不动盘上任何东西）。
     /// v1.3.49：先让 JS 播 height 0↔auto 的手风琴弹簧，动画回来再落折叠状态 ——
     /// 与捆绑包 ToggleGroupOpen 同一时序约束（先落状态会让 CSS 的 height:0 抢跑，动画空播）。</summary>
     private async Task ToggleCategoryCollapse(string key)
     {
         var collapse = !_collapsedCats.Contains(key);   // 本次动作：true = 收起
-        var idx = CategorySectionOf(key).Index;
         try
         {
+            // 按「分类名 → 稳定 id」取段体，不再按 _categorySections 的序号：
+            // 序号和屏上的段对不上时（空分类未登记 / 平铺兜底清过登记表），
+            // 序号会指到别人身上 —— 点空分类把有 mod 的那段折叠掉（2026-11-08 实机）。
             // 第二个参数是「是否展开」—— 与 collapse 相反，传反了就是收起时播展开（看着没反应）
-            await JS.InvokeVoidAsync("junigridJs.catToggle", "#jg-cat-body-" + idx, !collapse);
+            await JS.InvokeVoidAsync("junigridJs.catToggle", CatBodyAnchor(key), !collapse);
         }
         catch { }
         if (collapse) _collapsedCats.Add(key);
@@ -4842,7 +6488,7 @@
         {
             // 丢进一个折叠着的分类里，至少把它弹开让人看见结果（同款弹簧）
             _collapsedCats.Remove(key);
-            _ = JS.InvokeVoidAsync("junigridJs.catToggle", "#jg-cat-body-" + CategorySectionOf(key).Index, true);
+            _ = JS.InvokeVoidAsync("junigridJs.catToggle", CatBodyAnchor(key), true);
             StateHasChanged();
         }
     }
@@ -4885,8 +6531,8 @@
 
     /// <summary>把一个分类挪到另一个分类的前面/后面（重排 ModUserCategoryOrder）。
     /// before 来自落点：拖到目标段头上半 = 插到它前面，下半 = 插到它后面。
-    /// v1.3.55：「未分类」也可以拖、也可以当落点 —— 它在名单里用空字符串占位（不占位 = 垫底）。
-    /// ⚠ 名单是「倒序显示」的（末尾那条显示在最上面），所以统一换成「可见顺序」算、算完倒序写回。</summary>
+    /// ⚠ 名单是「倒序显示」的（末尾那条显示在最上面），所以统一换成「可见顺序」算、算完倒序写回；
+    /// 可见顺序只有 <see cref="CategoryDisplayOrder"/> 一个来源，别再各自算一套。</summary>
     private void MoveCategory(string from, string to, bool before)
     {
         if (string.Equals(from, to, StringComparison.OrdinalIgnoreCase)) return;
@@ -4920,27 +6566,48 @@
         WriteCategoryOrder(disp);
     }
 
-    /// <summary>段的「可见顺序」（= 名单倒序，含 "" = 未分类）。名单里没有、但屏上确实显示了
-    /// 的段（老分类、从没登记过的未分类段）按屏上的相对位置补进去 —— 否则一拖动就把它们丢了。</summary>
+    /// <summary>分段视图的显示顺序（屏上从上到下）—— <b>唯一口径</b>：列表排序、空分类补位、
+    /// 右侧导航、拖动重排全部走它。
+    /// <para>名单是「从下往上」存的（末尾 = 显示最上），倒着读就是屏序。
+    /// 「未分类」在这里就是一个普通的空字符串成员：名单里有它就按名单摆，没有（老配置）
+    /// 才垫底 —— 以前这份顺序里把空字符串<b>过滤掉再单独垫底</b>，而排序又另外算了一套
+    /// （<c>FindLastIndex + 1</c> 倒排），两边永远差一位：把未分类拖到最上，算出来的顺序
+    /// 和原来完全相等，被当成「挪了个寂寞」直接丢掉；别的分类拖到未分类上下也一样没反应
+    /// （2026-11-09 用户反馈「未分类不能拖动调整顺序、已分类的也拖不到它上下」）。</para>
+    /// <para>名单里没登记的分类（老分类 / 手改过的配置）按名字插在「未分类」之前 ——
+    /// 与旧的垫底口径一致，免得它们一出现就插进用户排好的队伍中间。</para></summary>
+    private List<string> CategoryDisplayOrder()
+    {
+        var order = Cfg.Current.ModUserCategoryOrder;
+        var disp = new List<string>();
+        for (var i = order.Count - 1; i >= 0; i--)          // 名单倒着读 = 屏上从上到下
+        {
+            var c = order[i] ?? "";
+            if (disp.Contains(c, StringComparer.OrdinalIgnoreCase)) continue;   // 脏配置去重
+            disp.Add(c);
+        }
+        if (!disp.Contains("")) disp.Add("");                // 老配置没有未分类占位 → 垫底
+
+        var extras = ExistingCategories()
+            .Where(c => !disp.Contains(c, StringComparer.OrdinalIgnoreCase))
+            .ToList();
+        if (extras.Count > 0)
+        {
+            var at = disp.FindIndex(c => c.Length == 0);
+            disp.InsertRange(at < 0 ? disp.Count : at, extras);
+        }
+        return disp;
+    }
+
+    /// <summary>段的「可见顺序」（= <see cref="CategoryDisplayOrder"/>，含 "" = 未分类）。
+    /// 屏上确实显示了、但两个来源都没登记的段，按屏上的相对位置补进去 ——
+    /// 否则一拖动就把它们丢了。</summary>
     private List<string> VisibleSectionOrder()
     {
-        var disp = Cfg.Current.ModUserCategoryOrder
-            .Where(x => x is not null)
-            .Reverse()
-            .ToList();
-
+        var disp = CategoryDisplayOrder();
         foreach (var sec in _categorySections)
-        {
-            if (disp.Contains(sec.Key, StringComparer.OrdinalIgnoreCase)) continue;
-            var idx = _categorySections.IndexOf(sec);
-            var at = disp.Count;
-            for (var k = idx + 1; k < _categorySections.Count; k++)   // 插在它下面第一个已知段之前
-            {
-                var j = disp.FindIndex(x => string.Equals(x, _categorySections[k].Key, StringComparison.OrdinalIgnoreCase));
-                if (j >= 0) { at = j; break; }
-            }
-            disp.Insert(at, sec.Key);
-        }
+            if (!disp.Contains(sec.Key, StringComparer.OrdinalIgnoreCase))
+                disp.Add(sec.Key);
         return disp;
     }
 
@@ -4974,10 +6641,19 @@
 
     private void OpenCategoryRename(string from)
     {
+        if (from.Length == 0) return;      // 「未分类」不是一个能改名的分类（双击别把它变成真分类）
         _categoryMenu = null;
         _categoryRenameFrom = from;
         _categoryRenameDraft = from;
         _categoryDialogError = null;
+    }
+
+    /// <summary>「…」→ 编辑：名字 + 图标一起改（2026-11-10 由「换个图标」「重命名分类」合并而来）。</summary>
+    private void OpenCategoryEdit(string from)
+    {
+        OpenCategoryRename(from);
+        // 对话框里点图标就要出图：物品清单在后台先热上，别等点了页签才解析 xnb
+        ItemCatalogService.Prewarm(Cfg.Current.GamePath);
     }
 
     private void ConfirmCategoryRename()
@@ -5001,6 +6677,14 @@
         }
         else if (!cfg.ModUserCategoryOrder.Contains(to, StringComparer.OrdinalIgnoreCase))
             cfg.ModUserCategoryOrder.Add(to);
+        // 图标跟着分类走：不改这一项的话，用户挑好的图会在改名后掉回默认小鸡
+        var iconKey = cfg.ModCategoryIcon.Keys.FirstOrDefault(k => string.Equals(k, from, StringComparison.OrdinalIgnoreCase));
+        if (iconKey is not null)
+        {
+            var spec = cfg.ModCategoryIcon[iconKey];
+            cfg.ModCategoryIcon.Remove(iconKey);
+            cfg.ModCategoryIcon[to] = spec;
+        }
         Cfg.Save(cfg);
         if (_collapsedCats.Remove(from)) _collapsedCats.Add(to);
         _categoryRev++;
@@ -5025,6 +6709,9 @@
             else cfg.ModUserCategory[k] = ModCategoryUtil.Join(rest);
         }
         cfg.ModUserCategoryOrder.RemoveAll(x => string.Equals(x, name, StringComparison.OrdinalIgnoreCase));
+        // 分类没了，它的图标也没意义 —— 留着只会在下次建同名分类时"诈尸"
+        var deadIcon = cfg.ModCategoryIcon.Keys.FirstOrDefault(k => string.Equals(k, name, StringComparison.OrdinalIgnoreCase));
+        if (deadIcon is not null) cfg.ModCategoryIcon.Remove(deadIcon);
         Cfg.Save(cfg);
         _collapsedCats.Remove(name);
         _categoryRev++;
@@ -5047,7 +6734,7 @@
     /// 渲染完再滚（见 OnAfterRenderAsync 里的 _pendingCategoryAnchor）。</summary>
     private async Task ScrollToCategory(string key)
     {
-        var anchor = "jg-cat-" + CategorySectionOf(key).Index;
+        var anchor = CatHeadAnchor(key);
         // v1.3.48：段头本来就画出来了（前面那几十行里的段）就直接滚，别再把整份列表一次画完。
         // 全量渲染 200+ 行实测两次占住 UI 线程约 350ms —— 点最上面那根杠换来的是这一下卡顿，
         // 而落点本来就就在屏幕上，等于白闪。
@@ -5064,8 +6751,12 @@
     }
 
     /// <summary>按当前行序切出分类段（段名/数量/前几个 mod 名），顺带给右侧导航的序号。
-    /// 只统计当前视图里看得见的行 —— 筛选/搜索之后导航与列表说的是同一批东西。</summary>
-    private void BuildCategorySections(IReadOnlyList<ModGroup> groups)
+    /// 只统计当前视图里看得见的行 —— 筛选/搜索之后导航与列表说的是同一批东西。
+    /// <para>返回值 = 这次到底要不要分段。以前是「清空登记表 + 把 SectionHeader 改 null」的
+    /// 副作用式退场，但调用方紧接着又把 SectionHeader 赋了回来 —— 结果段头照样画、登记表却是
+    /// 空的，所有段都拿到兜底序号 0、段体共用 jg-cat-body-0，点一个空分类会把有 mod 的那段
+    /// 折叠掉（2026-11-08 实机）。改成明确返回，由调用方决定平铺。</para></summary>
+    private bool BuildCategorySections(IReadOnlyList<ModGroup> groups)
     {
         _categorySections = new List<CategorySection>();
         // v1.3.47：分类不再是一种排序方式 —— 这个函数只按「当前有没有分类」决定画不画，
@@ -5092,36 +6783,37 @@
             && _categorySections.Count == 1 && _categorySections[0].Key.Length == 0)
         {
             _categorySections.Clear();
-            foreach (var g in groups) g.SectionHeader = null;
-            return;
+            return false;                       // 调用方按普通列表画（不要把 SectionHeader 赋回去）
         }
 
         // v1.3.78：**没有任何 mod 的分类也要画段头**。
         // 段头就是长按拖拽的落点（data-cat-key），空分类不画等于「新建了分类却拖不进去」
         // —— 2026-11-07 用户反馈。补一个 Groups 为空的段即可：不占行、但能接 drop。
-        foreach (var c in ExistingCategories())
-            if (!_categorySections.Any(x => string.Equals(x.Key, c, StringComparison.OrdinalIgnoreCase)))
-                _categorySections.Add(new CategorySection { Key = c, Label = c, Index = _categorySections.Count });
+        // v1.3.83：只在「全部 + 没搜索」时补 —— 那是唯一能拖拽的视图，也是空分类唯一有用的场合。
+        // 已启用/已禁用/可更新这类筛选下，一个没有成员的分类只会白占一行（用户同日要求）。
+        if (_filter == "all" && string.IsNullOrWhiteSpace(SearchText))
+        {
+            foreach (var c in ExistingCategories())
+                if (!_categorySections.Any(x => string.Equals(x.Key, c, StringComparison.OrdinalIgnoreCase)))
+                    _categorySections.Add(new CategorySection { Key = c, Label = c, Index = _categorySections.Count });
+        }
 
-        // 重排：**和有 mod 的段用同一个键**（ModUserCategoryOrder 倒序 = 最新建的在最上），
-        // 未分类永远垫底。2026-11-07 用户反馈「没 mod 的分类跑到下面去了，一加 mod 又跑回上面」+
-        // 「侧边栏不显示这个无 mod 的标签」—— 根因就是这里用了 VisibleSectionOrder（它靠
-        // _categorySections 的现有次序去补插，空段刚 add 在末尾，补出来自然排在最后），
-        // 和 picked 那边按 SectionRank 排的结果对不上。
-        var orderDesc = Cfg.Current.ModUserCategoryOrder
-            .Where(x => !string.IsNullOrWhiteSpace(x))
-            .Reverse()
-            .ToList();
+        // 重排：**和拖动/列表排序用同一个口径**（CategoryDisplayOrder，屏上从上到下）。
+        // 这里以前是「名单去掉未分类 → 倒排 → 未分类垫底」，和列表排序、拖动那两套各自为政，
+        // 于是空分类补出来的位置、拖动算出来的位置、屏上的位置三者对不上
+        // —— 拖动看起来「拖了但没动」（2026-11-09 用户反馈）。
+        var dispOrder = CategoryDisplayOrder();
         _categorySections = _categorySections
             .OrderBy(s =>
             {
-                if (s.Key.Length == 0) return int.MaxValue;              // 未分类永远最后
-                var i = orderDesc.FindIndex(x => string.Equals(x, s.Key, StringComparison.OrdinalIgnoreCase));
-                return i < 0 ? int.MaxValue - 1 : i;                     // 不在名单里的排倒数第二档
+                var i = dispOrder.FindIndex(x => string.Equals(x, s.Key, StringComparison.OrdinalIgnoreCase));
+                return i < 0 ? int.MaxValue : i;         // 没登记的段排最后
             })
             .ToList();
-        // 重编 Index —— 段体 DOM id（jg-cat-body-{Index}）和右侧导航都依赖它
+        // 重编 Index —— 只管「段的先后」与右侧导航的次序（段体的 DOM id 已改成按名字取，
+        // 不再依赖这个序号：序号一旦和屏上的段对不上就会指错人）
         for (var i = 0; i < _categorySections.Count; i++) _categorySections[i].Index = i;
+        return true;
     }
 
     // v0.41.0：全选当前过滤结果（只选看得见的，避免误选被过滤掉的）
@@ -7211,7 +8903,8 @@
                                 {
                                     (err, newVer) = await Task.Run(() =>
                                     {
-                                        var e = ModSvc.InstallUpdate(updGameDir, installTarget, zip!, out var nv, nexusModId: m.NexusModId);
+                                        var e = ModSvc.InstallUpdate(updGameDir, installTarget, zip!, out var nv,
+                                            nexusModId: m.NexusModId, cfg: Cfg);
                                         return (e, nv);
                                     });
                                 }
@@ -7340,7 +9033,8 @@
                                 {
                                     ghErr = await Task.Run(() =>
                                         ModSvc.InstallUpdate(ghGameDir, m.Folder, ghZip,
-                                            out ghNewVer, expectedUniqueId: ghExpect, nexusModId: m.NexusModId));
+                                            out ghNewVer, expectedUniqueId: ghExpect, nexusModId: m.NexusModId,
+                                            cfg: Cfg));
                                 }
                                 finally { InstallService.ExitInstallGate(); }
                             }

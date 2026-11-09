@@ -41,7 +41,7 @@ public static class InstallMigrate
     };
 
     /// <summary>缓存根下的散装文件（不是目录），同样要跟着搬。</summary>
-    public static readonly string[] DataFiles = { "_smapi-install.dat" };
+    public static readonly string[] DataFiles = { "_smapi-install.dat", "item-catalog.json" };
 
     public sealed record Result(List<string> Moved, List<string> Failed,
         long Bytes, bool ConfigPatched, string? OldDir, string? NewDir, string? SkipReason = null);

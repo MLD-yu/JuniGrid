@@ -756,12 +756,24 @@ html[data-theme="dark"] .jg-newver:hover:not(:disabled) {
 .jg-catnav-dash::before { content: ""; display: block; width: 14px; height: 3px; border-radius: 2px; background: var(--jg-line-strong); opacity: .55; transition: width .15s ease, opacity .15s ease, background .15s ease; }
 .jg-catnav-dash:hover::before, .jg-catnav-dash.hot::before { width: 22px; opacity: 1; background: var(--jg-text); }
 .jg-catnav-card { position: absolute; right: 28px; top: var(--jg-cat-card-y, 50%); transform: translateY(-50%); min-width: 150px; max-width: 240px; padding: 10px 12px; background: var(--jg-glass-95); border: 1px solid var(--jg-line); border-radius: 12px; box-shadow: 0 12px 34px rgba(0, 0, 0, .2); backdrop-filter: blur(8px); pointer-events: none; }
-.jg-catnav-title { font-size: 12.5px; font-weight: 700; color: var(--jg-text); margin-bottom: 6px; display: flex; gap: 6px; }
+/* 2026-11-10：卡片里跟着分类图标走（与段头同一张图）。文字行只剩名字，所以底边距收掉，
+   否则卡片下沿会多出一条空白。 */
+.jg-catnav-title { font-size: 12.5px; font-weight: 700; color: var(--jg-text); display: flex; align-items: center; gap: 7px; }
 .jg-catnav-title span { font-weight: 500; color: var(--jg-text-3); }
+.jg-catnav-icon {
+    width: 20px; height: 20px; flex: none; border-radius: 5px; overflow: hidden;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--jg-well); box-shadow: inset 0 0 0 1px var(--jg-line);
+}
+.jg-catnav-icon img { display: block; max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain; }
+.jg-catnav-title .jg-catnav-name { font-weight: 700; color: var(--jg-text); }
 .jg-catnav-row { font-size: 12px; color: var(--jg-text-2); padding: 2px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .jg-catnav-more { font-size: 11.5px; color: var(--jg-text-3); margin-top: 4px; }
 
 .jg-cat-dialog { min-width: 340px; max-width: 420px; }
+/* 2026-11-09：本地导入（拖放 / 从文件安装）的分类弹窗 —— 标题下多一行说明，
+   否则「有分类 / 未分类 / ＋ 新建」这三件事为什么凑在一起得靠猜。 */
+.jg-lppick-sub { font-size: 12.5px; line-height: 1.5; opacity: .68; margin: -2px 0 8px; }
 .jg-cat-list { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 12px; }
 .jg-cat-pick { border: 1px solid var(--jg-line); background: var(--jg-well); color: var(--jg-text); border-radius: 999px; padding: 5px 12px; font-size: 12.5px; cursor: pointer; }
 .jg-cat-pick:hover { border-color: var(--jg-text); }
@@ -773,19 +785,22 @@ html[data-theme="dark"] .jg-catnav-card { background: rgba(30, 32, 36, .92); }
 /* v1.3.46：分类选择弹窗 —— 照「存档」下拉的竖排列表（一行一个分类、选中整行高亮、右侧 ×、底部虚线＋） */
 /* v1.3.48：分类一多就把弹窗顶得老长 —— 改成名单自己滚（一行约 30px，一屏 8 行），
    ＋ 与输入框在滚动区外面，永远钉在列表下面，不会跟着滚走。 */
-.jg-cat-menu { display: flex; flex-direction: column; gap: 2px; margin: 8px 0 0; max-height: 236px; overflow-y: auto; scrollbar-width: thin; }
+/* 2026-11-10：这里以前写了 scrollbar-width: thin —— 只要指定了它，Chromium（WebView2）
+   就整份忽略 ::-webkit-scrollbar，退回系统原生粗条 + 上下箭头按钮（用户截图反馈）。
+   滚动条交给 base.css 的全局定制那套（6px 圆头、透明轨道）。 */
+.jg-cat-menu { display: flex; flex-direction: column; gap: 2px; margin: 8px 0 0; max-height: 236px; overflow-y: auto; }
 .jg-cat-menu .jg-profile-item { display: flex; align-items: center; border-radius: 8px; }
 .jg-cat-menu .jg-profile-item:hover:not(.active) { background: var(--jg-hover); }
 .jg-cat-menu .jg-profile-item.active { background: var(--jg-hover-strong); }
 .jg-cat-menu .jg-profile-item.active .jg-profile-name { font-weight: 600; color: var(--jg-text); }
 .jg-cat-foot { margin: 6px 0 12px; }
 
-/* v1.3.47：分类段头 = 手风琴 —— 可点、带箭头、双击名字重命名 */
+/* v1.3.47：分类段头 = 手风琴 —— 可点、双击名字重命名 */
 .jg-cat-head { cursor: pointer; user-select: none; padding: 6px 4px; margin: 10px 0 2px; border-radius: 8px; transition: background .12s ease; }
 .jg-cat-head:hover { background: var(--jg-hover); }
 .jg-cat-head:first-child { margin-top: 2px; }
-.jg-cat-chevron { width: 12px; height: 12px; flex: none; color: var(--jg-text-3); transition: transform .18s ease; }
-.jg-cat-head.collapsed .jg-cat-chevron { transform: rotate(-90deg); }
+/* 收起时整段变淡（箭头已被复选框取代，靠这个表达"这一段是收着的"） */
+.jg-cat-head.collapsed .jg-cat-icon { opacity: .5; }
 .jg-cat-head-name { font-size: 13px; font-weight: 700; color: var(--jg-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .jg-cat-head.collapsed .jg-cat-head-name { color: var(--jg-text-2); }
 /* v1.3.51：长按拖拽（不需要手柄图标 —— 按住行/段头 320ms 就拿起来了）*/
@@ -807,16 +822,189 @@ body.jg-dragging .jg-modrow, body.jg-dragging .jg-cat-head { cursor: grabbing; }
 .jg-cat-head.drop-target { background: var(--jg-hover-strong); box-shadow: inset 0 0 0 1px var(--jg-outline); }
 
 /* v1.3.54：分类重排的落点用「一条横线」标出插在哪一格（不再整块高亮 ——
-   分类拖拽时整块亮起来看不出是插到它前面还是后面）。上半 = 线在上边缘，下半 = 线在下边缘。 */
-.jg-cat-head.drop-above::before,
-.jg-cat-head.drop-below::after {
-    content: ""; position: absolute; left: 0; right: 0; height: 2px; z-index: 3;
+   分类拖拽时整块亮起来看不出是插到它前面还是后面）。
+   2026-11-09：线不再画在段头自己的 ::before/::after 上。那两条伪元素只能贴段头的上下边，
+   相邻两段各画一条就会得到相距 3px、几乎并排的两条线；展开的段更是把「段后」画到了内容顶部。
+   现在由 JS 算好「第几条缝」和一个 fixed 的行，位置统一取缝隙正中 ——
+   同一条缝只有一条线，折叠时不抖，展开时上/下两条自然分得开。 */
+.jg-cat-dropline {
+    position: fixed; display: none; height: 2px; z-index: 9000;
     border-radius: 2px; background: var(--jg-accent);
     box-shadow: 0 0 0 2px var(--jg-hover), 0 1px 6px color-mix(in srgb, var(--jg-accent) 55%, transparent);
     pointer-events: none;
 }
-/* 线画在段头与相邻段体的 6px 缝里（别压到两边的卡片上） */
-.jg-cat-head.drop-above::before { top: -5px; }
-.jg-cat-head.drop-below::after { bottom: -4px; }
 /* 拖分类时把悬停底色关掉：光标必然压在某个段头上，留着底色就又变成"整块高亮"了 */
 body.jg-dragging-cat .jg-cat-head:hover { background: transparent; }
+
+/* ─── 2026-11-09：分类图标（段头 + 图标选择器） ─────────────────────────
+   图标一律装进固定方框、object-fit:contain —— 游戏 Logo 是横条、物品是 16×16 方块、
+   角色大头照是 64×64，三种比例在同一个位置显示都不能被裁掉一块。 */
+.jg-cat-icon {
+    width: 22px; height: 22px; flex: none; border-radius: 5px; overflow: hidden;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--jg-well); box-shadow: inset 0 0 0 1px var(--jg-line);
+    /* 2026-11-10：图标本身是按钮（点一下换图标）—— 先把 button 的默认样式抹平 */
+    padding: 0; border: 0; cursor: pointer;
+}
+.jg-cat-icon:hover { box-shadow: inset 0 0 0 1px var(--jg-accent); }
+.jg-cat-icon:focus-visible { outline: 2px solid var(--jg-accent); outline-offset: 1px; }
+.jg-cat-icon img { display: block; max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain; }
+.jg-cat-icon-ph { width: 12px; height: 12px; border-radius: 3px; background: var(--jg-line); }
+/* 「加入分类」列表里每行前面那颗（点一下就地换图标）；新建行也用同一颗 */
+.jg-cat-icon-row { width: 20px; height: 20px; border-radius: 5px; margin-left: 6px; }
+/* 下载弹窗的分类列表里只是「展示」，点它不该有换图标的暗示 */
+.jg-cat-icon-ro { cursor: default; }
+.jg-cat-icon-ro:hover { box-shadow: inset 0 0 0 1px var(--jg-line); }
+/* 新建分类行：左边补 4px，和上面每条 `.jg-profile-item`（自带 padding: 4px）对齐 ——
+   否则这一行的图标会比上面的图标往左歪 4px，肉眼看得出不齐 */
+.jg-cat-newrow { display: flex; align-items: center; gap: 8px; padding-left: 4px; }
+.jg-cat-newrow .jg-remark-field { flex: 1; min-width: 0; }
+/* 「编辑分类」对话框里的大图标 */
+.jg-cat-icon-big { width: 34px; height: 34px; border-radius: 7px; }
+.jg-cat-edit { display: flex; align-items: center; gap: 10px; margin: 2px 0 10px; }
+.jg-cat-edit-hint { font-size: 11.5px; color: var(--jg-text-3); }
+/* 右侧复选框（全选本分类）：靠右，紧跟着「…」 */
+.jg-cat-check {
+    margin-left: auto; flex: none; width: 17px; height: 17px; padding: 0; border: 1.5px solid var(--jg-line-strong);
+    border-radius: 5px; background: transparent; color: transparent; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: background .12s ease, border-color .12s ease, color .12s ease;
+}
+.jg-cat-check svg { width: 12px; height: 12px; flex: none; }
+.jg-cat-check:hover { border-color: var(--jg-accent); }
+.jg-cat-check.some { border-color: var(--jg-accent); color: var(--jg-accent); }
+.jg-cat-check.on { background: var(--jg-accent); border-color: var(--jg-accent); color: #fff; }
+.jg-cat-head .jg-cat-head-more { margin-left: 0; }
+
+.jg-cat-icon-dialog { min-width: min(560px, 78vw); max-width: 620px; }
+.jg-icon-tabs { display: flex; align-items: center; gap: 6px; margin: 10px 0 8px; }
+.jg-icon-tab {
+    border: 1px solid var(--jg-line); background: var(--jg-well); color: var(--jg-text-2);
+    border-radius: 999px; padding: 4px 12px; font-size: 12px; cursor: pointer;
+}
+.jg-icon-tab:hover { border-color: var(--jg-line-strong); color: var(--jg-text); }
+.jg-icon-tab.on { border-color: var(--jg-accent); color: var(--jg-text); font-weight: 600; background: var(--jg-hover-strong); }
+.jg-icon-search { margin-left: auto; width: 150px; height: 28px; font-size: 12px; }
+/* 同上：别写 scrollbar-width: thin，否则全局定制的细滚动条失效（会变回系统粗条 + 箭头） */
+.jg-icon-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(74px, 1fr)); gap: 8px;
+    max-height: min(52vh, 420px); overflow-y: auto; padding: 4px 2px 6px;
+}
+.jg-icon-opt {
+    display: flex; flex-direction: column; align-items: center; gap: 4px;
+    padding: 6px 4px; border: 1px solid transparent; border-radius: 10px;
+    background: var(--jg-well); color: inherit; cursor: pointer;
+}
+.jg-icon-opt:hover { border-color: var(--jg-line-strong); }
+.jg-icon-opt.on { border-color: var(--jg-accent); box-shadow: inset 0 0 0 1px var(--jg-accent); }
+.jg-icon-opt-img { width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; }
+.jg-icon-opt-img img { display: block; max-width: 36px; max-height: 36px; width: auto; height: auto; object-fit: contain; }
+.jg-icon-opt-name {
+    font-size: 11px; color: var(--jg-text-2); max-width: 100%;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* ─── 覆盖包行上的「宿主 mod」标签（2026-11-09）──────────────────────────────
+   位置与 mod 行的分类标签相同：标题行里、版本号后面。内容 = 宿主封面 + 名字，
+   一眼看出这份覆盖盖在谁身上；宿主没装就换成警示色的「未安装宿主 mod」。
+   .jg-tag 默认 flex-shrink:0，长名字会把整行顶出去 —— 这里改成可收缩 + 省略号。 */
+.jg-hosttag {
+    display: inline-flex;
+    flex: 0 1 auto;
+    align-items: center;
+    gap: 5px;
+    align-self: center;
+    min-width: 0;
+    max-width: 260px;
+    padding: 2px 9px 2px 3px;
+    opacity: 1;
+}
+.jg-hosttag img {
+    flex: none;
+    width: 18px;
+    height: 18px;
+    border-radius: 5px;
+    object-fit: cover;
+    background: var(--jg-track);
+}
+.jg-hosttag-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.jg-hosttag[data-missing] {
+    padding: 2px 9px;
+    background: rgba(232, 17, 35, 0.10);
+    color: #c50f1f;
+    opacity: 1;
+}
+html[data-theme="dark"] .jg-hosttag[data-missing] {
+    background: rgba(232, 17, 35, 0.18);
+    color: #ff8a8a;
+}
+
+/* 覆盖包「已失效」标签：inline 的深红在深色主题下几乎读不出来，改成带暗色变体的类。 */
+.jg-tag.danger {
+    background: rgba(232, 17, 35, 0.10);
+    color: #c50f1f;
+    opacity: 1;
+}
+html[data-theme="dark"] .jg-tag.danger {
+    background: rgba(232, 17, 35, 0.20);
+    color: #ff8a8a;
+}
+/* ─── 覆盖包按宿主分段（2026-11-09 二改）─────────────────────────────────
+   段头复用 .jg-cat-head（可点、悬停、.collapsed 变灰），但去掉分类图标、
+   全选框和「…」菜单 —— 这三组（宿主 mod / 头像 / 未安装宿主 mod）是算出来的，
+   不是用户编辑的分类，给编辑入口只会让人以为能改名、能拖。
+   左侧一道竖条 + 右侧折角箭头，与 mod 分类段头一眼区分开。 */
+.jg-ov-sechead { padding: 4px 6px; }
+.jg-ov-secmark {
+    flex: none; width: 3px; height: 13px; border-radius: 2px;
+    background: var(--jg-accent); opacity: .6;
+}
+.jg-ov-sechead.collapsed .jg-ov-secmark { opacity: .28; }
+.jg-ov-secard {
+    margin-left: auto; display: inline-flex; align-items: center;
+    color: var(--jg-text-3); transition: transform .16s ease;
+}
+.jg-ov-secard svg { width: 14px; height: 14px; }
+.jg-ov-sechead.collapsed .jg-ov-secard { transform: rotate(-90deg); }
+
+/* 2026-11-09 三改：覆盖包段头 = 宿主 mod 的封面 + 真名（一个宿主一段）。
+   小封面跟行里那颗 44px 的不是一个量级 —— 段头是"标题"，22px 够了；
+   别复用 .jg-modrow-icon（44px 会把段头撑成两行高，跟 mod 分类段头对不齐）。 */
+.jg-ov-secicon {
+    width: 22px; height: 22px; flex: none;
+    border-radius: 6px; object-fit: cover;
+    background: var(--jg-track);
+}
+.jg-ov-sechead.collapsed .jg-ov-secicon { opacity: .5; }
+
+/* 四改：段头多了全选复选框后，箭头不能再吃 auto 外边距 ——
+   两个 margin-left:auto 会平分空白，复选框被顶到中间（实机一眼像错位）。
+   让复选框单独吃掉空白：它在右、箭头紧贴最右。 */
+.jg-ov-sechead .jg-ov-secard { margin-left: 0; }
+
+/* 五改（2026-11-10）：宿主标签变成入口 —— 点名字去宿主 mod 详情页 / N 网页面。
+   套的是 <button>，所以要把标签那套外观从 .jg-tag 继承过来后抹掉按钮原生样式：
+   字体、边框、背景、内边距都由 .jg-tag / .jg-hosttag 提供，这里只管交互反馈。
+   点睛一笔：悬停把名字加下划线 —— 整块标签本来就有底色，不给个线索看不出能点。 */
+.jg-hosttag-nav {
+    /* 不能写 font: inherit —— 那会把 .jg-tag 的 11px 一起冲掉（同为单类，本段在后面），
+       标签字跟着标题变成 14px 就撑破行了。只重置按钮自带的那几项。 */
+    font-family: inherit;
+    font-size: 11px;
+    line-height: 1.2;
+    border: 0;
+    cursor: pointer;
+    color: inherit;
+    text-align: left;
+    transition: background-color .14s ease;
+}
+.jg-hosttag-nav .jg-hosttag-name { text-decoration: none; }
+.jg-hosttag-nav:hover .jg-hosttag-name { text-decoration: underline; text-underline-offset: 2px; }
+.jg-hosttag-nav:hover { background: var(--jg-hover, rgba(127,127,127,.12)); }
+.jg-hosttag-nav[data-missing]:hover { background: rgba(232, 17, 35, 0.18); }
+.jg-hosttag-nav:focus-visible { outline: 2px solid var(--jg-accent); outline-offset: 1px; }

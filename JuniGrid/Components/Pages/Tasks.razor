@@ -574,11 +574,15 @@
         // v1.3.44：AlreadyRunning = 这个 mod 已经有一行在跑，不是错误，也没必要 toast ——
         // 用户眼睛就在任务管理页上，那一行的进度比一句话有用。
         if (err is not null && err != InstallService.AlreadyRunning)
-            // Premium 这条出口服务自己已经打开过文件页了，toast 说这句人话，别把内部标记
-            // 「premium：…」原样甩给用户（那个前缀是给调用方分流用的，不是文案）。
+        {
+            // Premium / 「关掉了内置网页下载」这两条出口，服务自己已经开过文件页了 ——
+            // toast 说这句人话，别把内部标记「premium：…」原样甩给用户（那个前缀是给调用方
+            // 分流用的，不是文案）。v1.3.85：这条是交接，不是失败，别用红条把人劝退。
+            var handoff = err.Contains("premium", StringComparison.OrdinalIgnoreCase);
             await JS.InvokeVoidAsync("junigridJs.toast",
-                err.Contains("premium", StringComparison.OrdinalIgnoreCase)
-                    ? LocService.Tr("应用内没取到直链，已改为打开网页") : err, "err");
+                handoff ? LocService.Tr("应用内没取到直链，已改为打开网页") : err,
+                handoff ? "ok" : "err");
+        }
     }
     private void Resume(TaskItem t)
     {

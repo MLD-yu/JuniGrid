@@ -638,6 +638,11 @@
         {
             // 首屏落定就查，不再干等 2.5 秒 —— 之前加上启动 900ms 的延迟，用户体感要 4 秒以上
             await Task.Delay(200, _cts.Token);
+
+            // 引导优先：它一出现就独占全屏，而且已经写过「看过」记档 —— 被盖住等于这次白弹。
+            // 引导本次不弹时这个 Task 立刻完成，赞助提示的行为与之前完全一致。
+            await StartupOverlayGate.WaitWelcomeAsync().WaitAsync(_cts.Token);
+
             await MaybeShowSponsorPromptAsync(Cfg.Current.TotalLaunchCount, promptDelayMs: 0);
         }
         catch (OperationCanceledException) { }

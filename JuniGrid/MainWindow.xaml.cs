@@ -458,6 +458,12 @@ public partial class MainWindow : Window
                         }
                         catch { }
                     };
+                    // ⚠ 这里不要再挂 NewWindowRequested 自己去开浏览器：WPF 版
+                    // BlazorWebView 内部已经挂了一个（Microsoft.AspNetCore.Components.WebView.Wpf
+                    // 里的 CoreWebView2_NewWindowRequested），target=_blank 就是它用
+                    // UseShellExecute 交给系统默认浏览器的。v1.3.1 曾在这里补过一次，
+                    // 结果每个图标点一下开两个网站（两个处理器各开一次，实测同一次点击
+                    // 发出两条顶层导航、间隔 ~9ms），现已移除。
                     // v1.0.9：WebView2 子进程崩溃自愈 —— 渲染进程挂掉时 Reload 重启它，
                     // 浏览器进程挂掉时记录日志（此时只能整窗重建，先保证不无声死掉）
                     args.WebView.CoreWebView2.ProcessFailed += (_, pf) =>

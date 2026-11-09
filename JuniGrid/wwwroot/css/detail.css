@@ -337,7 +337,9 @@ html[data-theme="dark"] .jg-user-tip-bubble {
 }
 .jg-pick-list {
     display: flex; flex-direction: column; gap: 6px;
-    max-height: 210px; overflow-y: auto; scrollbar-width: thin;
+    /* 别加 scrollbar-width: thin —— 会让 Chromium 丢掉全局 ::-webkit-scrollbar 定制，
+       变成系统原生粗条（上下箭头）。滚动条样式统一由 base.css 兜底。 */
+    max-height: 210px; overflow-y: auto;
 }
 /* 弹窗里现在最多三节（主文件 / 可选文件 / 更多文件下拉），每节列表都收紧一档：
    三节一起铺满会把「下载并安装」挤出屏幕。单节内部照旧自己滚。 */
@@ -389,6 +391,10 @@ html[data-theme="dark"] .jg-user-tip-bubble {
     max-height: 216px; overflow-y: auto;
 }
 .jg-pick-vdd .jg-sort-item { white-space: normal; line-height: 1.45; }
+/* 弹窗里同时有两支下拉（「更多文件」和「分类」），基础 z-index 相同（.jg-sort-dd 9500），
+   于是按 DOM 顺序后绘制的「分类」永远压在上面 —— 展开「更多文件」时菜单被分类触发按钮
+   横切一道（2026-11-10 用户截图）。让**展开的那一支**自己抬高一档即可。 */
+.jg-pick-modal .jg-sort-dd.open { z-index: 9520; }
 .jg-pick-vdd.open.up .jg-sort-menu { transform-origin: bottom left; }
 /* 弹窗内的遮罩要压在菜单之下：全局 .jg-dd-overlay 是 9000，会盖住菜单（看得见、点不中）。 */
 .jg-pick-modal .jg-dd-overlay { z-index: 15; }
