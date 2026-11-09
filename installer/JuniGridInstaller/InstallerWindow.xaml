@@ -238,8 +238,9 @@
     <!-- ========== 欢迎页 ========== -->
     <Grid x:Name="WelcomeScreen">
       <StackPanel VerticalAlignment="Bottom" Margin="48,0,48,42">
+        <!-- 「高级选项」不在这儿另开一个入口了：安装路径页就是唯一的第一步，
+             谁都会先看到路径框，不需要先想到"我要不要高级"才敢改位置。 -->
         <Button x:Name="BtnInstallNow" Style="{StaticResource AccentButton}" Content="安　装" Height="58" FontSize="19" Click="OnInstallNow" />
-        <Button x:Name="BtnAdvanced" Style="{StaticResource GhostButton}" Content="高 级 选 项" Margin="0,20,0,0" HorizontalAlignment="Center" Click="OnAdvanced" />
       </StackPanel>
     </Grid>
 
@@ -273,7 +274,6 @@
              （扫到别的管理器在接就不抢），之后归设置页的「一键安装」管。装机界面上放一个勾，
              老用户升级时会被默认值悄悄改掉他自己关过的开关。 -->
         <Button x:Name="BtnInstall" Style="{StaticResource AccentButton}" Content="开 始 安 装" Height="56" FontSize="18" Margin="0,24,0,0" Click="OnInstall" />
-        <Button x:Name="BtnBack" Style="{StaticResource GhostButton}" Content="返 回" Margin="0,16,0,0" HorizontalAlignment="Center" Click="OnBack" />
       </StackPanel>
     </Grid>
 

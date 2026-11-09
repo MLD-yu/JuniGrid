@@ -55,12 +55,13 @@ public partial class InstallerWindow : Window
 
     private void OnMinimize(object sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;
     private void OnClose(object sender, RoutedEventArgs e) => Close();
-    private void OnAdvanced(object sender, RoutedEventArgs e) => ShowScreen(PathScreen);
 
-    private void OnBack(object sender, RoutedEventArgs e)
+    /// <summary>「安装」= 先进路径页。路径框是每个人都该看见的一步，不再藏在「高级选项」后面
+    /// （藏起来的结果是新手以为位置写死了，压根不知道能换）。</summary>
+    private void OnInstallNow(object sender, RoutedEventArgs e)
     {
         PathHint.Visibility = Visibility.Collapsed;
-        ShowScreen(WelcomeScreen);
+        ShowScreen(PathScreen);
     }
 
     private void OnBrowse(object sender, RoutedEventArgs e)
@@ -72,8 +73,6 @@ public partial class InstallerWindow : Window
         if (dlg.ShowDialog() == true && !string.IsNullOrWhiteSpace(dlg.FolderName))
             PathBox.Text = dlg.FolderName;
     }
-
-    private void OnInstallNow(object sender, RoutedEventArgs e) => StartInstall();
 
     private void OnInstall(object sender, RoutedEventArgs e)
     {
@@ -251,9 +250,7 @@ public partial class InstallerWindow : Window
     private void SetControlsEnabled(bool enabled)
     {
         BtnInstallNow.IsEnabled = enabled;
-        BtnAdvanced.IsEnabled = enabled;
         BtnInstall.IsEnabled = enabled;
-        BtnBack.IsEnabled = enabled;
         BtnBrowse.IsEnabled = enabled;
         PathBox.IsEnabled = enabled;
         DeskShortcut.IsEnabled = enabled;
