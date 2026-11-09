@@ -56,14 +56,6 @@ public partial class InstallerWindow : Window
     private void OnMinimize(object sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;
     private void OnClose(object sender, RoutedEventArgs e) => Close();
 
-    /// <summary>「安装」= 先进路径页。路径框是每个人都该看见的一步，不再藏在「高级选项」后面
-    /// （藏起来的结果是新手以为位置写死了，压根不知道能换）。</summary>
-    private void OnInstallNow(object sender, RoutedEventArgs e)
-    {
-        PathHint.Visibility = Visibility.Collapsed;
-        ShowScreen(PathScreen);
-    }
-
     private void OnBrowse(object sender, RoutedEventArgs e)
     {
         var dlg = new Microsoft.Win32.OpenFolderDialog
@@ -249,7 +241,6 @@ public partial class InstallerWindow : Window
 
     private void SetControlsEnabled(bool enabled)
     {
-        BtnInstallNow.IsEnabled = enabled;
         BtnInstall.IsEnabled = enabled;
         BtnBrowse.IsEnabled = enabled;
         PathBox.IsEnabled = enabled;
@@ -258,7 +249,7 @@ public partial class InstallerWindow : Window
 
     private void ShowScreen(UIElement screen)
     {
-        foreach (var p in new UIElement[] { WelcomeScreen, PathScreen, ProgressScreen })
+        foreach (var p in new UIElement[] { PathScreen, ProgressScreen })
         {
             var isTarget = ReferenceEquals(p, screen);
             p.Visibility = isTarget ? Visibility.Visible : Visibility.Collapsed;

@@ -232,20 +232,14 @@
       </Rectangle.Fill>
     </Rectangle>
 
-    <!-- 路径页的整窗压暗 -->
-    <Rectangle x:Name="DimOverlay" Fill="#E00D0F12" Visibility="Collapsed" IsHitTestVisible="False" />
+    <!-- 整窗压暗：1.3.2 起首屏就是路径页，这里一开始就得是亮的 -->
+    <Rectangle x:Name="DimOverlay" Fill="#E00D0F12" Visibility="Visible" IsHitTestVisible="False" />
 
-    <!-- ========== 欢迎页 ========== -->
-    <Grid x:Name="WelcomeScreen">
-      <StackPanel VerticalAlignment="Bottom" Margin="48,0,48,42">
-        <!-- 「高级选项」不在这儿另开一个入口了：安装路径页就是唯一的第一步，
-             谁都会先看到路径框，不需要先想到"我要不要高级"才敢改位置。 -->
-        <Button x:Name="BtnInstallNow" Style="{StaticResource AccentButton}" Content="安　装" Height="58" FontSize="19" Click="OnInstallNow" />
-      </StackPanel>
-    </Grid>
-
-    <!-- ========== 路径页 ========== -->
-    <Grid x:Name="PathScreen" Visibility="Collapsed">
+    <!-- ========== 首屏 = 安装路径 ==========
+         以前这里还有一屏「欢　迎 / 安　装 / 高级选项」，路径框藏在第三层后面，
+         新手根本不知道安装位置能改。现在点开就是路径框：看得见、改得动，再按开始安装。
+         （「返回」也一并去掉 —— 这是第一屏，没有"回"可返。） -->
+    <Grid x:Name="PathScreen">
       <StackPanel VerticalAlignment="Bottom" Margin="36,0,36,36">
         <TextBlock Text="安装路径" FontSize="13" FontWeight="SemiBold" Foreground="#D9FFFFFF" />
         <Border CornerRadius="12" Background="#1AFFFFFF" BorderBrush="#2EFFFFFF" BorderThickness="1" Height="52" Margin="0,10,0,0">
