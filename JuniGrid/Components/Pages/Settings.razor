@@ -208,6 +208,29 @@
             <button type="button" class="jg-path-btn primary" @onclick="Save">@Loc.T("保存")</button>
         </div>
 
+        @* ─── v1.3.4：启动项 ───
+           SMAPI 的启动壳就是根目录一个朴素的 StardewModdingAPI.exe，很多人改名成 SMAPI.exe
+           好在文件夹里一眼看见。改名不影响运行，但我们按文件名硬找就会报「未找到 SMAPI」。
+           留空 = 自动（标准壳 → 根目录里认得出来的改名壳）；指定了就只认指定的那个。 *@
+        <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--jg-line)">
+            <div style="display:flex;align-items:center;gap:6px">
+                <span style="font-weight:600">@Loc.T("启动项")</span>
+                <span class="jg-help-tip">
+                    <span class="jg-help-tip-btn">?</span>
+                    <span class="jg-help-tip-bubble">@Loc.T("默认启动游戏目录下的 StardewModdingAPI.exe。如果你把它改了名（比如改成 SMAPI.exe），这里留空也能自动认出来；认不出来就点「浏览...」手动指定，之后每次启动都用它。")</span>
+                </span>
+            </div>
+            <input class="jg-ver-input" style="margin-top:6px" @bind="_launcherExe" @bind:after="OnLauncherTyped"
+                   placeholder='@Loc.T("留空 = 自动（游戏目录下的 StardewModdingAPI.exe）")' />
+            <div style="display:flex;gap:8px">
+                <button type="button" class="jg-path-btn" @onclick="PickLauncher">@Loc.T("浏览...")</button>
+                <button type="button" class="jg-path-btn" @onclick="AutoFindLauncher">@Loc.T("自动识别")</button>
+                <button type="button" class="jg-path-btn" @onclick="ClearLauncher">@Loc.T("恢复默认")</button>
+            </div>
+            <div style="margin-top:8px;font-size:12px;line-height:1.5;word-break:break-all;
+                        color:@(_launcherWarn ? "var(--jg-danger)" : "var(--jg-text-3)")">@_launcherStatus</div>
+        </div>
+
         @* ─── v1.2.4：游戏版本锁定 —— Steam 版才有 appmanifest，非 Steam 目录自动降级为说明文字 ─── *@
         @if (_manifestPath is not null)
         {
@@ -962,6 +985,11 @@
 
     private string _gamePath = "";
     private bool _oneClickInstall;
+
+    // ─── v1.3.4：启动项（SMAPI 启动壳可以改名，也可以被指到别处）───
+    private string _launcherExe = "";
+    private string _launcherStatus = "";
+    private bool _launcherWarn;
     /// <summary>v1.3.84：内置 N 网网页取链总闸（默认开）。</summary>
     private bool _builtinWeb;
     private bool _autoInstall;
@@ -1434,6 +1462,9 @@
         await LoadAccountsAsync();
         _gamePath = Cfg.Current.GamePath;        _oneClickInstall = Cfg.Current.EnableOneClickInstall;
         _builtinWeb = Cfg.Current.EnableBuiltinWebDownload;
+        // v1.3.4：启动项（只读一个路径 + 最多几个 exe 的版本资源，够快，不必丢后台）
+        _launcherExe = Cfg.Current.SmapiLauncherExe;
+        RefreshLauncherStatus();
         // 重 IO 丢后台：ProbeManifest 扫 Steam 清单 + ListStagedPackages 过 52 个版本包，
         // 同步跑会把首屏整个卡住（「点设置进半天」就是这里）
         _ = Task.Run(() =>
@@ -1549,18 +1580,151 @@
            && Directory.Exists(p)
            && File.Exists(Path.Combine(p, "Stardew Valley.exe"));
 
-    private static bool HasSmapi(string? p)
-        => !string.IsNullOrWhiteSpace(p) && File.Exists(Path.Combine(p, "StardewModdingAPI.exe"));
+    /// <summary>装了没有：与启动/自检同一口径（见 <see cref="SmapiLauncher"/>）——
+    /// 改名的启动器也算装了，否则这里会对着一个能正常玩的目录说「未检测到 SMAPI」。</summary>
+    private bool HasSmapi(string? p)
+        => SmapiLauncher.ExeFor(p, _launcherExe) is not null;
 
     private void SaveGamePath()
     {
         var cfg = Cfg.Current;
         cfg.GamePath = _gamePath;
+        cfg.SmapiLauncherExe = (_launcherExe ?? "").Trim();   // 两个输入框共用一个「保存」
         Cfg.Save(cfg);
         ProbeManifest();   // v1.2.4：目录变了 → Steam 清单与锁状态重探
+        RefreshLauncherStatus();
         _ = JS.InvokeVoidAsync("junigridJs.toast", HasSmapi(_gamePath)
             ? LocService.Tr("已保存游戏目录")
             : LocService.Tr("已保存游戏目录（未检测到 SMAPI，可通过首页「Steam 官方」启动游玩）"));
+    }
+
+    /// <summary>启动项状态行。没指定时说清「会自动认」；指定了但文件不在要当场变红 ——
+    /// 用户填完一个错路径再点启动，看到的会是「未找到 SMAPI」，那是二次困惑。</summary>
+    private void RefreshLauncherStatus()
+    {
+        var configured = (_launcherExe ?? "").Trim();
+        if (configured.Length == 0)
+        {
+            var pick = SmapiLauncher.Resolve(_gamePath, null);
+            switch (pick.Origin)
+            {
+                case LauncherOrigin.Standard:
+                    (_launcherStatus, _launcherWarn) =
+                        (LocService.Tr("默认：使用游戏目录下的 StardewModdingAPI.exe"), false);
+                    break;
+                case LauncherOrigin.Renamed:
+                    (_launcherStatus, _launcherWarn) = (LocService.Tf(
+                        "已自动识别到改名的启动器：{0}（想固定下来就点「浏览...」选中它）", pick.ExeName), false);
+                    break;
+                case LauncherOrigin.Ambiguous:
+                    (_launcherStatus, _launcherWarn) = (LocService.Tf(
+                        "游戏目录里有多个像 SMAPI 启动器的 exe（{0}），无法确定用哪个 —— 请点「浏览...」指定",
+                        string.Join("、", pick.Candidates.Select(Path.GetFileName))), true);
+                    break;
+                default:
+                    (_launcherStatus, _launcherWarn) = (LocService.Tr(
+                        "游戏目录里没找到 SMAPI 启动器 —— 如果你把 StardewModdingAPI.exe 改了名，请点「浏览...」选中它"), true);
+                    break;
+            }
+            return;
+        }
+
+        if (!File.Exists(configured))
+        {
+            (_launcherStatus, _launcherWarn) =
+                (LocService.Tf("这个文件不存在：{0}", configured), true);
+            return;
+        }
+
+        // SMAPI 的壳按「自己所在的目录」找本体 —— 指到别处（桌面、下载文件夹）基本启动不起来，
+        // 但仍然允许保存，只把话说在前面。
+        if (!IsInGameRoot(configured, _gamePath))
+        {
+            (_launcherStatus, _launcherWarn) = (LocService.Tf(
+                "使用指定启动项：{0}（它不在游戏目录下，SMAPI 可能找不到游戏本体）", Path.GetFileName(configured)), true);
+            return;
+        }
+
+        (_launcherStatus, _launcherWarn) =
+            (LocService.Tf("使用指定启动项：{0}", Path.GetFileName(configured)), false);
+    }
+
+    private static bool IsInGameRoot(string exePath, string? gamePath)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(gamePath)) return true;   // 没配目录就没法比，不误报
+            var exeDir = Path.GetDirectoryName(Path.GetFullPath(exePath));
+            var gameDir = Path.GetFullPath(gamePath).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            return exeDir is not null
+                && string.Equals(exeDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+                                 gameDir, StringComparison.OrdinalIgnoreCase);
+        }
+        catch { return true; }
+    }
+
+    /// <summary>输入框改了但还没落盘 —— 只更新状态行，别偷偷写配置（用户可能只是路过看看）。</summary>
+    private void OnLauncherTyped()
+    {
+        RefreshLauncherStatus();
+        StateHasChanged();
+    }
+
+    private void PickLauncher()
+    {
+        var picked = FilePicker.PickExe(
+            LocService.Tr("选择 SMAPI 启动器（StardewModdingAPI.exe 或改名后的它）"),
+            string.IsNullOrWhiteSpace(_launcherExe) ? _gamePath : _launcherExe);
+        if (picked is null) return;
+        _launcherExe = picked;
+        SaveLauncher();
+    }
+
+    /// <summary>自动识别：走的就是启动时那套判定（<see cref="SmapiLauncher.Resolve"/>），
+    /// 认出唯一一个就填进去落盘 —— 让「这次碰巧能启动」变成「以后都能启动」。</summary>
+    private void AutoFindLauncher()
+    {
+        var pick = SmapiLauncher.Resolve(_gamePath, null);
+        switch (pick.Origin)
+        {
+            case LauncherOrigin.Renamed when pick.ExePath is { } exe:
+                _launcherExe = exe;
+                SaveLauncher();
+                _ = JS.InvokeVoidAsync("junigridJs.toast",
+                    LocService.Tf("已识别到启动器：{0}", pick.ExeName), "ok");
+                return;
+            case LauncherOrigin.Standard:
+                // 标准壳就在标准位置：指定它没有收益（升级 SMAPI 后仍是同一个），保持"自动"最稳
+                _ = JS.InvokeVoidAsync("junigridJs.toast",
+                    LocService.Tr("游戏目录里就是标准的 StardewModdingAPI.exe，不需要额外指定"), "ok");
+                return;
+            case LauncherOrigin.Ambiguous:
+                _ = JS.InvokeVoidAsync("junigridJs.toast",
+                    LocService.Tr("认出多个候选，无法确定用哪个 —— 请点「浏览...」自己选"), "err");
+                break;
+            default:
+                _ = JS.InvokeVoidAsync("junigridJs.toast",
+                    LocService.Tr("没找到 SMAPI 启动器，请确认游戏目录，或点「浏览...」手动指定"), "err");
+                break;
+        }
+        RefreshLauncherStatus();
+        StateHasChanged();
+    }
+
+    private void ClearLauncher()
+    {
+        _launcherExe = "";
+        SaveLauncher();
+    }
+
+    private void SaveLauncher()
+    {
+        var cfg = Cfg.Current;
+        cfg.SmapiLauncherExe = (_launcherExe ?? "").Trim();
+        Cfg.Save(cfg);          // Save 内部会把它的进程名同步进判活名单
+        _launcherExe = cfg.SmapiLauncherExe;
+        RefreshLauncherStatus();
+        StateHasChanged();
     }
 
     private bool _detecting;

@@ -85,7 +85,10 @@
     text-decoration: underline;
     text-decoration-style: dotted;
     text-underline-offset: 2px;
-}.jg-logline a:hover { text-decoration-style: solid; }.jg-logline.err   { color: #e81123; }.jg-logline.upd   { color: #b4009e; }.jg-logline.warn  { color: #d97b00; }.jg-logline.info  { color: var(--jg-text); }.jg-logline.trace { color: var(--jg-text-3); }.jg-logline.sys   { color: #107c10; }/* v1.07.0：日志页右侧分类图例已删（错误/诊断/可更新/信息/警告） */
+}.jg-logline a:hover { text-decoration-style: solid; }.jg-logline.err   { color: #e81123; }.jg-logline.upd   { color: #b4009e; }.jg-logline.warn  { color: #d97b00; }.jg-logline.info  { color: var(--jg-text); }.jg-logline.trace { color: var(--jg-text-3); }.jg-logline.sys   { color: #107c10; }
+/* 「未加载」= SMAPI 说它没加载某个 mod/文件夹（点前缀禁用、缺 manifest.json、空目录、
+   Failed: …）。SMAPI 把这些写在 TRACE 里，以前整组丢掉，于是"mod 没进游戏"页面上无声。 */
+.jg-logline.skip  { color: #c99a2e; }/* v1.07.0：日志页右侧分类图例已删（错误/诊断/可更新/信息/警告） */
 
 /* -------- Responsive: 全站断点体系 -------- */
 /* 窄窗口：缩紧一切 */

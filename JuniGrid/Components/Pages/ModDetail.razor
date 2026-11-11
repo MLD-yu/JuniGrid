@@ -106,7 +106,11 @@
                 @if (_pickOpen)
                 {
                     <div class="jg-modal-overlay" @onclick="ClosePicker">
-                        <div class="jg-modal jg-pick-modal" @onclick:stopPropagation>
+                        @* 弹窗本体收点击 = 点弹窗里的空白处收起下拉（2026-11-11 用户反馈「选择文件
+                           这个下拉框关不了」）。透明遮罩 .jg-dd-overlay 是 position:fixed，但弹窗上有
+                           animation 留下的 transform（恒等 scale(1) 也会建立包含块），于是它只铺满弹窗
+                           那 420px —— 菜单向上探出弹窗的那一截压根没有遮罩可点。 *@
+                        <div class="jg-modal jg-pick-modal" @onclick="OnPickModalBlankClick" @onclick:stopPropagation>
                             <div class="jg-pick-title">@Loc.T("选择要安装的版本")</div>
                             <div class="jg-pick-sub">@_mod.Name</div>
 
@@ -165,7 +169,13 @@
                                        深浅色切换时它永远是那副白底方角长相（用户反馈「这个下拉框不行」）。
                                        换成站内那套 .jg-sort-dd（mod 管理的排序、存档下拉同款）：
                                        药丸触发按钮 + 弹性展开的玻璃菜单，颜色全走 token。 *@
-                                    <div class="jg-sort-dd jg-pick-vdd @(_pickVddOpen ? "open" : "")" id="jgPickVdd">
+                                    @* ⚠ class 必须**恒定**，不能写 @(_pickVddOpen ? "open" : "")：
+                                       字段一变就重渲染，Blazor 会用这串 class 整个覆盖属性，把 JS 维护的
+                                       open / data-up 一起抹掉 —— 关下拉时菜单从按钮上方"啪"地跳回下方
+                                       （2026-11-11 用户截图）。开合交给 dropdownToggle 自己维护。
+                                       容器挂 stopPropagation：点按钮/菜单项不冒泡到弹窗本体（那会收下拉）。 *@
+                                    <div class="jg-sort-dd jg-pick-vdd" id="jgPickVdd" data-dd="pick"
+                                         @onclick="Noop" @onclick:stopPropagation>
                                         <button type="button" class="jg-sort-trigger jg-pick-vdd-btn"
                                                 @onclick="TogglePickVdd">
                                             <span class="jg-pick-vdd-t @(histPicked is null ? "jg-pick-vdd-ph" : "")">
@@ -209,10 +219,12 @@
                             {
                                 <div class="jg-pick-cap">@Loc.T("分类")</div>
                                 @* v1.3.73：回到**浮层**（绝对定位、可以探出弹窗边界），不要再内嵌展开 ——
-                                   内嵌会把弹窗撑高，用户明确说「下拉框不能超出这个弹窗吗」。
-                                   这里只靠 `.open` 类控制显隐（纯 CSS），不调 dropdownToggle 那套 gsap 动画：
-                                   fitPickVdd 是在动画途中量矩形的，量不到最终高度，翻不上去还容易抖。 *@
-                                <div class="jg-sort-dd jg-pick-vdd @(_pickCatOpen ? "open" : "")" id="jgPickCat" data-dd="pickcat">
+                                   内嵌会把弹窗撑高。v1.3.77：开合改走 dropdownToggle（和 Mods 页同一手感），
+                                   落点/限高交给 junigridJs.fitPickDd 现量：它量触发按钮矩形和菜单 scrollHeight，
+                                   都不受 gsap transform 影响，动画途中也量得准。
+                                   class 恒定 + stopPropagation 的理由见上面「更多文件」那支的注释。 *@
+                                <div class="jg-sort-dd jg-pick-vdd" id="jgPickCat" data-dd="pickcat"
+                                     @onclick="Noop" @onclick:stopPropagation>
                                     <button type="button" class="jg-sort-trigger jg-pick-vdd-btn"
                                             @onclick="TogglePickCat"
                                             aria-expanded="@(_pickCatOpen ? "true" : "false")">
@@ -226,6 +238,14 @@
                                         </svg>
                                     </button>
                                     <div class="jg-sort-menu">
+                                        @* 2026-11-11：必须再套一层 .jg-sort-menu-in。
+                                           dropdownToggle 的淡出/弹性动画作用在「视觉内层」
+                                           （junigrid.core.js：vis = :scope > .jg-sort-menu-in || menu），
+                                           皮肤（背景/边框/阴影/内边距）也画在内层，外层只负责定位、限高和滚动。
+                                           少了这层，`.jg-pick-vdd .jg-sort-menu-in` 的皮肤无处可落，
+                                           而外层又被置成透明 —— 下拉整个变透明（用户截图）。
+                                           另一支「更多文件」本来就有这层，所以只有分类这支出问题。 *@
+                                        <div class="jg-sort-menu-in">
                                         <div class="jg-cat-menu">
                                             <div class="jg-profile-item @(!_newCatOpen && _pickedCategory.Length == 0 ? "active" : "")">
                                                 @CategoryIconBadge("")
@@ -270,7 +290,12 @@
                                             }
                                         </div>
                                     </div>
+                                    </div>
                                 </div>
+                                @* 分类下拉的配对遮罩：以前只有「更多文件」那支有，这支没有 ——
+                                   菜单悬在列表上时，除了再点一次按钮就没别的收回路径（点穿到被挡住的分类行）。 *@
+                                <div class="jg-dd-overlay @(_pickCatOpen ? "open" : "")" data-dd="pickcat"
+                                     @onclick="ClosePickCat"></div>
                             }
                             else if (PickedIsContentOverride)
                             {
@@ -721,6 +746,10 @@
             _focusNewCatPending = false;
             try { await _newCatInput.FocusAsync(); } catch { }
         }
+        // 2026-11-11：弹窗里的下拉落点每次渲染后都要重量 —— 菜单内容可能刚变过
+        // （分类增减、历史版本列表刷新），窗口也可能被拖动过。落点写在 data-up 上，
+        // 重渲染不会抹掉它（见 fitPickDd 的注释）。
+        if (_pickOpen && (_pickVddOpen || _pickCatOpen)) await FitPickDropdownsAsync();
         if (firstRender)
         {
             // 分类图标是后台解 XNB 一张张出的：出好一张就重画一次，否则第一次显示
@@ -824,6 +853,9 @@
     private bool _pickBusy;
     /// <summary>「历史版本」下拉是否展开（站内 .jg-sort-dd，和 mod 管理的存档/排序下拉同一套）。</summary>
     private bool _pickVddOpen;
+    /// <summary>最后一次点下拉触发按钮的时刻。用来让「点弹窗空白处收起」跳过刚展开的那一击 ——
+    /// 同一个 click 会继续冒泡到弹窗本体，曾经把刚打开的菜单当场收回去（「关闭之后打不开了」）。</summary>
+    private DateTime _pickDdTouchedAt = DateTime.MinValue;
     /// <summary>弹窗里当前选中的 fileId（主文件单选与历史版本下拉共用这一个状态）。</summary>
     private long _pickedFileId;
 
@@ -1317,24 +1349,64 @@
         ResetNewCategoryInput();
     }
 
-    /// <summary>历史版本下拉：开合走站内 dropdownToggle（GSAP 弹性动画 + 遮罩配对）。</summary>
+    /// <summary>点弹窗里的空白处收起下拉（2026-11-11 用户反馈「选择文件这个下拉框关不了」）。
+    /// <para>原来靠 <c>.jg-dd-overlay</c> 透明遮罩兜底，但弹窗有
+    /// <c>animation: jg-modal-pop-in … both</c>，动画结束后<b>保留着</b> <c>transform: scale(1)</c> ——
+    /// 恒等变换一样会建立包含块，于是 <c>position: fixed; inset: 0</c> 的遮罩只铺满弹窗那 420px，
+    /// 而菜单是向上探出弹窗的，探出去那一截压根没有遮罩可点。</para>
+    /// <para>改用弹窗本体收点击。下拉容器自己挂了 <c>@onclick:stopPropagation</c>，
+    /// 所以点触发按钮、点菜单项都不会冒上来误关。</para></summary>
+    private async Task OnPickModalBlankClick()
+    {
+        // 刚点过下拉触发器的这一击不算「点空白」：同一个 click 还会冒泡到弹窗本体
+        // （Blazor 的 stopPropagation 在这个链路上不一定先于本体处理器跑），
+        // 于是菜单刚展开就被这里收回去 —— 用户看到的是「关闭之后打不开了」。200ms 足够覆盖冒泡。
+        if ((DateTime.UtcNow - _pickDdTouchedAt).TotalMilliseconds < 200) return;
+        // 无条件收两支下拉：C# 字段只是 DOM 状态的镜像，只要有过一次没同步上，
+        // 「字段说关着」就不收 —— 用户看到的就是"点了空白处也关不掉"。Close* 本身幂等。
+        await ClosePickVdd();
+        await ClosePickCat();
+    }
+
+    /// <summary>只为给下拉容器挂 stopPropagation 用的空处理器。
+    /// <para>Blazor 的 <c>@onclick:stopPropagation</c> 必须配一个 <c>@onclick</c> 才会真正注册监听，
+    /// 否则那个属性只是个没人读的标记。</para></summary>
+    private void Noop() { }
+
+    /// <summary>历史版本/分类下拉：开合走站内 dropdownToggle（GSAP 弹性动画 + 遮罩配对）。
+    /// <para>2026-11-11：开/关以 <b>DOM 的真实状态</b>为准（.open 由 dropdownToggle 自己维护，
+    /// C# 字段只是镜像）。用字段翻转的话，只要两边有过一次跑偏，就会出现「点一下变成关、
+    /// 再点一下才开」——用户看到的就是「这个下拉关不掉」。</para>
+    /// <para>「量落点 + 展开」合并成一次 <c>dropdownToggleSelf</c>（菜单还藏着时
+    /// <c>visibility:hidden</c> 照样量得到 scrollHeight，所以第一帧就在正确的一侧）；以前拆成三次
+    /// 往返，中间被弹窗本体的「点空白收起」插队就会把刚开的菜单收回去 →「打不开」。</para></summary>
     private async Task TogglePickVdd()
     {
-        _pickVddOpen = !_pickVddOpen;
-        if (_pickVddOpen && _pickCatOpen) await ClosePickCat();   // 两个下拉不并存
-        try { await JS.InvokeVoidAsync("junigridJs.dropdownToggle", "#jgPickVdd", _pickVddOpen); } catch { }
-        // 向下展开会掉出弹窗/窗口时整块翻到触发按钮上方（同素材包弹窗那条 fitPkVar）
-        if (_pickVddOpen)
-        {
-            try { await JS.InvokeVoidAsync("junigridJs.fitPickVdd"); } catch { }
-        }
+        _pickDdTouchedAt = DateTime.UtcNow;
+        var open = await TogglePickDdAsync("#jgPickVdd");
+        _pickVddOpen = open;
+        if (open && _pickCatOpen) await ClosePickCat();          // 两个下拉不并存
     }
 
     private async Task ClosePickVdd()
     {
-        if (!_pickVddOpen) return;
+        // 不看字段是否 false 就提前 return：字段只是镜像，DOM 真开着却因为镜像没同步而
+        // "关不掉"的代价太大。dropdownToggle(false) 本身幂等。
         _pickVddOpen = false;
         try { await JS.InvokeVoidAsync("junigridJs.dropdownToggle", "#jgPickVdd", false); } catch { }
+    }
+
+    /// <summary>弹窗里两支下拉的落点/限高（2026-11-11）。
+    /// <para>弹窗本身不限高、不限流（可选文件那几节各自有内滚），浮层允许探出弹窗边界；
+    /// 但**不能探出窗口**：下面放得下就朝下、放不下就整块翻到按钮上方，再按窗口里的
+    /// 剩余空间给菜单限高内滚。</para>
+    /// <para>打开之前也会调一次（<c>allowClosed</c>，见 Toggle*）：先把落点算好再展开，
+    /// 不会"先出现在按钮下方、几十毫秒后才翻上去"。这里负责打开之后内容/窗口变化时的重量。</para></summary>
+    private async Task FitPickDropdownsAsync()
+    {
+        if (!_pickOpen) return;
+        if (_pickVddOpen) { try { await JS.InvokeVoidAsync("junigridJs.fitPickDd", "#jgPickVdd"); } catch { } }
+        if (_pickCatOpen) { try { await JS.InvokeVoidAsync("junigridJs.fitPickDd", "#jgPickCat"); } catch { } }
     }
 
     /// <summary>下拉里点某条历史/可选文件即以它为准（覆盖上方主文件单选）。
@@ -1613,22 +1685,36 @@
     /// <summary>分类列表开合。v1.3.77：走 Mods 页同一个 <c>dropdownToggle</c> ——
     /// 箭头 back.out 转 180°、浮层 y/-scale 弹簧、每个分类项依次滑入（stagger 0.05），
     /// 这样详情页的下拉和列表页的手感一致（用户要求）。
-    /// <para>⚠ 别在这里再调 <c>fitPickVdd</c>：它是在 gsap 展开动画【途中】量矩形的，
-    /// 量不到最终高度，翻不上去还会把位置算歪（v1.3.71 踩过）。</para></summary>
+    /// <para>2026-11-11：落点/限高交给 <c>fitPickDd</c>，并且**先算再开**（allowClosed），
+    /// 第一帧就在正确的一侧。它量的是触发按钮矩形和菜单 scrollHeight，都不受 gsap transform
+    /// 影响 —— 以前那版 fitPickVdd 用 getBoundingClientRect 量菜单，量到缩放中的高度才翻错
+    /// （v1.3.71）。</para></summary>
     private async Task TogglePickCat()
     {
-        _pickCatOpen = !_pickCatOpen;
-        if (_pickCatOpen && _pickVddOpen) await ClosePickVdd();   // 两个下拉不并存
-        try { await JS.InvokeVoidAsync("junigridJs.dropdownToggle", "#jgPickCat", _pickCatOpen); } catch { }
+        _pickDdTouchedAt = DateTime.UtcNow;
+        var open = await TogglePickDdAsync("#jgPickCat");
+        _pickCatOpen = open;
+        if (open && _pickVddOpen) await ClosePickVdd();          // 两个下拉不并存
+    }
+
+    /// <summary>下拉开合的唯一入口：读 DOM 真实状态 → 量落点 → 开合，**一次 interop 完成**。
+    /// <para>以前这里拆成三次往返（dropdownIsOpen / fitPickDd / dropdownToggle），中间任何一次
+    /// 被别的事件插队，菜单就会"刚开又被收回去"——用户看到的就是「关闭之后打不开了」。
+    /// 现在是一个原子动作（见 junigridJs.dropdownToggleSelf）。</para></summary>
+    private async Task<bool> TogglePickDdAsync(string sel)
+    {
+        try { return await JS.InvokeAsync<bool>("junigridJs.dropdownToggleSelf", sel); }
+        catch { return false; }
     }
 
     private async Task ClosePickCat()
     {
-        if (!_pickCatOpen) return;
+        var wasOpen = _pickCatOpen;
         _pickCatOpen = false;
         // 2026-11-09：选了已有分类/关下拉就把「新建分类」输入行一起收掉，
         // 否则下次拉开下拉还是那个半截输入框（和 Mods 页一样的老坑）
-        ResetNewCategoryInput();
+        if (wasOpen) ResetNewCategoryInput();
+        // 不提前 return：字段只是镜像，DOM 真开着也得能关（dropdownToggle 幂等）
         try { await JS.InvokeVoidAsync("junigridJs.dropdownToggle", "#jgPickCat", false); } catch { }
     }
 
@@ -1702,6 +1788,9 @@
             {
                 var i = m.Folder.IndexOf('/');
                 var key = i > 0 ? m.Folder[..i] : m.Folder;
+                // 与列表页同一口径（顶层）；老兜底留下的完整 folder 键顺手清掉
+                if (!string.Equals(key, m.Folder, StringComparison.OrdinalIgnoreCase))
+                    cfg.ModUserCategory.Remove(m.Folder);
                 if (category.Length == 0) cfg.ModUserCategory.Remove(key);
                 else cfg.ModUserCategory[key] = category;
             }

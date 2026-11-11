@@ -111,7 +111,7 @@ public partial class UninstallWindow : Window
                 WorkingScreen.Visibility = Visibility.Collapsed;
                 DoneMessage.Text = _purgeUserData
                     ? "JuniGrid 已卸载。安装目录、缓存、设置、Nexus 登录状态和收起来的存档副本将在此窗口关闭后彻底删除，删完找不回来。结果见 %TEMP%\\JuniGrid-uninstall-report.txt。"
-                    : "JuniGrid 已卸载。程序文件将在此窗口关闭后清理；缓存、设置和登录状态会保留。结果见 %TEMP%\\JuniGrid-uninstall-report.txt。";
+                    : "JuniGrid 已卸载。安装目录会整个清空（包括旧版备份、调试文件等残留）；缓存、设置和登录状态保留。结果见 %TEMP%\\JuniGrid-uninstall-report.txt。";
                 DoneScreen.Visibility = Visibility.Visible;
             }, TaskScheduler.FromCurrentSynchronizationContext());
     }
@@ -433,6 +433,26 @@ if (-not $root) {
   exit
 }
 
+# 用户数据 / 缓存的位置。普通卸载要「整个清空安装目录」，但这几处即便被用户指到了
+# 安装目录里面（cacheRoot 指过来是常见操作），也一个字节都不能碰 —— 那是他的缓存和存档副本，
+# 不是程序文件。plan 里这几项平时在 %APPDATA% / %LOCALAPPDATA%，只有落在 $root 里面才需要保护。
+$script:ProtectedPaths = @()
+foreach ($p in @($plan.AppDataDir, $plan.LocalAppDataDir, $plan.LegacyTempDir) + @($plan.CustomCacheDirs)) {
+  if ([string]::IsNullOrWhiteSpace([string]$p)) { continue }
+  try {
+    $pf = [IO.Path]::GetFullPath([string]$p).TrimEnd('\')
+    if ($pf.StartsWith($root + '\', [StringComparison]::OrdinalIgnoreCase)) { $script:ProtectedPaths += $pf }
+  } catch { }
+}
+foreach ($pr in $script:ProtectedPaths) { Trace ('[卸收] 受保护子树（用户数据/缓存，普通卸载不动）: ' + $pr) }
+function Test-Protected([string]$p) {
+  foreach ($pr in $script:ProtectedPaths) {
+    if ($p.Equals($pr, [StringComparison]::OrdinalIgnoreCase) -or
+        $p.StartsWith($pr + '\', [StringComparison]::OrdinalIgnoreCase)) { return $true }
+  }
+  return $false
+}
+
 if ($plan.PurgeUserData) {
   Trace '[卸收] 彻底删除：安装目录 + 设置 + 本地数据 + 旧临时 + 自定缓存，一起删'
   Remove-Tree $root
@@ -441,17 +461,28 @@ if ($plan.PurgeUserData) {
   Remove-Tree $plan.LegacyTempDir
   foreach ($path in $plan.CustomCacheDirs) { Trace ('[卸收]   删缓存: ' + $path); Remove-Tree $path }
 } else {
-  Trace '[卸收] 普通卸载：只按清单删程序文件，缓存/设置/登录态保留'
-  foreach ($rel in @($plan.ManifestFiles)) {
-    $relative = ([string]$rel).Replace('/', '\')
-    if ([IO.Path]::IsPathRooted($relative) -or $relative.Split('\') -contains '..') { continue }
-    $full = [IO.Path]::GetFullPath([IO.Path]::Combine($root, $relative))
-    # 清单只记文件。这里出现目录就跳过：Remove-Tree 是递归的，会把用户放在同名目录里的东西
-    # 一起端走，而这段的承诺是"只删我们自己写出去的文件"。
-    if ($full.StartsWith($root + '\', [StringComparison]::OrdinalIgnoreCase) -and [IO.File]::Exists($full)) { Remove-Tree $full }
+  # 普通卸载 = 「把安装目录清干净，但保留用户数据」。
+  # 安装目录里本该只有程序文件；旧版热替换留下的 .bak-*/.old/.pdb、以及清单没记到的
+  # 生成物，都靠这段递归收掉 —— 只按清单删会留下一堆残骸（实测 131MB）。
+  # 用户数据全都放在上面的受保护子树里，所以递归不会碰到它们。
+  Trace '[卸收] 普通卸载：递归清空安装目录（保留设置/登录/缓存）'
+  # 1) 删文件（带重试），跳过受保护子树
+  foreach ($f in @(Get-ChildItem -LiteralPath $root -Recurse -Force -File -ErrorAction SilentlyContinue)) {
+    if (Test-Protected $f.FullName) { continue }
+    Remove-Tree $f.FullName
   }
-  Remove-Tree ([IO.Path]::Combine($root, 'junigrid-files.txt'))
-  Remove-EmptyTree $root
+  # 2) 自底向上收掉空目录，同样跳过受保护子树；浅层后处理，保证先删子再删父
+  foreach ($d in @(Get-ChildItem -LiteralPath $root -Recurse -Force -Directory -ErrorAction SilentlyContinue |
+                   Sort-Object { $_.FullName.Length } -Descending)) {
+    if (Test-Protected $d.FullName) { continue }
+    if (-not (Get-ChildItem -LiteralPath $d.FullName -Force -ErrorAction SilentlyContinue | Select-Object -First 1)) {
+      Remove-Item -LiteralPath $d.FullName -Force -ErrorAction SilentlyContinue
+    }
+  }
+  # 3) 根目录空了才删它自己（还有受保护子树时就留着，否则会把缓存一起端走）
+  if (-not (Get-ChildItem -LiteralPath $root -Force -ErrorAction SilentlyContinue | Select-Object -First 1)) {
+    Remove-Tree $root
+  }
 }
 $left = @()
 if (Test-Path -LiteralPath $root) { $left += Get-ChildItem -LiteralPath $root -Force | ForEach-Object { $_.Name } }

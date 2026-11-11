@@ -477,12 +477,14 @@ body.jg-max .jg-taskdock .jg-taskdock-sub { white-space: nowrap; overflow: hidde
    （2026-10-20 实测）。9500 = 高于 .jg-dd-overlay(9000) 与 .jg-al-gradient(50)，与 v1.5.3 对齐。 */
 .jg-mods-toolbar:has(.jg-sort-dd.open) { position: relative; z-index: 9500; }/* 行尾「⋮」菜单靠窗口底部时整块翻到按钮上方 —— 向下放会把最后一行的菜单裁掉一半
    （2026-09-30 实测）。.up 由 junigridJs.fitModMenu 在打开后按实测矩形打上。 */
-.jg-sort-dd.open.up .jg-sort-menu {
+.jg-sort-dd.open.up .jg-sort-menu,
+.jg-sort-dd.open[data-up] .jg-sort-menu {
     top: auto;
     bottom: calc(100% + 8px);
     transform-origin: bottom left;
 }
-.jg-sort-dd.open.up .jg-sort-menu::before { top: auto; bottom: -14px; }/* v1.07.0：触顶桥 —— trigger→菜单之间 8px 空隙划入命中区域，鼠标移向菜单不再中途滑出下拉 */
+.jg-sort-dd.open.up .jg-sort-menu::before,
+.jg-sort-dd.open[data-up] .jg-sort-menu::before { top: auto; bottom: -14px; }/* v1.07.0：触顶桥 —— trigger→菜单之间 8px 空隙划入命中区域，鼠标移向菜单不再中途滑出下拉 */
 .jg-sort-menu::before { content: ''; position: absolute; left: 0; right: 0; top: -14px; height: 14px; }/* v1.07.0：Nexus 页菜单拆两层 —— 弹性动画只作用在 .jg-sort-menu-in（视觉层），
    外层盒子（含触顶桥）保持最终矩形不动，命中区域从打开第一帧起 = 最终位置，
    动画期间不再「看着开了、其实命中在下方 mod 卡上」。皮肤值须与 .jg-sort-menu 保持一致。 */

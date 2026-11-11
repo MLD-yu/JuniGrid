@@ -259,6 +259,17 @@
     box-shadow: 0 6px 20px rgba(0,0,0,0.16);
     opacity: 0; visibility: hidden;
     transition: opacity 120ms ease 120ms;
+}
+/* 多行提示（内容里带换行）：胶囊撑不住长说明，改成圆角卡片 —— 日志页「跳过 N 个 / 加载失败 N 个」
+   的悬浮说明要列清单，一行放不下。 */
+.jg-cursor-tip.multi {
+    white-space: pre-line;
+    max-width: 460px;
+    border-radius: 12px;
+    line-height: 1.6;
+    font-weight: 500;
+    text-align: left;
+    padding: 9px 14px;
 }/* -- v0.49.0：存档项 hover/active 复用排序菜单样式 -- */
 .jg-profile-menu .jg-profile-item {
     background: transparent !important;

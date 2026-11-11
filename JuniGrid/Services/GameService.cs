@@ -270,27 +270,41 @@ public sealed class GameService
     }
 
     /// <summary>读程序集元数据里的版本，取前三段（"4.5.2.0" → "4.5.2"）。
-    /// freshRead 时同样先拷到临时路径：游戏正在跑时 dll 可能被独占，直接读会抛。</summary>
+    /// <para><b>顺序是「先原地、后临时副本」</b>：2026-11-11 实机踩过 —— 临时目录所在盘满了，
+    /// <c>File.Copy</c> 抛「磁盘空间不足」，版本被读成 null，界面于是报「SMAPI 未安装」，
+    /// 玩家看到的就是「我的 SMAPI 怎么没了」，而文件其实一个都没少。临时副本只用来兜
+    /// 「游戏正在跑、dll 被独占」这一种情况。</para></summary>
     private static string? ReadAssemblyVersion(string dll, bool freshRead)
     {
-        var probePath = dll;
+        if (!freshRead) return TryReadAssemblyVersion(dll);
+
+        // freshRead：游戏正在跑时 dll 可能被独占，直接读会抛 —— 但先试一次原地，
+        // 成功就不落盘（省一次写盘，也不受临时目录可写性影响）。
+        if (TryReadAssemblyVersion(dll) is { } inPlace) return inPlace;
+
+        var probePath = Path.Combine(Path.GetTempPath(),
+            "jg-smapi-probe-" + Guid.NewGuid().ToString("N") + ".dll");
         try
         {
-            if (freshRead)
-            {
-                probePath = Path.Combine(Path.GetTempPath(),
-                    "jg-smapi-probe-" + Guid.NewGuid().ToString("N") + ".dll");
-                File.Copy(dll, probePath, true);
-            }
-            var name = System.Reflection.AssemblyName.GetAssemblyName(probePath);
-            var v = name.Version;
+            File.Copy(dll, probePath, true);
+            return TryReadAssemblyVersion(probePath);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warn("GameService", "读 SMAPI 程序集版本失败: " + ex.Message);
+            return null;
+        }
+        finally { try { File.Delete(probePath); } catch { } }
+    }
+
+    private static string? TryReadAssemblyVersion(string path)
+    {
+        try
+        {
+            var v = System.Reflection.AssemblyName.GetAssemblyName(path).Version;
             return v is null ? null : $"{v.Major}.{v.Minor}.{Math.Max(v.Build, 0)}";
         }
         catch (Exception ex) { AppLog.Warn("GameService", "读 SMAPI 程序集版本失败: " + ex.Message); return null; }
-        finally
-        {
-            if (freshRead) { try { File.Delete(probePath); } catch { } }
-        }
     }
 
     /// <summary>读一个 exe 的版本资源，取前三段（"4.5.2.0" → "4.5.2"）。
@@ -299,25 +313,40 @@ public sealed class GameService
     /// 拷到临时路径读，绕开缓存。</para></summary>
     private static string? ReadExeVersion(string exe, bool freshRead)
     {
-        var probePath = exe;
+        // 非 freshRead 不必落盘：没有缓存顾虑，直接读。
+        if (!freshRead) return TryReadExeVersion(exe);
+
+        var probePath = Path.Combine(Path.GetTempPath(),
+            "jg-smapi-probe-" + Guid.NewGuid().ToString("N") + ".exe");
         try
         {
-            if (freshRead)
-            {
-                probePath = Path.Combine(Path.GetTempPath(),
-                    "jg-smapi-probe-" + Guid.NewGuid().ToString("N") + ".exe");
-                File.Copy(exe, probePath, true);
-            }
-            var info = FileVersionInfo.GetVersionInfo(probePath);
+            File.Copy(exe, probePath, true);
+            return TryReadExeVersion(probePath);
+        }
+        catch (Exception ex)
+        {
+            // 拷不出来（临时目录不可写 / 盘满）就退回原地读：版本可能被 Windows 按路径缓存成
+            // 旧的，但那也比报「未安装」强 —— 而且 dll 那条路正常时根本走不到这里。
+            AppLog.Warn("GameService", "临时副本读取失败，改原地读版本资源 " + Path.GetFileName(exe) + ": " + ex.Message);
+            return TryReadExeVersion(exe);
+        }
+        finally { try { File.Delete(probePath); } catch { } }
+    }
+
+    private static string? TryReadExeVersion(string path)
+    {
+        try
+        {
+            var info = FileVersionInfo.GetVersionInfo(path);
             var raw = info.FileVersion ?? info.ProductVersion;
             if (string.IsNullOrWhiteSpace(raw)) return null;
             var parts = raw.Split('.');
             return parts.Length >= 3 ? string.Join('.', parts.Take(3)) : raw;
         }
-        catch (Exception ex) { AppLog.Warn("GameService", "读版本资源失败 " + Path.GetFileName(exe) + ": " + ex.Message); return null; }
-        finally
+        catch (Exception ex)
         {
-            if (freshRead) { try { File.Delete(probePath); } catch { } }
+            AppLog.Warn("GameService", "读版本资源失败 " + Path.GetFileName(path) + ": " + ex.Message);
+            return null;
         }
     }
 
@@ -349,16 +378,18 @@ public sealed class GameService
     private string? _smapiIconCache;
     private string? _smapiIconForPath;
 
-    public string? GetSmapiIconDataUri(string gamePath)
+    /// <summary>SMAPI 自己的图标（从启动器 exe 里抽取，转成 data URI 给界面用）。
+    /// 启动器可能被改名/被指到别处，所以走 <see cref="SmapiLauncher"/> 解析 ——
+    /// 否则改名用户会看到 SMAPI 一栏退回通用图标，像是"没装"。</summary>
+    public string? GetSmapiIconDataUri(string? gamePath, string? launcherExe = null)
     {
-        if (_smapiIconForPath == gamePath) return _smapiIconCache;
-        _smapiIconForPath = gamePath;
+        var exe = SmapiLauncher.ExeFor(gamePath, launcherExe);
+        if (exe is null) return null;
+        if (string.Equals(_smapiIconForPath, exe, StringComparison.OrdinalIgnoreCase)) return _smapiIconCache;
+        _smapiIconForPath = exe;
         _smapiIconCache = null;
         try
         {
-            var exe = Path.Combine(gamePath, "StardewModdingAPI.exe");
-            if (!File.Exists(exe)) return null;
-
             using var icon = System.Drawing.Icon.ExtractAssociatedIcon(exe);
             if (icon is null) return null;
             using var bmp = icon.ToBitmap();

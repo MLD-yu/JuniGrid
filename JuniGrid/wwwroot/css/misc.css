@@ -6,7 +6,41 @@
    清空/复制为黑底白字胶囊；诊断明细开关与右侧分类图例已删除。
    （v1.07.1：GhostFibers 动画背景已整体移除，页头/卡片/下拉恢复主题默认外观） */
 
-.jg-logs-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 12px; flex-wrap: wrap; }.jg-logs-actions { display: flex; gap: 8px; align-items: center; }/* 黑底白字胶囊（清空 / 复制全部 / 确认框主按钮） */
+.jg-logs-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 12px; flex-wrap: wrap; }
+/* 右边这一串是「清空 + 复制全部」：窄窗口时换行、靠右，别把按钮挤扁 */
+.jg-logs-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+/* 筛选框 + 问号 + 加载小结同一行：前两者间距 4px（问号紧跟筛选框，是一组），
+   小结与前两者用 10px 拉开一段，读起来才是「筛选 | 说明 | 这次加载了多少」 */
+.jg-filterrow { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+/* 页头「本次加载」小结：SMAPI 自己报的 mod/内容包数 + 跳过数 + 失败数。
+   点跳过/失败直接切到对应筛选 —— 用户问的是「我装的 mod 为什么没进游戏」，
+   这句话得在页面上第一眼就能看到，而不是让他自己去几百行日志里找。 */
+.jg-loadsum {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-left: 10px;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--jg-text-3);
+}
+.jg-loadsum-item { white-space: nowrap; }
+.jg-loadsum-link {
+    border: 0;
+    background: none;
+    padding: 0;
+    font: inherit;
+    color: inherit;
+    cursor: pointer;
+    text-decoration: none;
+    transition: color 120ms ease;
+}
+.jg-loadsum-link:hover { color: var(--jg-text); }
+.jg-loadsum-link.bad { color: #e81123; font-weight: 600; }
+.jg-loadsum-link.bad:hover { color: #ff3b4d; }
+.jg-loadsum-warn { color: #d97b00; font-weight: 600; }
+/* 黑底白字胶囊（清空 / 复制全部 / 确认框主按钮） */
 .jg-pill-dark {
     display: inline-flex;
     align-items: center;
@@ -661,7 +695,9 @@
     content: "";
     position: absolute;
     top: 100%;
-    left: 50%;
+    /* --jg-tip-arrow 由 junigrid.ui.js 在弹出时按「问号中心相对气泡左缘」算好写入：
+       气泡被推回容器内以后，箭头仍然指着问号（否则会指到旁边去）。 */
+    left: var(--jg-tip-arrow, 50%);
     transform: translateX(-50%);
     border: 6px solid transparent;
     border-top-color: #fffce1;
@@ -674,9 +710,9 @@
     transform-origin: bottom right;
 }
 .jg-help-tip--right .jg-help-tip-bubble::after {
-    left: auto;
-    right: 6px;
-    transform: none;
+    left: var(--jg-tip-arrow, calc(100% - 6px));
+    right: auto;
+    transform: translateX(-50%);
 }
 /* 贴在页面左上角的问号（立绘标题旁）：气泡朝下 + 左对齐 ——
    默认朝上会被导航条/视口上沿裁掉半截，居中又会让气泡左边伸出屏幕外 */
@@ -689,8 +725,9 @@
 }.jg-help-tip--down .jg-help-tip-bubble::after {
     top: auto;
     bottom: 100%;
-    left: 8px;
-    transform: none;
+    left: var(--jg-tip-arrow, 8px);
+    right: auto;
+    transform: translateX(-50%);
     border-top-color: transparent;
     border-bottom-color: #fffce1;
 }/* ── 返回顶部（左下角；右边留给任务中心悬浮球）── */

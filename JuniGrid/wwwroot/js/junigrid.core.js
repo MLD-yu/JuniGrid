@@ -68,17 +68,38 @@ window.junigridJs = {
     dropdownToggle(wrapSel, open) {
         const wrap = document.querySelector(wrapSel);
         if (!wrap) return;
+        // 2026-11-11：把「这一次要开还是要关」记在 data-dd-state 上，作为唯一权威状态。
+        // 只看 .open 类会有歧义：关闭动画途中 .open 还挂着（要等 onComplete 才摘），
+        // 这时点按钮会被判成"再关一次"，点了没反应。data-* 不受 Blazor 重渲染影响。
+        wrap.dataset.ddState = open ? 'open' : 'closed';
         // v1.1.2：按 data-dd 键配对同步 —— 一页可能有多个下拉遮罩（Mods 的排序/存档），
         // 无差别全开会互相拦截点击（后一个遮罩盖住前一个，@onclick 落到错误的 Close 上）
         const ddKey = wrap.dataset.dd;
         document.querySelectorAll('.jg-dd-overlay').forEach(o => o.classList.toggle('open', !!open && o.dataset.dd === ddKey));
         const menu  = wrap.querySelector('.jg-sort-menu');
         const arrow = wrap.querySelector('.jg-sort-arrow');
-        const items = wrap.querySelectorAll('.jg-sort-item, .jg-profile-item');
+        // 2026-11-11：**逐条动画只给前 20 条**，步长也按条数压。
+        // 「更多文件」一个 mod 可能有几百条（星露谷物语扩展版 610 条），全量 stagger 会把时间轴
+        // 拉到 18 秒以上，关闭动画的 onComplete 迟迟不来 → `.open` 摘不掉 → 再点按钮判成"关"，
+        // 用户看到的就是「关闭之后打不开了」。
+        const allItems = wrap.querySelectorAll('.jg-sort-item, .jg-profile-item');
+        const MAX_STAGGERED = 20;
+        const items = Array.prototype.slice.call(allItems, 0, MAX_STAGGERED);
+        const restItems = Array.prototype.slice.call(allItems, MAX_STAGGERED);
+        const stagOpen = items.length > 1 ? Math.min(0.05, 0.3 / (items.length - 1)) : 0;
+        const stagClose = items.length > 1 ? Math.min(0.03, 0.18 / (items.length - 1)) : 0;
         if (!menu) return;
         const vis = menu.querySelector(':scope > .jg-sort-menu-in') || menu;
+        // ⚠ gsap 不吃**嵌套数组**：`[vis, arrow, items]`（items 是数组）会抛
+        //   "Cannot set properties of undefined (setting 'cssText')"，届时收尾函数整个中断、
+        //   `.open` 永远摘不掉 —— 又是一次「关掉之后打不开」。所有多目标调用统一走这个扁平数组。
+        const targets = [vis, arrow].concat(items, restItems);
         const fromRight = wrap.classList.contains('jg-dd-right');
-        const originY = fromRight ? 'top right' : 'top left';
+        // 朝上开时缩放原点在底边，动画才像从按钮那儿弹出来（否则卡片的顶边当锚点，
+        // 视觉上是从上方荡下来）。data-up 由 fitPickDd 在【打开前】算好，配合"先测后开"。
+        const upNow = wrap.classList.contains('up') || wrap.dataset.up === '1';
+        const originY = fromRight ? (upNow ? 'bottom right' : 'top right')
+                                  : (upNow ? 'bottom left' : 'top left');
 
         // 兜底：无 gsap 时靠 .open + CSS 完成开关，避免白块残留
         if (!window.gsap) {
@@ -89,33 +110,64 @@ window.junigridJs = {
         const er = v => hasER ? v : undefined;
 
         if (wrap.__ddTl) { wrap.__ddTl.kill(); wrap.__ddTl = null; }
-        gsap.killTweensOf([vis, menu, arrow, items]);
+        gsap.killTweensOf(targets.concat(menu));
 
         if (open) {
             wrap.classList.add('open');
             // 滚动位置与 item 透明度必须重置：上次滚到底再开，菜单会「空盒带滚动条」
+            // （拆层的那几支里，真正滚动的是内层，两层都复位一下最省事）
             try { menu.scrollTop = 0; } catch (e) {}
+            try { if (vis !== menu) vis.scrollTop = 0; } catch (e) {}
             gsap.set(arrow, { rotation: 0 });
             gsap.set(vis,  { autoAlpha: 0, y: -10, scale: 0.92, transformOrigin: originY });
             gsap.set(items, { opacity: 0, x: -14 });
+            // 超出 20 条的部分不参与逐条动画（肉眼在滚动区外，动画也看不到），直接给终态
+            if (restItems.length) gsap.set(restItems, { opacity: 1, x: 0 });
             const tl = gsap.timeline();
             tl.to(arrow, { rotation: 180, duration: 0.5, ease: 'back.out(2)', easeReverse: er('power2.inOut') }, 0)
               .to(vis,   { autoAlpha: 1, y: 0, scale: 1, duration: 0.45, ease: 'back.out(1.7)', easeReverse: er('power3.out') }, 0)
-              .to(items, { opacity: 1, x: 0, duration: 0.28, ease: 'back.out(2)', easeReverse: er('power2.out'), stagger: 0.05 }, 0.08);
+              .to(items, { opacity: 1, x: 0, duration: 0.28, ease: 'back.out(2)', easeReverse: er('power2.out'), stagger: stagOpen }, 0.08);
             wrap.__ddTl = tl;
-        } else {
-            const tl = gsap.timeline({
-                onComplete() {
-                    // 关键：动画完全结束再彻底清 inline style + 移除 open 类，白块杜绝
-                    gsap.set([vis, arrow, items], { clearProps: 'all' });
-                    wrap.classList.remove('open');
-                    try { menu.scrollTop = 0; } catch (e) {}
+            // 看门狗：菜单"打开了却看不见"只有一种可能 —— autoAlpha 停在 0（tween 被打断、
+            // rAF 被节流、或相邻一次误触发把它 kill 了）。700ms 后还没真正可见就清掉 inline
+            // 样式让 CSS 的 .open 接管。清单条命，代价为零（正常动画 450ms 内早就结束了）。
+            clearTimeout(wrap.__ddWatch);
+            wrap.__ddWatch = setTimeout(function () {
+                if (!wrap.classList.contains('open')) return;
+                if (parseFloat(getComputedStyle(vis).opacity) < 0.9) {
+                    gsap.set(targets, { clearProps: 'all' });
                 }
-            });
-            tl.to(items, { opacity: 0, x: -8, duration: 0.16, ease: 'power2.in', stagger: 0.03 }, 0)
+            }, 700);
+        } else {
+            clearTimeout(wrap.__ddWatch);   // 关的时候别让看门狗再把它拽出来
+            // 收尾动作做成幂等函数：正常由时间轴 onComplete 触发，万一时间轴被打断/吞掉，
+            // 下面的兜底定时器会再调一次（重复调用无害）。
+            const finishClose = function () {
+                // 关键：动画完全结束再彻底清 inline style + 移除 open 类，白块杜绝
+                gsap.set(targets, { clearProps: 'all' });
+                wrap.classList.remove('open');
+                // .up / data-up 是「这一次该朝上开」的临时结论，不能带到下一次（内容/位置都变了）。
+                // ⚠ 只能在**动画结束**这一帧清：提前清会让菜单在淡出途中从按钮上方弹回下方
+                //   （mods.css 里 .jg-modmenu 那条「关态 transition:none」就是同一个坑）。
+                wrap.classList.remove('up');
+                delete wrap.dataset.up;
+                try { menu.scrollTop = 0; } catch (e) {}
+                try { if (vis !== menu) vis.scrollTop = 0; } catch (e) {}
+            };
+            const tl = gsap.timeline({ onComplete: finishClose });
+            tl.to(items, { opacity: 0, x: -8, duration: 0.16, ease: 'power2.in', stagger: stagClose }, 0)
               .to(vis,   { autoAlpha: 0, y: -10, scale: 0.92, duration: 0.22, ease: 'power2.out' }, 0)
               .to(arrow, { rotation: 0, duration: 0.28, ease: 'power2.inOut' }, 0);
             wrap.__ddTl = tl;
+            // 2026-11-11 兜底：`.open` 只在 onComplete 里摘，一旦时间轴没跑完（被 kill、rAF 节流、
+            // 条目多到时间轴超长），类就一直挂着 → 下次点击判成"关"，用户看到「打不开了」。
+            // 600ms 后若还是 .open 就强制落终态；用 __ddTl 比对做代次保护，期间被重新打开就不动它。
+            clearTimeout(wrap.__ddCloseWatch);
+            wrap.__ddCloseWatch = setTimeout(function () {
+                if (wrap.__ddTl !== tl) return;      // 期间又被打开/关闭过，交给新的那一次
+                if (!wrap.classList.contains('open')) return;
+                finishClose();
+            }, 600);
         }
     },
 

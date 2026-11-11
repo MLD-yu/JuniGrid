@@ -52,6 +52,8 @@ _backup-*/
 .codex-build/
 .codex-testbuild/
 .testtmp/
+.tmp-test/
+.tmp-xdyno/
 
 # WPF 标记编译第二遍落下的临时工程文件
 *_wpftmp.csproj
@@ -61,3 +63,11 @@ _backup-*/
 # JuniGrid.Manifest/ManifestTrust.cs 的 PublicKeySpkiBase64。
 junigrid-manifest-*.pem
 *.pem
+
+# 本地存档（改动前的备份补丁，不进仓库）
+.backup/
+
+# 测试工程（JuniGridTestHarness / DownloadSmoke / js-smoke）。
+# 只留本地：CI 的 build.yml 不跑测试，发版也不依赖它们；
+# 里面全是「起真实进程、操真实窗口」的用例，换台机器就跑不动，进库只会误导。
+/test/

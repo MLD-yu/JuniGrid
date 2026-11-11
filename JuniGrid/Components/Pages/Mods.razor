@@ -180,7 +180,14 @@
                 <div style="opacity:.75;font-size:12.5px;margin-top:3px">
                     @if (_smapiVersion is null)
                     {
-                        @if (SmapNeedsOld && _smapiUpdate is { LatestVersion: not null, InstallerZipUrl: not null })
+                        @* v1.3.4：主程序在盘上就是装了。读不出版本号（游戏占着 dll、临时目录不可写、
+                           盘满了）只能说明「版本未知」，不能退化成「未安装」再劝人重装一遍 ——
+                           详情页用 SmapiState 判的是「文件在不在」，两边口径必须一致。 *@
+                        if (SmapiLoaderOnDisk)
+                        {
+                            <span style="color:#f0b95a">@Loc.T("已安装 · 读不到版本号（游戏可能正在运行），关掉游戏后再刷新即可")</span>
+                        }
+                        else if (SmapNeedsOld && _smapiUpdate is { LatestVersion: not null, InstallerZipUrl: not null })
                         {
                             <span>@Loc.F("未安装 · 当前游戏 {0} 适配 SMAPI {1}，点右侧按钮一键下载安装", GameVerDisplay, _smapiUpdate.LatestVersion)</span>
                         }
@@ -4625,6 +4632,9 @@
     {
         get
         {
+            // 启禁/切档进行中：先不重算，保持上一帧那份（见 _holdListSnapshot 的注释）。
+            // 只有「已经有快照」时才按住 —— 首帧没有缓存，该算还是得算。
+            if (_holdListSnapshot && _groupsCache is not null) return _groupsCache;
             if (_groupsCache is not null
                 && ReferenceEquals(_groupsKeyMods, _mods)
                 && ReferenceEquals(_groupsKeyUids, _installedUids)
@@ -4725,12 +4735,28 @@
             _groupsKeySort = _sortMode;
             _groupsKeyCategoryRev = _categoryRev;
             // 列表内容变了 ⇒ 从头开始渐进渲染（否则换了筛选还按上一批的行数一次画光）
-            _renderLimit = FirstRenderRows;
+            // 唯独「启禁/切档刚放开快照」这一次例外：那时行本来就在屏幕上，打回 40 行
+            // 会让它们先消失一批、再以补画的方式冒回来 —— 同一次操作闪两下（2026-11-10）。
+            if (_forceFullRenderOnce) { _forceFullRenderOnce = false; _renderLimit = 0; }
+            else _renderLimit = FirstRenderRows;
             return units;
         }
     }
 
     private IReadOnlyList<ModGroup>? _groupsCache;
+
+    /// <summary>批量启禁/切档进行中为 true：列表先按住上一帧的快照，等磁盘重扫的结果套用完
+    /// 再一次性重算。
+    /// <para>🔴 2026-11-10 用户反馈「禁用/启用后一闪一闪，先闪没又闪回来」：启禁是
+    /// <b>磁盘改名 → 内存迁移 → 后台重扫套用</b>三段，中间那段数据是半成品（folder 已经改了、
+    /// 但缓存键与分组还没全换过来），而每一段边界都各渲染一次 —— 用户看到的是行先整片消失、
+    /// 一秒后又全部补回来。按住快照后只剩「旧列表 → 新列表」一次切换，不再有中间帧。</para></summary>
+    private bool _holdListSnapshot;
+
+    /// <summary>下一次重算列表时不要打回「首帧 40 行」的分批额度 —— 由放开
+    /// <see cref="_holdListSnapshot"/> 的那一处置位，用一次就清。</summary>
+    private bool _forceFullRenderOnce;
+
     private IReadOnlyList<ModEntry>? _groupsKeyMods;
     private HashSet<string>? _groupsKeyUids;
     private string? _groupsKeyFilter;
@@ -5004,6 +5030,11 @@
         : _smapiVersion == "installed" ? "已安装"
         : _smapiVersion;
 
+    /// <summary>SMAPI 主程序在不在游戏根目录 —— 与详情页、依赖栏走同一个入口
+    /// （<see cref="GameService.SmapiState"/>）。版本号读不出来时用它兜底：
+    /// 「装了但读不到版本」和「没装」是两件事，界面不能说反。</summary>
+    private bool SmapiLoaderOnDisk => Game.SmapiState(Cfg.Current.GamePath).Installed;
+
     private ModUpdateState GetState(string folder) =>
         _states.TryGetValue(folder, out var s) ? s : new ModUpdateState();
 
@@ -5039,6 +5070,22 @@
     private static readonly TimeSpan FingerprintMaxAge = TimeSpan.FromDays(7);
     /// <summary>vNext：指纹缓存（Cfg.ModUpdateFingerprints）本轮有写入，需要落盘。</summary>
     private bool _fpDirty;
+
+    /// <summary>v1.3.46：本轮「按下载缓存认领为已装、暂不亮 ⇧」的行数（进检查汇总日志）。</summary>
+    private int _artifactClaimed;
+
+    /// <summary>v1.3.46：这一行为什么不亮 ⇧ 必须说得出来。
+    /// <para>只记「按下载缓存认领」这一档 —— 它是唯一会「昨天亮、今天灭」的判据：判据本身是
+    /// 下载缓存里的 <c>nxm-&lt;页号&gt;-&lt;文件号&gt;.zip</c>，而那份包闲置满 24 小时就会被
+    /// <see cref="StorageService.AutoCleanDownloads"/> 清掉。用户报「第一天能检测到更新、第二天就
+    /// 检测不到」时，这条日志直接给出依据（包的时间 vs Mods 目录的时间），不用再靠猜。</para></summary>
+    private void LogWeakInstallClaim(ModEntry m, NexusUpdateTruth.InstallProof? proof)
+    {
+        if (proof?.Kind != NexusUpdateTruth.InstallEvidenceKind.DownloadArtifact) return;
+        _artifactClaimed++;
+        AppLog.Info("Updates", $"按下载缓存认领为已装、这一行暂不亮 ⇧：{m.Folder}（{proof.Detail}）"
+            + " —— 证据只当次有效、不写进账本；包被清理后若其实没装上，⇧ 会自己回来");
+    }
 
     private static void RememberRemoteVersion(string folder, string? version, string? url = null, long? fileId = null)
     {
@@ -5109,7 +5156,7 @@
             else
             {
                 sv = Game.ProbeSmapiVersion(gp, freshRead: true);
-                icon = Game.GetSmapiIconDataUri(gp);
+                icon = Game.GetSmapiIconDataUri(gp, Cfg.Current.SmapiLauncherExe);
                 _svSmapiPath = smapiCacheKey;
                 _svSmapiVersionCache = sv;
                 _svSmapiIconCache = icon;
@@ -5413,7 +5460,7 @@
                 _smapiVersion = Game.ProbeSmapiVersion(Cfg.Current.GamePath, freshRead: true);
                 _svSmapiPath = Cfg.Current.GamePath;
                 _svSmapiVersionCache = _smapiVersion;
-                _smapiIcon = Game.GetSmapiIconDataUri(Cfg.Current.GamePath);
+                _smapiIcon = Game.GetSmapiIconDataUri(Cfg.Current.GamePath, Cfg.Current.SmapiLauncherExe);
                 // v1.1.8：旧版游戏必须查对应 tag，不能刷成 latest 4.x
                 _smapiUpdate = SmapNeedsOld
                     ? await Updater.CheckSmapiForGameAsync(_smapiVersion, _gameVer, force: true)
@@ -5959,19 +6006,60 @@
 
     /// <summary>分类的登记单位：捆绑包记顶层目录，独立 mod 记自己的文件夹 ——
     /// 与列表的一行对齐（子包不单独归分类）。</summary>
-    private static string CategoryKeyOf(ModEntry m)
+    public static string CategoryKeyOf(ModEntry m)
     {
         var top = GroupKeyOf(m);
         return top.Length > 0 ? top : m.Folder;
     }
 
+    /// <summary>查分类表时按顺序试的键：先新口径（顶层目录），再老数据（完整 folder）。
+    /// <para>🔴 2026-11-10：写入端一直是 <see cref="CategoryKeyOf"/>（顶层），但读取端以前在
+    /// 「组被拆成单行」时退回 <c>Items[0].Folder</c>（完整 "顶层/子包"）—— 于是**只有一个子包的
+    /// 顶层目录**（N 网包里常见：<c>Grandpas Farm/[CP] Grandpas Farm</c>）怎么拖都进不了分类：
+    /// 弹窗报成功、配置也写了 "Grandpas Farm"，列表却按 "Grandpas Farm/[CP] Grandpas Farm"
+    /// 查不到，一直在未分类段（用户反馈「有些 mod 放不进分类」）。
+    /// <para>两个键都试：老配置里万一留着完整路径（早期 <c>_modsByFolder</c> 查不到时直接
+    /// 写 folder 的兜底路径），也能读回来，不至于被这次修复甩成孤儿。</para></summary>
+    private static IEnumerable<string> CategoryKeysOf(ModEntry m)
+    {
+        var top = CategoryKeyOf(m);
+        foreach (var k in CategoryKeyVariants(top)) yield return k;
+        if (!string.Equals(top, m.Folder, StringComparison.OrdinalIgnoreCase) && m.Folder.Length > 0)
+            foreach (var k in CategoryKeyVariants(m.Folder)) yield return k;
+    }
+
+    /// <summary>一个分类键的两种写法：原样，以及首段取反点前缀（<c>SVE</c> ↔ <c>.SVE</c>）。
+    /// <para>🔴 2026-11-10 用户反馈「分类后禁用、重新启用，分类被重置」：启禁本来是把顶层目录
+    /// 改名成 <c>.SVE</c> 再改回来，分类键靠改名迁移跟着走；但老版本的批量启用拿「剥过点的
+    /// 目标名」当 old，算出 <c>("SVE","SVE")</c> 被早退掉，键就永久停在 <c>.SVE</c> 那侧，
+    /// 而列表按 <c>SVE</c> 查 —— 整包显示成「未分类」。写入端已经修掉，这里再把读端做成
+    /// 两侧都认：用户此刻已经丢掉的分类不必手工重设，升级后自己就回来了。</para></summary>
+    private static IEnumerable<string> CategoryKeyVariants(string key)
+    {
+        if (string.IsNullOrEmpty(key)) yield break;
+        yield return key;
+        var alt = key.StartsWith('.') ? key[1..] : "." + key;
+        if (alt.Length > 0) yield return alt;
+    }
+
     private string CategoryOfGroup(ModGroup g)
     {
-        var key = g.Key.Length > 0 ? g.Key : g.Items.Count > 0 ? g.Items[0].Folder : "";
-        if (key.Length == 0 || !Cfg.Current.ModUserCategory.TryGetValue(key, out var c)) return "";
-        // 2026-11-07：一个 mod 现在可以同时归进多个分类（安装弹窗支持多选），配置里存成
-        // "9,10"。列表只按第一个分类摆（同一个 mod 不重复画行），其余分类只作标签保留。
-        return FirstCategory(c);
+        if (g.Items.Count == 0) return "";
+        // 口径必须与写入端一致：**看这一组的成员，而不是看 g.Key**。单子包的"捆绑包"在
+        // OrderRows 里被端成 Key="" 的普通行，按 g.Key 就退回完整 folder 了（见 CategoryKeysOf）。
+        return CategoryIn(Cfg.Current.ModUserCategory, g.Items[0]);
+    }
+
+    /// <summary>在分类表里查这个 mod 归哪一类（"" = 未分类）。列表分段、段头全选、行标签共用这一处，
+    /// 免得再出现「写入按顶层、读取按完整路径」那种两头对不上的事。</summary>
+    public static string CategoryIn(IReadOnlyDictionary<string, string> map, ModEntry m)
+    {
+        foreach (var key in CategoryKeysOf(m))
+            if (map.TryGetValue(key, out var raw))
+                // 2026-11-07：一个 mod 现在可以同时归进多个分类（安装弹窗支持多选），配置里存成
+                // "9,10"。列表只按第一个分类摆（同一个 mod 不重复画行），其余分类只作标签保留。
+                return FirstCategory(raw);
+        return "";
     }
 
     /// <summary>配置里的分类值可能是多选拼起来的（<c>"9,10"</c>）—— 取第一个。
@@ -5983,8 +6071,7 @@
 
     /// <summary>单个 mod 归哪个分类（与列表那一行同一口径：捆绑包按顶层目录登记）。
     /// 段头「点一下全选」用它从当前视图里挑出这一段的成员。</summary>
-    private string CategoryOfMod(ModEntry m)
-        => Cfg.Current.ModUserCategory.TryGetValue(CategoryKeyOf(m), out var c) ? FirstCategory(c) : "";
+    private string CategoryOfMod(ModEntry m) => CategoryIn(Cfg.Current.ModUserCategory, m);
 
 
     /// <summary>有没有任何已登记的自定义分类（含空分类）。没有时列表不画分段、右侧不出导航。</summary>
@@ -6055,8 +6142,7 @@
         foreach (var f in _categoryTargets)
         {
             var cat = "";
-            if (_modsByFolder.TryGetValue(f, out var m))
-                cat = Cfg.Current.ModUserCategory.TryGetValue(CategoryKeyOf(m), out var c) ? FirstCategory(c) : "";
+            if (_modsByFolder.TryGetValue(f, out var m)) cat = CategoryOfMod(m);
             if (first) { common = cat; first = false; }
             else if (!string.Equals(common, cat, StringComparison.OrdinalIgnoreCase)) return null;
         }
@@ -6160,16 +6246,25 @@
     private void AssignSelectedCategory(string? category)
     {
         var cfg = Cfg.Current;
-        var tops = _categoryTargets
-            .Select(f => _modsByFolder.TryGetValue(f, out var m) ? CategoryKeyOf(m) : null)
-            .Where(k => !string.IsNullOrWhiteSpace(k)).Select(k => k!)
-            .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-        if (tops.Count == 0) return;
+        // 登记单位去重（同一个捆绑包的多个子包只写一次键），同时留着 ModEntry 本身 ——
+        // 下面要拿它的完整 folder 清掉老兜底路径留下的脏键。
+        var units = _categoryTargets
+            .Select(f => _modsByFolder.TryGetValue(f, out var m) ? m : null)
+            .Where(m => m is not null).Select(m => m!)
+            .GroupBy(m => CategoryKeyOf(m), StringComparer.OrdinalIgnoreCase)
+            .Select(g => g.First())
+            .ToList();
+        if (units.Count == 0) return;
         var name = category?.Trim() ?? "";
-        foreach (var k in tops)
+        foreach (var m in units)
         {
-            if (name.Length == 0) cfg.ModUserCategory.Remove(k);
-            else cfg.ModUserCategory[k] = name;
+            var key = CategoryKeyOf(m);
+            // 老兜底（_modsByFolder 查不到时直接写了完整 folder）留下的键：不清掉的话，
+            // CategoryKeysOf 会先命中顶层键，问题不大，但这种悬空键删分类后会变孤儿。
+            if (!string.Equals(key, m.Folder, StringComparison.OrdinalIgnoreCase))
+                cfg.ModUserCategory.Remove(m.Folder);
+            if (name.Length == 0) cfg.ModUserCategory.Remove(key);
+            else cfg.ModUserCategory[key] = name;
         }
         if (name.Length > 0 && !cfg.ModUserCategoryOrder.Contains(name, StringComparer.OrdinalIgnoreCase))
             cfg.ModUserCategoryOrder.Add(name);
@@ -6182,8 +6277,8 @@
         // 用户选的「首字母 / 最早在前」悄悄改成按名字排。分段本来就在 Groups 里做，不需要动排序。
         ClearSelection();
         ShowNotice("ok", name.Length == 0
-            ? LocService.Tf("已把 {0} 项移出分类", tops.Count)
-            : LocService.Tf("已把 {0} 项加入「{1}」", tops.Count, name));
+            ? LocService.Tf("已把 {0} 项移出分类", units.Count)
+            : LocService.Tf("已把 {0} 项加入「{1}」", units.Count, name));
         StateHasChanged();
     }
 
@@ -6628,7 +6723,10 @@
         var cfg = Cfg.Current;
         foreach (var f in folders)
         {
-            var key = _modsByFolder.TryGetValue(f, out var m) ? CategoryKeyOf(m) : f;
+            var m = _modsByFolder.TryGetValue(f, out var found) ? found : null;
+            var key = m is not null ? CategoryKeyOf(m) : f;
+            if (m is not null && !string.Equals(key, m.Folder, StringComparison.OrdinalIgnoreCase))
+                cfg.ModUserCategory.Remove(m.Folder);      // 老兜底键，顺手清掉
             if (category.Length == 0) cfg.ModUserCategory.Remove(key);
             else cfg.ModUserCategory[key] = category;
         }
@@ -7445,6 +7543,30 @@
             : TopLevelsOf(folders).Concat(folders).Select(NormGroupKey)
               .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
 
+    /// <summary>一次启禁里，内存/配置的键在<b>改名前</b>可能是哪几个写法。
+    /// <para>为什么要枚举：<see cref="SwitchTargetsOf"/> 交出去的是<b>磁盘操作的目标名</b>，
+    /// 已按 <see cref="NormGroupKey"/> 剥掉点前缀；但内存与配置里的键是<b>改名前</b>的，
+    /// 顶层与子包各自都可能带点（<c>.SVE</c> / <c>.SVE/.[CP] x</c> / <c>SVE/.[CP] x</c>）。
+    /// 拿目标名当 old 会算出 new==old，被 <see cref="MigrateFolderCaches"/> 首行的
+    /// <c>if (newFolder == folder) return;</c> 早退 —— 这正是捆绑包分类被重置的那条线。</para>
+    /// <para>只为「找得到就搬」服务：不存在的键迁不动，多列几个候选没有副作用
+    /// （MigrateDictKey / ApplyRenameInMemory 都只在前缀真匹配时才动手）。</para></summary>
+    private static IEnumerable<string> PreSwitchNames(string normalized)
+    {
+        yield return normalized;                    // 禁用前、以及本来就没点前缀的子包
+        var i = normalized.IndexOf('/');
+        var top = i < 0 ? normalized : normalized[..i];
+        if (top.Length == 0) yield break;
+        var rest = i < 0 ? "" : normalized[i..];    // 含前导 '/'
+        yield return "." + top + rest;              // 顶层带点（启用那条线的常态）
+        if (i < 0) yield break;
+        var sub = rest.TrimStart('/');
+        if (sub.Length == 0) yield break;
+        var dotSub = sub.StartsWith('.') ? sub : "." + sub;   // 子包自己也被单独关过
+        yield return top + "/" + dotSub;
+        yield return "." + top + "/" + dotSub;
+    }
+
     /// <summary>父行整包开关 = 顶层一次改名（<see cref="BatchSetDisabled"/>）+ 把包里每个子包的依赖图
     /// 跑一遍。少后半段的话，整包开出来仍挂着「依赖被禁」—— 散装 mod 那颗开关会连带把它依赖的 mod
     /// 启用，同一个 mod 走两条路不该有两种结果。
@@ -7513,17 +7635,36 @@
         // 旧 folder 名，GetCover/GetNexusCategory 查不到 → 封面消失、分类落回"代码 Mod"。
         // v1.1.8：改名没成功的那些不能迁（磁盘还是旧名，内存跟着改就走样了）
         var __t = System.Diagnostics.Stopwatch.GetTimestamp();
+        // 启禁期间按住列表快照：内存迁移与后台重扫各自都是「半成品」，各渲染一次就是用户
+        // 看到的「行先整片闪没、一秒后再闪回来」（见 _holdListSnapshot 的注释）。
+        _holdListSnapshot = true;
         var failedSet = new HashSet<string>(failedTargets, StringComparer.OrdinalIgnoreCase);
+        // 🔴 2026-11-10 用户反馈：捆绑包（SVE / 里奇赛德村这种几个子包折成一行的）禁用后重新启用，
+        // 自定义分类被重置。根因就在下面这一句 —— targets 是 SwitchTargetsOf **归一化过**的名字
+        // （NormGroupKey 已 TrimStart('.')），启用那条线算出来是
+        // MigrateFolderCaches("SVE", DisabledName("SVE", false)) = ("SVE","SVE")，
+        // 而 MigrateFolderCaches 第一行 `if (newFolder == folder) return;` 直接早退：
+        // ModUserCategory 里那个 ".SVE" 键一次都没搬回来。磁盘上目录已经变回 SVE/…，
+        // 列表按 "SVE" 查分类、配置里只剩 ".SVE" → 整包落回「未分类」。
+        // 修法：迁移要以**改名前真实存在的那份路径**当 old（见 PreSwitchNames），
+        // 不能拿磁盘操作的目标名，否则启用线永远是 new==old 的空操作。
         foreach (var top in targets)
-            if (!failedSet.Contains(top))
-                MigrateFolderCaches(top, DisabledName(top, disabled), persist: false);
+        {
+            if (failedSet.Contains(top)) continue;
+            foreach (var before in PreSwitchNames(top))
+                MigrateFolderCaches(before, DisabledName(before, disabled), persist: false);
+        }
         ReindexMods();
         ModsPerf($"批量{(disabled ? "禁" : "启")} {targets.Count} 个目录",
             ("内存改名+缓存迁移", ElapsedMs(__t)));
 
         // v1.1.8：批量启禁期间 watcher 是关着的，不会有文件事件来补这一轮，
         // 所以这里必须显式排一次后台重扫（原来是同步 Rescan()，148 项实测冻 481ms）。
-        RescanAndRestate();
+        // 等这一轮把结果套用完再放开快照：放开时列表已是最终数据，界面上只换一次，
+        // 不再有「行先闪没、再闪回来」的中间帧（2026-11-10 用户反馈）。
+        try { await RescanInBackground(); }
+        finally { _holdListSnapshot = false; _forceFullRenderOnce = true; }
+        StateHasChanged();
         // v0.72.9：显式触发一次封面回填（带并发闸门，不会叠加）——批量改名后 folder 变了，
         // 需要重新拉取新 key 下的封面。
         if (NexusService.IsAuthenticated) _ = GuardedFireAndForget(BackfillCoversAsync(), "封面回填");
@@ -8202,6 +8343,7 @@
 
         var precise = targets;
         var _fpReused = 0;   // 指纹复用（零请求）的行数 —— 进检查耗时日志
+        _artifactClaimed = 0;   // 「按下载缓存认领为已装」的行数 —— 同样进日志（见 LogWeakInstallClaim）
         Dictionary<int, string>? fpUpdatedAt = null;   // modId → 批量指纹的 updatedAt（精查成功后回写缓存用）
         if (NexusService.IsAuthenticated)
         {
@@ -8244,7 +8386,8 @@
                                 _fpReused++;
                                 // 指纹一致 → 远端文件列表没变 → 上次精查的文件版本直接复用
                                 var cachedFid = cached.LatestFileId != 0 ? cached.LatestFileId : (long?)null;
-                                var show = NexusUpdateTruth.ShouldShowUpdate(Cfg.Current, m, cached.LatestFileVersion, cachedFid);
+                                var show = NexusUpdateTruth.ShouldShowUpdate(Cfg.Current, m, cached.LatestFileVersion, cachedFid, out var fpProof);
+                                LogWeakInstallClaim(m, fpProof);
                                 RememberRemoteVersion(m.Folder, cached.LatestFileVersion, fileId: cachedFid);
                                 // 「N 网已最新」而这一行还挂着 GitHub 源 ⇒ 这里不许定稿：GitHub 那一支
                                 // 只长在 CheckOnlyOne 里，留在这儿就等于"作者只在 GitHub 发新版"的 mod
@@ -8281,6 +8424,7 @@
         if (!NexusService.IsAuthenticated)
         {
             var gitHubRest = new List<ModEntry>();
+            var preMiss = 0;   // 快道没覆盖、又没 Key 精查 ⇒ 只能按「已最新」落屏
             foreach (var m in precise)
             {
                 var preVer = _smapiPrecheck is not null
@@ -8290,6 +8434,7 @@
                 {
                     _states[m.Folder] = new ModUpdateState { Status = "latest" };
                     _lastCheckedUtc[m.Folder] = DateTime.UtcNow;
+                    preMiss++;
                     continue;
                 }
                 var showPre = NexusUpdateTruth.ShouldShowUpdate(Cfg.Current, m, preVer, null);
@@ -8300,6 +8445,12 @@
                     RemoteVersion = preVer,
                 };
             }
+            // 这一行是「没配 Key 时为什么某些 mod 永远查不到更新」的唯一证据：快道（smapi.io）
+            // 按 UniqueID 建索引，库里没有的 mod 只能落成「已最新」。用户报「检测不到」时
+            // 先看这个数与下面那条汇总，就能区分「真没有新版」和「我们根本没查上」。
+            if (preMiss > 0)
+                AppLog.Warn("Updates", $"快道没覆盖 {preMiss} 个 mod，且未配置 Nexus Key 无法精查"
+                    + " —— 这些行只能按「已最新」显示（配置 Key 后可逐个核对 MAIN 文件）");
             precise = gitHubRest;
         }
 
@@ -8344,17 +8495,11 @@
                         Status = showB ? "available" : "latest",
                         RemoteVersion = bver,
                     };
-                    if (fpUpdatedAt is not null && fpUpdatedAt.TryGetValue(bid, out var uaB))
-                    {
-                        Cfg.Current.ModUpdateFingerprints[bid] = new ModUpdateFingerprintEntry
-                        {
-                            UpdatedAt = uaB,
-                            LatestFileVersion = bver,
-                            LatestFileId = 0,
-                            CheckedAtUtc = DateTime.UtcNow,
-                        };
-                        _fpDirty = true;
-                    }
+                    // v1.3.46：批量结果**不写**指纹缓存。两套口径不能混进同一个持久账：
+                    // 这里取的是 GraphQL modFiles 里「最后一条 MAIN」（不排序、也没有「与已装目录同名
+                    // 优先」），精查走的是 PickMainForInstall（按上传时间取新 + 目录名提示）；再叠上
+                    // LatestFileId 只能填 0 → 下一次复用拿不到 fileId 证据（⇧ 装上消不掉）。
+                    // 批量本身很便宜（一次 50 个），下一轮照旧批量判，不需要缓存替它兜底。
                     NotifyCheckProgress();
                     return;
                 }
@@ -8385,6 +8530,7 @@
             $"[检查] 完成 {targets.Count} 个：快道 {swCheck.ElapsedMilliseconds - msFingerprint - msPrecise}ms"
             + $" · 指纹批查 {msFingerprint}ms（复用 {_fpReused}）· MAIN 批查 {msBatchMain}ms"
             + $" · 精查 {__preciseCount} 个（实查 {__preciseReal}）{msPrecise}ms"
+            + (_artifactClaimed > 0 ? $" · 按下载缓存认领为已装 {_artifactClaimed} 个" : "")
             + $" · 合计 {swCheck.ElapsedMilliseconds}ms");
         // vNext：检查期间列表已可见（不再换骨架屏），人为保底 0.6s 延迟已删
         _checkingUpdates = false;
@@ -8522,7 +8668,8 @@
                     if (healed) Cfg.Save(Cfg.Current);
                     RememberRemoteVersion(m.Folder, remoteVer, fileId: file?.FileId);
                     // 权威判定：N 网 MAIN 文件 fileId/版本 vs 本地有效版本（含安装记录）
-                    var showNx = NexusUpdateTruth.ShouldShowUpdate(Cfg.Current, m, remoteVer, file?.FileId);
+                    var showNx = NexusUpdateTruth.ShouldShowUpdate(Cfg.Current, m, remoteVer, file?.FileId, out var nxProof);
+                    LogWeakInstallClaim(m, nxProof);
                     // vNext：精查成功 → 连同本轮批量的 updatedAt 指纹一起写入持久化缓存，
                     // 下次进页指纹没变就直接复用这个版本号（快道零请求命中的数据源）
                     if (fpUpdatedAt is not null && fpUpdatedAt.TryGetValue(m.NexusModId!.Value, out var ua))

@@ -51,6 +51,10 @@ public sealed class PlayTimeService : IDisposable
         try
         {
             if (!_launcher.IsGameRunning) return;
+            // 顺手兜住「日志页没在尾随」：玩家在 Steam 里自己点开始、或 JuniGrid 是先开的后台，
+            // 这一 tick 就把 SMAPI 日志接上（已在尾随则什么都不做）。放这里是因为这个 30 秒
+            // 轮询本来就在判游戏进程，不额外多扫一次。
+            _launcher.EnsureLogTailAttached();
             lock (_gate)
             {
                 var key = DateTime.Now.ToString("yyyy-MM-dd");

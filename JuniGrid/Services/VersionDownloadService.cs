@@ -199,7 +199,10 @@ public sealed class VersionDownloadService
             var cfg = _cfg.Current;
             var gamePath = cfg.GamePath;
             if (string.IsNullOrWhiteSpace(gamePath) || !Directory.Exists(gamePath)) return;
-            if (File.Exists(Path.Combine(gamePath, "StardewModdingAPI.exe"))) return;   // 版本缓存/共享池已恢复
+            // 版本缓存/共享池已恢复 —— 判据跟启动时同一套（见 SmapiLauncher）：用户把
+            // StardewModdingAPI.exe 改了名，这里如果只认那个文件名，切一次版本就会白下载一次 SMAPI，
+            // 还会在游戏根目录多塞一个壳回来。
+            if (SmapiLauncher.ExeFor(gamePath, cfg.SmapiLauncherExe) is not null) return;
 
             var gameVer = _updater.GetGameVersion(gamePath);
             var tag = UpdateService.RecommendSmapiTag(gameVer);

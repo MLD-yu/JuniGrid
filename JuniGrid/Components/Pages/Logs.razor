@@ -23,24 +23,82 @@
                     <span class="jg-help-tip-bubble">@Loc.T("命令桥 = 让本页底部的输入框能把命令直接交给 SMAPI 执行。关闭时输入框不可用；开关改动要重启游戏才生效。")</span>
                 </span>
             </div>
-            <div class="jg-sort-dd @(_filterOpen ? "open" : "")" id="jgLogFilter" data-dd="logfilter">
-                <button type="button" class="jg-sort-trigger" @onclick="ToggleFilterMenu">
-                    @FilterLabel(_filter)
-                    <svg class="jg-sort-arrow" width="12" height="12" viewBox="0 0 12 12" fill="none">
-                        <path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-                    </svg>
-                </button>
-                <div class="jg-sort-menu">
-                    @foreach (var f in Filters)
-                    {
-                        <button type="button" class="jg-sort-item @(_filter == f.Key ? "active" : "")"
-                                @onclick="() => SelectFilter(f.Key)">@Loc.T(f.Label)</button>
-                    }
+            @* 筛选框 + 问号 + 本次加载小结同处一行：这三样都是「我看到的到底是哪些行」，
+               分开摆（问号在右、小结在右上角）会让人以为问号讲的是别处的东西。
+               问号紧贴筛选框右侧，中间只留 4px，视觉上是一组。 *@
+            <div class="jg-filterrow">
+                <div class="jg-sort-dd @(_filterOpen ? "open" : "")" id="jgLogFilter" data-dd="logfilter">
+                    <button type="button" class="jg-sort-trigger" @onclick="ToggleFilterMenu">
+                        @FilterLabel(_filter)
+                        <svg class="jg-sort-arrow" width="12" height="12" viewBox="0 0 12 12" fill="none">
+                            <path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                    </button>
+                    <div class="jg-sort-menu">
+                        @foreach (var f in Filters)
+                        {
+                            <button type="button" class="jg-sort-item @(_filter == f.Key ? "active" : "")"
+                                    @onclick="() => SelectFilter(f.Key)">@Loc.T(f.Label)</button>
+                        }
+                    </div>
                 </div>
+                @* 本次加载小结：SMAPI 自己说了多少次加载/跳过，就是「我装的 mod 为什么没进游戏」的第一手答案。
+                   没有这一段时，点前缀（禁用态）这类「SMAPI 只在 TRACE 里提一句」的跳过在页面上完全无声。 *@
+                @if (_loadSum.Any || _modsPathMismatch || _crash is not null)
+                {
+                    <div class="jg-loadsum">
+                        @if (_crash is not null)
+                        {
+                            <button type="button" class="jg-loadsum-item jg-loadsum-link bad"
+                                    data-tip="@CrashTip()" @onclick="OpenCrashReport">
+                                @Loc.F("上次崩溃 {0}", _crash.Modified.ToString("MM-dd HH:mm"))
+                            </button>
+                        }
+                        @if (_modsPathMismatch)
+                        {
+                            <span class="jg-loadsum-item jg-loadsum-warn" data-tip="@ModsPathTip()">@Loc.T("Mods 目录不一致")</span>
+                        }
+                        @if (_loadSum.Mods is not null || _loadSum.Packs is not null)
+                        {
+                            <span class="jg-loadsum-item">@Loc.F("本次加载：{0} 个 mod · {1} 个内容包", _loadSum.Mods ?? 0, _loadSum.Packs ?? 0)</span>
+                        }
+                        @if (_loadSum.Skipped > 0)
+                        {
+                            <button type="button" class="jg-loadsum-item jg-loadsum-link"
+                                    @onclick='() => SelectFilter("skip")'>
+                                @Loc.F("跳过 {0} 个", _loadSum.Skipped)@(_loadSum.DotIgnored > 0 ? Loc.F("（点前缀 {0}）", _loadSum.DotIgnored) : "")
+                            </button>
+                        }
+                        @if (_loadSum.Failures.Count > 0)
+                        {
+                            <button type="button" class="jg-loadsum-item jg-loadsum-link bad"
+                                    @onclick='() => SelectFilter("err")'>
+                                @Loc.F("加载失败 {0} 个", _loadSum.Failures.Count)
+                            </button>
+                        }
+                    </div>
+                }
+                @* 开发者模式：SMAPI 的控制台本来就会打印 TRACE，本页跟着打印。
+                   不解释一句，用户只会觉得「日志页怎么突然刷屏了」。 *@
+                @if (ShowTrace)
+                {
+                    <div class="jg-loadsum">
+                        <span class="jg-loadsum-item" data-tip="@Loc.T("SMAPI 的配置里开了开发者模式（DeveloperMode: true），它的控制台会把 TRACE 也打印出来 —— 所以本页也跟着显示：逐条「跳过了哪个文件夹」、每个 mod 的失败细节、Content Patcher 的刷屏都会出现。想回到干净的样子，把 smapi-internal/config.json 里的 DeveloperMode 改回 false，再重启游戏。")">
+                            @Loc.T("含 TRACE（开发者模式）")
+                        </span>
+                    </div>
+                }
             </div>
             <div class="jg-dd-overlay @(_filterOpen ? "open" : "")" data-dd="logfilter" @onclick="CloseFilter"></div>
         </div>
         <div class="jg-logs-actions">
+            @* 这里没有「显示全部」开关，是有意的：本页的口径只有一个 —— SMAPI 控制台打印什么，
+               这里就是什么。TRACE 显不显示由 SMAPI 自己的 DeveloperMode 决定（见 SmapiConsoleSettings），
+               多给一个开关就等于给出第二套口径，两边迟早对不上。
+               要看文件里多出来的那些行，就用「打开日志」。 *@
+            <button type="button" class="jg-pill-dark"
+                    data-tip="@Loc.T("用系统默认程序打开 ErrorLogs\\SMAPI-latest.txt。本页是 SMAPI 控制台的镜像，文件里比这里多的那部分（TRACE、逐条跳过证据、游戏期刷屏）只能从这里看。")"
+                    @onclick="OpenLogFile">@Loc.T("打开日志")</button>
             <button type="button" class="jg-pill-dark" @onclick="AskClear">@Loc.T("清空")</button>
             <button type="button" class="jg-pill-dark" @onclick="CopyAll">@Loc.T("复制全部")</button>
         </div>
@@ -54,12 +112,12 @@
             }
             else if (_visible.Count == 0)
             {
-                <div style="padding:20px;opacity:.5;font-size:13px"> @Loc.T("当前分类没有匹配的日志。") </div>
+                <div style="padding:20px;opacity:.5;font-size:13px">@EmptyText()</div>
             }
-            @foreach (var line in _visible)
+            @foreach (var row in _visible)
             {
-                <div class="jg-logline @LogLineClassifier.Classify(line)">
-                    @foreach (var seg in Segments(line))
+                <div class="jg-logline @row.Cls">
+                    @foreach (var seg in Segments(row.Line))
                     {
                         if (seg.IsUrl)
                         {
@@ -87,7 +145,7 @@
             @* 命令桥的开关在页头（和立绘页换肤开关同一位置、同一套 markup）。
                桥不可用时输入框直接禁用（关闭态），或只报"为什么没发出去"（开着但游戏没跑等）。 *@
         </div>
-        <div class="jg-logfooter">@Loc.F("实时输出 · 共 {0} 行", _visible.Count)</div>
+        <div class="jg-logfooter">@FooterText()</div>
     </div>
 
     @* ─── 清空日志确认弹窗 ─── *@
@@ -110,27 +168,91 @@
     // 渲染源是 LauncherService 里的共享缓冲快照——页面组件随路由销毁重建，
     // 本地存的行会在离开 /logs 后"清空"，所以历史行一律从服务取。
     private IReadOnlyList<string> _lines = Array.Empty<string>();    // 服务缓冲快照（全量）
-    private IReadOnlyList<string> _visible = Array.Empty<string>();  // 视图：分类筛选
-    private string _filter = "all"; // all | err | upd | loaded
+    // 与 _lines 等长：每行的颜色。必须整页算（ClassifyAll），因为没级别头的续行
+    // 要沿用上一条头的颜色 —— 单行判定会把 WARN 的多行正文后半截变白。
+    private string[] _classes = Array.Empty<string>();
+    private IReadOnlyList<(string Line, string Cls)> _visible = Array.Empty<(string, string)>();  // 视图：分类筛选
+    private string _filter = "all"; // all | err | skip | warn | upd | loaded
+    // 本页口径 = SMAPI 控制台（见 LauncherService.ConsoleShowsTrace）：只有 SMAPI 开了开发者模式、
+    // 控制台自己会打印 TRACE 时，「全部」才显示 TRACE。否则一行都不显示 —— 控制台里也没有。
+    private bool ShowTrace => Launcher.ConsoleShowsTrace;
     private bool _pendingScroll;
     private bool _pendingScrollForce;   // 首屏带历史 → 强制落底；日常新行只在用户位于底部附近时跟随（JS 侧判定）
+    private SmapiLoadSummary _loadSum = SmapiLoadSummary.FromLines(Array.Empty<string>());
+
+    // SMAPI 崩溃报告（ErrorLogs 里那份 Message/Stack Trace）。它不在 SMAPI-latest.txt 里，
+    // 原来日志页完全看不到 —— 「游戏闪退了」时玩家最需要的就是它。
+    private LauncherService.CrashReport? _crash;
+    private DateTime _crashCheckedAt = DateTime.MinValue;
 
     private static readonly (string Key, string Label)[] Filters =
     {
-        ("all", "全部"), ("err", "错误"), ("upd", "可更新"), ("loaded", "已加载")
+        ("all", "全部"), ("err", "错误"), ("skip", "未加载"), ("warn", "警告"), ("upd", "可更新"), ("loaded", "已加载")
     };
     private string FilterLabel(string key) =>
         Loc.T(Array.Find(Filters, f => f.Key == key).Label);
 
+    /// <summary>空态：说得清「不是日志丢了，是这一档里确实没有」。</summary>
+    private string EmptyText() => Loc.T("当前分类没有匹配的日志。");
+
     protected override void OnInitialized()
     {
         _lines = Launcher.GetLogSnapshot();
+        _classes = LogLineClassifier.ClassifyAll(_lines);
+        _loadSum = SmapiLoadSummary.FromLines(_lines);
+        CheckModsPath();
+        RefreshCrashReport();
         _visible = BuildVisible();
         _pendingScroll = _lines.Count > 0;
         _pendingScrollForce = true;
         Launcher.OnLogLine += HandleLog;
         _bridgeOn = Bridge.Enabled;
     }
+
+    // 崩溃报告是磁盘上的文件，不是日志行：只在进入页面和之后每 10 秒各扫一次 ——
+    // 游戏在页面开着的时候崩掉，页头也能立刻冒出「上次崩溃」。
+    private void RefreshCrashReport()
+    {
+        if (DateTime.Now - _crashCheckedAt < TimeSpan.FromSeconds(10)) return;
+        _crashCheckedAt = DateTime.Now;
+        _crash = LauncherService.LatestCrashReport();
+    }
+
+    private string CrashTip() =>
+        Loc.F("上次游戏崩溃：{0}", _crash?.Modified.ToString("yyyy-MM-dd HH:mm") ?? "") + "\n"
+        + (_crash?.Message ?? "") + "\n" + (_crash?.Path ?? "") + "\n"
+        + Loc.T("这是 SMAPI 写的崩溃报告（Message / 堆栈），不在 SMAPI 日志里。点一下直接打开这个文件。");
+
+    private string FooterText()
+    {
+        var text = _filter == "all"
+            ? Loc.F("实时输出 · 共 {0} 行", _lines.Count)
+            : Loc.F("实时输出 · 当前筛选 {0} 行 / 共 {1} 行", _visible.Count, _lines.Count);
+        var dropped = Launcher.DroppedLineCount;
+        if (dropped > 0)
+            text += Loc.F("（另有 {0} 行已滚出视图，完整内容在 ErrorLogs\\SMAPI-latest.txt）", dropped);
+        return text;
+    }
+
+    // 「SMAPI 扫的 Mods 目录」vs「设置里的游戏目录」—— 两边不一致时，用户在列表里装得再对，
+    // 游戏那边也一个都看不到，而 SMAPI 不会为此报错（它只把真实路径 INFO 一句）。
+    private bool _modsPathMismatch;
+
+    private void CheckModsPath()
+    {
+        var used = _loadSum.ModsPath;
+        var mine = Launcher.ConfiguredModsDir;
+        _modsPathMismatch = !string.IsNullOrWhiteSpace(used)
+                            && !string.IsNullOrWhiteSpace(mine)
+                            && !string.Equals(TrimDir(used), TrimDir(mine), StringComparison.OrdinalIgnoreCase);
+
+        static string TrimDir(string p) => p.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+    }
+
+    private string ModsPathTip() =>
+        Loc.T("游戏实际读取的 Mods 目录") + "\n  " + _loadSum.ModsPath + "\n"
+        + Loc.T("设置里这个目录") + "\n  " + Launcher.ConfiguredModsDir + "\n"
+        + Loc.T("两边不是同一个目录 → 列表里装好的 mod 游戏一个也读不到。请到设置页把游戏目录改成实际在用的那个。");
 
     public void Dispose() => Launcher.OnLogLine -= HandleLog;
 
@@ -153,6 +275,10 @@
     {
         lock (_flushGate) _flushPending = false;
         _lines = Launcher.GetLogSnapshot();
+        _classes = LogLineClassifier.ClassifyAll(_lines);
+        _loadSum = SmapiLoadSummary.FromLines(_lines);
+        CheckModsPath();
+        RefreshCrashReport();
         _visible = BuildVisible();
         _pendingScroll = true;
         _pendingScrollForce = false;
@@ -192,13 +318,32 @@
         try { await JS.InvokeVoidAsync("junigridJs.dropdownToggle", "#jgLogFilter", false); } catch { }
     }
 
-    // 视图 = 服务缓冲快照按分类筛选。TRACE 组已在 LauncherService 读取文件时整组丢弃
-    // （SMAPI 文件日志 verbose，TRACE 占九成以上，进缓冲只会挤掉可见行），此处不再重复过滤。
-    // 分类判定复用 LogLineClassifier，和行着色永远同一套规则。
-    private IReadOnlyList<string> BuildVisible() =>
-        _filter == "all"
-            ? _lines
-            : _lines.Where(l => LogLineClassifier.MatchesFilter(l, _filter)).ToList();
+    // 视图 = 服务缓冲快照按分类筛选。
+    // 「全部」= SMAPI 控制台的镜像：文件里独有的 TRACE 行不出现（控制台默认不打印它们），
+    // 包括我们为查案特意留在缓冲里的跳过/加载失败证据。要查那一条：点页头「跳过 N 个」进
+    // 「未加载」，或者右上「打开日志」看原文。
+    // 唯一例外是 SMAPI 自己的开发者模式：那时控制台会打印 TRACE（SMAPI 源码里
+    // ShowTraceInConsole = isDeveloperMode），本页就跟上，免得「控制台有、这里没有」。
+    // 筛选用整页算好的颜色（_classes）而不是逐行重判：这样「错误」筛选也会带出 ERROR 块里
+    // 那些没级别头的续行（堆栈、多行正文），单独看一条错误时不会只剩个开头。
+    private IReadOnlyList<(string Line, string Cls)> BuildVisible()
+    {
+        var trace = ShowTrace;
+        var rows = new List<(string Line, string Cls)>(_lines.Count);
+        for (var i = 0; i < _lines.Count; i++)
+        {
+            var line = _lines[i];
+            var cls = i < _classes.Length ? _classes[i] : LogLineClassifier.Classify(line);
+            var keep = _filter switch
+            {
+                "all" => trace || !LogLineClassifier.IsFileOnly(line),
+                "loaded" => LogLineClassifier.MatchesFilter(line, "loaded"),
+                _ => cls == _filter,
+            };
+            if (keep) rows.Add((line, cls));
+        }
+        return rows;
+    }
 
     // ─── 清空 / 复制：清空走确认弹窗，复制成功弹 toast ───
     private bool _confirmClear;
@@ -209,19 +354,61 @@
         _confirmClear = false;
         Launcher.ClearLog();
         _lines = Array.Empty<string>();
-        _visible = Array.Empty<string>();
+        _classes = Array.Empty<string>();
+        _visible = Array.Empty<(string, string)>();
+        _loadSum = SmapiLoadSummary.FromLines(Array.Empty<string>());
+        _modsPathMismatch = false;
     }
 
     private async Task CopyAll()
     {
         try
         {
-            await JS.InvokeVoidAsync("navigator.clipboard.writeText", string.Join('\n', _visible));
+            // 「复制全部」= 整个日志，不是当前筛选结果。之前复制的是 _visible，
+            // 在「错误」筛选下点它会只复制那几行，用户拿去求助时恰好少了上下文。
+            await JS.InvokeVoidAsync("navigator.clipboard.writeText", string.Join('\n', _lines));
             await JS.InvokeVoidAsync("junigridJs.toast", LocService.Tr("复制成功"));
         }
         catch
         {
             await JS.InvokeVoidAsync("junigridJs.toast", LocService.Tr("复制失败"), "err");
+        }
+    }
+
+    private void OpenCrashReport()
+    {
+        if (_crash is not null) Reveal(_crash.Path);
+    }
+
+    /// <summary>用系统默认程序打开 SMAPI 原始日志。本页是「控制台镜像」，文件里比这里多的那部分
+    /// （TRACE、逐条跳过证据）只能从这儿看 —— 说本页没有少显示，总得给出处。
+    /// 没有关联程序时退回资源管理器定位，至少把人带到文件跟前。</summary>
+    private void OpenLogFile()
+    {
+        try
+        {
+            var path = LauncherService.SmapiLogPath;
+            if (!File.Exists(path)) throw new FileNotFoundException(path);
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(path) { UseShellExecute = true });
+        }
+        catch { Reveal(LauncherService.SmapiLogPath); }
+    }
+
+    private async void Reveal(string path)    {
+        try
+        {
+            if (!File.Exists(path))
+                throw new FileNotFoundException(path);
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("explorer.exe")
+            {
+                Arguments = $"/select,\"{path}\"",
+                UseShellExecute = true
+            });
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warn("Logs", "打开日志文件失败: " + ex.Message);
+            await JS.InvokeVoidAsync("junigridJs.toast", LocService.Tr("找不到日志文件"), "err");
         }
     }
 

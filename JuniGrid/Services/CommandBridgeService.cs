@@ -214,9 +214,10 @@ public sealed class CommandBridgeService
         try
         {
             if (Probe() is not null) return true;
-            foreach (var p in System.Diagnostics.Process.GetProcessesByName("StardewModdingAPI"))
-            { try { return true; } finally { p.Dispose(); } }
-            return false;
+            // 判活口径交给 LauncherService：启动器改名后进程名也变了，只认 StardewModdingAPI
+            // 会漏掉「游戏还在跑」→ 复制/移动 mod 的 dll 时撞一句 Win32 文案，
+            // 用户看到的只是「操作失败」，不知道为什么。
+            return LauncherService.SmapiProcessRunning();
         }
         catch { return false; }
     }

@@ -819,6 +819,10 @@
     private static string SummarizeLaunchError(string? err)
     {
         if (string.IsNullOrWhiteSpace(err)) return LocService.Tr("未知原因");
+        // 启动器这一档必须排在通用 SMAPI 判定之前：它说的不是"没装"，而是"没找到 / 认出多个"，
+        // 压成「请先安装 SMAPI」会把用户引去重装（他明明装了，只是改了名）。
+        if (err.Contains("SMAPI 启动器", StringComparison.OrdinalIgnoreCase))
+            return LocService.Tr("没找到唯一的 SMAPI 启动器 —— 如果你把 StardewModdingAPI.exe 改了名，去「设置 → 启动项」里选中它");
         if (err.Contains("SMAPI", StringComparison.OrdinalIgnoreCase))
             return LocService.Tr("未检测到 SMAPI，请先安装 SMAPI，或在左上角切换「官方」模式启动");
         var line = err.Split('\n')[0].Trim().TrimEnd('。', '.');

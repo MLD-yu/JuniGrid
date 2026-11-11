@@ -374,9 +374,10 @@ html[data-theme="dark"] .jg-user-tip-bubble {
 
 /* 「历史版本」下拉 —— 复用站内 .jg-sort-dd（mod 管理的排序/存档下拉同款）。
    原生 <select> 的弹出列表由系统绘制，圆角/配色不受主题控制，深浅色切换时永远是白底方角。 */
-/* 保留 visible：弹窗里还有一支绝对定位的「更多文件」下拉要能探出边界。
-   分类列表改成内嵌展开后靠 .jg-cat-inline 自己限高（200px 内滚），弹窗最多增高两百来像素，
-   不会顶出屏幕，也就用不着让整个弹窗滚起来（那会把浮层裁掉）。 */
+/* 保留 visible：两支下拉都是绝对定位浮层，允许探出弹窗边界 —— 弹窗本身**不加**限高/滚动
+   （2026-11-11 用户定：可选文件那几节各自已经有 148px 内滚，再叠一层整体滚动是多余）。
+   浮层的落点与限高由 junigridJs.fitPickDd 现量：下面放得下就朝下、放不下就翻到按钮上方，
+   再按窗口里的剩余空间给菜单限高，溢出的部分菜单自己滚 —— 既不探出窗口，也不撑高弹窗。 */
 .jg-modal.jg-pick-modal { overflow: visible; }
 .jg-pick-vdd { display: block; width: 100%; }
 .jg-pick-vdd .jg-pick-vdd-btn {
@@ -386,16 +387,38 @@ html[data-theme="dark"] .jg-user-tip-bubble {
 .jg-pick-vdd-t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* 还没选历史版本时的占位态：字色退一档，跟「未选择」的语义一致 */
 .jg-pick-vdd-t.jg-pick-vdd-ph { color: var(--jg-text-3); }
+/* 2026-11-11：**视觉从外层挪到内层**。
+   dropdownToggle 的弹性动画作用在 `.jg-sort-menu-in`（视觉内层，Nexus 页的拆层方案），
+   可外层 `.jg-sort-menu` 自己也画着背景/边框/阴影 —— 于是关闭时只有内层变透明，
+   整块白卡片留在原地亮着，用户以为「没关掉」再点一次（又打开）→「选择文件这个关不掉」
+   （用户截图 2：一块没有内容的白板）。背景/边框/阴影/内边距交给内层，整卡一起淡出/缩放。
+   260px 只是「还没人量过」时的兜底上限，真实高度由 fitPickDd 现量（只压不抬）。 */
 .jg-pick-vdd .jg-sort-menu {
     left: 0; right: 0; width: 100%; min-width: 0;
-    max-height: 216px; overflow-y: auto;
+    /* 外层只负责定位：不限高、也不滚。滚动交给内层 —— 外层背景是透明的，
+       滚动条画在外层会飘在卡片右边框外侧，中间留出一道缝；
+       交给内层后，滚动条落在卡片圆角内，和 Nexus 页那套拆层一致。 */
+    max-height: none; overflow: visible;
+    padding: 0; border: 0; background: transparent;
+    box-shadow: none; backdrop-filter: none;
+}
+.jg-pick-vdd .jg-sort-menu-in {
+    padding: 6px;
+    /* 260px 只是「还没人量过」时的兜底上限，窗口不够时 fitPickDd 会把 inline max-height 压得更小 */
+    max-height: 260px; overflow-y: auto; overflow-x: hidden;
+    border-radius: 14px;
+    border: 1px solid var(--jg-line-strong);
+    background: var(--jg-glass-95);
+    backdrop-filter: saturate(180%) blur(20px);
+    box-shadow: 0 12px 32px rgba(0, 0, 0, .14);
 }
 .jg-pick-vdd .jg-sort-item { white-space: normal; line-height: 1.45; }
 /* 弹窗里同时有两支下拉（「更多文件」和「分类」），基础 z-index 相同（.jg-sort-dd 9500），
    于是按 DOM 顺序后绘制的「分类」永远压在上面 —— 展开「更多文件」时菜单被分类触发按钮
    横切一道（2026-11-10 用户截图）。让**展开的那一支**自己抬高一档即可。 */
 .jg-pick-modal .jg-sort-dd.open { z-index: 9520; }
-.jg-pick-vdd.open.up .jg-sort-menu { transform-origin: bottom left; }
+.jg-pick-vdd.open.up .jg-sort-menu,
+.jg-pick-vdd.open[data-up] .jg-sort-menu { transform-origin: bottom left; }
 /* 弹窗内的遮罩要压在菜单之下：全局 .jg-dd-overlay 是 9000，会盖住菜单（看得见、点不中）。 */
 .jg-pick-modal .jg-dd-overlay { z-index: 15; }
 .jg-pick-actions { display: flex; justify-content: flex-end; gap: 12px; margin-top: 22px; }
@@ -433,11 +456,11 @@ html[data-theme="dark"] .jg-user-tip-bubble {
 .jg-file-btn-done { opacity: .5; cursor: default; }
 
 /* ═══ v1.3.73：弹窗里的分类浮层（下载面板）═══
-   它是**浮层**，允许探出弹窗边界（`.jg-pick-modal` 保持 overflow: visible），不撑高弹窗。
+   浮层照旧允许探出弹窗边界（弹窗 overflow: visible），但落点和高度由 fitPickDd 现量现给：
+   放不下就在窗口里翻到按钮上方，并按剩余空间限高。这里的 260px 只是「没人量过时」的兜底上限。
    两个历史坑必须继续压住：
    ① 双滚动容器 → 会挤出横向滚动条：内层 .jg-cat-menu 不再自己滚，交给 .jg-sort-menu。
    ② ＋ 按钮 width:100% + padding + 虚线边框，content-box 下横向溢出 20 多像素。 */
-.jg-pick-vdd .jg-sort-menu { max-height: 260px; overflow-y: auto; overflow-x: hidden; }
 .jg-pick-vdd .jg-cat-menu { max-height: none; overflow: visible; margin: 0; min-width: 0; }
 .jg-pick-vdd .jg-cat-menu .jg-profile-item { min-width: 0; }
 .jg-pick-vdd .jg-profile-addcap { box-sizing: border-box; }

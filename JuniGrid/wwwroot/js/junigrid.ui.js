@@ -104,16 +104,89 @@
         if (menu.getBoundingClientRect().bottom > host.getBoundingClientRect().bottom - 8) dd.classList.add('up');
     };
 
-    window.junigridJs.fitPickVdd = function () {
-        // 详情页「选择要安装的版本」弹窗里的历史版本下拉：往下放会掉出弹窗 ⇒ 按实测矩形翻到上方。
-        // 和 fitPkVar 同因不同框（那边是素材包对象弹窗的版本下拉）。
-        var dd = document.querySelector('.jg-pick-vdd.open');
-        if (!dd) return;
-        dd.classList.remove('up');
-        var menu = dd.querySelector('.jg-sort-menu');
-        if (!menu) return;
-        var host = menu.closest('.jg-modal') || document.documentElement;
-        if (menu.getBoundingClientRect().bottom > host.getBoundingClientRect().bottom - 8) dd.classList.add('up');
+    window.junigridJs.dropdownIsOpen = function (sel) {
+        // 下拉的 open 状态**只认 DOM**（dropdownToggle 自己维护那个类），C# 字段只是镜像。
+        // 给 Razor 用：点触发按钮时按真实状态翻转，避免字段与 DOM 不同步时"点了关不掉／点了打不开"。
+        var wrap = document.querySelector(sel);
+        if (!wrap) return false;
+        // ① 有意图记录就认它（dropdownToggle 每次调用都会写），关闭动画途中也判得对
+        var st = wrap.dataset.ddState;
+        if (st === 'open' || st === 'closed') return st === 'open';
+        if (!wrap.classList.contains('open')) return false;
+        // 2026-11-11 防御：`.open` 还挂着但视觉上已经收掉了（时间轴被打断、onComplete 没跑到）
+        // 时判成"关"。否则下一次点击会被当成"再关一次"，用户看到的就是「关闭之后打不开了」
+        // ——「更多文件」610 条的 mod 上实测复现过。
+        var menu = wrap.querySelector('.jg-sort-menu');
+        var vis = menu && (menu.querySelector(':scope > .jg-sort-menu-in') || menu);
+        if (vis) {
+            var cs = getComputedStyle(vis);
+            if (cs.visibility === 'hidden' || parseFloat(cs.opacity) < 0.05) return false;
+        }
+        return true;
+    };
+
+    window.junigridJs.dropdownToggleSelf = function (sel) {
+        // 一次 interop 完成「读状态 → 量落点 → 开合」，返回开完后的状态。
+        // 以前拆成 dropdownIsOpen + fitPickDd + dropdownToggle 三次往返，中间任何一次被别的
+        // 事件插队（弹窗本体的"点空白收起"就是同一个点击冒上去的），菜单就会刚开又被收回去，
+        // 用户看到的是「关闭之后打不开了」。现在只有一个原子动作，插队也无从发生。
+        var wrap = document.querySelector(sel);
+        if (!wrap) return false;
+        // 状态走 dropdownIsOpen：它会把「类还挂着但已经看不见」判成关着的
+        var open = !window.junigridJs.dropdownIsOpen(sel);
+        if (open && window.junigridJs.fitPickDd) {
+            try { window.junigridJs.fitPickDd(sel, true); } catch (e) {}   // 先量落点再展开
+        }
+        window.junigridJs.dropdownToggle(sel, open);
+        return open;
+    };
+
+    window.junigridJs.fitPickDd = function (sel, allowClosed) {
+        // 详情页「选择要安装的版本」弹窗里的两支下拉（#jgPickVdd 更多文件 / #jgPickCat 分类）。
+        // 弹窗本身不限高也不滚（列表各节自己有内滚），所以浮层可以探出弹窗 —— 但**不能出窗口**：
+        //   ① 下面放得下就照常朝下；放不下且上方更宽裕 → 打 data-up 整块翻到按钮上方；
+        //   ② 按那一侧的剩余空间给菜单限高，超出的部分菜单自己滚
+        //      （用户 2026-11-11 截图：菜单从弹窗底边探出去又超出窗口，最后三行看不见）。
+        // allowClosed = true：**打开之前**先算一次（菜单还藏着，visibility:hidden 不影响 scrollHeight），
+        //   这样第一帧就在正确的一侧 —— 否则先渲染到下方、几十毫秒后才翻上去，
+        //   看起来就是「刚打开在下面，然后突然变到上面」（2026-11-11 用户反馈）。
+        // ⚠ 只量 offset/scrollHeight 和触发按钮的矩形：这两样不受 gsap 动画的 transform 影响，
+        //   所以开合动画途中调用也量得准（v1.3.71 用 getBoundingClientRect 量菜单，
+        //   量到的是缩放中的高度，翻不上去还把位置算歪）。
+        var wrap = document.querySelector(sel);
+        if (!wrap) return;
+        if (!allowClosed && !wrap.classList.contains('open')) return;
+        var menu = wrap.querySelector('.jg-sort-menu');
+        var btn = wrap.querySelector('.jg-sort-trigger');
+        if (!menu || !btn) return;
+        // 真正滚动的层是「视觉内层」.jg-sort-menu-in（外层透明、只定位）。
+        // 限高必须落在这一层，滚动条才会被卡片圆角收进去。
+        var box = menu.querySelector(':scope > .jg-sort-menu-in') || menu;
+
+        box.style.maxHeight = '';           // 先复位 → 量到的是 CSS 的上限与内容的自然高度
+        // 「朝上开」这个结论必须写在 data-up 上，不能用 .up 类：Blazor 重渲染会用 markup 里的
+        // class 字符串整个覆盖 class 属性，JS 加的类当场消失 —— 关下拉时那一下「突然掉到按钮
+        // 下方」（2026-11-11 用户截图）就是它：字段一变 false，重渲染先摘 .up，gsap 才慢慢淡出。
+        // data-* 不在渲染树里，Blazor 不碰它。
+        delete wrap.dataset.up;
+        wrap.classList.remove('up');        // 清掉旧版本可能残留的类
+
+        // 裁菜单的是窗口，不是弹窗（弹窗 overflow: visible）
+        var br = btn.getBoundingClientRect();
+        var vh = window.innerHeight || document.documentElement.clientHeight;
+        var need = box.scrollHeight;                        // 滚动层的 scrollHeight = 内容自然高度（含内边距）
+        var cssCap = parseFloat(getComputedStyle(box).maxHeight);   // 各下拉自己的设计上限
+        if (!isFinite(cssCap)) cssCap = need;
+        var want = Math.min(need, cssCap);                  // 真正需要占的高度
+        var gap = 10;                                       // 按钮与菜单之间那 8px 空隙 + 余量
+        var below = vh - 8 - br.bottom - gap;
+        var above = br.top - gap - 8;
+        var up = want > below && above > below;
+        if (up) wrap.dataset.up = '1';
+        // 只往下压、不往上抬：放得下就交给 CSS 的上限，放不下才按剩余空间收窄（自己滚）。
+        // 两头都塞不下时保底给两行的高度：宁可贴着边，也别变成一条点不中的细缝。
+        var avail = Math.max(110, Math.min(cssCap, Math.floor((up ? above : below) - 4)));
+        if (need > avail) box.style.maxHeight = avail + 'px';
     };
 
     window.junigridJs.toast = function (msg, kind) {
@@ -247,6 +320,8 @@ window.junigridJs.tiltPerspective = function (selector, opts) {
     function show(t, x, y) {
         var el = ensure();
         el.textContent = t;
+        // 带换行的提示是多行说明（日志页的加载小结、跳过清单），胶囊形状撑不住 —— 换成圆角卡片
+        el.classList.toggle('multi', t.indexOf('\n') >= 0);
         el.style.opacity = '1';
         el.style.visibility = 'visible';
         move(x, y);
@@ -425,10 +500,35 @@ window.junigridJs.tiltPerspective = function (selector, opts) {
         // --down / --right 的气泡都用 CSS 的 transform:none 对齐，GSAP 这边就不能再给 -50%
         return (cls.contains('jg-help-tip--down') || cls.contains('jg-help-tip--right')) ? 0 : -50;
     }
+    // 水平兜底：气泡按 CSS 定位算出来的左边缘若越出 .jg-main（overflow-x:hidden），
+    // 就会被裁成半截。2026-11-10 用户截图：设置页「启动项」的问号离卡片左缘不足半个
+    // 气泡宽（max 260px），左边「默认」两个字被削掉只剩「认」。
+    // 这里不猜有没有越界，直接量 —— 越界多少就往回推多少，箭头跟着挪到问号正下方。
+    var EDGE_PAD = 8;
+    function clampShift(wrap, bubble) {
+        var btn = btnOf(wrap) || wrap;
+        var br = btn.getBoundingClientRect();
+        var w = bubble.offsetWidth;
+        if (!w) return 0;
+        var cls = wrap.classList, cssLeft;
+        if (cls.contains('jg-help-tip--right')) cssLeft = br.right - w;          // CSS: right:0
+        else if (cls.contains('jg-help-tip--down')) cssLeft = br.left;           // CSS: left:0
+        else cssLeft = br.left + br.width / 2 - w / 2;                          // CSS: 居中
+        // 优先贴着卡片内缘收：只按 .jg-main 收的话，气泡会悬在卡片边线外面 8px 看着像跑版
+        var hr = (wrap.closest('.jg-card, .jg-main') || document.documentElement).getBoundingClientRect();
+        var want = cssLeft;
+        if (want + w > hr.right - EDGE_PAD) want = hr.right - EDGE_PAD - w;
+        if (want < hr.left + EDGE_PAD) want = hr.left + EDGE_PAD;
+        var dx = Math.round(want - cssLeft);
+        // 箭头原本钉在气泡中心，气泡被推走后会指错地方 —— 改成对准问号中心
+        var arrow = Math.min(Math.max(br.left + br.width / 2 - (cssLeft + dx), 10), w - 10);
+        bubble.style.setProperty('--jg-tip-arrow', arrow + 'px');
+        return dx;
+    }
     function close(wrap) {
         if (wrap._tipTl) { wrap._tipTl.kill(); wrap._tipTl = null; }
         var b = bubbleOf(wrap), btn = btnOf(wrap);
-        if (b) gsap.set(b, { autoAlpha: 0, y: 14, scale: 0.4, xPercent: xPercentOf(wrap) });
+        if (b) gsap.set(b, { autoAlpha: 0, y: 14, scale: 0.4, xPercent: xPercentOf(wrap), x: 0 });
         if (btn) gsap.set(btn, { scale: 1 });
     }
     document.addEventListener('mouseover', function (e) {
@@ -437,10 +537,11 @@ window.junigridJs.tiltPerspective = function (selector, opts) {
         var bubble = bubbleOf(wrap), btn = btnOf(wrap);
         if (!bubble) return;
         if (wrap._tipTl) wrap._tipTl.kill();
+        var dx = clampShift(wrap, bubble);
         wrap._tipTl = gsap.timeline({ paused: true })
             // 透明度不进 elastic 缓动：elastic 会让 opacity 在弹跳里反复跌破 1（实测 0.84 / 0.98），
             // 奶油底就变半透明、透出底下那行文字。弹入第一帧直接拉满，只让缩放和位移去弹。
-            .set(bubble, { autoAlpha: 1, xPercent: xPercentOf(wrap) }, 0)
+            .set(bubble, { autoAlpha: 1, xPercent: xPercentOf(wrap), x: dx }, 0)
             .to(bubble, {
                 y: 0, scale: 1, duration: 1,
                 ease: 'elastic.out(1.2, 0.3)'

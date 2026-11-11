@@ -108,6 +108,7 @@ public sealed class ConfigService
         }
         SyncAdultFilter();
         SyncStoragePaths();
+        SyncLaunchTarget();
         // v1.3.32：分片加速内置常开 —— 设置页的开关已移除，而老配置里几乎都存着当年默认写下的
         // false（甚至用户手动关过的），不纠正就等于「UI 没了但功能还是关的」。这里统一拉平。
         // v1.3.36：保留一条【藏起来的】排障逃生口（见 SegmentAccelerationEnabled）。
@@ -218,6 +219,11 @@ public sealed class ConfigService
         StoragePaths.CacheRoot = string.IsNullOrWhiteSpace(Current.CacheRoot) ? null : Current.CacheRoot;
     }
 
+    /// <summary>把「自定义启动项」的进程名同步进判活名单。启动器一改名，进程名也跟着变，
+    /// 而判活/清理工作集/关闭游戏都按进程名找 —— 只认 StardewModdingAPI 就会把这一局
+    /// 算成「游戏没在跑」，表现是玩了两小时时长没涨、退出后 ✕ 也关不掉它。</summary>
+    private void SyncLaunchTarget() => LauncherService.NoteLauncherProcess(Current.SmapiLauncherExe);
+
     // v0.72.6：持久化协调器 —— Save() 不再每次全量写盘，改为 dirty 标记 + 250ms 防抖合并 +
     // 版本号快照 + 单写者后台落盘 + tmp 原子替换 + 异步重试。批量 63 个 mod 的 100+ 次
     // 保存请求合并为一次真实磁盘写入（"批量操作慢"的持久化侧根因）。
@@ -291,6 +297,7 @@ public sealed class ConfigService
         Current = cfg;
         SyncAdultFilter();
         SyncStoragePaths();
+        SyncLaunchTarget();
         Saved?.Invoke();
         System.Threading.Interlocked.Increment(ref _dirtyVersion);
         lock (_schedGate)
@@ -457,6 +464,14 @@ public sealed class JuniGridConfig
 {
     public string GamePath { get; set; } = "";
     public string LaunchMode { get; set; } = "smapi";   // "smapi" | "steam"
+
+    /// <summary>自定义启动项：不走「游戏目录下的 StardewModdingAPI.exe」时，用这个 exe 启动。
+    /// <para>空 = 自动（标准壳 → 游戏根目录里认得出来的改名壳，见 <see cref="SmapiLauncher"/>）。
+    /// 存在的理由：SMAPI 的启动壳就是根目录一个朴素的 <c>StardewModdingAPI.exe</c>，很多人把它
+    /// 改名成 <c>SMAPI.exe</c> 好在文件夹里一眼看见 —— 改名不影响运行，但我们按文件名硬找就会
+    /// 报「未找到 SMAPI」，用户看到的是「我明明装好了」。</para>
+    /// <para>绝对路径（exe，不是目录）。路径失效时启动前自检会说明并按标准位置兜底，不会静默。</para></summary>
+    public string SmapiLauncherExe { get; set; } = "";
     public string SteamAppId { get; set; } = "413150";
 
     // OAuth2（授权码 + PKCE）持久化 token —— 仅存本机。

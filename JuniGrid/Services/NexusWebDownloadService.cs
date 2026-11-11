@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using System.Text.Json;
 using System.Windows;
 using Microsoft.Web.WebView2.Core;
@@ -13,6 +13,319 @@ public sealed record NexusWebDownloadResult(string? Url, string? Error,
     public static NexusWebDownloadResult Ok(string url, IReadOnlyList<string>? mirrors = null)
         => new(url, null, mirrors);
     public static NexusWebDownloadResult Fail(string error) => new(null, error);
+}
+
+/// <summary>
+/// v1.3.4：内嵌内核的身份修补（纯函数，无界面依赖，便于白盒测试）。
+/// <para>Cloudflare 认 WebView2 最省事的一条依据就是 <c>Sec-CH-UA</c> 里的
+/// <c>Microsoft Edge WebView2</c> —— 这里只把这一句换成 <c>Microsoft Edge</c>，
+/// 其余平台/架构/位数原样照抄，不制造新的不一致。</para>
+/// </summary>
+internal static class BrowserIdentity
+{
+    /// <summary>压掉「我是被程序嵌进来的」的那些 JS 痕迹。
+    /// <para>只改 UA 不够 —— 2026-11-11 02:20 实机：UA 已修成普通 Edge、CF cookie 也清了，
+    /// 托管挑战照样一分钟不放行（<c>act=False</c>，连可点的 Turnstile 都不给）。WebView2 还留着一个
+    /// 普通浏览器没有的全局对象 <c>window.chrome.webview</c>，一段 JS 就能问出来；
+    /// 再加上 <c>navigator.webdriver</c>（自动化标记）。这里把它们在页面脚本执行之前抹平。</para>
+    /// <para>只定义 getter 返回 undefined、不 delete：WebView2 自己挂的属性未必可删，
+    /// 但可写 getter 足以让所有探测读不到东西。不改任何其它行为（postMessage 仍由宿主独占）。</para></summary>
+    internal const string HideEmbeddedScript = """
+(() => {
+  const hide = (obj, key) => {
+    if (!obj) return;
+    try {
+      Object.defineProperty(obj, key, { get: () => undefined, configurable: true, enumerable: false });
+    } catch (e) { }
+  };
+  try {
+    hide(window.chrome, 'webview');
+    hide(window.chrome, 'webviewBridge');
+    hide(Navigator.prototype, 'webdriver');
+    hide(navigator, 'webdriver');
+  } catch (e) { }
+})();
+""";
+
+    /// <summary>Windows 构建号 → Chrome 口径的 platformVersion。
+    /// <para>只在读不到内核自报值时才用：Win11 报 15.0.0、Win10 报 10.0.0，与 Chrome 一致。</para></summary>
+    internal static string GuessPlatformVersion()
+        => Environment.OSVersion.Version.Build >= 22000 ? "15.0.0" : "10.0.0";
+
+    /// <summary>读身份脚本：只读不改。高熵字段拿不到就退化成低熵字段，
+    /// 由 <see cref="Build"/> 兜底。</summary>
+    internal const string ProbeScript = """
+        (async () => {
+          try {
+            var d = navigator.userAgentData;
+            var out = {
+              ua: navigator.userAgent || '',
+              langs: Array.prototype.slice.call(navigator.languages || []),
+            };
+            if (!d) return JSON.stringify(out);
+            out.brands = d.brands || [];
+            out.mobile = !!d.mobile;
+            out.platform = d.platform || '';
+            try {
+              out.h = await d.getHighEntropyValues(
+                ['architecture','bitness','model','platformVersion','uaFullVersion','fullVersionList','wow64']);
+            } catch (e) { }
+            return JSON.stringify(out);
+          } catch (e) { return ''; }
+        })()
+        """;
+
+    /// <summary>
+    /// 由内核自报的身份拼出 <c>setUserAgentOverride</c> 的参数。
+    /// <para>纯函数（不碰界面），白盒测试直接喂 JSON 断言：brands 里不能再有 WebView2、
+    /// 必须有一个 Microsoft Edge，UA 字符串里不能残留 WebView2 字样。</para>
+    /// </summary>
+    internal static string? Build(string? probeJson, string? engineVersion,
+        string fallbackPlatformVersion)
+    {
+        var brands = new List<Dictionary<string, string>>();
+        var fullBrands = new List<Dictionary<string, string>>();
+        var langs = new List<string>();
+        var ua = string.Empty;
+        var platform = "Windows";
+        var platformVersion = fallbackPlatformVersion;
+        var fullVersion = string.Empty;
+        var arch = "x86";
+        var bitness = "64";
+        var model = string.Empty;
+        var mobile = false;
+        var wow64 = false;
+
+        if (!string.IsNullOrWhiteSpace(probeJson))
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(probeJson);
+                var root = doc.RootElement;
+                if (root.TryGetProperty("ua", out var u) && u.ValueKind == JsonValueKind.String)
+                    ua = u.GetString() ?? "";
+                if (root.TryGetProperty("langs", out var ls) && ls.ValueKind == JsonValueKind.Array)
+                    foreach (var item in ls.EnumerateArray())
+                        if (item.ValueKind == JsonValueKind.String && item.GetString() is { Length: > 0 } one)
+                            langs.Add(one);
+                if (root.TryGetProperty("platform", out var p) && p.ValueKind == JsonValueKind.String
+                    && !string.IsNullOrWhiteSpace(p.GetString()))
+                    platform = p.GetString()!;
+                if (root.TryGetProperty("mobile", out var m)
+                    && m.ValueKind is JsonValueKind.True or JsonValueKind.False)
+                    mobile = m.GetBoolean();
+                if (root.TryGetProperty("brands", out var bs) && bs.ValueKind == JsonValueKind.Array)
+                    brands = ReadBrands(bs);
+
+                if (root.TryGetProperty("h", out var h) && h.ValueKind == JsonValueKind.Object)
+                {
+                    if (h.TryGetProperty("fullVersionList", out var fb) && fb.ValueKind == JsonValueKind.Array)
+                        fullBrands = ReadBrands(fb);
+                    if (h.TryGetProperty("uaFullVersion", out var fv) && fv.ValueKind == JsonValueKind.String)
+                        fullVersion = fv.GetString() ?? "";
+                    if (h.TryGetProperty("platformVersion", out var pv) && pv.ValueKind == JsonValueKind.String
+                        && !string.IsNullOrWhiteSpace(pv.GetString()))
+                        platformVersion = pv.GetString()!;
+                    if (h.TryGetProperty("architecture", out var a) && a.ValueKind == JsonValueKind.String
+                        && !string.IsNullOrWhiteSpace(a.GetString()))
+                        arch = a.GetString()!;
+                    if (h.TryGetProperty("bitness", out var b) && b.ValueKind == JsonValueKind.String
+                        && !string.IsNullOrWhiteSpace(b.GetString()))
+                        bitness = b.GetString()!;
+                    if (h.TryGetProperty("model", out var mo) && mo.ValueKind == JsonValueKind.String)
+                        model = mo.GetString() ?? "";
+                    if (h.TryGetProperty("wow64", out var w)
+                        && w.ValueKind is JsonValueKind.True or JsonValueKind.False)
+                        wow64 = w.GetBoolean();
+                }
+            }
+            catch (Exception ex)
+            {
+                AppLog.Warn("NexusWeb", "解析内核身份失败（改用默认身份）：" + ex.Message);
+            }
+        }
+
+        var engine = string.IsNullOrWhiteSpace(engineVersion) ? "135.0.0.0" : engineVersion!;
+        if (string.IsNullOrWhiteSpace(fullVersion)) fullVersion = engine;
+        var major = fullVersion.Split('.')[0];
+        if (major.Length == 0) major = "135";
+
+        // UA 字符串：正常 WebView2 里本来就没有 WebView2 字样，但个别版本/自定义 UA 会带 ——
+        // 带就整条重建，别只删词（删出来的串更容易不一致）。
+        if (string.IsNullOrWhiteSpace(ua) || ua.Contains("WebView2", StringComparison.OrdinalIgnoreCase))
+            ua = $"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+               + $"Chrome/{engine} Safari/537.36 Edg/{engine}";
+
+        brands = NormalizeBrands(brands, major, fullVersion, fullList: false);
+        fullBrands = NormalizeBrands(fullBrands, major, fullVersion, fullList: true);
+
+        var acceptLanguage = langs.Count > 0
+            ? string.Join(",", langs.Take(4).Select((l, i) =>
+                i == 0 ? l : $"{l};q={Math.Max(0.1, 1 - i * 0.1):0.0}"))
+            : "zh-CN,zh;q=0.9,en;q=0.8";
+
+        var payload = new Dictionary<string, object?>
+        {
+            ["userAgent"] = ua,
+            ["acceptLanguage"] = acceptLanguage,
+            ["platform"] = "Win32",
+            ["userAgentMetadata"] = new Dictionary<string, object?>
+            {
+                ["brands"] = brands,
+                ["fullVersionList"] = fullBrands,
+                ["fullVersion"] = fullVersion,
+                ["platform"] = string.IsNullOrWhiteSpace(platform) ? "Windows" : platform,
+                ["platformVersion"] = platformVersion,
+                ["architecture"] = arch,
+                ["model"] = model,
+                ["mobile"] = mobile,
+                ["bitness"] = bitness,
+                ["wow64"] = wow64,
+            },
+        };
+        return JsonSerializer.Serialize(payload);
+    }
+
+    private static List<Dictionary<string, string>> ReadBrands(JsonElement array)
+    {
+        var list = new List<Dictionary<string, string>>();
+        foreach (var item in array.EnumerateArray())
+        {
+            if (item.ValueKind != JsonValueKind.Object) continue;
+            var brand = item.TryGetProperty("brand", out var b) && b.ValueKind == JsonValueKind.String
+                ? b.GetString() ?? "" : "";
+            var version = item.TryGetProperty("version", out var v) && v.ValueKind == JsonValueKind.String
+                ? v.GetString() ?? "" : "";
+            if (brand.Length == 0) continue;
+            list.Add(new Dictionary<string, string> { ["brand"] = brand, ["version"] = version });
+        }
+        return list;
+    }
+
+    /// <summary>拼出真 Edge 的 Sec-CH-UA 三品牌形态（熵增品牌 + Chromium + Microsoft Edge）。
+    /// <para><b>2026-11-11 04:48 实锤，这是「内置浏览器过不了人机验证」的真正原因。</b>
+    /// WebView2 原生自报四条品牌：<c>Chromium/157 | Microsoft Edge WebView2/157 |
+    /// Not-A.Brand/99 | Microsoft Edge/157</c>。旧逻辑在这之上做「去掉 WebView2」的修补，
+    /// 但只要身份探针取不到数据（<see cref="Build"/> 的兜底分支），brands 就是空列表，
+    /// 修补完只剩孤零零一条 <c>Microsoft Edge</c>。真 Edge / Chrome 恒定发三条，
+    /// 单条品牌是任何正常浏览器都不会有的形态，Cloudflare 一眼判异常 ——
+    /// 同一台机器、同一个 URL、同一个窗口位置，只改这一个字段：
+    /// 单品牌 3 次全卡死在「请稍候…」，补全三条后 3 次全放行（见 tools/TurnstileProbe）。</para>
+    /// <para>所以这里不再「在输入上修补」，而是<b>无条件产出规范三品牌</b>：
+    /// 熵增品牌沿用内核自己的（WebView2 157 给的是 <c>Not-A.Brand/99</c>，这正是该版本
+    /// 该发的那条），取不到就按同款兜底；Chromium 与 Microsoft Edge 用真实版本号补齐。</para>
+    /// <para>顺序照真 Edge 的口径：熵增品牌 → Chromium → Microsoft Edge。</para></summary>
+    /// <param name="fullList">true = 这是 fullVersionList（版本号带补丁位），false = 低熵 brands（只有大版本）。</param>
+    private static List<Dictionary<string, string>> NormalizeBrands(
+        List<Dictionary<string, string>> input, string majorVersion, string fullVersion, bool fullList)
+    {
+        // 熵增品牌（GREASE）：内核自己给的那条优先 —— 它和当前 Chromium 大版本是配套的。
+        var greaseName = input
+            .Select(b => b.TryGetValue("brand", out var n) ? n : "")
+            .FirstOrDefault(n => n.Contains("Not", StringComparison.OrdinalIgnoreCase)
+                              || n.Contains("Brand", StringComparison.OrdinalIgnoreCase));
+        if (string.IsNullOrEmpty(greaseName)) greaseName = "Not-A.Brand";
+
+        var v = fullList ? fullVersion : majorVersion;
+        return new List<Dictionary<string, string>>
+        {
+            new() { ["brand"] = greaseName, ["version"] = fullList ? "99.0.0.0" : "99" },
+            new() { ["brand"] = "Chromium", ["version"] = v },
+            new() { ["brand"] = "Microsoft Edge", ["version"] = v },
+        };
+    }
+}
+
+/// <summary>
+/// v1.3.4：「这台机器过不了 N 网人机验证」的短期记忆。
+/// <para>用户反馈里最扎心的一类：同一台机器，浏览器里秒过，应用内每次都卡在转圈。
+/// 这种机器的内嵌通道是<b>结构性</b>过不去（Cloudflare 认得出 WebView2 的身份 / 网络出口
+/// 本身被风控），再试一百次也只是让每个人白等 30 秒。所以失败一次就记下来，下一单直接
+/// 走浏览器 + nxm 回流那条稳的路。</para>
+/// <para>有效期设计成「3 天 或 换一个版本」二者先到 —— 两个都要，是因为过不去的成因会变
+/// （出口 IP 换了、Cloudflare 规则调了、我们自己的取链策略改了），不能一条记录把用户
+/// 永久钉死在浏览器通道上；而换版本重试一次的成本只有一次 30 秒，比「新版本明明修好了
+/// 他还在走老路」划算。</para>
+/// </summary>
+internal static class ChallengeMemory
+{
+    /// <summary>记多久。见类注释里的取舍。</summary>
+    internal static readonly TimeSpan Ttl = TimeSpan.FromDays(3);
+
+    private static string FilePath => Path.Combine(StoragePaths.NexusWebDir, "challenge-broken");
+
+    /// <summary>这台机器现在还要不要跳过内嵌通道。</summary>
+    internal static bool IsBlocked()
+    {
+        try
+        {
+            var path = FilePath;
+            if (!File.Exists(path)) return false;
+            return ShouldSkip(File.ReadAllText(path), DateTime.UtcNow, AppInfo.Version);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warn("NexusWeb", "读取人机验证记忆失败（按未记录处理）：" + ex.Message);
+            return false;
+        }
+    }
+
+    /// <summary>记下「这台机器过不去」。写失败不影响主流程。</summary>
+    internal static void MarkBroken(string? appVersion)
+    {
+        try
+        {
+            Directory.CreateDirectory(StoragePaths.NexusWebDir);
+            File.WriteAllText(FilePath,
+                DateTime.UtcNow.ToString("O") + " " + (appVersion ?? ""));
+            AppLog.Warn("NexusWeb",
+                $"已记录「这台机器过不了人机验证」（{Ttl.TotalDays:F0} 天或换版本后重试），后续直接走浏览器");
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warn("NexusWeb", "记录人机验证失败态出错（不影响流程）：" + ex.Message);
+        }
+    }
+
+    /// <summary>通道恢复正常（挑战真的过了）就撤销记忆。</summary>
+    internal static void Clear()
+    {
+        try
+        {
+            if (File.Exists(FilePath)) File.Delete(FilePath);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warn("NexusWeb", "清除人机验证记忆失败：" + ex.Message);
+        }
+    }
+
+    /// <summary>纯判定，给白盒测试用。标记格式：<c>&lt;UTC 时间 O 格式&gt; &lt;应用版本&gt;</c>。
+    /// <para>解析不出来当没记录 —— 一条坏文件不该让用户永远走不到内嵌通道。</para></summary>
+    internal static bool ShouldSkip(string? marker, DateTime nowUtc, string? appVersion)
+    {
+        if (string.IsNullOrWhiteSpace(marker)) return false;
+        var text = marker.Trim();
+        var split = text.IndexOf(' ');
+        var stamp = split < 0 ? text : text[..split];
+        var version = split < 0 ? "" : text[(split + 1)..].Trim();
+
+        if (!DateTime.TryParse(stamp, null,
+                System.Globalization.DateTimeStyles.AdjustToUniversal
+                | System.Globalization.DateTimeStyles.AssumeUniversal,
+                out var at)) return false;
+
+        // 时钟回拨或文件来自未来：别信，也别让它把用户锁住。
+        if (at - nowUtc > TimeSpan.FromHours(1)) return false;
+        if (nowUtc - at > Ttl) return false;
+
+        // 换过版本就再给内嵌通道一次机会（标记里没写版本时按「同版本」算）。
+        if (!string.IsNullOrEmpty(version) && !string.IsNullOrEmpty(appVersion)
+            && !string.Equals(version, appVersion, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        return true;
+    }
 }
 
 /// <summary>
@@ -151,7 +464,7 @@ public sealed class NexusWebDownloadService
             root.Children.Add(loading);
             var window = new Window
             {
-                Title = "JuniGrid · 内置 Nexus 网页账号", Width = 1180, Height = 880,
+                Title = "JuniGrid · 内置 Nexus 网页账号", Width = 960, Height = 720,
                 WindowStartupLocation = WindowStartupLocation.CenterScreen, Content = root,
                 ShowInTaskbar = true,
             };
@@ -529,13 +842,22 @@ public sealed class NexusWebDownloadService
     /// 验证页一旦真卡住，用户就得多等这 10 秒，纯属白等。</para></summary>
     private const int GraceSeconds = 10;
 
-    /// <summary>验证页卡住时重载页面的次数。
-    /// <para>控制台实测（同一 profile、同一参数、离屏无焦点）8 秒就能过 —— 卡住多半是单次
-    /// 挑战的死循环，重载一次拿到的就是新挑战。</para>
-    /// <para>v1.3.61 从 2 降到 1：每次重试要花 ~33 秒（等 25s + 清 cookie + 重载），两次就是
-    /// 一分半，而这条通道在这种网络环境下真的过不去（2026-11-07 03:39 实机：3 轮循环后照样
-    /// 交浏览器）。留一次兜住「偶发死循环」，剩下的时间交给浏览器那条稳的路。</para></summary>
-    private const int MaxChallengeReloads = 1;
+    /// <summary>验证卡住时「换一次质询」的次数，整轮最多一次。
+    /// <para>v1.3.4 把原先的「等 45 秒 → 清 cookie → 重载」压成一步、并提前到窗口上屏
+    /// 6 秒后做（见 <see cref="ChallengeRecoveryDelaySeconds"/>）。原来的顺序有两个毛病：
+    /// ① 换质询的时机窗口还停在屏幕外/没焦点，换来的仍是过不去的质询；
+    /// ② 一次重试要 45 秒，用户在这 45 秒里看到的只有转圈 —— 反馈里「卡在人机验证」
+    ///    基本都是这一段。</para></summary>
+    private const int MaxChallengeRecoveries = 1;
+
+    /// <summary>窗口搬到屏幕中央之后，多久换一次质询。
+    /// <para>为什么必须有这一步：这张质询是<b>窗口还在屏幕外</b>时下发的 —— 那一刻
+    /// <c>document.hasFocus()</c> 为假、<c>window.screenX/screenY</c> 是几千的负数，
+    /// Turnstile 的「自动放行」路径判不出可见/聚焦，往往就此卡死，人点也不放行。
+    /// 等窗口上屏、Activate 之后重载一次，拿到的才是「可见且有焦点」的质询。</para>
+    /// <para>6 秒：上屏后先有 4 秒静默期（见 <see cref="HiddenHost.Reveal"/>）让原质询
+    /// 自己试一次，再多给 2 秒；仍放不掉就换新的，不把这个坏质询留到超时。</para></summary>
+    private const int ChallengeRecoveryDelaySeconds = 6;
 
     /// <summary>看到验证页之后多久把窗口交给用户。
     /// <para>2026-11-08 22:44（用户反馈「人机验证窗口出现得太慢」）：以前这里是两道闸
@@ -550,8 +872,20 @@ public sealed class NexusWebDownloadService
 
     /// <summary>验证窗口交到用户手上之后，给他多久自己过。这段时间里不重载、不清 cookie、
     /// 也不偷偷转浏览器 —— 他正在看着那个转圈的页面，任何自作主张都会把页面换掉。
-    /// 45 秒足够：手动过一次 CF 托管挑战通常十几秒，卡到 45 秒基本是真过不去。</summary>
-    private const int ChallengeManualSeconds = 45;
+    /// <para>v1.3.4：45 秒 → 22 秒。手动过一次 CF 托管挑战正常只要几秒，而「过了 22 秒还没过」
+    /// 在我们的实测里几乎等于过不去（2026-11-11 用户反馈集中在这一段空转）。22 秒 + 前面
+    /// 6 秒的自动重试，整条内嵌通道最坏 30 秒内就会交出结论，不再让人对着转圈等一分半。</para></summary>
+    private const int ChallengeManualSeconds = 22;
+
+    /// <summary>挑战页存在期间，两次探针之间至少隔这么久（秒）。
+    /// <para>2026-11-11 02:50 实机日志：整条挑战持续 30 秒，而探针按 0.6 秒一次注入，
+    /// 等于对着一张正在跑 Turnstile 的页面连续执行了约 50 次 <c>Runtime.evaluate</c>。
+    /// CF 的托管挑战恰恰把「这页一直有人在跑脚本」当自动化证据 —— 注入越勤越不放行，
+    /// 形成自锁。这里把挑战期的探测压到 12 秒一次：给它一段真正「没人打扰」的时间
+    /// （真实浏览器在挑战期间本来就是一个脚本都不跑）。</para>
+    /// <para>代价：挑战消失后最多晚 12 秒才收窗。用户手动过完验证时窗口多留几秒无妨，
+    /// 比起「永远过不去」这个代价可以忽略。</para></summary>
+    private const int ChallengeQuietSeconds = 12;
 
     private const string GameDomain = "stardewvalley";
 
@@ -568,6 +902,15 @@ public sealed class NexusWebDownloadService
         TaskItem? task = null)
     {
         if (!Enabled) return NexusWebDownloadResult.Fail("应用内自动下载已关闭");
+
+        // v1.3.4：这台机器上一次就是卡在人机验证上退出来的 —— 别再让它白等一遍。
+        // 直接失败，调用方（InstallService）会按 NeedsPremium 打开系统浏览器 + nxm 回流。
+        if (ChallengeMemory.IsBlocked())
+        {
+            AppLog.Info("NexusWeb", "这台机器上次卡在人机验证，本次直接跳过内嵌通道（改走浏览器）");
+            return NexusWebDownloadResult.Fail(
+                "这台机器过不去 Nexus 的人机验证，已改为用浏览器打开下载页");
+        }
         if (modId <= 0 || fileId <= 0) return NexusWebDownloadResult.Fail("modId/fileId 无效");
         LastFailureWasLoginWall = false;
 
@@ -710,8 +1053,10 @@ public sealed class NexusWebDownloadService
         private bool _challengeActive;
         /// <summary>验证过不去时，是否已经把文件页交给系统浏览器等 nxm 回流。</summary>
         private bool _browserHandoff;
-        /// <summary>验证页卡住后已经重载过几次（见 <see cref="MaxChallengeReloads"/>）。</summary>
-        private int _challengeReloads;
+        /// <summary>这一轮已经「换过几次质询」（见 <see cref="MaxChallengeRecoveries"/>）。</summary>
+        private int _challengeRecoveries;
+        /// <summary>窗口上屏后，到点就换一次质询；null = 还没排期。</summary>
+        private DateTime? _challengeRecoverAtUtc;
         /// <summary>本轮第一次探到验证页的时刻 —— 弹窗去抖用（见 <see cref="ChallengeRevealDelaySeconds"/>）。
         /// 挑战页消失或重载页面时清空，下一轮重新计时。</summary>
         private DateTime? _challengeSeenAtUtc;
@@ -753,8 +1098,129 @@ public sealed class NexusWebDownloadService
                 ? $"已清除 CF 验证 Cookie（{cleared}/{CfCookieNames.Length} 个，含 cf_clearance/__cf_bm）"
                 : $"清除 CF Cookie 没有生效（CDP 调用全部失败：{firstError ?? "未知"}）");
         }
+
+        /// <summary>「身份已修过一次」的落盘标记 —— 旧 cf_clearance 是按旧 UA 签发的，
+        /// 换身份之后它就作废了，所以只在第一次换的时候清一次 cookie。</summary>
+        private static string IdentityMarkerPath => Path.Combine(StoragePaths.NexusWebDir, "identity-v1");
+        private static bool IdentityApplied
+        {
+            get { try { return File.Exists(IdentityMarkerPath); } catch { return false; } }
+        }
+
+        /// <summary>
+        /// v1.3.4：把内核自报的身份从「内嵌 WebView2」修成「普通 Edge」。
+        /// <para><b>为什么值得做</b>：WebView2 的 UA 字符串看着像 Edge，但
+        /// <c>Sec-CH-UA</c> / <c>navigator.userAgentData.brands</c> 里明明白白写着
+        /// <c>Microsoft Edge WebView2</c> —— 对 Cloudflare 来说这就是「我是被某个程序嵌进来的
+        /// 浏览器」，是最省事的一条判定依据。真浏览器里同样页面能过、内嵌里过不去，差别往往就在
+        /// 这一行字上。这里用 CDP 把 brands / fullVersionList 换成真 Edge，并保持
+        /// platform / platformVersion / architecture / bitness 等字段<b>原样不动</b> ——
+        /// 只抹掉那一句自报，不制造新的不一致。</para>
+        /// <para>失败不影响取链：拿不到身份就用内核版本号拼一个最普通的 Edge 身份。</para>
+        /// </summary>
+        private async Task ApplyBrowserIdentityAsync()
+        {
+            if (_core is null) return;
+            // 2026-11-11 对照实验开关：设 JG_RAW_WEBVIEW2=1 时一个补丁都不打，
+            // 用来验证「是不是我们自己的篡改反而让 Turnstile 拒绝渲染控件」。
+            // 只影响本机调试，默认路径不受影响。
+            if (Environment.GetEnvironmentVariable("JG_RAW_WEBVIEW2") == "1")
+            {
+                AppLog.Warn("NexusWeb", "⚠ 对照实验：跳过全部身份修补（JG_RAW_WEBVIEW2=1）");
+                return;
+            }
+            try
+            {
+                var probe = await ReadIdentityProbeAsync();
+                var payload = BrowserIdentity.Build(probe,
+                    _core.Environment?.BrowserVersionString, BrowserIdentity.GuessPlatformVersion());
+                if (payload is null) return;
+
+                try
+                {
+                    await _core.CallDevToolsProtocolMethodAsync("Network.setUserAgentOverride", payload);
+                }
+                catch (Exception ex)
+                {
+                    // Network 域偶发不可用（未 enable / 内核差异）时退到 Emulation 域，参数完全一样。
+                    AppLog.Warn("NexusWeb", "Network.setUserAgentOverride 失败，改用 Emulation：" + ex.Message);
+                    await _core.CallDevToolsProtocolMethodAsync("Emulation.setUserAgentOverride", payload);
+                }
+                AppLog.Info("NexusWeb", "已把内嵌内核的身份修成普通 Edge（抹掉 WebView2 标记）");
+
+                // UA 只是「自报家门」，页面脚本还能直接问 window.chrome.webview 在不在。
+                // 这段必须在文档创建时先跑，晚于页面脚本就没意义了。
+                try
+                {
+                    await _core.AddScriptToExecuteOnDocumentCreatedAsync(BrowserIdentity.HideEmbeddedScript);
+                    AppLog.Info("NexusWeb", "已隐藏 window.chrome.webview / navigator.webdriver 痕迹");
+                }
+                catch (Exception ex)
+                {
+                    AppLog.Warn("NexusWeb", "隐藏嵌入痕迹失败（不影响取链流程）：" + ex.Message);
+                }
+
+                if (!IdentityApplied)
+                {
+                    await ClearCfCookiesAsync();
+                    try
+                    {
+                        Directory.CreateDirectory(StoragePaths.NexusWebDir);
+                        File.WriteAllText(IdentityMarkerPath, AppInfo.Version);
+                    }
+                    catch { /* 标记写不进去只会导致多清一次 cookie，无碍 */ }
+                }
+            }
+            catch (Exception ex)
+            {
+                AppLog.Warn("NexusWeb", "修正内核身份失败（不影响取链流程）：" + ex.Message);
+            }
+        }
+
+        /// <summary>读内核自己的身份（含高熵字段）。返回内核上报的 JSON 原文，失败返回 null。</summary>
+        private async Task<string?> ReadIdentityProbeAsync()
+        {
+            if (_core is null) return null;
+            try
+            {
+                var raw = await _core.CallDevToolsProtocolMethodAsync("Runtime.evaluate",
+                    JsonSerializer.Serialize(new Dictionary<string, object?>
+                    {
+                        ["expression"] = BrowserIdentity.ProbeScript,
+                        ["awaitPromise"] = true,
+                        ["returnByValue"] = true,
+                    }));
+                using var doc = JsonDocument.Parse(raw);
+                if (doc.RootElement.TryGetProperty("result", out var result)
+                    && result.TryGetProperty("value", out var value)
+                    && value.ValueKind == JsonValueKind.String)
+                    return value.GetString();
+            }
+            catch (Exception ex)
+            {
+                AppLog.Warn("NexusWeb", "读取内核身份失败（改用版本号兜底）：" + ex.Message);
+            }
+            return null;
+        }
+
         /// <summary>静默窗口到期时间：这段时间内不做任何探针注入（见 PumpAsync 里的说明）。</summary>
         private DateTime _quietUntilUtc = DateTime.MinValue;
+
+        /// <summary>挑战期间的「完全静默」开关。
+        /// <para>2026-11-11 03:08 现场：诊断显示 <c>turnstile</c> 脚本在、<c>challenges.cloudflare.com</c>
+        /// 通（200）、出口 IP 正常，但页面上<b>连一个 Turnstile 控件都没渲染出来</b>，只有转圈。
+        /// 前几轮我们都是一边注入探针一边等结果，所以「注入本身把挑战搅了」这个变量一直没被排除。
+        /// 这里彻底换成零注入：挑战期间一个脚本都不跑，只用 <see cref="DocumentTitle"/>
+        /// （COM 属性，页面侧完全看不见）判断挑战页有没有换掉。</para></summary>
+        private bool _challengeSilent;
+
+        /// <summary>进入完全静默的时刻，用来兜住「标题判断失灵」的情况。</summary>
+        private DateTime _challengeSilentAtUtc = DateTime.MinValue;
+
+        /// <summary>完全静默最多持续多久（秒）。到点无论标题如何都恢复探测 ——
+        /// 万一 CF 的挑战页标题跟 N 网页面一样，不设上限就会一直哑着。</summary>
+        private const int ChallengeSilentMaxSeconds = 20;
+
         private string? _lastError;
 
         public HiddenHost(int modId, long fileId, Action<string, double?, double?>? report, NexusFetchSlot slot)
@@ -828,7 +1294,10 @@ public sealed class NexusWebDownloadService
                 VerticalAlignment = VerticalAlignment.Stretch,
             };
 
-            const double offW = 1180, offH = 880;
+            // 2026-11-10：1180×880 在 1080p 屏上几乎铺满（用户反馈「弹窗太大」），收到 960×720：
+            // 宽度 960 是 Nexus 页面排版不塌的下限附近，Cloudflare 验证页、登录页、下载页都用得上，
+            // 又比原来窄 19%、矮 18%，露出来的背景足够让人看清「这只是个辅助窗口」。
+            const double offW = 960, offH = 720;
             _window = new Window
             {
                 Title = "JuniGrid · Nexus",
@@ -893,6 +1362,9 @@ public sealed class NexusWebDownloadService
             _core.NavigationStarting += OnNavigationStarting;
             _core.LaunchingExternalUriScheme += OnLaunchingExternalUriScheme;
             await HookNetworkAsync();
+            // 必须排在 Network.enable 之后（setUserAgentOverride / deleteCookies 都属这个域），
+            // 也必须在第一次导航之前 —— 这一层改的是「后续每个请求带上什么身份」。
+            await ApplyBrowserIdentityAsync();
             _core.NavigationCompleted += (_, e) =>
             {
                 if (!e.IsSuccess && e.WebErrorStatus != CoreWebView2WebErrorStatus.OperationCanceled)
@@ -1132,6 +1604,15 @@ public sealed class NexusWebDownloadService
                 var mime = resp.TryGetProperty("mimeType", out var m) ? m.GetString() : null;
                 if (string.IsNullOrWhiteSpace(url) || string.IsNullOrWhiteSpace(mime)) return;
 
+                // 挑战脚本的加载情况：判断「为什么只有转圈」最硬的一手证据。
+                // 走网络事件、不碰页面 —— 挑战期间正是靠这个维持零注入。
+                if (url.Contains("challenge-platform", StringComparison.OrdinalIgnoreCase)
+                    || url.Contains("challenges.cloudflare.com", StringComparison.OrdinalIgnoreCase))
+                {
+                    var st = resp.TryGetProperty("status", out var sv) && sv.TryGetInt32(out var si) ? si : 0;
+                    AppLog.Info("NexusWeb", $"挑战脚本 status={st} {(url.Length > 110 ? url[..110] : url)}");
+                }
+
                 var isPack = mime.Contains("zip", StringComparison.OrdinalIgnoreCase)
                           || mime.Contains("7z", StringComparison.OrdinalIgnoreCase)
                           || mime.Contains("rar", StringComparison.OrdinalIgnoreCase)
@@ -1277,6 +1758,26 @@ public sealed class NexusWebDownloadService
                     return null;
                 }
 
+                // 挑战期完全静默：一次注入都不做，只用 DocumentTitle 看挑战页换掉没有。
+                // 这是唯一还没被排除的变量 —— 前几轮全都是一边注入探针一边等结果，
+                // 而 CF 的托管挑战恰恰会把「这页在被人持续跑脚本」当成自动化证据。
+                if (_challengeSilent)
+                {
+                    var silentFor = (DateTime.UtcNow - _challengeSilentAtUtc).TotalSeconds;
+                    var title = string.Empty;
+                    try { title = _core?.DocumentTitle ?? string.Empty; } catch { }
+                    if (!LooksLikeChallengeTitle(title) || silentFor > ChallengeSilentMaxSeconds)
+                    {
+                        _challengeSilent = false;
+                        _quietUntilUtc = DateTime.MinValue;
+                        AppLog.Info("NexusWeb", LooksLikeChallengeTitle(title)
+                            ? $"静默 {silentFor:F0}s 期满仍是挑战页，恢复探测"
+                            : $"静默 {silentFor:F0}s 后标题变为「{title}」，挑战页已换掉，恢复探测");
+                    }
+                    await Task.Delay(700, ct);
+                    continue;
+                }
+
                 // 静默窗口：刚把验证页交到用户眼前的那几秒里，一次探针都不打。
                 // 每次探针都是一次 CDP Runtime.evaluate 注入，而 CF 的反自动化最爱抓这个 ——
                 // 「一直有人在页面上执行脚本」正是托管挑战迟迟不自动放行的常见原因
@@ -1343,6 +1844,13 @@ public sealed class NexusWebDownloadService
                         interactive = true;
                         _autoHintSent = true;
                         _challengeRevealAtUtc = DateTime.UtcNow;
+                        // 交窗之后进入完全静默（见 _challengeSilent）：让这张挑战在「没人碰」的
+                        // 条件下自己跑一次，这才是真实浏览器里发生的事。
+                        _challengeSilent = true;
+                        _challengeSilentAtUtc = DateTime.UtcNow;
+                        // 排期换质询：这张质询是窗口还在屏幕外时下发的，可见/焦点都不对，
+                        // 大概率已经死在里面。上屏 + Activate 之后重载，等于在正确条件下重新要一张。
+                        _challengeRecoverAtUtc = DateTime.UtcNow.AddSeconds(ChallengeRecoveryDelaySeconds);
                         AppLog.Info("NexusWeb", needClick
                             ? $"检测到人机验证（有可点的 Turnstile）→ 弹窗交给用户点"
                             : $"检测到 Cloudflare 验证页（只有转圈）→ 弹窗交给用户看着，窗口内静默让它自己跑");
@@ -1350,35 +1858,39 @@ public sealed class NexusWebDownloadService
                         continue;
                     }
 
-                    // 已经交到用户手上了：给他 ChallengeManualSeconds 亲手过，
-                    // 期间不催、不重载、不偷偷转浏览器。
+                    // 已经交到用户手上了。先看「换质询」有没有到点 —— 这一步是 v1.3.4 的核心：
+                    // 以前换了质询也是在屏幕外/无焦点的条件下换的，换来的还是过不去的。
                     var age = (DateTime.UtcNow - started).TotalSeconds;
                     var manualAge = (DateTime.UtcNow - _challengeRevealAtUtc).TotalSeconds;
+
+                    if (_challengeRecoveries < MaxChallengeRecoveries
+                        && _challengeRecoverAtUtc is { } recoverAt
+                        && DateTime.UtcNow >= recoverAt)
+                    {
+                        _challengeRecoveries++;
+                        _challengeRecoverAtUtc = null;
+                        // 清 cookie 是这一步的一半：2026-11-07 03:16 实锤，被污染的
+                        // cf_clearance / __cf_bm 会让托管挑战永远不放行（清掉后同一 profile
+                        // 7 秒通过）。旧版把这步挂在 45 秒之后，等于先让人干等一分半。
+                        await ClearCfCookiesAsync();
+                        AppLog.Warn("NexusWeb",
+                            $"验证页 {age:F0}s 未放行 → 窗口已上屏，清 CF Cookie 并重载换新质询（第 {_challengeRecoveries} 次）");
+                        _report?.Invoke("正在重新校验一次…", null, null);
+                        _core?.Navigate(PageUrl);
+                        // 新质询要静默：探针注入会打断挑战本身（见 _quietUntilUtc 的说明）。
+                        _quietUntilUtc = DateTime.UtcNow.AddSeconds(4);
+                        // 手动计时重来：换质询之后要重新给满 ChallengeManualSeconds，否则会出现
+                        // 「刚重载 2 秒就判超时」把第二次机会白扔掉（2026-11-09 00:14 自测日志）。
+                        _challengeRevealAtUtc = DateTime.UtcNow;
+                        started = DateTime.UtcNow;
+                        _challengeSeenAtUtc = null;
+                        _autoHintSent = false;
+                        await Task.Delay(800, ct);
+                        continue;
+                    }
+
                     if (manualAge > ChallengeManualSeconds)
                     {
-                        // 2026-11-07 03:16 实锤：同一个真实 profile，挑战页 35s+ 不放行；
-                        // 删掉 Cookies 库后 7 秒通过 —— profile 里被污染的 CF cookie
-                        // （过期 cf_clearance / 坏 __cf_bm）会让托管挑战永远不放行。
-                        // 重载前先清这几个 CF 专用 cookie（Nexus 登录 cookie 原样保留）。
-                        if (_challengeReloads < MaxChallengeReloads)
-                        {
-                            _challengeReloads++;
-                            await ClearCfCookiesAsync();
-                            AppLog.Warn("NexusWeb",
-                                $"验证页 {age:F0}s 未放行（act=False），已清 CF Cookie，重载页面重试（第 {_challengeReloads} 次）");
-                            _report?.Invoke($"验证没通过，正在重试（第 {_challengeReloads} 次）…", null, null);
-                            started = DateTime.UtcNow;
-                            _autoHintSent = false;
-                            _challengeSeenAtUtc = null;   // 新一轮挑战重新走去抖
-                            // 手动计时也要重来：窗口一直在屏幕上，这个起点还是上一次弹窗的时刻，
-                            // 不清就会「重载完 2 秒」直接判超时、把刚给用户的第二次机会白扔掉
-                            // （2026-11-09 00:14 自测日志：重载后 2s 就跳到「改开系统浏览器」）。
-                            _challengeRevealAtUtc = DateTime.UtcNow;
-                            _core?.Navigate(PageUrl);
-                            await Task.Delay(800, ct);
-                            continue;
-                        }
-
                         if (!_browserHandoff)
                         {
                             _browserHandoff = true;
@@ -1386,9 +1898,26 @@ public sealed class NexusWebDownloadService
                             _lastError = "已打开浏览器下载页 —— 点一下页面上的下载按钮，会自动接回本任务";
                             _report?.Invoke("已用浏览器打开下载页 —— 点一下下载按钮，任务会自动继续…", null, null);
                             AppLog.Warn("NexusWeb",
-                                $"验证页 {age:F0}s 仍未放行（重载 {_challengeReloads} 次后），改开系统浏览器等 nxm 回流");
+                                $"验证页 {age:F0}s 未放行（换质询 {_challengeRecoveries} 次后），改开系统浏览器等 nxm 回流");
+                            // v1.3.4：把这台机器记下来 —— 下一单不再先白跑一遍内嵌通道，
+                            // 直接开浏览器（见 ChallengeMemory）。过 3 天或升版本会自动失效重试。
+                            ChallengeMemory.MarkBroken(AppInfo.Version);
+                            // 交接前把现场留下来：这一行以后就是「为什么过不去」的唯一证据。
+                            // 挑战已经废了，此时注入不影响任何东西。
+                            try
+                            {
+                                var diag = await EvalAwaitAsync(ChallengeDiagScript);
+                                if (!string.IsNullOrWhiteSpace(diag))
+                                    AppLog.Warn("NexusWeb", "验证现场诊断 " + diag);
+                            }
+                            catch (Exception ex) { AppLog.Warn("NexusWeb", "验证现场诊断失败：" + ex.Message); }
                             try { UpdateService.OpenUrl(PageUrl); }
                             catch (Exception ex) { AppLog.Warn("NexusWeb", "打开浏览器失败：" + ex.Message); }
+                            // 交接完就把内嵌窗口收走：它已经没用了（用户在真浏览器里点），
+                            // 而它此刻还是 Topmost —— 2026-11-11 用户截图原话「这个窗口还一直处于顶部」，
+                            // 挡住别的窗口、点「关闭」也没用（重开一单又弹出来）。
+                            Conceal();
+                            AppLog.Info("NexusWeb", "内嵌验证窗口已收起（取消置顶并移出屏幕）");
                         }
                         await Task.Delay(1500, ct);
                         continue;
@@ -1400,7 +1929,7 @@ public sealed class NexusWebDownloadService
                         // 措辞别写「一般几秒钟」：这台机器上挑战经常一卡就是几十秒，
                         // 说「几秒钟」等于骗人（2026-11-07 03:39 用户截图）。
                         _autoHintSent = true;
-                        _report?.Invoke($"Nexus 风控校验中…（第 {_challengeReloads + 1} 次尝试，最多 {MaxChallengeReloads + 1} 次）", null, null);
+                        _report?.Invoke($"Nexus 风控校验中…（第 {_challengeRecoveries + 1} 次尝试，最多 {MaxChallengeRecoveries + 1} 次）", null, null);
                     }
                     await Task.Delay(1500, ct);
                     continue;
@@ -1408,9 +1937,9 @@ public sealed class NexusWebDownloadService
 
                 // 挑战页退场：CF 花掉的那几十秒不该算进「页面多久没出现按钮」的预算里，
                 // 否则一次慢验证就能把后面的正常加载时间挤没。
-                // ⚠ 只重置计时，不重置 _challengeReloads：探针在重载间隙会闪变 cf=False 走到这里，
-                // 把重载计数也清零的话就变成「永远在重试第 1 次」的死循环（2026-11-07 03:11 实机）。
-                // 计数只在窗口生命周期里累加，到 MaxChallengeReloads 就走外跳兜底。
+                // ⚠ 只重置计时，不重置 _challengeRecoveries：探针在重载间隙会闪变 cf=False 走到这里，
+                // 把换质询的计数也清零的话就变成「永远在重试第 1 次」的死循环（2026-11-07 03:11 实机）。
+                // 计数只在窗口生命周期里累加，到 MaxChallengeRecoveries 就走外跳兜底。
                 if (sawChallenge)
                 {
                     sawChallenge = false;
@@ -1437,6 +1966,10 @@ public sealed class NexusWebDownloadService
                     Conceal();
                     _revealedHint = null;
                     _cfMisses = 0;
+                    _challengeRecoverAtUtc = null;   // 过了就别再排期换质询了
+                    // 这张质询过了 = 这条通道在这台机器上是能用的 —— 撤销「上次过不去」的记忆，
+                    // 免得用户为一两次偶发失败在 3 天里一直被改道去浏览器。
+                    ChallengeMemory.Clear();
                     AppLog.Info("NexusWeb", "人机验证已通过，窗口收回屏幕外");
                 }
 
@@ -1568,9 +2101,9 @@ public sealed class NexusWebDownloadService
         /// <para>同一原因只搬一次：CF 过完变登录墙时窗口已经在屏幕上了，那时只更新
         /// 任务行的提示文案，不再重复挪窗口（否则每轮都 Activate 一次，用户的输入焦点
         /// 会被反复抢走）。</para>
-        /// <para>必须先按工作区夹一次尺寸：窗口建的时候是 1180×880 DIP，125% 缩放下
-        /// 就是 1475×1100 物理像素，比 1080p 的工作区还高 —— 直接居中会让标题栏和
-        /// 底部按钮都跑到屏幕外，用户连登录框都点不到。</para></summary>
+        /// <para>必须先按工作区夹一次尺寸：窗口建的时候是 960×720 DIP，125% 缩放下
+        /// 就是 1200×900 物理像素，仍可能顶到 1080p 工作区的边 —— 直接居中会让标题栏和
+        /// 底部按钮贴边甚至出屏，用户连登录框都点不到。</para></summary>
         private void Reveal(string reason, string hint)
         {
             var firstTime = _revealedHint is null;
@@ -1585,8 +2118,11 @@ public sealed class NexusWebDownloadService
             try
             {
                 var wa = SystemParameters.WorkArea;
-                var w = Math.Min(_window.Width, Math.Max(720, wa.Width - 48));
-                var h = Math.Min(_window.Height, Math.Max(520, wa.Height - 48));
+                // 2026-11-10：除了夹工作区，再按比例收一档 —— 小屏（工作区 ~1100 宽）上
+                // 960×720 仍会吃掉整个屏幕，缩到工作区的 78%×86% 才留得出「这是辅助窗口」的余地。
+                // 大屏上比例算出来比 960 还大，Math.Min 会让它保持 960×720，不会反过来被放大。
+                var w = Math.Min(_window.Width, Math.Max(640, Math.Min(wa.Width - 48, wa.Width * 0.78)));
+                var h = Math.Min(_window.Height, Math.Max(480, Math.Min(wa.Height - 48, wa.Height * 0.86)));
                 _window.Width = w;
                 _window.Height = h;
                 _window.Left = wa.Left + Math.Max(0, (wa.Width - w) / 2);
@@ -1647,6 +2183,21 @@ public sealed class NexusWebDownloadService
                     : null;
             }
             catch { return null; }
+        }
+
+        /// <summary>标题像不像 Cloudflare 的中间页。
+        /// <para>这里只用来判断「挑战页换掉了没有」，判断「是不是人机验证」仍然交给探针 ——
+        /// 区别在于 <c>DocumentTitle</c> 是宿主侧的属性，读它不往页面里注入任何代码，
+        /// 挑战期间用它是干净的。</para></summary>
+        private static bool LooksLikeChallengeTitle(string? title)
+        {
+            if (string.IsNullOrWhiteSpace(title)) return false;
+            var t = title.Trim().ToLowerInvariant();
+            return t.StartsWith("just a moment")
+                || t.StartsWith("请稍候")
+                || t.Contains("attention required")
+                || t.Contains("正在进行安全验证")
+                || t.Contains("checking your browser");
         }
 
         private async Task<ProbeState?> ProbeAsync()
@@ -1722,6 +2273,105 @@ public sealed class NexusWebDownloadService
         /// <c>result</c> 字段的<b>内容</b>，即 <c>{"result":{"type":"string","value":"..."}}</c>，
         /// 比标准 CDP 响应少一层 <c>result</c>。早期写成 <c>root.result.result.value</c>
         /// 会永远取不到值（探针实测：页面明明加载好了，probe 却一直是 null）。</para></summary>
+        /// <summary>失败现场诊断：只在准备交接浏览器那一刻跑一次。
+        /// <para>挑这个时机是因为挑战已经废了，注入不再影响任何东西；而它要回答的三个问题
+        /// 恰好能把「指纹问题」和「出口 IP 问题」分开：</para>
+        /// <list type="number">
+        /// <item><c>window.turnstile</c> —— 挑战脚本到底加载了没。加载失败就只会一直转圈；</item>
+        /// <item>挑战 iframe 的尺寸 —— 有没有给出可点的控件（0×0 说明它压根没渲染）；</item>
+        /// <item><c>challenges.cloudflare.com</c> 通不通 + <c>/cdn-cgi/trace</c> 的出口 IP、
+        /// 机房、WARP 状态 —— 这一条能直接对上「为什么同一个网里浏览器能过、这里过不去」。</item>
+        /// </list></summary>
+        internal const string ChallengeDiagScript = """
+(async () => {
+  const o = {};
+  try { o.turnstile = typeof window.turnstile; } catch (e) { o.turnstile = 'err'; }
+  try {
+        // 注意：这里数「全部」iframe，而不是只看 src 里带 cloudflare 的。
+        // 2026-11-11 的两次诊断都是 ifr:none，但挑战脚本全 200 —— 分不清是
+        // 「一个 iframe 都没有」还是「有 iframe 但不是 cf 域（blob: 之类）」。
+        const all = document.querySelectorAll('iframe');
+        o.all = all.length;
+        const box = [];
+        for (let i = 0; i < all.length && box.length < 3; i++) {
+          const s = all[i].src || '';
+          if (s.indexOf('cloudflare') < 0) continue;
+          const r = all[i].getBoundingClientRect();
+          box.push(Math.round(r.width) + 'x' + Math.round(r.height));
+        }
+        o.ifr = box.join('/') || 'none';
+        // 承载 challenge 的容器：托管挑战会往 #challenge-stage 里塞控件。
+        const st = document.querySelector('#challenge-stage');
+        o.stage = st ? (Math.round(st.getBoundingClientRect().width) + 'x'
+                      + Math.round(st.getBoundingClientRect().height)) : 'none';
+        o.ct = document.querySelectorAll('.cf-turnstile').length;
+        o.body = (document.body ? document.body.innerText : '').replace(/\s+/g, ' ').trim().slice(0, 70);
+  } catch (e) { o.ifr = 'err'; }
+  try {
+        o.sx = Math.round(window.screenX); o.sy = Math.round(window.screenY);
+        o.focus = document.hasFocus();
+  } catch (e) { }
+  const grab = async (url, ms) => {
+        const ctl = new AbortController();
+        const timer = setTimeout(() => ctl.abort(), ms);
+        try {
+          const r = await fetch(url, { cache: 'no-store', signal: ctl.signal });
+          const body = await r.text();
+          clearTimeout(timer);
+          return { s: r.status, b: body };
+        } catch (e) { clearTimeout(timer); return { s: -1, b: '' }; }
+  };
+  o.cf = (await grab('https://challenges.cloudflare.com/cdn-cgi/trace', 4000)).s;
+  const own = await grab('/cdn-cgi/trace', 4000);
+  o.trace = own.s;
+  if (own.s === 200) {
+        const m = {};
+        own.b.split('\n').forEach(line => {
+          const i = line.indexOf('=');
+          if (i > 0) m[line.slice(0, i)] = line.slice(i + 1);
+        });
+        o.ip = m.ip || ''; o.colo = m.colo || ''; o.loc = m.loc || ''; o.warp = m.warp || '';
+  }
+  return JSON.stringify(o);
+})()
+""";
+
+        /// <summary>同上，但允许返回 Promise 的脚本（诊断要等网络请求）。
+        /// <para>自建 8 秒上限：<c>CallDevToolsProtocolMethodAsync</c> 本身不设超时，
+        /// 而诊断脚本里有 <c>fetch</c> —— 网络卡住会把整条下载拖死。超时就当没诊断过。</para></summary>
+        private async Task<string?> EvalAwaitAsync(string expression)
+        {
+        if (_core is null) return null;
+        try
+        {
+            var payload = JsonSerializer.Serialize(new Dictionary<string, object?>
+            {
+                ["expression"] = expression,
+                ["returnByValue"] = true,
+                ["awaitPromise"] = true,
+                ["userGesture"] = false,
+            });
+            var call = _core.CallDevToolsProtocolMethodAsync("Runtime.evaluate", payload);
+            if (await Task.WhenAny(call, Task.Delay(TimeSpan.FromSeconds(8))) != call)
+            {
+                AppLog.Warn("NexusWeb", "诊断脚本超时（8s），跳过");
+                return null;
+            }
+            var raw = await call;
+            using var doc = JsonDocument.Parse(raw);
+            var root = doc.RootElement;
+            if (root.TryGetProperty("exceptionDetails", out _)) return null;
+            if (!root.TryGetProperty("result", out var val)) return null;
+            return val.TryGetProperty("value", out var v) && v.ValueKind == JsonValueKind.String
+                ? v.GetString() : null;
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warn("NexusWeb", "诊断脚本执行失败：" + ex.Message);
+            return null;
+        }
+        }
+
         private async Task<string?> EvalAsync(string expression, bool userGesture)
         {
             if (_core is null) return null;
