@@ -33,11 +33,13 @@ public static class InstallMigrate
     /// ⚠ 这张表是<b>手抄</b>的：应用里新加一个 <c>InCache("新目录")</c> 而这里没跟上，
     /// 那个目录就会留在旧位置（2026-10-04 实测漏掉 <c>nexus-browse</c>）。
     /// 别再靠人记 —— 夹具 <c>installer/jg-installer-drift.py</c> 的 M10 会扫应用源码里
-    /// 全部 <c>InCache("x")</c>，断言每个都列在这两张表里（当前 9 个全覆盖）。</summary>
+    /// 全部 <c>InCache("x")</c>，断言每个都列在这两张表里（当前 10 个全覆盖）。</summary>
     public static readonly string[] DataDirs =
     {
         "depot-staging", "downloads", "mods-backup", "portrait-covers",
         "self-update", "smapi-installer", "webview2", "nexus-browse", "nexus-web",
+        // 用户自己传的分类图标（1.3.4 新增）—— 是他自己的图片，不是能重建的缓存，丢了找不回来
+        "custom-icons",
     };
 
     /// <summary>缓存根下的散装文件（不是目录），同样要跟着搬。</summary>

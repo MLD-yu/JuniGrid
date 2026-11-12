@@ -594,21 +594,61 @@ public sealed partial class ModService
         if (cfg is not null) PurgeOverlaysOf(folderName, cfg);
     }
 
-    /// <summary>v1.1.4：子包卸载后清理顶层空壳。仅当顶层文件夹里已经没有任何
-    /// 文件/子目录（真空）时才删；删不动（被占用）静默放弃，下次再清。</summary>
+    /// <summary>v1.1.4：子包卸载后清理顶层空壳。删不动（被占用）静默放弃，下次再清。
+    /// <para>2026-11-12 用户实机：捆绑包「全选删除」之后父文件夹还挂在列表上，显示
+    /// 「无清单 / 该文件夹没有 manifest.json」。原因是老实现只认「顶层一个条目都不剩」——
+    /// 而这类整合包删完子包后，里面往往还留着 <c>assets/</c> 这种**空目录**，
+    /// 顶层因此永远「非空」，空壳就永远删不掉。</para>
+    /// <para>现在的判定：顶层里**一个文件都没有**（递归看）时，先把空的子目录自底向上清掉，
+    /// 顶层随之变空就一并删除。只要还留着任何真文件，就一点都不动 —— 那是用户自己的东西。</para>
+    /// </summary>
     internal static void TryRemoveEmptyTopShell(string gamePath, string top)
     {
-        try
+        foreach (var name in TopShellCandidates(top))
         {
-            var topDir = Path.Combine(gamePath, "Mods", top);
-            if (!Directory.Exists(topDir)) return;
-            if (Directory.EnumerateFileSystemEntries(topDir).Any()) return;
-            Directory.Delete(topDir);
-            AppLog.Warn("Mods", $"[空壳清理] 捆绑包子包已删空，顶层空目录 {top} 一并移除");
+            try
+            {
+                var topDir = Path.Combine(gamePath, "Mods", name);
+                if (!Directory.Exists(topDir)) continue;
+
+                // 递归找文件：只要还有一个真文件，就完全不动（连空目录也不碰）
+                if (Directory.EnumerateFiles(topDir, "*", SearchOption.AllDirectories).Any()) continue;
+
+                PruneEmptyDirs(topDir);
+                if (Directory.EnumerateFileSystemEntries(topDir).Any()) continue;   // 还有删不掉的空目录
+                Directory.Delete(topDir);
+                AppLog.Warn("Mods", $"[空壳清理] 捆绑包子包已删空，顶层空目录 {name} 一并移除");
+                return;
+            }
+            catch (Exception ex)
+            {
+                AppLog.Warn("Mods", $"[空壳清理] {name} 清理失败（无碍，下次再清）: {ex.Message}");
+            }
         }
-        catch (Exception ex)
+    }
+
+    /// <summary>要试的顶层名：记录里的原样，以及「启用/禁用」两种点前缀写法。
+    /// 调用方传来的可能是 <c>X</c> 也可能是 <c>.X</c>，而磁盘上只有其中一种。</summary>
+    private static IEnumerable<string> TopShellCandidates(string top)
+    {
+        var name = top.Trim();
+        if (name.Length == 0) yield break;
+        yield return name;
+        var alt = name.StartsWith('.') ? name[1..] : "." + name;
+        if (alt.Length > 0 && !alt.Equals(name, StringComparison.OrdinalIgnoreCase)) yield return alt;
+    }
+
+    /// <summary>自底向上删空目录。调用前已确认这棵树里没有任何文件，所以删的全是空壳。</summary>
+    private static void PruneEmptyDirs(string dir)
+    {
+        foreach (var sub in Directory.EnumerateDirectories(dir))
         {
-            AppLog.Warn("Mods", $"[空壳清理] {top} 清理失败（无碍，下次再清）: {ex.Message}");
+            try
+            {
+                PruneEmptyDirs(sub);
+                if (!Directory.EnumerateFileSystemEntries(sub).Any()) Directory.Delete(sub);
+            }
+            catch (Exception ex) { AppLog.Warn("Mods", $"[空壳清理] 空目录 {sub} 删除失败: {ex.Message}"); }
         }
     }
 }

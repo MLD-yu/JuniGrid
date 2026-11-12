@@ -879,13 +879,58 @@ body.jg-dragging-cat .jg-cat-head:hover { background: transparent; }
 .jg-cat-head .jg-cat-head-more { margin-left: 0; }
 
 .jg-cat-icon-dialog { min-width: min(560px, 78vw); max-width: 620px; }
-.jg-icon-tabs { display: flex; align-items: center; gap: 6px; margin: 10px 0 8px; }
-.jg-icon-tab {
-    border: 1px solid var(--jg-line); background: var(--jg-well); color: var(--jg-text-2);
-    border-radius: 999px; padding: 4px 12px; font-size: 12px; cursor: pointer;
+/* 2026-11-12：页签改成 React Bits 那套「浏览器标签 + 下划线」（用户指定）。
+   原来是一个胶囊滑块在按钮背后整块滑动，现在只有一条 2px 下划线跟着当前项走，
+   选中项自己有一层浅色底 —— 层级更轻，也不跟「圆形图标格」抢注意力。 */
+.jg-icon-tabs {
+    display: flex; align-items: center; gap: 2px;
+    margin: 10px 0 6px; position: relative;
+    padding-bottom: 1px; border-bottom: 1px solid var(--jg-line);
 }
-.jg-icon-tab:hover { border-color: var(--jg-line-strong); color: var(--jg-text); }
-.jg-icon-tab.on { border-color: var(--jg-accent); color: var(--jg-text); font-weight: 600; background: var(--jg-hover-strong); }
+/* 下划线：宽度贴当前页签，位置由 junigridJs.jgPlaceIconGlider 算（贴到页签底边） */
+.jg-icon-glider {
+    position: absolute; left: 0; top: 0; z-index: 2; pointer-events: none;
+    height: 2px; border-radius: 2px; opacity: 0;
+    background: var(--jg-accent);
+    box-shadow: 0 0 10px color-mix(in srgb, var(--jg-accent) 55%, transparent);
+}
+.jg-icon-tabs > .jg-icon-tab,
+.jg-icon-tabs > .jg-icon-search { position: relative; z-index: 1; }
+.jg-icon-tab {
+    flex: 1 1 0; min-width: 0;                 /* 等宽铺满 —— 参照示例的 browser tab 形态 */
+    border: 0; background: transparent; color: var(--jg-text-3);
+    border-radius: 8px 8px 0 0; padding: 7px 10px; font-size: 12.5px; cursor: pointer;
+    text-align: center; white-space: nowrap;
+    transition: color .18s ease, background-color .18s ease;
+}
+.jg-icon-tab:hover { color: var(--jg-text); background: var(--jg-well); }
+.jg-icon-tab.on {
+    color: var(--jg-text); font-weight: 600; background: var(--jg-hover-strong);
+    border-color: transparent;
+}
+/* 高度补间的容器：切页签时先把旧高度写进去、再补到新高度，否则内容是一下子跳过去的 */
+.jg-icon-body { overflow: hidden; }
+/* 物品清单在后台解析时的加载态 —— motion.dev 的 jumping dots：
+   0.6s、easeInOut、mirror 交替、三颗间隔 0.2s、起始偏移 -0.5s（让它们一开始就错开） */
+.jg-icon-loading {
+    display: flex; align-items: center; justify-content: center; gap: 10px;
+    min-height: min(52vh, 420px);
+}
+.jg-icon-loading span {
+    width: 10px; height: 10px; border-radius: 50%;
+    background: var(--jg-accent); will-change: transform;
+    animation: jg-dot-jump .6s ease-in-out infinite alternate;
+}
+.jg-icon-loading span:nth-child(1) { animation-delay: -.5s; }
+.jg-icon-loading span:nth-child(2) { animation-delay: -.3s; }
+.jg-icon-loading span:nth-child(3) { animation-delay: -.1s; }
+@keyframes jg-dot-jump {
+    from { transform: translateY(0); }
+    to   { transform: translateY(-12px); }
+}
+@media (prefers-reduced-motion: reduce) {
+    .jg-icon-loading span { animation: none; }
+}
 .jg-icon-search { margin-left: auto; width: 150px; height: 28px; font-size: 12px; }
 /* 同上：别写 scrollbar-width: thin，否则全局定制的细滚动条失效（会变回系统粗条 + 箭头） */
 .jg-icon-grid {
@@ -897,6 +942,27 @@ body.jg-dragging-cat .jg-cat-head:hover { background: transparent; }
     padding: 6px 4px; border: 1px solid transparent; border-radius: 10px;
     background: var(--jg-well); color: inherit; cursor: pointer;
 }
+/* 自制图标多一颗删除 ×，所以外面套一层定位容器（.jg-icon-opt 本身是 <button>，不能再套按钮） */
+.jg-icon-cell { position: relative; display: flex; }
+.jg-icon-cell > .jg-icon-opt { flex: 1 1 auto; min-width: 0; }
+/* 内置图标不显示 ×：由 cell 上的 data-custom 决定（渲染层不再用 @if，见组件注释） */
+.jg-icon-cell[data-custom="0"] > .jg-icon-del { display: none; }
+/* 删除按钮常驻可见（只是淡一点）—— 只在 hover 才出现的话，用户根本找不到怎么删（用户反馈）。
+   2026-11-12 又调了一次：原来贴到格子外面（top/right: -5px）且只有 18px，一半落在网格间隙里，
+   点十次有九次点到缝里/点到图标上。现在收进格子内缩 2px、放大到 20px，悬停变红。 */
+.jg-icon-del {
+    position: absolute; top: 1px; right: 1px;
+    width: 21px; height: 21px; line-height: 1; padding: 0;
+    border: 1px solid var(--jg-line-strong); border-radius: 50%;
+    background: var(--jg-card); color: var(--jg-text-2);
+    font-size: 15px; font-weight: 600; cursor: pointer; opacity: 1; z-index: 1;
+    /* 白底白圈在浅色图标格上等于隐形（用户就是这么「找不到删除」的）——
+       加一层投影把它从图标上「抬」起来，平时也看得见 */
+    box-shadow: 0 1px 4px rgba(0, 0, 0, .22);
+    transition: color .12s, background-color .12s, border-color .12s, box-shadow .12s;
+}
+.jg-icon-cell:hover .jg-icon-del, .jg-icon-del:focus-visible { opacity: 1; color: var(--jg-text); }
+.jg-icon-del:hover { color: #fff; background: #d33; border-color: #d33; opacity: 1; }
 .jg-icon-opt:hover { border-color: var(--jg-line-strong); }
 .jg-icon-opt.on { border-color: var(--jg-accent); box-shadow: inset 0 0 0 1px var(--jg-accent); }
 .jg-icon-opt-img { width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; }
@@ -905,6 +971,93 @@ body.jg-dragging-cat .jg-cat-head:hover { background: transparent; }
     font-size: 11px; color: var(--jg-text-2); max-width: 100%;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+
+/* ─── 2026-11-12：自定义图标（上传图片）────────────────────────────────────
+   「自定义」页签的第一格是上传按钮；空列表时下面给一句说明。
+   上传后进方形裁剪层：固定方框 + 拖动/缩放，方框内的部分就是图标 ——
+   图标格是正方形，用户图片比例各异，所以缩放与平移是必需的，不是可选项。 */
+.jg-icon-add {
+    border-style: dashed; border-color: var(--jg-line-strong);
+    color: var(--jg-text-2);
+}
+.jg-icon-add:hover { color: var(--jg-text); border-color: var(--jg-accent); }
+.jg-icon-add .jg-icon-opt-img { color: currentColor; }
+.jg-icon-empty {
+    font-size: 12px; color: var(--jg-text-3); line-height: 1.6;
+    padding: 4px 2px 2px;
+}
+
+.jg-crop-overlay {
+    position: fixed; inset: 0; z-index: 30;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(0, 0, 0, .55);
+    backdrop-filter: blur(2px);
+}
+.jg-crop-panel {
+    width: min(380px, 86vw);
+    padding: 18px 18px 14px;
+    border: 1px solid var(--jg-line-strong); border-radius: 14px;
+    background: var(--jg-card, #fff); color: var(--jg-text);
+    box-shadow: 0 24px 60px rgba(0, 0, 0, .35);
+    animation: jgCropIn .18s cubic-bezier(.22, 1, .36, 1);
+}
+@keyframes jgCropIn { from { opacity: 0; transform: translateY(6px) scale(.98); } }
+.jg-crop-hint { font-size: 12px; color: var(--jg-text-3); margin: 6px 0 12px; line-height: 1.6; }
+
+/* 舞台：正方形取景框。圆角与图标格的圆角一致，看起来就是「以后的样子」 */
+.jg-crop-stage {
+    position: relative; width: 100%; aspect-ratio: 1 / 1;
+    overflow: hidden; touch-action: none; cursor: grab;
+    border-radius: 12px; background: var(--jg-track, #e9e9ec);
+    border: 1px solid var(--jg-line);
+}
+.jg-crop-stage:active { cursor: grabbing; }
+.jg-crop-stage img {
+    position: absolute; left: 0; top: 0;
+    transform-origin: 0 0; will-change: transform;
+    user-select: none; -webkit-user-drag: none; pointer-events: none;
+    max-width: none; max-height: none;
+}
+/* 三分线：只作视觉参考，不挡鼠标 */
+.jg-crop-grid {
+    position: absolute; inset: 0; pointer-events: none;
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .4);
+    background:
+        linear-gradient(to right, transparent calc(33.33% - .5px), rgba(255,255,255,.28) 0 calc(33.33% + .5px), transparent 0 calc(66.66% - .5px), rgba(255,255,255,.28) 0 calc(66.66% + .5px), transparent 0),
+        linear-gradient(to bottom, transparent calc(33.33% - .5px), rgba(255,255,255,.28) 0 calc(33.33% + .5px), transparent 0 calc(66.66% - .5px), rgba(255,255,255,.28) 0 calc(66.66% + .5px), transparent 0);
+}
+
+.jg-crop-tools {
+    display: flex; align-items: center; gap: 8px; margin: 12px 0 4px;
+}
+.jg-crop-tools .jg-mini-btn { min-width: 32px; padding: 4px 8px; line-height: 1.2; }
+
+/* 缩放滑块：React Bits WakeSlider 的柱状波形（用户指定）。
+   值以左的柱子点亮；手一快，柱子按余弦钟形隆起一道尾迹，松手回落。
+   逻辑在 junigrid.taskdock.js（jgWake*），这里只管样子。 */
+.jg-wake { --jw-height: 44px; --jw-rest: 16px; flex: 1 1 auto; min-width: 0; }
+.jg-wake-track {
+    position: relative; display: flex; align-items: center; gap: 3px;
+    height: var(--jw-height); cursor: grab; touch-action: none;
+    user-select: none; -webkit-user-select: none;
+}
+.jg-wake-track.drag { cursor: grabbing; }
+/* 未点亮那部分也得看得见 —— 用 --jg-line 在浅色主题下几乎是一片白，
+   整条滑块就成了「一根橙条 + 空白」，看不出是 22 根柱子（实机截图确认过）。 */
+.jg-wake-bar {
+    flex: 1 1 0; min-width: 0; height: var(--jw-height);
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--jg-text) 26%, transparent);
+    transform: scaleY(.36); transform-origin: 50% 50%;
+    transition: background-color .12s ease;
+}
+.jg-wake-bar[data-on='true'] { background: var(--jg-accent); }
+/* 整条轨道都是一个透明按钮：拖拽、键盘（←→/Home/End）都走它 */
+.jg-wake-handle {
+    position: absolute; inset: 0; margin: 0; padding: 0; border: 0;
+    border-radius: 10px; background: transparent; cursor: inherit; outline: none;
+}
+.jg-wake-handle:focus-visible { box-shadow: 0 0 0 2px color-mix(in srgb, var(--jg-accent) 45%, transparent); }
 
 /* ─── 覆盖包行上的「宿主 mod」标签（2026-11-09）──────────────────────────────
    位置与 mod 行的分类标签相同：标题行里、版本号后面。内容 = 宿主封面 + 名字，

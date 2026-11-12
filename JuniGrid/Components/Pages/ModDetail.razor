@@ -381,36 +381,12 @@
                     </div>
                 }
 
-                @* 2026-11-10：分类图标选择器 —— 和 Mods 页同一套（默认 / 角色 / 物品）。
-                   点分类行前面那颗图标就到这里；新建行选中的图先记草稿，建完分类才落盘。 *@
-                @if (_catIconPickOpen)
-                {
-                    var curIcon = CategoryIconSpec(_catIconPickKey);
-                    <div class="jg-dlg-overlay" @onclick="CloseCatIconPicker">
-                        <div class="jg-dialog jg-cat-icon-dialog" @onclick:stopPropagation>
-                            <div class="jg-remark-title">@Loc.F("给「{0}」选个图标", CatIconPickLabel())</div>
-                            <div class="jg-icon-tabs">
-                                <button class="jg-icon-tab @(_catIconTab == "default" ? "on" : "")" @onclick='() => SwitchCatIconTab("default")'>@Loc.T("默认")</button>
-                                <button class="jg-icon-tab @(_catIconTab == "portrait" ? "on" : "")" @onclick='() => SwitchCatIconTab("portrait")'>@Loc.T("角色")</button>
-                                <button class="jg-icon-tab @(_catIconTab == "item" ? "on" : "")" @onclick='() => SwitchCatIconTab("item")'>@Loc.T("物品")</button>
-                                @if (_catIconTab != "default")
-                                {
-                                    <input class="jg-remark-input jg-icon-search" placeholder='@Loc.T(_catIconTab == "item" ? "搜物品名" : "搜角色名")'
-                                           value="@_catIconSearch" @oninput="OnCatIconSearch" />
-                                }
-                            </div>
-                            <div class="jg-icon-grid">
-                                @foreach (var opt in CatIconOptions())
-                                {
-                                    @CatIconOptionButton(opt, curIcon)
-                                }
-                            </div>
-                            <div class="jg-dialog-actions">
-                                <button class="jg-btn" @onclick="CloseCatIconPicker">@Loc.T("关闭")</button>
-                            </div>
-                        </div>
-                    </div>
-                }
+                @* 分类图标选择器：与列表页共用同一个组件（CategoryIconPicker）。
+                   页面只管「开 / 关 + 选中后落到哪儿」（新建草稿 or 分类配置）。 *@
+                <CategoryIconPicker Open="_catIconPickOpen" Title="@CatIconPickLabel()"
+                                    CurrentSpec="@CategoryIconSpec(_catIconPickKey)"
+                                    OnPick="OnIconPicked" OnCleared="OnIconCleared"
+                                    OnClose="CloseCatIconPicker" />
 
             @* ─── v0.69.5：三项手风琴（多开不互关 / 平滑展开 / 超长内部滚动且标题吸顶）─── *@
             <div class="jg-about-acc">
@@ -760,21 +736,6 @@
             // 返回列表的位置由 Mods 页 OpenDetail 存的快照恢复，两条路互不影响。
             try { await JS.InvokeVoidAsync("junigridJs.setScroll", ".jg-main", 0); } catch { }
         }
-        // 图标选择器的懒加载：对话框一出现就把滚动监听挂上（DOM 没渲染出来时找不到网格）
-        if (_catIconPickOpen && !_catIconScrollBound)
-        {
-            _catIconScrollBound = true;
-            try
-            {
-                _catIconScrollRef ??= DotNetObjectReference.Create(this);
-                await JS.InvokeVoidAsync("junigridJs.iconGridInfinite", _catIconScrollRef);
-            }
-            catch (Exception ex)
-            {
-                _catIconScrollBound = false;
-                AppLog.Warn("ModDetail", "[图标] 懒加载监听挂载失败: " + ex.Message);
-            }
-        }
         if (!_loading && _mod is not null)
         {
             // v1.2.5：modDetailInit / authorTipInit 按「当前 mod」只跑一次 ——
@@ -887,24 +848,12 @@
     /// 必须等 OnAfterRenderAsync。</summary>
     private bool _focusNewCatPending;
 
-    // ─── 2026-11-10：分类图标选择器（两个弹窗里点分类图标就地换）───
+    // ─── 分类图标选择器：UI 与全部状态都在共用组件 CategoryIconPicker 里 ───
     private bool _catIconPickOpen;
     /// <summary>正在改图标的行：<see cref="NewCatIconKey"/> = 新建行草稿，其余 = 分类名（"" 是未分类）。</summary>
     private string _catIconPickKey = "";
-    private string _catIconTab = "default";
-    private string _catIconSearch = "";
-    /// <summary>物品网格一次铺多少格（600+ 件一口气画会卡，滚到底再续）。</summary>
-    private int _catIconItemLimit = 140;
-    private const int CatIconBatch = 140;
-    /// <summary>滚动监听挂没挂（对话框一开就挂；元素随对话框销毁，关闭时复位）。</summary>
-    private bool _catIconScrollBound;
-    private DotNetObjectReference<ModDetail>? _catIconScrollRef;
     /// <summary>新建分类的图标草稿 —— 用户点了图标但还没建分类，图先记这儿，建完一起落盘。</summary>
     private string _newCatIcon = CategoryIconService.DefaultSpec;
-    private List<CategoryIconService.IconOption>? _catIconPortraits;
-    private string? _catIconPortraitsFor;
-    private List<CategoryIconService.IconOption>? _catIconItems;
-    private string? _catIconItemsFor;
 
     /// <summary>当前选中的版本是不是「内容覆盖」类（XNB 素材包）。见 <see cref="LooksLikeContentOverrideFile"/>。</summary>
     private bool PickedIsContentOverride =>
@@ -1455,131 +1404,45 @@
     private void OpenCatIconPicker(string key)
     {
         _catIconPickKey = key;
-        _catIconTab = "default";
-        _catIconSearch = "";
-        _catIconItemLimit = 140;
         _catIconPickOpen = true;
-        _catIconScrollBound = false;   // 对话框是新元素，滚动监听要重新挂
-        // 600 多件物品要解析两个 xnb：先把后台热起来，切到「物品」页签时基本就绪
-        ItemCatalogService.Prewarm(Cfg.Current.GamePath);
     }
 
-    private void CloseCatIconPicker()
+    private void CloseCatIconPicker() => _catIconPickOpen = false;
+
+    /// <summary>组件里点了一格。KeepOpen 的那次（刚上传完）只是把图记住，弹窗留着。</summary>
+    private void OnIconPicked(CategoryIconPicker.IconPick pick)
+        => ApplyCatIcon(pick.Spec, close: !pick.KeepOpen);
+
+    /// <summary>正被用着的那张自制图被删了 —— 这一项清回默认。</summary>
+    private void OnIconCleared()
+        => ApplyCatIcon(CategoryIconService.DefaultSpec, close: false);
+
+    /// <summary>选定即生效：新建行只记草稿，已有分类直接写配置。
+    /// 选回默认（小鸡）等于清掉这一项 —— 配置里不留无意义的键。</summary>
+    private void ApplyCatIcon(string spec, bool close)
     {
-        _catIconPickOpen = false;
-        _catIconScrollBound = false;
+        var normalized = CategoryIconService.NormalizeSpec(spec);
+        if (_catIconPickKey == NewCatIconKey)
+        {
+            _newCatIcon = normalized;
+        }
+        else
+        {
+            var cfg = Cfg.Current;
+            if (string.Equals(normalized, CategoryIconService.DefaultSpec, StringComparison.OrdinalIgnoreCase))
+                cfg.ModCategoryIcon.Remove(_catIconPickKey);
+            else
+                cfg.ModCategoryIcon[_catIconPickKey] = normalized;
+            Cfg.Save(cfg);
+        }
+        if (close) _catIconPickOpen = false;
+        StateHasChanged();
     }
 
     private string CatIconPickLabel()
         => _catIconPickKey == NewCatIconKey
             ? Loc.T("新分类")
             : _catIconPickKey.Length > 0 ? _catIconPickKey : Loc.T("未分类");
-
-    private void SwitchCatIconTab(string tab)
-    {
-        if (_catIconTab == tab) return;
-        _catIconTab = tab;
-        _catIconSearch = "";
-        _catIconItemLimit = 140;
-    }
-
-    private void OnCatIconSearch(ChangeEventArgs e)
-    {
-        _catIconSearch = e.Value?.ToString() ?? "";
-        _catIconItemLimit = 140;       // 换了搜索词就从第一批重新铺
-    }
-
-    /// <summary>物品全量清单（搜索过滤后）。</summary>
-    private List<CategoryIconService.IconOption> CatIconItemSource()
-    {
-        var gp = Cfg.Current.GamePath;
-        if (_catIconItems is null || !string.Equals(_catIconItemsFor, gp, StringComparison.OrdinalIgnoreCase))
-        {
-            _catIconItems = CategoryIconService.Items(gp);
-            _catIconItemsFor = gp;
-        }
-        var q = _catIconSearch.Trim();
-        if (q.Length == 0) return _catIconItems;
-        return _catIconItems.Where(o => o.Name.Contains(q, StringComparison.OrdinalIgnoreCase)).ToList();
-    }
-
-    private int CatIconHiddenCount()
-        => _catIconTab != "item" ? 0 : Math.Max(0, CatIconItemSource().Count - _catIconItemLimit);
-
-    /// <summary>网格滚到底时由 <c>junigridJs.iconGridInfinite</c> 回调：再铺一批。</summary>
-    [JSInvokable]
-    public void LoadMoreIcons()
-    {
-        if (_disposed || !_catIconPickOpen || _catIconTab != "item") return;
-        if (CatIconHiddenCount() <= 0) return;
-        _catIconItemLimit += CatIconBatch;
-        _ = InvokeAsync(StateHasChanged);
-    }
-
-    private IEnumerable<CategoryIconService.IconOption> CatIconOptions()
-    {
-        switch (_catIconTab)
-        {
-            case "portrait":
-            {
-                var gp = Cfg.Current.GamePath;
-                if (_catIconPortraits is null || !string.Equals(_catIconPortraitsFor, gp, StringComparison.OrdinalIgnoreCase))
-                {
-                    _catIconPortraits = CategoryIconService.Portraits(gp);
-                    _catIconPortraitsFor = gp;
-                }
-                var q = _catIconSearch.Trim();
-                if (q.Length == 0) return _catIconPortraits;
-                return _catIconPortraits
-                    .Where(o => o.Name.Contains(q, StringComparison.OrdinalIgnoreCase)
-                                || o.Spec.Contains(q, StringComparison.OrdinalIgnoreCase))
-                    .ToList();
-            }
-            case "item":
-                return CatIconItemSource().Take(_catIconItemLimit);
-            default:
-                return new[]
-                {
-                    new CategoryIconService.IconOption(CategoryIconService.DefaultSpec, Loc.T("星露谷小鸡"), "默认"),
-                };
-        }
-    }
-
-    private RenderFragment CatIconOptionButton(CategoryIconService.IconOption opt, string curSpec) => @<button
-        type="button" class="jg-icon-opt @(string.Equals(opt.Spec, curSpec, StringComparison.OrdinalIgnoreCase) ? "on" : "")"
-        data-tip="@opt.Name" @onclick="() => SetCatIcon(opt.Spec)">
-        <span class="jg-icon-opt-img">
-            @if (CategoryIconService.Url(opt.Spec, Cfg.Current.GamePath) is { } u)
-            {
-                <img src="@u" alt="" loading="lazy" decoding="async" />
-            }
-        </span>
-        <span class="jg-icon-opt-name">@opt.Name</span>
-    </button>;
-
-    /// <summary>选定即生效（点一下就走）。新建行只记草稿；已有分类直接写配置。
-    /// 选回默认（小鸡）等于清掉这一项 —— 配置里不留无意义的键。</summary>
-    private void SetCatIcon(string spec)
-    {
-        var normalized = CategoryIconService.NormalizeSpec(spec);
-        if (_catIconPickKey == NewCatIconKey)
-        {
-            _newCatIcon = normalized;
-            _catIconPickOpen = false;
-            _catIconScrollBound = false;
-            StateHasChanged();
-            return;
-        }
-        var cfg = Cfg.Current;
-        if (string.Equals(normalized, CategoryIconService.DefaultSpec, StringComparison.OrdinalIgnoreCase))
-            cfg.ModCategoryIcon.Remove(_catIconPickKey);
-        else
-            cfg.ModCategoryIcon[_catIconPickKey] = normalized;
-        Cfg.Save(cfg);
-        _catIconPickOpen = false;
-        _catIconScrollBound = false;
-        StateHasChanged();
-    }
 
     /// <summary>有没有「可选」的分类。只有默认（未分类）时这一层整个不出现 ——
     /// 一个只有「未分类」一项的下拉/弹窗，等于让用户白点一步。</summary>
@@ -1709,6 +1572,12 @@
 
     private async Task ClosePickCat()
     {
+        // 2026-11-12：图标选择器是盖在下拉上面的模态层（.jg-dlg-overlay，z-index 999998），
+        // 但它渲染在 .jg-pick-modal **外面**，点击不经过 modal 的 @onclick:stopPropagation ——
+        // 于是点选择器里的页签/图标时，下拉的 jg-dd-overlay 也会收到同一次点击，走到这里把
+        // 「新建分类」草稿一起清掉：用户刚输好名字、挑完图标回来一看，那一行整个没了。
+        // 选择器开着就说明用户还在编辑同一个分类，这时候不该关下拉、更不该清草稿。
+        if (_catIconPickOpen) return;
         var wasOpen = _pickCatOpen;
         _pickCatOpen = false;
         // 2026-11-09：选了已有分类/关下拉就把「新建分类」输入行一起收掉，
@@ -2389,7 +2258,5 @@
     {
         _disposed = true;
         PackThumbService.Changed -= OnIconThumbReady;
-        _catIconScrollRef?.Dispose();
-        _catIconScrollRef = null;
     }
 }

@@ -1,0 +1,453 @@
+@namespace JuniGrid.Components
+@using JuniGrid.Services
+@inject ConfigService Cfg
+@inject IJSRuntime JS
+@implements IDisposable
+
+@* 2026-11-12：分类图标选择器收敛成这一个组件。
+   以前详情页（ModDetail）和列表页（Mods）各写了一份 markup + 一套方法 —— 结果每次改
+   「只改了一处」：下划线、高度补间、自定义图标、删除按钮都得改两遍，漏一处就出现
+   「这边丝滑那边直跳」「这边能删那边没有」的反馈。
+   页面只负责：开/关、标题、当前规格、选中后怎么落盘（草稿还是配置）。 *@
+
+@if (Open)
+{
+    var curIcon = CategoryIconService.NormalizeSpec(CurrentSpec);
+    var opts = (_tab == "custom" ? CategoryIconService.CustomIcons() : Options()).ToList();
+    <div class="jg-dlg-overlay" @onclick="Close">
+        <div class="jg-dialog jg-cat-icon-dialog" @onclick:stopPropagation>
+            <div class="jg-remark-title">@Loc.F("给「{0}」选个图标", Title)</div>
+            @* 页签：.jg-icon-glider 由 JS 贴着当前项定位（下划线，见 mods.css） *@
+            <div class="jg-icon-tabs" data-active="@TabIndex">
+                <span class="jg-icon-glider" aria-hidden="true"></span>
+                <button class="jg-icon-tab @(_tab == "default" ? "on" : "")" @onclick='() => SwitchTab("default")'>@Loc.T("默认")</button>
+                <button class="jg-icon-tab @(_tab == "portrait" ? "on" : "")" @onclick='() => SwitchTab("portrait")'>@Loc.T("角色")</button>
+                <button class="jg-icon-tab @(_tab == "item" ? "on" : "")" @onclick='() => SwitchTab("item")'>@Loc.T("物品")</button>
+                <button class="jg-icon-tab @(_tab == "custom" ? "on" : "")" @onclick='() => SwitchTab("custom")'>@Loc.T("自定义")</button>
+                @if (_tab is "portrait" or "item")
+                {
+                    <input class="jg-remark-input jg-icon-search" placeholder='@Loc.T(_tab == "item" ? "搜物品名" : "搜角色名")'
+                           value="@_search" @oninput="OnSearch" />
+                }
+            </div>
+            @* 高度补间的作用对象：切页签时由 junigridJs.iconTabSwitch 从旧高度补到新高度 *@
+            <div class="jg-icon-body">
+                @if (ItemsLoading())
+                {
+                    @* 物品清单在后台解析（600+ 件、每件查一次图集像素），先顶一个跳动圆点 *@
+                    <div class="jg-icon-loading" role="status" aria-label='@Loc.T("正在加载物品")'>
+                        <span></span><span></span><span></span>
+                    </div>
+                }
+                else
+                {
+                    <div class="jg-icon-grid">
+                        @if (_tab == "custom")
+                        {
+                            @* 「自定义」第一格固定是上传按钮，传过的图排在它后面 *@
+                            <button type="button" class="jg-icon-opt jg-icon-add" data-tip='@Loc.T("上传一张图片当图标")'
+                                    @onclick="PickFile">
+                                <span class="jg-icon-opt-img">
+                                    <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true">
+                                        <path d="M9 3.6v10.8M3.6 9h10.8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+                                    </svg>
+                                </span>
+                                <span class="jg-icon-opt-name">@Loc.T("上传图片")</span>
+                            </button>
+                        }
+                        @foreach (var opt in opts)
+                        {
+                            @OptionButton(opt, curIcon)
+                        }
+                    </div>
+                    @if (_tab == "custom" && opts.Count == 0)
+                    {
+                        <div class="jg-icon-empty">@Loc.T("还没有自定义图标。点左上角的「上传图片」，选一张图后可以拖动和缩放，框里的部分就是图标。")</div>
+                    }
+                }
+            </div>
+            <div class="jg-dialog-actions">
+                <button class="jg-btn" @onclick="Close">@Loc.T("关闭")</button>
+            </div>
+        </div>
+
+        @* 上传后先在这里裁：图标框是方的，用户图片比例五花八门，
+           拖动定位、滚轮/滑块缩放，方框内即所得。 *@
+        @if (_cropOpen)
+        {
+            <div class="jg-crop-overlay" @onclick:stopPropagation>
+                <div class="jg-crop-panel">
+                    <div class="jg-remark-title">@Loc.T("调整图片")</div>
+                    <div class="jg-crop-hint">@Loc.T("拖动图片摆位置，滚轮或滑块缩放。框里的部分就是图标。")</div>
+                    <div class="jg-crop-stage">
+                        <img id="jgCropImg" alt="" draggable="false" />
+                        <span class="jg-crop-grid" aria-hidden="true"></span>
+                    </div>
+                    <div class="jg-crop-tools">
+                        <button type="button" class="jg-mini-btn" title='@Loc.T("缩小")'
+                                @onclick='() => CropZoomBy(0.8)'>−</button>
+                        @* 缩放：React Bits WakeSlider 那种柱状波形滑块（拖动时柱子隆起尾迹） *@
+                        <div class="jg-wake" id="jgCropWake" data-min="1" data-max="4">
+                            <div class="jg-wake-track">
+                                @for (var i = 0; i < 22; i++)
+                                {
+                                    <span class="jg-wake-bar"></span>
+                                }
+                                <button type="button" class="jg-wake-handle" role="slider"
+                                        aria-label='@Loc.T("缩放")' aria-valuemin="1" aria-valuemax="4" aria-valuenow="1"></button>
+                            </div>
+                        </div>
+                        <button type="button" class="jg-mini-btn" title='@Loc.T("放大")'
+                                @onclick='() => CropZoomBy(1.25)'>+</button>
+                        <button type="button" class="jg-mini-btn" @onclick="CropReset">@Loc.T("重置")</button>
+                    </div>
+                    <div class="jg-dialog-actions">
+                        <button class="jg-btn" @onclick="CancelCrop">@Loc.T("取消")</button>
+                        <button class="jg-btn primary" @onclick="ConfirmCrop">@Loc.T("使用这张")</button>
+                    </div>
+                </div>
+            </div>
+        }
+    </div>
+}
+
+@code {
+    /// <summary>用户选了一个图标。<see cref="KeepOpen"/> = true 表示「别关弹窗」
+    /// （刚上传完那张图要留在列表里让人看一眼）。</summary>
+    public sealed record IconPick(string Spec, bool KeepOpen);
+
+    /// <summary>弹窗开着没有（页面控制）。</summary>
+    [Parameter] public bool Open { get; set; }
+    /// <summary>标题里的分类名。</summary>
+    [Parameter] public string Title { get; set; } = "";
+    /// <summary>这个分类当前的图标规格（决定哪一格高亮）。</summary>
+    [Parameter] public string CurrentSpec { get; set; } = CategoryIconService.DefaultSpec;
+    [Parameter] public EventCallback<IconPick> OnPick { get; set; }
+    /// <summary>正被用的那张自制图被删了 —— 页面要把这一项清回默认。</summary>
+    [Parameter] public EventCallback OnCleared { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private bool _wasOpen;
+    private string _tab = "default";
+    private string _search = "";
+    private int _itemLimit = 140;
+    private const int Batch = 140;
+
+    /// <summary>滚动监听挂没挂（对话框一开就挂；元素随对话框销毁，关闭时复位）。</summary>
+    private bool _scrollBound;
+    private DotNetObjectReference<CategoryIconPicker>? _ref;
+
+    private List<CategoryIconService.IconOption>? _portraits;
+    private string? _portraitsFor;
+    private List<CategoryIconService.IconOption>? _items;
+    private string? _itemsFor;
+    private bool _itemsLoading;
+
+    /// <summary>待播放的页签切换方向（0 无 / ±1）—— 必须等这一帧渲染完才调 JS。</summary>
+    private int _tabAnimDir;
+    /// <summary>对话框刚打开：下一次渲染后把下划线无动画摆到位（只做一次）。</summary>
+    private bool _mountPending;
+
+    private bool _cropOpen;
+    private bool _cropMountPending;
+    private bool _cropSaving;
+    private bool _disposed;
+
+    private string GamePath => Cfg.Current.GamePath;
+
+    protected override void OnParametersSet()
+    {
+        // 开的那一下重置内部状态（弹窗是 @if 渲染的，但组件实例会跨开关复用）
+        if (Open && !_wasOpen)
+        {
+            _tab = "default";
+            _search = "";
+            _itemLimit = Batch;
+            _tabAnimDir = 0;
+            _mountPending = true;
+            _scrollBound = false;
+            // 600 多件物品要解析两个 xnb：先把后台热起来，切到「物品」页签时基本就绪
+            ItemCatalogService.Prewarm(GamePath);
+        }
+        if (!Open)
+        {
+            _scrollBound = false;
+            _cropOpen = false;
+            _cropMountPending = false;
+        }
+        _wasOpen = Open;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        // 懒加载：只有 JS 真挂到网格上才算挂上（切页签会换掉 .jg-icon-grid 那个元素）
+        if (Open && !_scrollBound)
+        {
+            try
+            {
+                _ref ??= DotNetObjectReference.Create(this);
+                _scrollBound = await JS.InvokeAsync<bool>("junigridJs.iconGridInfinite", _ref);
+            }
+            catch { _scrollBound = false; }
+        }
+        if (_mountPending && Open)
+        {
+            _mountPending = false;
+            try { await JS.InvokeVoidAsync("junigridJs.iconMount"); } catch { }
+        }
+        if (Open && _tabAnimDir != 0)
+        {
+            var dir = _tabAnimDir;
+            _tabAnimDir = 0;
+            try { await JS.InvokeVoidAsync("junigridJs.iconTabSwitch", dir); }
+            catch (Exception ex) { AppLog.Warn("IconPicker", "[图标] 页签切换动画失败: " + ex.Message); }
+        }
+        if (_cropOpen && _cropMountPending)
+        {
+            _cropMountPending = false;
+            try
+            {
+                if (!await JS.InvokeAsync<bool>("junigridJs.iconCropMount"))
+                {
+                    _cropOpen = false;
+                    AppLog.Warn("IconPicker", "[图标] 这张图读不出来");
+                }
+            }
+            catch (Exception ex) { AppLog.Warn("IconPicker", "[图标] 裁剪层挂载失败: " + ex.Message); }
+        }
+    }
+
+    // ───────────────────────── 页签 ─────────────────────────
+
+    private int TabIndex => _tab switch { "default" => 0, "portrait" => 1, "item" => 2, "custom" => 3, _ => 0 };
+
+    /// <summary>切页签。高度由 JS 补间（从「默认」一格到「物品」几百格，不补会猛跳）；
+    /// 内容不做额外动画（用户明确不要那个淡入淡出）。</summary>
+    private void SwitchTab(string tab)
+    {
+        if (_tab == tab) return;
+        _tabAnimDir = TabIndexOf(tab) >= TabIndexOf(_tab) ? 1 : -1;
+        _tab = tab;
+        _search = "";
+        _itemLimit = Batch;
+        // 切到「物品」当场把后台解析踢起来 —— 不能等渲染里那条路径（加载态会先把渲染短路掉）
+        if (tab == "item") EnsureItems(GamePath);
+        // 换页签会换掉 .jg-icon-grid 元素，滚动监听要重挂
+        _scrollBound = false;
+    }
+
+    private static int TabIndexOf(string tab)
+        => tab switch { "default" => 0, "portrait" => 1, "item" => 2, "custom" => 3, _ => 0 };
+
+    private void OnSearch(ChangeEventArgs e)
+    {
+        _search = e.Value?.ToString() ?? "";
+        _itemLimit = Batch;      // 换了搜索词就从第一批重新铺
+    }
+
+    // ───────────────────────── 选项 ─────────────────────────
+
+    private IEnumerable<CategoryIconService.IconOption> Options()
+    {
+        switch (_tab)
+        {
+            case "portrait":
+            {
+                var gp = GamePath;
+                if (_portraits is null || !string.Equals(_portraitsFor, gp, StringComparison.OrdinalIgnoreCase))
+                {
+                    _portraits = CategoryIconService.Portraits(gp);
+                    _portraitsFor = gp;
+                }
+                var q = _search.Trim();
+                if (q.Length == 0) return _portraits;
+                return _portraits
+                    .Where(o => o.Name.Contains(q, StringComparison.OrdinalIgnoreCase)
+                                || o.Spec.Contains(q, StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+            }
+            case "item":
+                return ItemSource().Take(_itemLimit);
+            default:
+                return new[]
+                {
+                    new CategoryIconService.IconOption(CategoryIconService.DefaultSpec, Loc.T("星露谷小鸡"), "默认"),
+                };
+        }
+    }
+
+    private RenderFragment OptionButton(CategoryIconService.IconOption opt, string curSpec) => @<div class="jg-icon-cell"
+             data-custom="@(CategoryIconService.IsCustom(opt.Spec) ? "1" : "0")">
+        <button type="button" class="jg-icon-opt @(string.Equals(opt.Spec, curSpec, StringComparison.OrdinalIgnoreCase) ? "on" : "")"
+                data-tip="@opt.Name" @onclick="() => Pick(opt.Spec)">
+            <span class="jg-icon-opt-img">
+                @if (CategoryIconService.Url(opt.Spec, GamePath) is { } u)
+                {
+                    <img src="@u" alt="" loading="lazy" decoding="async" />
+                }
+            </span>
+            <span class="jg-icon-opt-name">@opt.Name</span>
+        </button>
+        @* 自制图标是用户自己的文件，传错了得能去掉。内置图标由 CSS 按 data-custom=0 隐藏 ——
+           2026-11-12：这里原本是 @if(IsCustom)，实测在 @<div> 模板里那段没被渲染出来（× 根本不出现），
+           改成「永远渲染 + CSS 按属性隐藏」，不依赖模板里的条件块。 *@
+        <button type="button" class="jg-icon-del" title='@Loc.T("删掉这张图")'
+                aria-label='@Loc.T("删掉这张图")' @onclick="() => DeleteCustom(opt.Spec)">×</button>
+    </div>;
+
+    private async Task Pick(string spec)
+    {
+        await OnPick.InvokeAsync(new IconPick(CategoryIconService.NormalizeSpec(spec), KeepOpen: false));
+    }
+
+    /// <summary>删掉一张自制图标；正被这个分类用着就让页面清回默认。</summary>
+    private async Task DeleteCustom(string spec)
+    {
+        if (!CategoryIconService.IsCustom(spec)) return;
+        if (string.Equals(CategoryIconService.NormalizeSpec(CurrentSpec), spec, StringComparison.OrdinalIgnoreCase))
+            await OnCleared.InvokeAsync();
+        CategoryIconService.DeleteCustom(spec);
+        StateHasChanged();
+    }
+
+    // ───────────────────────── 物品清单（后台解析） ─────────────────────────
+
+    private List<CategoryIconService.IconOption> ItemSource()
+    {
+        var gp = GamePath;
+        if (_items is null || !string.Equals(_itemsFor, gp, StringComparison.OrdinalIgnoreCase))
+        {
+            EnsureItems(gp);
+            return [];
+        }
+        var q = _search.Trim();
+        if (q.Length == 0) return _items;
+        return _items.Where(o => o.Name.Contains(q, StringComparison.OrdinalIgnoreCase)).ToList();
+    }
+
+    private bool ItemsLoading()
+        => _tab == "item"
+           && (_itemsLoading
+               || _items is null
+               || !string.Equals(_itemsFor, GamePath, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>后台枚举物品清单：600+ 件每件都要查一次图集像素，同步跑会占住 UI 线程 300~450ms。
+    /// 同一时刻只允许一个任务在跑，反复切页签不会叠任务。</summary>
+    private void EnsureItems(string gp)
+    {
+        if (_itemsLoading) return;
+        _itemsLoading = true;
+        _ = Task.Run(() =>
+        {
+            List<CategoryIconService.IconOption> list;
+            try { list = CategoryIconService.Items(gp); }
+            catch { list = []; }
+            _ = InvokeAsync(() =>
+            {
+                if (_disposed) return;
+                _items = list;
+                _itemsFor = gp;
+                _itemsLoading = false;
+                StateHasChanged();
+            });
+        });
+    }
+
+    private int HiddenCount() => _tab != "item" ? 0 : Math.Max(0, ItemSource().Count - _itemLimit);
+
+    /// <summary>网格滚到底时由 <c>junigridJs.iconGridInfinite</c> 回调：再铺一批。</summary>
+    [JSInvokable]
+    public void LoadMoreIcons()
+    {
+        if (_disposed || !Open || _tab != "item") return;
+        if (HiddenCount() <= 0) return;
+        _itemLimit += Batch;
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    // ───────────────────────── 自定义图标：选图 → 裁剪 → 存盘 ─────────────────────────
+
+    private async Task PickFile()
+    {
+        try
+        {
+            _ref ??= DotNetObjectReference.Create(this);
+            var name = await JS.InvokeAsync<string?>("junigridJs.iconPickFile");
+            if (string.IsNullOrWhiteSpace(name)) return;   // 用户取消了
+            _cropOpen = true;
+            _cropMountPending = true;
+            StateHasChanged();
+        }
+        catch (Exception ex) { AppLog.Warn("IconPicker", "[图标] 选图失败: " + ex.Message); }
+    }
+
+    private async Task CropZoomBy(double factor)
+    {
+        try { await JS.InvokeVoidAsync("junigridJs.iconCropZoomBy", factor); } catch { }
+    }
+
+    private async Task CropReset()
+    {
+        try { await JS.InvokeVoidAsync("junigridJs.iconCropReset"); } catch { }
+    }
+
+    private async Task CancelCrop()
+    {
+        _cropOpen = false;
+        _cropMountPending = false;
+        try { await JS.InvokeVoidAsync("junigridJs.iconCropClose"); } catch { }
+        StateHasChanged();
+    }
+
+    private async Task ConfirmCrop()
+    {
+        if (_cropSaving) return;
+        _cropSaving = true;
+        try
+        {
+            _ref ??= DotNetObjectReference.Create(this);
+            var ok = await JS.InvokeAsync<bool>("junigridJs.iconCropSave", _ref);
+            if (!ok) AppLog.Warn("IconPicker", "[图标] 裁剪导出失败，未能保存");
+        }
+        catch (Exception ex) { AppLog.Warn("IconPicker", "[图标] 保存自定义图标失败: " + ex.Message); }
+        finally { _cropSaving = false; }
+    }
+
+    /// <summary>JS 回调：把裁剪好的 PNG 存进图标目录，当场选中，弹窗保持打开。</summary>
+    [JSInvokable]
+    public Task<string?> SaveCustomIcon(string dataUrl, string name)
+    {
+        try
+        {
+            var comma = dataUrl.IndexOf(',');
+            if (comma < 0) return Task.FromResult<string?>(null);
+            var bytes = Convert.FromBase64String(dataUrl[(comma + 1)..]);
+            var spec = CategoryIconService.SaveCustom(bytes, name);
+            if (spec is null) return Task.FromResult<string?>(null);
+
+            _cropOpen = false;
+            _cropMountPending = false;
+            _tab = "custom";
+            AppLog.Info("IconPicker", "[图标] 已保存自定义图标 " + spec);
+            // KeepOpen：让用户在列表里看到刚传的那张
+            _ = InvokeAsync(() => OnPick.InvokeAsync(new IconPick(spec, KeepOpen: true)));
+            return Task.FromResult<string?>(spec);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warn("IconPicker", "[图标] 自定义图标写盘失败: " + ex.Message);
+            return Task.FromResult<string?>(null);
+        }
+    }
+
+    // ───────────────────────── 开关 ─────────────────────────
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    public void Dispose()
+    {
+        _disposed = true;
+        try { _ref?.Dispose(); } catch { }
+        _ref = null;
+    }
+}

@@ -87,12 +87,18 @@ public partial class MainWindow : Window
         try
         {
             Directory.CreateDirectory(StoragePaths.InCache("portrait-covers"));
+            Directory.CreateDirectory(StoragePaths.CustomIconDir);
             core.AddWebResourceRequestedFilter(
                 "https://junigrid-assets/*", CoreWebView2WebResourceContext.All);
+            // 2026-11-12：用户上传的分类图标单开一条通道 —— 它们不是缓存（清缓存不该带走），
+            // 所以住在另一个目录。虚拟主机只映射一个目录，另开一个 host 比混着更干净。
+            core.AddWebResourceRequestedFilter(
+                "https://junigrid-icons/*", CoreWebView2WebResourceContext.All);
             core.WebResourceRequested -= OnThumbWebResourceRequested;
             core.WebResourceRequested += OnThumbWebResourceRequested;
             Services.PackThumbService.ThumbHostBase = "https://junigrid-assets";
             Log("素材缩略图短 URL 通道已挂上 → " + StoragePaths.InCache("portrait-covers"));
+            Log("自定义图标短 URL 通道已挂上 → " + StoragePaths.CustomIconDir);
         }
         catch (Exception ex) { Log("MapAssetThumbHost 失败: " + ex.Message); }
     }
@@ -102,8 +108,16 @@ public partial class MainWindow : Window
         CoreWebView2? core = sender as CoreWebView2;
         try
         {
-            if (!e.Request.Uri.StartsWith("https://junigrid-assets/", StringComparison.OrdinalIgnoreCase)) return;
-            var name = Path.GetFileName(new Uri(e.Request.Uri).LocalPath);
+            var uri = new Uri(e.Request.Uri);
+            var host = uri.Host;
+            string dir;
+            if (host.Equals("junigrid-assets", StringComparison.OrdinalIgnoreCase))
+                dir = StoragePaths.InCache("portrait-covers");
+            else if (host.Equals("junigrid-icons", StringComparison.OrdinalIgnoreCase))
+                dir = StoragePaths.CustomIconDir;
+            else return;
+
+            var name = Path.GetFileName(uri.LocalPath);
             static CoreWebView2WebResourceResponse? NotFound(CoreWebView2? c) =>
                 c?.Environment.CreateWebResourceResponse(Stream.Null, 404, "Not Found", "Content-Type: text/plain");
             if (string.IsNullOrEmpty(name) || name.Contains("..")
@@ -112,15 +126,19 @@ public partial class MainWindow : Window
                 e.Response = NotFound(core);
                 return;
             }
-            var path = Path.Combine(StoragePaths.InCache("portrait-covers"), name);
+            var path = Path.Combine(dir, name);
             if (!File.Exists(path))
             {
                 e.Response = NotFound(core);
                 return;
             }
-            var fs = File.OpenRead(path);
+            // 2026-11-12：交给 WebView2 的是内存副本，不是文件句柄。
+            // 直接用 File.OpenRead 的话，这个流会被 WebView2 一直攥着（哪怕图早就显示完了），
+            // 结果是那张图在应用退出前都删不掉、改名也报「另一个程序正在使用」——
+            // 自制图标要支持「换一张 / 删掉」就绕不过这一条。图标只有几十 KB，读进内存不心疼。
+            var bytes = File.ReadAllBytes(path);
             e.Response = core?.Environment.CreateWebResourceResponse(
-                fs, 200, "OK",
+                new MemoryStream(bytes, writable: false), 200, "OK",
                 "Content-Type: image/png\r\nCache-Control: public, max-age=31536000, immutable\r\n");
         }
         catch

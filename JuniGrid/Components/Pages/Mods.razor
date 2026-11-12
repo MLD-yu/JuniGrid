@@ -1524,37 +1524,14 @@
     </div>
 }
 
-@* 2026-11-09：分类图标选择器 —— 素材全部取自游戏本体：Logo / 角色大头照 / 物品图鉴。
-   选完立刻落盘（点一下就走，没有"确定"），关闭走遮罩或底部按钮。 *@
+@* 分类图标选择器：与详情页共用同一个组件（CategoryIconPicker）。
+   页面只管「开 / 关 + 选中后落到哪儿」（新建草稿 / 本地导入草稿 / 分类配置）。 *@
 @if (_iconPickOpen)
 {
-    var curIcon = IconSpecOf(_iconPickKey);
-    <div class="jg-dlg-overlay" @onclick="CloseIconPicker">
-        <div class="jg-dialog jg-cat-icon-dialog" @onclick:stopPropagation>
-            <div class="jg-remark-title">@Loc.F("给「{0}」选个图标", IconCategoryLabel(_iconPickKey))</div>
-            <div class="jg-icon-tabs">
-                <button class="jg-icon-tab @(_iconTab == "default" ? "on" : "")" @onclick='() => SwitchIconTab("default")'>@Loc.T("默认")</button>
-                <button class="jg-icon-tab @(_iconTab == "portrait" ? "on" : "")" @onclick='() => SwitchIconTab("portrait")'>@Loc.T("角色")</button>
-                <button class="jg-icon-tab @(_iconTab == "item" ? "on" : "")" @onclick='() => SwitchIconTab("item")'>@Loc.T("物品")</button>
-                @if (_iconTab != "default")
-                {
-                    <input class="jg-remark-input jg-icon-search" placeholder='@Loc.T(_iconTab == "item" ? "搜物品名" : "搜角色名")'
-                           value="@_iconSearch" @oninput="OnIconSearch" />
-                }
-            </div>
-            @* 2026-11-10：一次只铺一批，滚到底自动续 —— 不再有「显示更多」按钮
-               （600 多件物品点按钮点到手酸）。滚动监听在 junigrid.taskdock.js。 *@
-            <div class="jg-icon-grid">
-                @foreach (var opt in IconOptions())
-                {
-                    @IconOptionButton(opt, curIcon)
-                }
-            </div>
-            <div class="jg-dialog-actions">
-                <button class="jg-btn" @onclick="CloseIconPicker">@Loc.T("关闭")</button>
-            </div>
-        </div>
-    </div>
+    <CategoryIconPicker Open="_iconPickOpen" Title="@IconCategoryLabel(_iconPickKey)"
+                        CurrentSpec="@IconSpecOf(_iconPickKey)"
+                        OnPick="OnIconPicked" OnCleared="OnIconCleared"
+                        OnClose="CloseIconPicker" />
 }
 
     @* v0.71.6：存档下拉打开时铺透明遮罩，点"除下拉框本身以外"的地方收回。
@@ -3998,24 +3975,6 @@
             _ = RunDragSelfTestAsync();
         }
 
-        // 2026-11-10：图标选择器的懒加载 —— 对话框一出现就把滚动监听挂上。
-        // 只能在这里挂：DOM 没渲染出来时 document.querySelector 拿不到网格，
-        // 而 @if 里的对话框不是每次渲染都重建（挂在 OnAfterRender 才稳）。
-        if (_iconPickOpen && !_iconScrollBound)
-        {
-            _iconScrollBound = true;
-            try
-            {
-                _iconScrollRef ??= DotNetObjectReference.Create(this);
-                await JS.InvokeVoidAsync("junigridJs.iconGridInfinite", _iconScrollRef);
-            }
-            catch (Exception ex)
-            {
-                _iconScrollBound = false;
-                AppLog.Warn("Mods", "[图标] 懒加载监听挂载失败: " + ex.Message);
-            }
-        }
-
         // v1.3.29 渐进渲染：这一帧只画了前 _renderLimit 行 → 放一帧让浏览器先画出来，
         // 再把额度翻倍补下一批。放在方法最前：它必须每帧都被判到，不能排在下面那些
         // JS 调用（placeViewThumb / 滚动恢复）后面被顺延。
@@ -5506,8 +5465,6 @@
         try { _dragRef?.Dispose(); } catch { }
         _dragRef = null;
         // 图标选择器的滚动回调同理
-        try { _iconScrollRef?.Dispose(); } catch { }
-        _iconScrollRef = null;
         try { LeaveCts.Cancel(); } catch { }
         Installer.OnChanged -= OnInstallerChanged;
         PackThumbService.Changed -= OnThumbsChanged;
@@ -6292,20 +6249,6 @@
     private bool _iconPickOpen;
     /// <summary>正在改图标的分类（"" = 未分类，它是合法值，所以用单独的 open 标记而不是 null 判空）。</summary>
     private string _iconPickKey = "";
-    private string _iconTab = "default";
-    private string _iconSearch = "";
-    /// <summary>角色清单按游戏目录缓存一次：每次渲染都去枚举 148 个文件太浪费。</summary>
-    private List<CategoryIconService.IconOption>? _iconPortraits;
-    private string? _iconPortraitsFor;
-    /// <summary>物品全量清单（700+ 件，首次解析 xnb 约 100ms，之后走缓存）。</summary>
-    private List<CategoryIconService.IconOption>? _iconItems;
-    private string? _iconItemsFor;
-    /// <summary>物品网格一次画多少格 —— 700 个 &lt;img&gt; 一口气铺出来会卡，滚到底再续。</summary>
-    private int _iconItemLimit = 140;
-    private const int IconItemBatch = 140;
-    /// <summary>滚动监听挂没挂（对话框一开就挂；元素随对话框销毁，关闭时复位）。</summary>
-    private bool _iconScrollBound;
-    private DotNetObjectReference<Mods>? _iconScrollRef;
     private bool _thumbRefreshQueued;
 
     private string IconSpecOf(string key)
@@ -6329,102 +6272,12 @@
     private void OpenIconPicker(string key)
     {
         _iconPickKey = key;
-        _iconTab = "default";
-        _iconSearch = "";
-        _iconItemLimit = 140;
         _iconPickOpen = true;
-        _iconScrollBound = false;     // 对话框是新元素，滚动监听要重新挂
         _categoryMenu = null;
-        // 700 多件物品要解析两个 xnb：后台先热一遍，等用户点「物品」页签时基本上已经好了
-        ItemCatalogService.Prewarm(Cfg.Current.GamePath);
     }
 
-    private void CloseIconPicker()
-    {
-        _iconPickOpen = false;
-        _iconScrollBound = false;
-    }
+    private void CloseIconPicker() => _iconPickOpen = false;
 
-    private void SwitchIconTab(string tab)
-    {
-        if (_iconTab == tab) return;
-        _iconTab = tab;
-        _iconSearch = "";
-        _iconItemLimit = 140;
-    }
-
-    private void OnIconSearch(ChangeEventArgs e)
-    {
-        _iconSearch = e.Value?.ToString() ?? "";
-        _iconItemLimit = 140;          // 换了搜索词就从第一批重新铺
-    }
-
-    /// <summary>当前页签下没画出来的条目数（只有物品页签会截断）。</summary>
-    private int IconHiddenCount()
-    {
-        if (_iconTab != "item") return 0;
-        var all = IconItemSource().Count;
-        return Math.Max(0, all - _iconItemLimit);
-    }
-
-    /// <summary>JS 那边滚到底时回调：再铺一批（顺便把额度封顶，避免越滚越多次空调用）。</summary>
-    [JSInvokable]
-    public void LoadMoreIcons()
-    {
-        if (_disposed || !_iconPickOpen || _iconTab != "item") return;
-        if (IconHiddenCount() <= 0) return;
-        _iconItemLimit += IconItemBatch;
-        _ = InvokeAsync(StateHasChanged);
-    }
-
-    /// <summary>物品全量清单（搜索过滤后）。</summary>
-    private List<CategoryIconService.IconOption> IconItemSource()
-    {
-        var gp = Cfg.Current.GamePath;
-        if (_iconItems is null || !string.Equals(_iconItemsFor, gp, StringComparison.OrdinalIgnoreCase))
-        {
-            _iconItems = CategoryIconService.Items(gp);
-            _iconItemsFor = gp;
-        }
-        var q = _iconSearch.Trim();
-        if (q.Length == 0) return _iconItems;
-        return _iconItems
-            .Where(o => o.Name.Contains(q, StringComparison.OrdinalIgnoreCase))
-            .ToList();
-    }
-
-    private IEnumerable<CategoryIconService.IconOption> IconOptions()
-    {
-        switch (_iconTab)
-        {
-            case "portrait":
-            {
-                var gp = Cfg.Current.GamePath;
-                if (_iconPortraits is null || !string.Equals(_iconPortraitsFor, gp, StringComparison.OrdinalIgnoreCase))
-                {
-                    _iconPortraits = CategoryIconService.Portraits(gp);
-                    _iconPortraitsFor = gp;
-                }
-                var q = _iconSearch.Trim();
-                if (q.Length == 0) return _iconPortraits;
-                return _iconPortraits
-                    .Where(o => o.Name.Contains(q, StringComparison.OrdinalIgnoreCase)
-                                || o.Spec.Contains(q, StringComparison.OrdinalIgnoreCase))
-                    .ToList();
-            }
-            case "item":                return IconItemSource().Take(_iconItemLimit);
-            default:
-                // 2026-11-09：木牌 Logo 选项已删（400×220 的横条缩进方框只剩一条糊影，
-                // 谁也不会真选它）——「默认」页签只剩那只鸡，也就是不设图标时的样子。
-                return new[]
-                {
-                    new CategoryIconService.IconOption(CategoryIconService.DefaultSpec, Loc.T("星露谷小鸡"), "默认"),
-                };
-        }
-    }
-
-    /// <summary>「加入分类」列表里每行前面那颗图标（点一下就地换图标）。
-    /// 没设过的分类走默认小鸡 —— 所以新建出来的分类天然带着小鸡图标。</summary>
     private RenderFragment CatIconButton(string key, string extraClass) => @<button
         type="button" class="jg-cat-icon @extraClass" data-tip='@Loc.T("点图标换一个")'
         aria-label='@Loc.T("点图标换一个")'
@@ -6439,47 +6292,39 @@
         }
     </button>;
 
-    private RenderFragment IconOptionButton(CategoryIconService.IconOption opt, string curSpec) => @<button        type="button" class="jg-icon-opt @(string.Equals(opt.Spec, curSpec, StringComparison.OrdinalIgnoreCase) ? "on" : "")"
-        data-tip="@opt.Name" @onclick="() => SetCategoryIcon(opt.Spec)">
-        <span class="jg-icon-opt-img">
-            @if (CategoryIconService.Url(opt.Spec, Cfg.Current.GamePath) is { } u)
-            {
-                <img src="@u" alt="" loading="lazy" decoding="async" />
-            }
-        </span>
-        <span class="jg-icon-opt-name">@opt.Name</span>
-    </button>;
+    /// <summary>组件里点了一格。KeepOpen 那次（刚上传完）只是把图记住，弹窗留着。</summary>
+    private void OnIconPicked(CategoryIconPicker.IconPick pick)
+        => ApplyCategoryIcon(pick.Spec, close: !pick.KeepOpen);
 
-    /// <summary>选定即落盘（点一下就走）。选回默认（小鸡）等于清掉这一项 —— 配置里不留下无意义的键。</summary>
-    private void SetCategoryIcon(string spec)
+    /// <summary>正被用着的那张自制图被删了 —— 这一项清回默认。</summary>
+    private void OnIconCleared()
+        => ApplyCategoryIcon(CategoryIconService.DefaultSpec, close: false);
+
+    /// <summary>把图标写下去。新建行只记草稿（两份草稿各自独立），已有分类直接写配置；
+    /// 选回默认（小鸡）等于清掉这一项。</summary>
+    private void ApplyCategoryIcon(string spec, bool close)
     {
         var normalized = CategoryIconService.NormalizeSpec(spec);
         // 还在"新建分类"这一步：图先记在草稿上，等「新建并加入」时跟分类名一起落盘
         if (_iconPickKey == NewCatIconKey)
         {
             _categoryNewIcon = normalized;
-            _iconPickOpen = false;
-            _iconScrollBound = false;
-            StateHasChanged();
-            return;
         }
-        // 本地导入弹窗里的新建行 —— 另一份草稿，别串到「加入分类」那一份去
-        if (_iconPickKey == LocalNewCatIconKey)
+        else if (_iconPickKey == LocalNewCatIconKey)
         {
+            // 本地导入弹窗里的新建行 —— 另一份草稿，别串到「加入分类」那一份去
             _localPackNewIcon = normalized;
-            _iconPickOpen = false;
-            _iconScrollBound = false;
-            StateHasChanged();
-            return;
         }
-        var cfg = Cfg.Current;
-        if (string.Equals(normalized, CategoryIconService.DefaultSpec, StringComparison.OrdinalIgnoreCase))
-            cfg.ModCategoryIcon.Remove(_iconPickKey);
         else
-            cfg.ModCategoryIcon[_iconPickKey] = normalized;
-        Cfg.Save(cfg);
-        _iconPickOpen = false;
-        _iconScrollBound = false;
+        {
+            var cfg = Cfg.Current;
+            if (string.Equals(normalized, CategoryIconService.DefaultSpec, StringComparison.OrdinalIgnoreCase))
+                cfg.ModCategoryIcon.Remove(_iconPickKey);
+            else
+                cfg.ModCategoryIcon[_iconPickKey] = normalized;
+            Cfg.Save(cfg);
+        }
+        if (close) _iconPickOpen = false;
         StateHasChanged();
     }
 
@@ -6992,7 +6837,12 @@
             // 目标必须在开工前固定住，否则删到一半目标就变了
             var picked = _mods.Where(m => _selected.Contains(m.Folder)).ToList();
             if (picked.Count == 0) return;
-            _ = StartDeleteAsync(picked.Select(m => m.Folder).ToList(), picked.Select(m => m.Name).ToList(), toTrash);
+            // 2026-11-12：勾选「全选」再删，语义上和「删整个捆绑包」是同一件事 ——
+            // 该顶层下所有子包都在名单里时收敛成顶层目录，一次搬走（连带包里的
+            // assets/、文档等残留），而不是逐个删子包、留一个「无清单」的空壳父目录。
+            // 只删其中一个子包时 WholeGroupTargets 不会收敛，兄弟不受影响。
+            _ = StartDeleteAsync(WholeGroupTargets(picked.Select(m => m.Folder).ToList()),
+                picked.Select(m => m.Name).ToList(), toTrash);
         }
     }
 

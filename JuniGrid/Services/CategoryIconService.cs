@@ -21,8 +21,20 @@ public static class CategoryIconService
     /// <summary>没设置过图标时的默认值：白鸡（= Steam 库图标那只）。</summary>
     public const string DefaultSpec = "chicken";
 
+    /// <summary>用户自己上传的图片：规格是 <c>custom:&lt;id&gt;</c>，id 是 8 位十六进制。
+    /// 文件存在 <see cref="StoragePaths.CustomIconDir"/>，短 URL 走独立虚拟主机
+    /// （<see cref="CustomHost"/>，见 MainWindow.OnThumbWebResourceRequested）。</summary>
+    public const string CustomPrefix = "custom:";
+    public const string CustomHost = "https://junigrid-icons";
+    /// <summary>自制图标的 PNG 尺寸。显示框只有 22~36px，96 已经留了高分屏余量。</summary>
+    public const int CustomSize = 96;
+    private const string CustomNameIndex = "custom-icons.json";
+
     /// <summary>原版物品图鉴表（24 列 × 16px）。</summary>
     private const string ObjectsAsset = "Maps/springobjects";
+    /// <summary>工具与武器各有自己的图集和数据表，跟物品不是同一张（见 ItemCatalogService.Tools/Weapons）。</summary>
+    private const string ToolsAsset = "TileSheets/tools";
+    private const string WeaponsAsset = "TileSheets/weapons";
     /// <summary>动物行走图：16×16 一格、每行 4 格。第一格就是站着的那张。</summary>
     private const string ChickenAsset = "Animals/White Chicken";
 
@@ -34,8 +46,13 @@ public static class CategoryIconService
     /// <see cref="PackThumbService.Changed"/>，页面收到后重画一次就有了）。</summary>
     public static string? Url(string? spec, string gamePath)
     {
-        if (string.IsNullOrWhiteSpace(gamePath)) return null;
         var s = NormalizeSpec(spec);
+
+        // 自制图标跟游戏目录无关（是用户上传的 PNG），所以放在 gamePath 判空之前 ——
+        // 换了机器/还没设游戏目录时，自制图标照样要能显示出来。
+        if (IsCustom(s)) return CustomUrl(s[CustomPrefix.Length..]);
+
+        if (string.IsNullOrWhiteSpace(gamePath)) return null;
 
         if (s.Equals(DefaultSpec, StringComparison.OrdinalIgnoreCase)) return ChickenUrl(gamePath);
 
@@ -56,6 +73,19 @@ public static class CategoryIconService
             return File.Exists(sheet) ? PackThumbService.GetTile(sheet, id, 64) : ChickenUrl(gamePath);
         }
 
+        // 工具 / 武器：格子号就是数据表里那条记录的 SpriteIndex / id，
+        // 列数按图集实际宽度算（这两张图比物品图窄，写死 24 会错位）。
+        if (s.StartsWith("tool:", StringComparison.OrdinalIgnoreCase)
+            || s.StartsWith("weapon:", StringComparison.OrdinalIgnoreCase))
+        {
+            var isTool = s.StartsWith("tool:", StringComparison.OrdinalIgnoreCase);
+            var rest = isTool ? s["tool:".Length..].Trim() : s["weapon:".Length..].Trim();
+            if (!int.TryParse(rest, out var idx) || idx < 0) return ChickenUrl(gamePath);
+            var sheet = ContentOverrideService.AssetFullPath(gamePath, isTool ? ToolsAsset : WeaponsAsset);
+            if (!File.Exists(sheet)) return ChickenUrl(gamePath);
+            return PackThumbService.GetFrame(sheet, idx, PackThumbService.SheetCols(sheet), cell: 16, outSize: 64);
+        }
+
         if (s.StartsWith("animal:", StringComparison.OrdinalIgnoreCase))
         {
             var name = s["animal:".Length..].Trim();
@@ -67,6 +97,150 @@ public static class CategoryIconService
         }
 
         return ChickenUrl(gamePath);
+    }
+
+    // ───────────────────────── 自定义图片（用户上传） ─────────────────────────
+
+    /// <summary>这个规格是不是「用户上传的图」。</summary>
+    public static bool IsCustom(string? spec)
+        => spec is not null && spec.StartsWith(CustomPrefix, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>id 只允许十六进制 —— 它直接变成文件名，不校验就能用 <c>../</c> 写到别的目录去。</summary>
+    public static bool IsValidCustomId(string? id)
+    {
+        if (id is null || id.Length is < 6 or > 32) return false;
+        foreach (var c in id)
+            if (!Uri.IsHexDigit(c)) return false;
+        return true;
+    }
+
+    /// <summary>自制图标的落盘路径（id 非法时 null）。</summary>
+    public static string? CustomFile(string id)
+        => IsValidCustomId(id) ? Path.Combine(StoragePaths.CustomIconDir, "jgc-" + id.ToLowerInvariant() + ".png") : null;
+
+    /// <summary>自制图标 → 可进 &lt;img&gt; 的 URL。文件不在了返回 null（调用方会退回白鸡）。</summary>
+    public static string? CustomUrl(string id)
+    {
+        var path = CustomFile(id);
+        if (path is null || !File.Exists(path)) return null;
+        // 短 URL 通道没挂上（单元测试 / 早期启动）时退回 data URI，跟 PackThumbService 一个策略
+        if (PackThumbService.ThumbHostBase is not null) return CustomHost + "/" + Path.GetFileName(path);
+        try { return "data:image/png;base64," + Convert.ToBase64String(File.ReadAllBytes(path)); }
+        catch { return null; }
+    }
+
+    /// <summary>存一张自制图标。返回值就是写进配置的规格（<c>custom:&lt;id&gt;</c>）；
+    /// 内容不是 PNG 或写盘失败时返回 null。</summary>
+    public static string? SaveCustom(byte[] png, string displayName)
+    {
+        if (png is null || png.Length < 8) return null;
+        // PNG 魔数：8 字节。前端给的是 canvas.toDataURL，正常就是 PNG；这里挡一下
+        // 免得半截数据/别的格式躺进图标目录（那目录是直接喂给 &lt;img&gt; 的）
+        ReadOnlySpan<byte> sig = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+        if (!png.AsSpan(0, 8).SequenceEqual(sig)) return null;
+        if (png.Length > 4 * 1024 * 1024) return null;
+
+        var id = Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(4)).ToLowerInvariant();
+        var path = CustomFile(id);
+        if (path is null) return null;
+        try
+        {
+            Directory.CreateDirectory(StoragePaths.CustomIconDir);
+            File.WriteAllBytes(path, png);
+        }
+        catch { return null; }
+
+        // 名字只用于悬浮提示（文件本身是哈希名）。存一份索引，读不到就当「自定义图片」
+        try
+        {
+            var index = LoadCustomIndex();
+            index.RemoveAll(x => x.Id == id);
+            index.Add(new CustomIndexEntry(id, Trim(displayName), DateTime.UtcNow));
+            WriteCustomIndex(index);
+        }
+        catch { /* 名字存不下不影响图标本身可用 */ }
+
+        return CustomPrefix + id;
+    }
+
+    /// <summary>删掉一张自制图标（配置里还引用着的由调用方自己清）。</summary>
+    public static void DeleteCustom(string spec)
+    {
+        if (!IsCustom(spec)) return;
+        var id = spec[CustomPrefix.Length..];
+        var path = CustomFile(id);
+        try { if (path is not null && File.Exists(path)) File.Delete(path); } catch { }
+        try
+        {
+            var index = LoadCustomIndex();
+            index.RemoveAll(x => x.Id.Equals(id, StringComparison.OrdinalIgnoreCase));
+            WriteCustomIndex(index);
+        }
+        catch { }
+    }
+
+    /// <summary>已上传的自制图标，最近上传的排最前。</summary>
+    public static List<IconOption> CustomIcons()
+    {
+        var list = new List<IconOption>();
+        try
+        {
+            var dir = StoragePaths.CustomIconDir;
+            if (!Directory.Exists(dir)) return list;
+            var index = LoadCustomIndex();
+            var rows = new List<(DateTime At, IconOption Opt)>();
+            foreach (var f in Directory.EnumerateFiles(dir, "jgc-*.png"))
+            {
+                var name = Path.GetFileNameWithoutExtension(f);   // jgc-<id>
+                if (name.Length <= 4) continue;
+                var id = name[4..];
+                if (!IsValidCustomId(id)) continue;
+                var entry = index.FirstOrDefault(x => x.Id.Equals(id, StringComparison.OrdinalIgnoreCase));
+                var at = entry?.At ?? File.GetLastWriteTimeUtc(f);
+                rows.Add((at, new IconOption(CustomPrefix + id,
+                    string.IsNullOrWhiteSpace(entry?.Name) ? "自定义图片" : entry!.Name!,
+                    "自定义")));
+            }
+            // 最近传的排最前（id 是随机的，按 id 排等于乱序）
+            rows.Sort((a, b) => b.At.CompareTo(a.At));
+            list.AddRange(rows.Select(r => r.Opt));
+        }
+        catch { }
+        return list;
+    }
+
+    private sealed class CustomIndexEntry
+    {
+        public string Id { get; set; } = "";
+        public string? Name { get; set; }
+        public DateTime At { get; set; }
+        public CustomIndexEntry() { }
+        public CustomIndexEntry(string id, string name, DateTime at) { Id = id; Name = name; At = at; }
+    }
+
+    private static List<CustomIndexEntry> LoadCustomIndex()
+    {
+        try
+        {
+            var p = Path.Combine(StoragePaths.CustomIconDir, CustomNameIndex);
+            if (!File.Exists(p)) return [];
+            return System.Text.Json.JsonSerializer.Deserialize<List<CustomIndexEntry>>(File.ReadAllText(p)) ?? [];
+        }
+        catch { return []; }
+    }
+
+    private static void WriteCustomIndex(List<CustomIndexEntry> list)
+    {
+        var p = Path.Combine(StoragePaths.CustomIconDir, CustomNameIndex);
+        Directory.CreateDirectory(StoragePaths.CustomIconDir);
+        File.WriteAllText(p, System.Text.Json.JsonSerializer.Serialize(list));
+    }
+
+    private static string Trim(string? s)
+    {
+        var t = (s ?? "").Trim();
+        if (t.Length == 0) return "自定义图片";
+        return t.Length > 40 ? t[..40] : t;
     }
 
     private static string? ChickenUrl(string gamePath)
@@ -180,6 +354,16 @@ public static class CategoryIconService
     public static List<IconOption> Items(string gamePath)
     {
         var list = new List<IconOption>();
+        // 工具、武器先摆最前面。它们在 Data/Objects 之外（各有独立的数据表和图集），
+        // 而且各自只有几十件 —— 跟在 700 多件物品后面会被「首批 140 件」的分批截断挡住，
+        // 用户滚很久都翻不到，等于没有（用户反馈「物品里面没有工具」）。
+        if (!string.IsNullOrWhiteSpace(gamePath))
+        {
+            foreach (var e in ItemCatalogService.Tools(gamePath))
+                list.Add(new IconOption(e.Spec, e.Name, "工具"));
+            foreach (var e in ItemCatalogService.Weapons(gamePath))
+                list.Add(new IconOption(e.Spec, e.Name, "武器"));
+        }
         // 同名变体只留 id 最小的那件：原版光是叫「Stone」的 id 就有 48 个
         // （矿洞各层石头的不同配色），全铺出来能把前几屏刷满，还挑不出区别。
         // 按<b>内部英文名</b>去重而不是中文名 —— "Large Egg / Large Brown Egg" 汉化后

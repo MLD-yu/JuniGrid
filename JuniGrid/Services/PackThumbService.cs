@@ -230,6 +230,15 @@ public static class PackThumbService
     /// <summary>这一格在图集里到底画没画东西。原版 <c>Data/Objects</c> 里留着一些 1.6 的
     /// 废弃条目（比如 id 30 的 Lumber），图集里对应格子是全透明的 —— 选中它们只会得到一个
     /// 空白图标，所以列清单时先筛掉。解不出来的表一律当"有"，不误伤。</summary>
+    /// <summary>按图集实际宽度算列数（标准 16px 格子）。物品图固定 24 列，但
+    /// <c>TileSheets/tools</c>、<c>TileSheets/weapons</c> 这些图窄得多 —— 写死 24 会让格子号错位。</summary>
+    public static int SheetCols(string? xnbPath, int cell = 16)
+    {
+        if (string.IsNullOrWhiteSpace(xnbPath) || !File.Exists(xnbPath)) return 24;
+        var tex = Decode(xnbPath);
+        return tex is null || tex.Width < cell ? 24 : Math.Max(1, tex.Width / cell);
+    }
+
     public static bool HasVisiblePixels(string? xnbPath, int index, int cols = 24, int cell = 16)
     {
         if (string.IsNullOrWhiteSpace(xnbPath) || !File.Exists(xnbPath) || index < 0) return true;

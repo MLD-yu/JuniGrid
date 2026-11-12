@@ -17,6 +17,7 @@ public static class Program
     private const int MOUSEEVENTF_LEFTUP = 0x0004;
     private const int MOUSEEVENTF_RIGHTDOWN = 0x0008;
     private const int MOUSEEVENTF_RIGHTUP = 0x0010;
+    private const int MOUSEEVENTF_WHEEL = 0x0800;
 
     [DllImport("user32.dll")] private static extern bool SetCursorPos(int x, int y);
     [DllImport("user32.dll")] private static extern bool SetProcessDPIAware();
@@ -43,6 +44,8 @@ public static class Program
                 case "find": Find(args); return 0;
                 case "click": Click(args); return 0;
                 case "clickxy": ClickXY(int.Parse(args[1]), int.Parse(args[2]), args.Length > 3 && args[3] == "right"); return 0;
+                case "wheel": Wheel(int.Parse(args[1]), int.Parse(args[2]), int.Parse(args[3])); return 0;
+                case "drag": Drag(int.Parse(args[1]), int.Parse(args[2]), int.Parse(args[3]), int.Parse(args[4]), args.Length > 5 ? int.Parse(args[5]) : 24); return 0;
                 case "front": Front(FindHwnd(args[1])); return 0;
                 case "keys": Keys(string.Join(' ', args.Skip(1))); return 0;
                 default: Console.WriteLine(Usage); return 1;
@@ -290,6 +293,38 @@ public static class Program
         mouse_event(down, 0, 0, 0, IntPtr.Zero);
         mouse_event(up, 0, 0, 0, IntPtr.Zero);
         Console.WriteLine($"clicked {x},{y} right={right}");
+    }
+
+    /// <summary>在指定坐标滚动鼠标滚轮。delta &lt; 0 向下滚（一格 120）。</summary>
+    private static void Wheel(int x, int y, int delta)
+    {
+        SetCursorPos(x, y);
+        Thread.Sleep(120);
+        mouse_event(MOUSEEVENTF_WHEEL, 0, 0, delta, IntPtr.Zero);
+        Thread.Sleep(200);
+        Console.WriteLine($"wheel {x},{y} delta={delta}");
+    }
+
+    /// <summary>按住左键从 (x1,y1) 拖到 (x2,y2)，分 <paramref name="steps"/> 步移动 —— 直接跳过去
+    /// 的话 pointerdown/pointermove 事件序列不完整，网页里的拖拽逻辑（需要连续 move）不会触发。</summary>
+    private static void Drag(int x1, int y1, int x2, int y2, int steps)
+    {
+        steps = Math.Max(2, steps);
+        SetCursorPos(x1, y1);
+        Thread.Sleep(80);
+        mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, IntPtr.Zero);
+        Thread.Sleep(60);
+        for (var i = 1; i <= steps; i++)
+        {
+            var x = x1 + (x2 - x1) * i / steps;
+            var y = y1 + (y2 - y1) * i / steps;
+            SetCursorPos(x, y);
+            Thread.Sleep(16);
+        }
+        Thread.Sleep(60);
+        mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, IntPtr.Zero);
+        Thread.Sleep(150);
+        Console.WriteLine($"drag {x1},{y1} -> {x2},{y2} steps={steps}");
     }
 
     private static void Keys(string text)

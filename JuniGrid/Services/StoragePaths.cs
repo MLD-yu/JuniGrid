@@ -103,6 +103,13 @@ public static class StoragePaths
     /// <summary>SMAPI 更新前的 Mods 安全备份。跟随缓存目录。</summary>
     public static string ModsBackupDir => InCache("mods-backup");
 
+    /// <summary>v1.3.3：用户自己上传的分类图标（裁剪成方形后的 PNG）。
+    /// <para>刻意<b>不</b>和缩略图缓存（portrait-covers）放一起 —— 那个目录在存储页里是
+    /// 「可清理」的，用户点一下「清理缓存」就会把自制图标连锅端掉，而这是用户亲手做的数据、
+    /// 重建不了。所以单独一个目录，并在 MainWindow 里单独挂一条虚拟主机
+    /// （<c>https://junigrid-icons</c>）给它用。</para></summary>
+    public static string CustomIconDir => InCache("custom-icons");
+
     /// <summary>
     /// 游戏历史版本缓存（DepotDownloader 暂存，按版本号分目录）。
     /// 跟随统一缓存目录；未设置 CacheRoot 时用 <see cref="DefaultCacheRoot"/>（与其它可迁移项一致）。

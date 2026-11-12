@@ -33,7 +33,9 @@ public static class ItemCatalogService
     public sealed record Item(int Id, string Name, string Key, string Type = "");
 
     /// <summary>解析规则变了就升这个号，磁盘缓存整份作废。</summary>
-    private const string CacheVersion = "v3";
+    /// <summary>缓存格式版本。解析规则一改就要跟着升，否则老用户读到的是按旧规则算出来的清单
+    /// （v4：工具改用 menu 格 + 按族去重 + 补中文名，v3 的缓存里那些错图/英文键会被一直用下去）。</summary>
+    private const string CacheVersion = "v4";
 
     private static readonly object Gate = new();
     private static List<Item>? _items;
@@ -67,7 +69,170 @@ public static class ItemCatalogService
         });
     }
 
-    // ───────────────────────── 解析 ─────────────────────────
+
+    // ───────────────────────── 工具 / 武器 ─────────────────────────
+
+    /// <summary>一件可以用作分类图标的"非物品"条目。<paramref name="Spec"/> 直接就是图标规格。</summary>
+    public sealed record IconEntry(string Spec, string Name);
+
+    /// <summary>
+    /// 工具清单（<c>Data/Tools</c> + <c>TileSheets/tools</c>）。
+    /// <para>工具<b>不在</b> <c>Data/Objects</c> 里，图集也是独立的一张 —— 所以物品页签原来
+    /// 一件工具都看不到（用户反馈「为什么物品里面没有工具」）。</para>
+    /// <para>解析仍走"定点扫描"而不是完整反序列化：这两张表的值端字段顺序随游戏版本会变。
+    /// 只认两样在文件里都<b>按记录顺序</b>出现的东西 —— 名字的本地化 token
+    /// （<c>[LocalizedText Strings\Tools:Xxx_Name]</c>）和贴图资源名（<c>TileSheets\tools</c>）——
+    /// 按顺序一一配对。工具的 SpriteIndex 是紧跟贴图名之后的<b>第三个 int</b>
+    /// （实测 Axe=0、CopperAxe=1、SteelAxe=2… 逐级 +1）。</para></summary>
+    public static List<IconEntry> Tools(string gamePath)
+    {
+        var list = new List<IconEntry>();
+        try
+        {
+            var body = ReadDataBody(gamePath, "Data/Tools");
+            if (body is null) return list;
+            var loc = ReadLocalizedMap(gamePath, "Strings/Tools");
+            var nameKeys = FindLocalizedKeys(body, @"Strings[\\/]Tools:(\w+)_Name\]");
+            var textures = FindStringEnds(body, "TileSheets/tools");
+            var n = Math.Min(nameKeys.Count, textures.Count);
+
+            // 一条记录在文件里是这样（1.6.19 实测，token 级）：
+            //   Key | ClassName | 英文名 | int | int | [LocalizedText ..._Name] | [Description]
+            //   | TileSheets\tools | heldIdx | menuIdx | upgradeLevel | (T)上一级 | 0
+            //
+            // 该画的是 menuIdx（菜单/工具栏那张图）；为 -1 时退回 heldIdx
+            // （鱼竿就是这种：held 8/9/10/11，menu -1）。
+            //
+            // 2026-11-12 修：以前把 **upgradeLevel**（0/1/2/3/4）当格子号用，于是所有「铱级」
+            // 工具都画成第 4 格 —— 界面上表现为斧头/镐/锄/喷壶的铱级是同一张图，一堆重复
+            // （用户反馈「为什么这么多重复的，而且还不是手里能拿的」）。
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            for (var i = 0; i < n; i++)
+            {
+                var key = nameKeys[i];                                   // Axe / Axe_Copper / FishingRod_Bamboo
+                var family = key.Split('_')[0];
+                // 垃圾桶在 Data/Tools 里，但它不是拿在手里的工具；
+                // 灯笼的 menu 格（74）在 TileSheets/tools 里只有一小块紫色残片，画出来认不出是什么。
+                // 这两样放进图标选择器只会让人困惑，直接不列。
+                if (family.Equals("TrashCan", StringComparison.OrdinalIgnoreCase)
+                    || family.Equals("Lantern", StringComparison.OrdinalIgnoreCase)) continue;
+                // 同族只留第一档（斧头 5 个等级在我这里长得几乎一样，全列出来就是「重复」）。
+                // 鱼竿例外：每根都不一样，而且都能真的拿到。
+                var isRod = family.Equals("FishingRod", StringComparison.OrdinalIgnoreCase);
+                if (!isRod && !seen.Add(family)) continue;
+
+                var held = ReadIntAt(body, textures[i]);
+                var menu = ReadIntAt(body, textures[i] + 4);
+                var sprite = menu is >= 0 ? menu!.Value : held ?? -1;
+                if (sprite is < 0 or > 4096) continue;
+
+                var shown = LookupName(loc, key) ?? key;
+                list.Add(new IconEntry("tool:" + sprite, shown));
+            }
+        }
+        catch (Exception ex) { AppLog.Warn("ItemCatalog", "工具清单解析失败: " + ex.Message); }
+        return list;
+    }
+
+    /// <summary>
+    /// 武器清单（<c>Data/Weapons</c> + <c>TileSheets/weapons</c>）。
+    /// <para>武器同样不在 <c>Data/Objects</c> 里。图集 <c>TileSheets/weapons</c> 的格子号
+    /// 就是武器在 <c>Data/Weapons</c> 里的 id（0 起连续），所以按出现顺序编号即可。</para></summary>
+    public static List<IconEntry> Weapons(string gamePath)
+    {
+        var list = new List<IconEntry>();
+        try
+        {
+            var body = ReadDataBody(gamePath, "Data/Weapons");
+            if (body is null) return list;
+            var loc = ReadLocalizedMap(gamePath, "Strings/Weapons");
+            var nameKeys = FindLocalizedKeys(body, @"Strings[\\/]Weapons:(\w+)_Name\]");
+            for (var i = 0; i < nameKeys.Count; i++)
+            {
+                var shown = LookupName(loc, nameKeys[i]) ?? nameKeys[i];
+                list.Add(new IconEntry("weapon:" + i, shown));
+            }
+        }
+        catch (Exception ex) { AppLog.Warn("ItemCatalog", "武器清单解析失败: " + ex.Message); }
+        return list;
+    }
+
+    private static byte[]? ReadDataBody(string gamePath, string asset)
+    {
+        var p = ContentOverrideService.AssetFullPath(gamePath, asset);
+        return File.Exists(p) ? XnbDecoder.ReadContentRegion(File.ReadAllBytes(p)) : null;
+    }
+
+    /// <summary>把 <c>Strings/Tools</c> 这类「key → 本地化文本」表读成字典（优先 zh-CN）。</summary>
+    private static Dictionary<string, string> ReadLocalizedMap(string gamePath, string asset)
+    {
+        foreach (var name in new[] { asset + ".zh-CN", asset })
+        {
+            var p = ContentOverrideService.AssetFullPath(gamePath, name);
+            if (!File.Exists(p)) continue;
+            var dict = ReadStringDictionary(XnbDecoder.ReadContentRegion(File.ReadAllBytes(p)));
+            if (dict.Count > 0) return dict;
+        }
+        return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static string? Lookup(Dictionary<string, string> map, string key)
+        => map.TryGetValue(key, out var v) && !string.IsNullOrWhiteSpace(v) ? v : null;
+
+    /// <summary>按本地化 key 取显示名。<c>Strings/Tools</c> 与 <c>Strings/Weapons</c> 里的键都带
+    /// <c>_Name</c> 后缀（<c>Axe_Name</c>），而 <c>Data/*</c> 里的 token 只给到 <c>Axe</c> ——
+    /// 只查一次原名会永远落空，界面上就一直是英文键（用户反馈「这些武器怎么没中文翻译」）。</summary>
+    private static string? LookupName(Dictionary<string, string> map, string key)
+        => Lookup(map, key) ?? Lookup(map, key + "_Name");
+
+    /// <summary>按出现顺序抓出所有匹配的本地化 key（如 <c>Axe_Copper</c>）。</summary>
+    private static List<string> FindLocalizedKeys(byte[] body, string pattern)
+    {
+        var keys = new List<string>();
+        var re = new Regex(pattern);
+        foreach (var (_, text) in ScanStrings(body))
+        {
+            var m = re.Match(text);
+            if (m.Success) keys.Add(m.Groups[1].Value);
+        }
+        return keys;
+    }
+
+    /// <summary>按出现顺序抓出所有「等于这个资源名」的字符串，返回它们在 body 里<b>结束</b>的偏移。
+    /// 资源名里的路径分隔符两种写法都认（XNB 里混用 <c>\</c> 和 <c>/</c>）。</summary>
+    private static List<int> FindStringEnds(byte[] body, string asset)
+    {
+        var norm = asset.Replace('\\', '/');
+        var ends = new List<int>();
+        foreach (var (end, text) in ScanStrings(body))
+            if (text.Replace('\\', '/').Equals(norm, StringComparison.OrdinalIgnoreCase)) ends.Add(end);
+        return ends;
+    }
+
+    /// <summary>扫 body 里所有 <c>0x02 + 长度 + UTF8</c> 形态的字符串（XNB 的 StringReader 格式）。
+    /// 返回 (字符串结束偏移, 文本)。长度超过 1 字节编码的直接跳过 —— 说明踩错位了。</summary>
+    private static IEnumerable<(int End, string Text)> ScanStrings(byte[] body)
+    {
+        for (var i = 0; i + 2 < body.Length; i++)
+        {
+            if (body[i] != 0x02) continue;
+            var len = body[i + 1];
+            if (len == 0 || len > 120) continue;
+            var start = i + 2;
+            if (start + len > body.Length) continue;
+            var ok = true;
+            for (var k = 0; k < len; k++)
+            {
+                var c = body[start + k];
+                if (c < 0x20 || c >= 0x7f) { ok = false; break; }
+            }
+            if (!ok) continue;
+            yield return (start + len, Encoding.UTF8.GetString(body, start, len));
+        }
+    }
+
+    private static int? ReadIntAt(byte[] body, int offset)
+        => offset >= 0 && offset + 4 <= body.Length ? BitConverter.ToInt32(body, offset) : null;
 
     private static List<Item> Parse(string gamePath)
     {

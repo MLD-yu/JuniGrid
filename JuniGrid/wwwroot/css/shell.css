@@ -243,10 +243,17 @@
     box-shadow: 0 4px 14px rgba(229, 72, 77, 0.35);
 }.jg-dialog-actions .jg-btn.danger:hover { box-shadow: 0 6px 18px rgba(229, 72, 77, 0.45); }/* ── 备注/重命名弹窗 ── */
 .jg-dialog-actions .jg-btn.primary {
-    background: linear-gradient(135deg, #4465c4, #2f4bb0);
+    /* 2026-11-12：原来写死成蓝色渐变，换了主题色（橙/绿/系统色）之后这颗「主按钮」还是蓝的，
+       和界面其余部分对不上（用户截图指出「使用这张为什么不是主题色」）。
+       改成跟随 --jg-accent，与 .jg-toast-live.ok / .jg-cat-check.on 同一套规矩。 */
+    background: var(--jg-accent);
+    border-color: transparent;
     color: #fff;
-    box-shadow: 0 4px 14px rgba(52, 88, 190, 0.35);
-}.jg-dialog-actions .jg-btn.primary:hover { background: linear-gradient(135deg, #5170d4, #3355b8); }/* ── 「启动 N 次」赞助弹窗：两屏（文案 / 收款码），版式参照 React Bits Stepper ── */
+    box-shadow: 0 4px 14px color-mix(in srgb, var(--jg-accent) 38%, transparent);
+}.jg-dialog-actions .jg-btn.primary:hover {
+    background: color-mix(in srgb, var(--jg-accent) 88%, #000);
+    box-shadow: 0 6px 18px color-mix(in srgb, var(--jg-accent) 48%, transparent);
+}/* ── 「启动 N 次」赞助弹窗：两屏（文案 / 收款码），版式参照 React Bits Stepper ── */
 .jg-sponsor-panel {
     position: relative;
     width: 420px;

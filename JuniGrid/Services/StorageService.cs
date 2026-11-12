@@ -197,6 +197,15 @@ public sealed partial class StorageService
             pcovers, pcovers, Cleanable: true, Movable: true,
             Tip: "内容包页为了秒开把缩略图存了一份 清理只是让它下次重新生成 不影响任何 mod"));
 
+        // 2026-11-12：用户上传的分类图标（裁剪成方形后的 PNG）。刻意单独一个目录、
+        // 且不跟缩略图缓存一样可清 —— 那是用户亲手做的图，清掉重建不了。
+        // 但必须在这里有一行：磁盘上有目录、界面上看不见，就是 G3 审计钉过的「无主条目」。
+        var customIcons = StoragePaths.CustomIconDir;
+        list.Add(new("customicons", "自定义分类图标", "你上传的分类图标原图", customIcons,
+            new[] { customIcons }, Array.Empty<string>(), Cleanable: false, Movable: true,
+            Tip: "你在分类图标选择器里上传的图片 是你自己的数据 清缓存和清理缩略图都不会动它 "
+                + "换缓存位置时会跟着搬过去 删掉它只会让那些分类退回默认的小鸡图标"));
+
         var appCacheFiles = new[]
         {
             Path.Combine(StoragePaths.AppDataDir, "junigrid.translate-cache.json"),
