@@ -1,9 +1,9 @@
 {
   "schema": 1,
-  "version": "1.3.2",
-  "sha256": "716bb4ca931771efa5105ffb4334a6bfca9ffabc5d0d88b3ec7ed6ead516bb20",
-  "size": 127609775,
-  "url": "https://github.com/MLD-yu/JuniGrid/releases/download/v1.3.2/JuniGrid-cn-v1.3.2-setup.exe",
-  "published_at": "2026-11-09T17:32:05Z",
+  "version": "1.3.4",
+  "sha256": "edd2b7b240fd384029aa2f4d92096655d9648b57355a9fc46250fbe801939b73",
+  "size": 127633839,
+  "url": "https://github.com/MLD-yu/JuniGrid/releases/download/v1.3.4/JuniGrid-cn-v1.3.4-setup.exe",
+  "published_at": "2026-11-12T05:13:53Z",
   "key_id": "2026-01"
 }
