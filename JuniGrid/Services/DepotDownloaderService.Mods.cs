@@ -315,34 +315,91 @@ public sealed partial class DepotDownloaderService
     /// </summary>
     public string? RehomeOrphanMods(string gamePath)
     {
-        var root = Path.Combine(StagingRoot, "_mods-orphan");
-        if (!Directory.Exists(root)) return null;
-
         // 候选抽屉按 SMAPI 档分组（同一档有多个版本时该档整体算"歧义"）
         var drawersByMajor = new Dictionary<int, List<string>>();   // major → 抽屉 Mods 路径列表
+        // 版本号 → 抽屉：_copyleft 批次名里带着版本号，归属是确定的，不必走"唯一候选"那条保守判据
+        var drawersByVersion = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        // 版本包内的 Mods-incomplete-<时间戳>：一次中断的拷贝留下的残副本。
+        // 它们不在 _mods-orphan 下，以前从不被枚举 → 永远躺在包里，只随「清缓存」被硬删。
+        // 归属是确定的（就在这一版的包里），直接指定该包自己的抽屉。
+        var incomplete = new List<(string ModsRoot, string PreferredDrawer)>();
         foreach (var pkg in ListStagedPackages())
         {
+            var drawer = Path.Combine(pkg.Path, "Mods");
             var major = SmapiMajorOfGameVersion(pkg.Label);
-            if (major == 0) continue;
-            if (!drawersByMajor.TryGetValue(major, out var lst))
-                drawersByMajor[major] = lst = new List<string>();
-            lst.Add(Path.Combine(pkg.Path, "Mods"));
+            if (major != 0)
+            {
+                if (!drawersByMajor.TryGetValue(major, out var lst))
+                    drawersByMajor[major] = lst = new List<string>();
+                lst.Add(drawer);
+            }
+            drawersByVersion[pkg.Label] = drawer;
+            try
+            {
+                foreach (var d in Directory.EnumerateDirectories(pkg.Path, "Mods-incomplete-*"))
+                    incomplete.Add((d, drawer));
+            }
+            catch { }
         }
-        return RehomeOrphanMods(gamePath, drawersByMajor);
+        // _incomplete\<appId>-<depotId>-<版本>-<时间戳>\Mods：中断的切换留下的残包，
+        // 里面的 Mods 抽屉属于名字里那一版。归位回该版抽屉（重复/现役同名走回收站），
+        // 这样存储页不再单独列「残包」行也不会把用户的 mod 藏起来。
+        var incompleteRoot = Path.Combine(StagingRoot, "_incomplete");
+        if (Directory.Exists(incompleteRoot))
+        {
+            foreach (var d in Directory.EnumerateDirectories(incompleteRoot))
+            {
+                var mods = Path.Combine(d, "Mods");
+                if (!Directory.Exists(mods)) continue;
+                var name = Path.GetFileName(d);
+                foreach (var (ver, drawer) in drawersByVersion)
+                {
+                    if (name.Contains("-" + ver + "-", StringComparison.OrdinalIgnoreCase)
+                        || name.EndsWith("-" + ver, StringComparison.OrdinalIgnoreCase))
+                    { incomplete.Add((mods, drawer)); break; }
+                }
+            }
+        }
+        return RehomeOrphanMods(gamePath, drawersByMajor, drawersByVersion, incomplete);
     }
 
     /// <summary>抽屉表单独传进来：判定逻辑（唯一候选才动、重复/自带件进回收站、判不出就留）
     /// 要能脱离真实版本包单测，否则只能靠真下几个 GB 的版本包才能验。</summary>
-    public static string? RehomeOrphanMods(string gamePath, Dictionary<int, List<string>> drawersByMajor)
+    public static string? RehomeOrphanMods(string gamePath, Dictionary<int, List<string>> drawersByMajor,
+        Dictionary<string, string>? drawersByVersion = null,
+        IReadOnlyList<(string ModsRoot, string PreferredDrawer)>? packageIncompleteRoots = null)
     {
         var root = Path.Combine(StagingRoot, "_mods-orphan");
-        if (!Directory.Exists(root)) return null;
+        if (!Directory.Exists(root) && (packageIncompleteRoots is null || packageIncompleteRoots.Count == 0))
+            return null;
 
         int rehomed = 0, trashed = 0, left = 0;
         var trash = string.IsNullOrWhiteSpace(gamePath) ? null : StoragePaths.GameTrashDir(gamePath);
         var gameMods = string.IsNullOrWhiteSpace(gamePath) ? null : Path.Combine(gamePath, "Mods");
 
-        foreach (var modsRoot in EnumerateOrphanModsRoots(root))
+        // _copyleft\<版本>-<时间戳> 批次：名字里就写着属于哪一版，直接认那一版的抽屉。
+        // 不走这条的话，同一档有多个版本时它会因"歧义"永远留在隔离区。
+        string? BatchDrawer(string modsRoot)
+        {
+            if (drawersByVersion is null) return null;
+            var parent = Path.GetDirectoryName(modsRoot);
+            if (parent is null
+                || !Path.GetFileName(parent).Equals("_copyleft", StringComparison.OrdinalIgnoreCase)) return null;
+            var batch = Path.GetFileName(modsRoot);
+            foreach (var (v, d) in drawersByVersion)
+                if (batch.StartsWith(v + "-", StringComparison.OrdinalIgnoreCase)
+                    || batch.StartsWith(v + ".", StringComparison.OrdinalIgnoreCase)
+                    || batch.Equals(v, StringComparison.OrdinalIgnoreCase))
+                    return d;
+            return null;
+        }
+
+        var work = EnumerateOrphanModsRoots(root)
+            .Select(r => (ModsRoot: r, Preferred: BatchDrawer(r)))
+            .ToList();
+        if (packageIncompleteRoots is not null) work.AddRange(packageIncompleteRoots);
+
+        foreach (var (modsRoot, batchDrawer) in work)
         {
             List<string> entries;
             try { entries = Directory.GetDirectories(modsRoot).ToList(); } catch { continue; }
@@ -352,18 +409,23 @@ public sealed partial class DepotDownloaderService
                 if (name.StartsWith('.')) continue;
                 if (SmapiBaseMods.Contains(name)) { if (Trash(mod, trash)) trashed++; else left++; continue; }
 
-                var major = SmapiMajorOfModFolder(mod);
-                if (major == 0 || !drawersByMajor.TryGetValue(major, out var drawers) || drawers.Count != 1)
-                { left++; continue; }                       // 判不了 / 没有或不止一个候选 → 不猜
+                var dst0 = batchDrawer;
+                if (dst0 is null)
+                {
+                    var major = SmapiMajorOfModFolder(mod);
+                    if (major == 0 || !drawersByMajor.TryGetValue(major, out var drawers) || drawers.Count != 1)
+                    { left++; continue; }                   // 判不了 / 没有或不止一个候选 → 不猜
+                    dst0 = drawers[0];
+                }
 
-                var dst = Path.Combine(drawers[0], name);
+                var dst = Path.Combine(dst0, name);
                 var liveTwin = gameMods is not null && Directory.Exists(Path.Combine(gameMods, name));
                 if (Directory.Exists(dst) || liveTwin)
                 { if (Trash(mod, trash)) trashed++; else left++; continue; }   // 别处已有同名 = 重复
 
                 try
                 {
-                    Directory.CreateDirectory(drawers[0]);
+                    Directory.CreateDirectory(dst0);
                     if (StorageService.TryMoveTree(mod, dst)) rehomed++;
                     else left++;
                 }
@@ -379,7 +441,9 @@ public sealed partial class DepotDownloaderService
         return line;
     }
 
-    /// <summary>孤儿区里所有"Mods 清单目录"（Mods 或 Mods-&lt;时间戳&gt;，含 _no-smapi/&lt;版本&gt; 这类两层嵌套）。</summary>
+    /// <summary>孤儿区里所有"Mods 清单目录"（Mods 或 Mods-&lt;时间戳&gt;，含 _no-smapi/&lt;版本&gt; 这类两层嵌套）。
+    /// 也含 _copyleft\&lt;版本&gt;-&lt;时间戳&gt; 批次 —— 那批 mod 直接躺在批次目录下、没有 Mods 子层，
+    /// 不认它的话第二批起永远归不了位（FindOrphanModsDir 只取第一个非空批次）。</summary>
     private static List<string> EnumerateOrphanModsRoots(string root)
     {
         var found = new List<string>();
@@ -392,6 +456,11 @@ public sealed partial class DepotDownloaderService
                 var n = Path.GetFileName(s);
                 if (n.Equals("Mods", StringComparison.OrdinalIgnoreCase)
                     || n.StartsWith("Mods-", StringComparison.OrdinalIgnoreCase)) { found.Add(s); continue; }
+                if (n.Equals("_copyleft", StringComparison.OrdinalIgnoreCase))
+                {
+                    try { found.AddRange(Directory.GetDirectories(s)); } catch { }
+                    continue;
+                }
                 if (depth < 3) Walk(s, depth + 1);
             }
         }

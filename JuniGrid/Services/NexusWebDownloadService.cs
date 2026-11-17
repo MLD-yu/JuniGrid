@@ -382,8 +382,9 @@ public sealed class NexusWebDownloadService
     private const string AccountStartUrlFallback = "https://www.nexusmods.com/";
 
     /// <summary>明确没登录时直接开登录页 —— 以前不管登没登录都开游戏分区页，用户得自己在
-    /// 页头找那颗小小的「Log in」，找不到就以为内置浏览器坏了（2026-11-07 用户反馈）。</summary>
-    private const string LoginStartUrl = "https://users.nexusmods.com/auth/login";
+    /// 页头找那颗小小的「Log in」，找不到就以为内置浏览器坏了（2026-11-07 用户反馈）。
+    /// 2026-11-17：Nexus 把登录页改到了 /auth/sign_in，旧的 /auth/login 已是 404。</summary>
+    private const string LoginStartUrl = "https://users.nexusmods.com/auth/sign_in";
     private static bool _accountRetried;
     /// <summary>v1.3.43：这个账号窗口是「因为撞了登录墙」才打开的 —— 登录成功后自动收掉。
     /// 用户自己点「打开内置网页」进来的不算（他可能只是想看看/换号，不该被自动关掉）。</summary>
@@ -425,9 +426,49 @@ public sealed class NexusWebDownloadService
     private static string SignedInCachePath => Path.Combine(StoragePaths.NexusWebDir, "signed-in");
     private static string AccountNameCachePath => Path.Combine(StoragePaths.NexusWebDir, "account-name.txt");
 
+    /// <summary>OAuth 授权进行中时的授权链接：「使用其它账号登录」清完 cookie 后回到这里，
+    /// 回调到达后清空。null = 当前不在授权流程里。</summary>
+    private static string? _pendingAuthorizeUrl;
+    /// <summary>授权还没回调用户就把窗口关了 —— 让等待中的 OAuth 立刻收场，不用干等 5 分钟。</summary>
+    private static Action? _authorizeAbandoned;
+
+    /// <summary>在内置网页里走 OAuth 授权：登录发生在下载通道同一个 profile 里，
+    /// 授权完 API 账号和内置网页账号就是同一个号，不用再登第二次。</summary>
+    public async Task OpenAuthorizeAsync(string authorizeUrl, Action onAbandoned)
+    {
+        _pendingAuthorizeUrl = authorizeUrl;
+        _authorizeAbandoned = onAbandoned;
+        await OpenAccountWindowAsync(startUrl: authorizeUrl);
+    }
+
+    public async Task CompleteAuthorizeAsync()
+    {
+        var dispatcher = Application.Current?.Dispatcher;
+        if (dispatcher is null) return;
+        await dispatcher.InvokeAsync(() =>
+        {
+            if (_pendingAuthorizeUrl is null || _accountView?.CoreWebView2 is null) return;
+            _pendingAuthorizeUrl = null;
+            _authorizeAbandoned = null;
+            _closeAfterLogin = true;
+            _accountView.CoreWebView2.Navigate(AccountStartUrl);
+        });
+    }
+
+    /// <summary>授权流程结束（成功 / 失败 / 取消）。还停在授权页上就把窗口关掉 ——
+    /// 回调监听器已经停了，再点 Authorise 只会落到一个打不开的页面。</summary>
+    public void EndAuthorize()
+    {
+        var stillPending = _pendingAuthorizeUrl is not null;
+        _pendingAuthorizeUrl = null;
+        _authorizeAbandoned = null;
+        if (stillPending) _ = Application.Current?.Dispatcher.InvokeAsync(() => _accountWindow?.Close());
+    }
+
     /// <summary>显示使用下载通道同一 profile 的 Nexus 网页，让用户登录或切换账号。</summary>
     /// <param name="closeAfterLogin">true = 这是「登录墙」打开的窗口，登录成功后自动关掉。</param>
-    public async Task OpenAccountWindowAsync(bool closeAfterLogin = false)
+    /// <param name="startUrl">指定入口；null = 按登录状态选分区页或登录页。</param>
+    public async Task OpenAccountWindowAsync(bool closeAfterLogin = false, string? startUrl = null)
     {
         _closeAfterLogin = closeAfterLogin;
         AppLog.Info("NexusWeb", "用户请求打开内置 Nexus 网页账号窗口");
@@ -440,6 +481,7 @@ public sealed class NexusWebDownloadService
                 _accountWindow.Left = SystemParameters.WorkArea.Left + 80;
                 _accountWindow.Top = SystemParameters.WorkArea.Top + 60;
                 _accountWindow.Activate();
+                if (startUrl is not null) _accountView?.CoreWebView2?.Navigate(startUrl);
                 return;
             }
             _accountRetried = false;   // 每次开窗都允许换入口重试一次
@@ -449,6 +491,12 @@ public sealed class NexusWebDownloadService
             var env = await HiddenHost.GetSharedEnvironmentAsync(profile);
             var view = new WebView2();
             var root = new System.Windows.Controls.Grid();
+            root.RowDefinitions.Add(new System.Windows.Controls.RowDefinition { Height = GridLength.Auto });
+            root.RowDefinitions.Add(new System.Windows.Controls.RowDefinition());
+            var accountBar = BuildAccountBar(() => SwitchAccount(view));
+            accountBar.Visibility = Visibility.Collapsed;
+            root.Children.Add(accountBar);
+            System.Windows.Controls.Grid.SetRow(view, 1);
             root.Children.Add(view);
             var loading = new System.Windows.Controls.TextBlock
             {
@@ -461,6 +509,7 @@ public sealed class NexusWebDownloadService
                 Foreground = System.Windows.Media.Brushes.DimGray,
                 FontSize = 16,
             };
+            System.Windows.Controls.Grid.SetRow(loading, 1);
             root.Children.Add(loading);
             var window = new Window
             {
@@ -474,6 +523,14 @@ public sealed class NexusWebDownloadService
             {
                 _accountWindow = null; _accountView = null;
                 try { view.Dispose(); } catch { }
+                if (_pendingAuthorizeUrl is not null)
+                {
+                    AppLog.Info("NexusWeb", "授权还没完成，用户关掉了内置网页");
+                    var abandoned = _authorizeAbandoned;
+                    _pendingAuthorizeUrl = null;
+                    _authorizeAbandoned = null;
+                    abandoned?.Invoke();
+                }
             };
             // 关窗前再探一次：用户可能刚在里面点了 Sign out 就顺手关窗，
             // 2 秒的轮询未必赶得上（v1.3.42）
@@ -497,14 +554,54 @@ public sealed class NexusWebDownloadService
             await view.EnsureCoreWebView2Async(env);
             view.CoreWebView2.Settings.AreDefaultContextMenusEnabled = true;
             view.CoreWebView2.Settings.AreDevToolsEnabled = false;
+            view.CoreWebView2.NewWindowRequested += (_, e) =>
+            {
+                if (!Uri.TryCreate(e.Uri, UriKind.Absolute, out var uri)) return;
+                var callback = new Uri(NexusOAuthService.CallbackUrl);
+                if (uri.GetLeftPart(UriPartial.Path) != callback.GetLeftPart(UriPartial.Path)) return;
+                e.Handled = true;
+                view.CoreWebView2.Navigate(e.Uri);
+            };
+            ulong latestNavId = 0;
+            string latestNavUri = "";
+            var sameUrlRetries = 0;
             view.CoreWebView2.NavigationStarting += (_, e) =>
-                AppLog.Info("NexusWeb", "网页登录窗口开始导航：" + e.Uri);
+            {
+                if (!e.IsRedirected && e.Uri != latestNavUri) sameUrlRetries = 0;
+                latestNavId = e.NavigationId;
+                latestNavUri = e.Uri;
+                accountBar.Visibility = Visibility.Collapsed;
+                AppLog.Info("NexusWeb", "网页登录窗口开始导航：" + new Uri(e.Uri).GetLeftPart(UriPartial.Path));
+            };
             view.CoreWebView2.NavigationCompleted += async (_, e) =>
             {
+                // 被新导航顶掉的那次（比如连点「使用其它账号登录」）也会报失败，不算数
+                if (e.NavigationId != latestNavId) return;
                 if (!e.IsSuccess)
                 {
                     var message = $"Nexus 页面加载失败：{e.WebErrorStatus}\n地址：{view.Source}";
                     AppLog.Warn("NexusWeb", message);
+
+                    // 登录 / 授权页（users.nexusmods.com）断一下多半是代理抖动：原地重开，
+                    // 绝不能跳去 www 分区页 —— 那会把授权流程整个丢掉（2026-11-17 实机）。
+                    var failedUri = Uri.TryCreate(latestNavUri, UriKind.Absolute, out var u) ? u : null;
+                    if (failedUri?.Host == "users.nexusmods.com")
+                    {
+                        if (sameUrlRetries < 2)
+                        {
+                            sameUrlRetries++;
+                            AppLog.Info("NexusWeb", $"登录页没打开，原地重试第 {sameUrlRetries} 次");
+                            loading.Text = "Nexus 登录页没打开，正在重试…";
+                            loading.Visibility = Visibility.Visible;
+                            await Task.Delay(800);
+                            if (e.NavigationId != latestNavId || _accountView != view) return;
+                            view.CoreWebView2?.Navigate(failedUri.AbsoluteUri);
+                            return;
+                        }
+                        loading.Text = $"Nexus 登录页打不开（{e.WebErrorStatus}）\n请检查网络 / 加速器后，关闭窗口并重新打开。";
+                        loading.Visibility = Visibility.Visible;
+                        return;
+                    }
 
                     // v1.3.39：一次失败不代表网络断了 —— 根路径和分区页在这台机器上的
                     // Cloudflare 待遇不同（2026-11-05 01:35 实测根路径 Unknown）。两个入口都试过再报错。
@@ -524,7 +621,9 @@ public sealed class NexusWebDownloadService
                     loading.Visibility = Visibility.Visible;
                     return;
                 }
-                AppLog.Info("NexusWeb", "网页登录窗口导航完成：" + view.Source);
+                AppLog.Info("NexusWeb", "网页登录窗口导航完成：" + view.Source?.GetLeftPart(UriPartial.Path));
+                accountBar.Visibility = ShouldShowAccountSwitcher(view.Source, _pendingAuthorizeUrl is not null)
+                    ? Visibility.Visible : Visibility.Collapsed;
                 loading.Visibility = Visibility.Collapsed;
                 await TryCaptureAccountNameAsync(view);
             };
@@ -556,10 +655,85 @@ public sealed class NexusWebDownloadService
             // v1.3.39：先开游戏分区页 —— 隐藏下载窗口一直靠这类页面过 Cloudflare，
             // 而根路径在这台机器上会被挡（实测 Unknown）。
             // v1.3.59：没登录就直接进登录页（否则用户面对首页找不到入口）。
-            var startUrl = SignedIn ? AccountStartUrl : LoginStartUrl;
+            startUrl ??= SignedIn ? AccountStartUrl : LoginStartUrl;
             view.CoreWebView2.Navigate(startUrl);
-            AppLog.Info("NexusWeb", "内置 Nexus 网页账号窗口已显示，入口=" + startUrl);
+            AppLog.Info("NexusWeb", "内置 Nexus 网页账号窗口已显示，入口="
+                + (startUrl == _pendingAuthorizeUrl ? "OAuth 授权页" : startUrl));
         }).Task.Unwrap();
+    }
+
+    internal static bool ShouldShowAccountSwitcher(Uri? uri, bool authorizationPending) =>
+        authorizationPending && uri is { IsAbsoluteUri: true }
+        && uri.Scheme == Uri.UriSchemeHttps
+        && uri.Host == "users.nexusmods.com"
+        && uri.AbsolutePath == "/oauth/authorize";
+
+    private static System.Windows.Controls.Border BuildAccountBar(Action onSwitch)
+    {
+        var tan = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xD2, 0xB4, 0x8C));
+        var tanHover = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xC4, 0xA2, 0x76));
+
+        // 默认 Button 模板会用系统蓝盖掉悬停色，这里换成只认 Background 的圆角模板
+        var face = new FrameworkElementFactory(typeof(System.Windows.Controls.Border));
+        face.SetValue(System.Windows.Controls.Border.CornerRadiusProperty, new CornerRadius(14));
+        face.SetValue(System.Windows.Controls.Border.PaddingProperty, new Thickness(16, 5, 16, 5));
+        face.SetBinding(System.Windows.Controls.Border.BackgroundProperty, new System.Windows.Data.Binding("Background")
+        {
+            RelativeSource = System.Windows.Data.RelativeSource.TemplatedParent,
+        });
+        var content = new FrameworkElementFactory(typeof(System.Windows.Controls.ContentPresenter));
+        content.SetValue(FrameworkElement.HorizontalAlignmentProperty, HorizontalAlignment.Center);
+        content.SetValue(FrameworkElement.VerticalAlignmentProperty, VerticalAlignment.Center);
+        face.AppendChild(content);
+
+        var button = new System.Windows.Controls.Button
+        {
+            Content = LocService.Tr("使用其它账号登录"),
+            Template = new System.Windows.Controls.ControlTemplate(typeof(System.Windows.Controls.Button)) { VisualTree = face },
+            Background = tan,
+            Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x3B, 0x2A, 0x1A)),
+            FontSize = 13,
+            Cursor = System.Windows.Input.Cursors.Hand,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Margin = new Thickness(0, 7, 12, 7),
+        };
+        button.MouseEnter += (_, _) => button.Background = tanHover;
+        button.MouseLeave += (_, _) => button.Background = tan;
+        button.Click += (_, _) => onSwitch();
+
+        return new System.Windows.Controls.Border
+        {
+            Background = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x1C, 0x1C, 0x1C)),
+            Child = button,
+        };
+    }
+
+    private static DateTime _lastSwitchAt;
+
+    /// <summary>「使用其它账号登录」：清掉内置 profile 的登录态再回到入口 ——
+    /// 授权流程里回到授权页（Nexus 会先要求登录），否则回登录页。</summary>
+    private void SwitchAccount(WebView2 view)
+    {
+        var core = view.CoreWebView2;
+        if (core is null) return;
+        // 连点会让第二下把第一下的导航顶掉（2026-11-17 实机：0.8 秒内点了两下）
+        if (DateTime.UtcNow - _lastSwitchAt < TimeSpan.FromSeconds(2)) return;
+        _lastSwitchAt = DateTime.UtcNow;
+        AppLog.Info("NexusWeb", "使用其它账号登录：清空内置网页登录态");
+        ClearWebSession(core);
+        core.Navigate(_pendingAuthorizeUrl ?? LoginStartUrl);
+    }
+
+    private void ClearWebSession(CoreWebView2 core)
+    {
+        core.CookieManager.DeleteAllCookies();
+        _accountName = null;
+        _signedIn = false;
+        // 不复位的话：界面被推成「未登录」，新号登上后探测到的 true 与旧值相同，就不会再通知界面
+        _publishedSignedIn = false;
+        try { File.Delete(AccountNameCachePath); File.Delete(SignedInCachePath); } catch { }
+        AccountNameChanged?.Invoke(null);
+        SignedInChanged?.Invoke(false);
     }
 
     /// <summary>v1.3.39：页面里「当前登录账号」的探测脚本。
@@ -668,13 +842,13 @@ public sealed class NexusWebDownloadService
                     _publishedSignedIn = signed;
                     AppLog.Info("NexusWeb", signed ? "网页账号状态：已登录" : "网页账号状态：未登录");
                     SignedInChanged?.Invoke(signed);
-                    // v1.3.43：刚登录成功就把账号窗口收掉 —— 用户点完登录不用再手动关一次。
-                    // 留 1.2 秒让他看见页面已经变成登录态，不至于以为"点了就消失"。
-                    if (signed && _closeAfterLogin)
-                    {
-                        _closeAfterLogin = false;
-                        CloseAccountWindowSoon();
-                    }
+                }
+                // v1.3.43：刚登录成功就把账号窗口收掉 —— 用户点完登录不用再手动关一次。
+                // 放在「状态变了」外面：授权前网页可能本来就登着同一个号，状态不会变，窗口也得收。
+                if (signed && _closeAfterLogin)
+                {
+                    _closeAfterLogin = false;
+                    CloseAccountWindowSoon();
                 }
             }
 
@@ -769,12 +943,7 @@ public sealed class NexusWebDownloadService
         await dispatcher.InvokeAsync(async () =>
         {
             if (_accountView is null) throw new InvalidOperationException("内置 Nexus 网页窗口尚未准备好");
-            _accountView.CoreWebView2.CookieManager.DeleteAllCookies();
-            _accountName = null;
-            _signedIn = false;
-            try { File.Delete(AccountNameCachePath); File.Delete(SignedInCachePath); } catch { }
-            AccountNameChanged?.Invoke(null);
-            SignedInChanged?.Invoke(false);
+            ClearWebSession(_accountView.CoreWebView2);
             _accountView.CoreWebView2.Navigate("https://www.nexusmods.com/");
         }).Task.Unwrap();
     }

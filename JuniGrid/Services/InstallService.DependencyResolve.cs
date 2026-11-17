@@ -320,7 +320,7 @@ public sealed partial class InstallService
         var list = new List<NexusModListEntry>();
         var seen = new HashSet<int>();
         var answered = false;
-        foreach (var term in UidSearchTerms(uid))
+        async Task<bool> TryTermAsync(string term)
         {
             List<NexusModListEntry>? hits = null;
             try
@@ -332,8 +332,9 @@ public sealed partial class InstallService
                     searchText: term, forceIncludeAdult: true);
             }
             catch { }
-            if (hits is null) continue;
+            if (hits is null) return false;   // 没答上：不算命中，也不算"搜过"
             answered = true;
+            var before = list.Count;
             foreach (var h in hits)
             {
                 if (h.Id <= 0 || !seen.Add(h.Id)) continue;
@@ -346,10 +347,33 @@ public sealed partial class InstallService
                 }
                 list.Add(h);
             }
+            return list.Count > before;
+        }
+        foreach (var term in UidSearchTerms(uid))
+        {
+            await TryTermAsync(term);
             if (list.Count >= 12) break;   // 候选上限，防跑飞
         }
+        // v1.6.0：主词一条都没捞到时才继续猜 —— 每多一个词就是一次 GraphQL 请求，
+        // 常见依赖不该为这条兜底多付流量（实机 2026-11-15 的两条误判都出在这里）。
+        if (list.Count == 0)
+            foreach (var term in UidFallbackSearchTerms(uid))
+            {
+                await TryTermAsync(term);
+                if (list.Count >= 12) break;
+            }
         // 作者段能对上的候选排前面：下载数高≠就是它（搜 "Miku" 下载第一是别人的皮肤包）
-        return (RankByAuthor(uid, list), answered);
+        var ranked = RankByAuthor(uid, list);
+        // 下载有代价（配额 + 用户的 N 网流量），所以先过一遍「作者段＋名字段」双闸再下载。
+        // 兜底搜索词就是作者段时，它会把该作者名下的<b>全部</b> mod 灌进候选池，池里每行亲和度
+        // 都是满分，排序只能退回下载数 —— 实机 2026-11-15：aedenthorn.CustomWallsAndFloors
+        // 连下三个（Free Love / Multiple Spouses / Extra Map Layers），三个都因 UID 不符被拒，
+        // 用户看着"1 个失败"却白扣了四次下载。
+        var identified = ranked.Where(h => SearchHitIdentifies(uid, h.Name, h.Uploader)).ToList();
+        if (identified.Count > 0) return (identified, answered);
+        // 一个都过不了闸时才盲试最热的一条：页面名与 UID 名字段对不上的<b>真</b>依赖
+        //（Nom0ri.RomRas ↔「Romanceable Rasmodia - Female Wizard」）只能靠下载后的 UID 校验认。
+        return (ranked.Take(1).ToList(), answered);
     }
 
     /// <summary>premiumBlocked 快速通道专用：只找一个候选 id 生成手动链接
@@ -358,13 +382,42 @@ public sealed partial class InstallService
     /// 一个都不过时宁可返回 null（转"未找到"开搜索页人工确认），
     /// 也不能把人领到同作者另一个 mod 的页面上 —— 那条链接是"人工确认"的入口，
     /// 喂给它一个错页等于让人确认一个错答案。</summary>
-    private async Task<NexusModListEntry?> FirstCandidateAsync(
+    private async Task<(NexusModListEntry? Face, bool Answered)> FirstCandidateAsync(
         JuniGridConfig cfg, string uid, IReadOnlyDictionary<string, int>? preResolved,
         IReadOnlyList<int>? parentModIds = null)
     {
         var known = await KnownCandidatesAsync(cfg, uid, preResolved, parentModIds: parentModIds);
-        if (known.Count > 0) return known[0];
+        if (known.Count > 0) return (known[0], true);
         var hits = await SearchDependencyCandidatesAsync(uid);
-        return hits.Hits.FirstOrDefault(h => SearchHitIdentifies(uid, h.Name, h.Uploader));
+        // Answered 一并带出去：搜索没答上（断网/限流）和"问过了确实没有"是两件事，
+        // 以前的调用方拿到 null 一律印「Nexus 搜索不到匹配的 mod」—— 网络抖一下就替用户判死。
+        return (hits.Hits.FirstOrDefault(h => SearchHitIdentifies(uid, h.Name, h.Uploader)), hits.Answered);
+    }
+
+    /// <summary>缺失依赖的「同页分支」：它解析到的页面 <paramref name="pageId"/>，本机已装着
+    /// 另一个 UID 的 mod，且该页当前主文件（<paramref name="mainFileId"/>）就是装上的那份
+    /// （见 <see cref="NexusUpdateTruth.IsCurrentMainInstalled"/>）⇒ 再下载也是同一个包，
+    /// 满足不了要求的 UID。返回那条已装条目；认不出就返回 null，不拦。
+    /// <para>起因（实机 2026-11-16）：Durin's Rest 装饰包要 <c>aedenthorn.CustomWallsAndFloors</c>，
+    /// 而 3010 页已换成 Platonymous 的 Redux（2.1.7 / fileId 24229），本机装的正是它。两代名字
+    /// 封面全同，「缺少依赖」那行看起来和已装行一模一样；一键安装反复下同一个包、反复被
+    /// UID 校验拒，白耗下载额度。SMAPI 没有别名机制（ContentPackFor 按必需依赖处理，
+    /// ModMetadata.HasId 是 OrdinalIgnoreCase 整串相等），装再多遍也解不开。</para>
+    /// <para>并列一律不认：同一页有多个不同 UID 的已装条目时，指不出「再下会装到谁」，
+    /// 交给下载后的 UID 校验兜底。台账缺失同理。</para></summary>
+    internal static ModEntry? SamePageForkEntry(IEnumerable<ModEntry> mods, JuniGridConfig cfg,
+        int pageId, long mainFileId, string requiredUid)
+    {
+        if (pageId <= 0 || mainFileId <= 0) return null;
+        ModEntry? hit = null;
+        foreach (var m in mods)
+        {
+            if (m.NexusModId != pageId || string.IsNullOrWhiteSpace(m.UniqueID)) continue;
+            if (m.UniqueID.Trim().Equals(requiredUid, StringComparison.OrdinalIgnoreCase)) continue;
+            if (hit is not null) return null;   // 并列：不指认
+            hit = m;
+        }
+        return hit is not null && NexusUpdateTruth.IsCurrentMainInstalled(cfg, hit, pageId, mainFileId)
+            ? hit : null;
     }
 }

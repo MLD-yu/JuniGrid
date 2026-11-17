@@ -16,7 +16,7 @@
     var opts = (_tab == "custom" ? CategoryIconService.CustomIcons() : Options()).ToList();
     <div class="jg-dlg-overlay" @onclick="Close">
         <div class="jg-dialog jg-cat-icon-dialog" @onclick:stopPropagation>
-            <div class="jg-remark-title">@Loc.F("给「{0}」选个图标", Title)</div>
+            <div data-notrans class="jg-remark-title">@Loc.F("给「{0}」选个图标", Title)</div>
             @* 页签：.jg-icon-glider 由 JS 贴着当前项定位（下划线，见 mods.css） *@
             <div class="jg-icon-tabs" data-active="@TabIndex">
                 <span class="jg-icon-glider" aria-hidden="true"></span>

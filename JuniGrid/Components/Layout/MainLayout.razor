@@ -8,10 +8,10 @@
 @implements IDisposable
 
 <div class="jg-shell" @onclick="OnAnyClickProbe" @onclick:stopPropagation="false">
-    <TitleBar />
+    <TitleBar OnDonate="OpenSponsorPanel" />
 
     <div class="jg-body">
-        <AccountPanel />
+        <AccountPanel @ref="_accountPanel" />
 
         <div class="jg-content">
             <TopNav />
@@ -33,6 +33,11 @@
 <WelcomeGuide />
 
 @code {
+    /// <summary>v1.3.5：标题栏打赏按钮的落点 —— 赞助弹窗住在常驻的 AccountPanel 里。</summary>
+    private AccountPanel? _accountPanel;
+
+    private void OpenSponsorPanel() => _accountPanel?.OpenSponsorPanel();
+
     protected override void OnInitialized()
     {
         Nav.LocationChanged += OnLocChanged;

@@ -110,8 +110,8 @@ public partial class UninstallWindow : Window
                 StopIndeterminate();
                 WorkingScreen.Visibility = Visibility.Collapsed;
                 DoneMessage.Text = _purgeUserData
-                    ? "JuniGrid 已卸载。安装目录、缓存、设置、Nexus 登录状态和收起来的存档副本将在此窗口关闭后彻底删除，删完找不回来。结果见 %TEMP%\\JuniGrid-uninstall-report.txt。"
-                    : "JuniGrid 已卸载。安装目录会整个清空（包括旧版备份、调试文件等残留）；缓存、设置和登录状态保留。结果见 %TEMP%\\JuniGrid-uninstall-report.txt。";
+                    ? "JuniGrid 已卸载。程序文件、缓存、设置、Nexus 登录状态和收起来的存档副本将在此窗口关闭后删除，删完找不回来（安装目录里不属于本程序的东西仍会留下）。结果见 %TEMP%\\JuniGrid-uninstall-report.txt。"
+                    : "JuniGrid 已卸载。只删除了安装清单里登记的程序文件；安装目录里你自己放的东西（mods、素材、备份等）、缓存、设置和登录状态全部原样保留。结果见 %TEMP%\\JuniGrid-uninstall-report.txt。";
                 DoneScreen.Visibility = Visibility.Visible;
             }, TaskScheduler.FromCurrentSynchronizationContext());
     }
@@ -273,7 +273,8 @@ public partial class UninstallWindow : Window
             var appData = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "JuniGrid");
             var localAppData = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "JuniGrid");
             var manifest = ReadInstallManifest(_installDir);
-            if (manifest.Count == 0) manifest = ["JuniGrid.exe", "Uninstall.exe"];
+            var hadManifest = manifest.Count > 0;
+            if (!hadManifest) manifest = ["JuniGrid.exe", "Uninstall.exe"];
             // Uninstall.exe 是解包后从 JuniGrid.exe 复制出来的，不在 payload 清单里 ——
             // 不补进来的话普通卸载会留下一个还能双击的卸载器副本。
             foreach (var extra in new[] { "Uninstall.exe", ManifestFile })
@@ -283,6 +284,7 @@ public partial class UninstallWindow : Window
                 ParentPid = Environment.ProcessId,
                 InstallDir = _installDir,
                 ManifestFiles = manifest,
+                HadManifest = hadManifest,
                 PurgeUserData = _purgeUserData,
                 AppDataDir = appData,
                 LocalAppDataDir = localAppData,
@@ -418,8 +420,8 @@ function Remove-EmptyTree([string]$root) {
 }
 
 # 安装目录读不出来、或它本身就是磁盘根（C:\）⇒ 一个文件都不动。
-# 彻底删除那支是整棵递归删，传进来一个盘根就等于格盘；
-# InstallRecycle.cs 的回收口有同一道闸，两边判据必须一致。
+# 现在这里已经不做整棵递归了（只按清单删），但闸不能撤：路径解析失败时下面的 Join-Path
+# 会退化成相对路径，删的就不再是我们以为的那个目录。InstallRecycle.cs 的回收口有同一道闸。
 $root = $null
 if (-not [string]::IsNullOrWhiteSpace([string]$plan.InstallDir)) {
   try { $root = [IO.Path]::GetFullPath([string]$plan.InstallDir).TrimEnd('\') } catch { $root = $null }
@@ -433,9 +435,10 @@ if (-not $root) {
   exit
 }
 
-# 用户数据 / 缓存的位置。普通卸载要「整个清空安装目录」，但这几处即便被用户指到了
-# 安装目录里面（cacheRoot 指过来是常见操作），也一个字节都不能碰 —— 那是他的缓存和存档副本，
-# 不是程序文件。plan 里这几项平时在 %APPDATA% / %LOCALAPPDATA%，只有落在 $root 里面才需要保护。
+# 用户数据 / 缓存的位置。清单是装机时写的、理论上不含这些目录，但这道保护不能省：
+# cacheRoot 指到安装目录里面是常见操作，一旦清单里出现了那里的文件（或清单被改过），
+# 按清单删就会顺手删掉用户的缓存和存档副本。plan 里这几项平时在 %APPDATA% /
+# %LOCALAPPDATA%，只有落在 $root 里面才需要保护。
 $script:ProtectedPaths = @()
 foreach ($p in @($plan.AppDataDir, $plan.LocalAppDataDir, $plan.LegacyTempDir) + @($plan.CustomCacheDirs)) {
   if ([string]::IsNullOrWhiteSpace([string]$p)) { continue }
@@ -444,7 +447,7 @@ foreach ($p in @($plan.AppDataDir, $plan.LocalAppDataDir, $plan.LegacyTempDir) +
     if ($pf.StartsWith($root + '\', [StringComparison]::OrdinalIgnoreCase)) { $script:ProtectedPaths += $pf }
   } catch { }
 }
-foreach ($pr in $script:ProtectedPaths) { Trace ('[卸收] 受保护子树（用户数据/缓存，普通卸载不动）: ' + $pr) }
+foreach ($pr in $script:ProtectedPaths) { Trace ('[卸收] 受保护子树（落进安装目录的用户数据/缓存，按清单删时跳过）: ' + $pr) }
 function Test-Protected([string]$p) {
   foreach ($pr in $script:ProtectedPaths) {
     if ($p.Equals($pr, [StringComparison]::OrdinalIgnoreCase) -or
@@ -453,36 +456,76 @@ function Test-Protected([string]$p) {
   return $false
 }
 
-if ($plan.PurgeUserData) {
-  Trace '[卸收] 彻底删除：安装目录 + 设置 + 本地数据 + 旧临时 + 自定缓存，一起删'
+# 安装目录里的程序文件：<b>两种模式走同一条路</b>，只按清单删。
+#
+# 「彻底删除」的语义是「连缓存/设置/登录态一起清掉」，不是「安装目录里非本程序的东西
+# 也删掉」。以前这里在彻底删除那支是整棵 Remove-Tree $root —— 等于给"多删缓存"这个
+# 附加动作配了一把全目录删除的钥匙：安装目录可以是 C:\Users\<名>，也可以是装了几十 GB
+# 素材的文件夹，一次递归就是灾难，而盘根闸（只认 'C:\' 这种写法）根本拦不住。
+#
+# 判断「是不是我们的文件」的唯一可信来源是装机那一刻写的 junigrid-files.txt，
+# 不是目录叫什么名字，也不是用户勾没勾那个框。所以：
+# ① 清单里有的才删；② 每个登记文件的同基名残骸（热替换留下的 .bak-*/.old/.pdb）一起收，
+# 名字锁死在我们自己的文件名上，不会误伤 mods 里的同名 DLL；③ 非空目录一律留着；
+# ④ 没有清单（更早版本装的）⇒ 只删主程序与卸载器，其余原样留下并报回去，宁可留残骸也不猜。
+Trace ('[卸收] 按清单删程序文件（含 .bak-*/.old/.pdb 残骸）‖ 彻底删除=' + [bool]$plan.PurgeUserData)
+$manifest = @($plan.ManifestFiles | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+Trace ('[卸收] 清单条目 ' + $manifest.Count + ' 条')
+if ($plan.HadManifest -eq $false) {
+  Trace '[卸收] 这个安装目录没有安装清单（更早版本装的）⇒ 只删主程序与卸载器，其余原样保留，绝不按目录名猜'
+}
+foreach ($rel in $manifest) {
+  $full = $null
+  try {
+    $full = [IO.Path]::GetFullPath((Join-Path $root ([string]$rel -replace '/', '\'))).TrimEnd('\')
+  } catch { continue }
+  if (-not $full.StartsWith($root + '\', [StringComparison]::OrdinalIgnoreCase)) { continue }
+  if (Test-Protected $full) { continue }
+  if (Test-Path -LiteralPath $full -PathType Leaf) { Remove-Tree $full }
+
+  # 同基名残骸：JuniGrid.dll.bak-20261112-013547、JuniGrid.exe.old、JuniGrid.pdb
+  $dir = Split-Path -Parent $full
+  $leaf = Split-Path -Leaf $full
+  $stem = [IO.Path]::GetFileNameWithoutExtension($leaf)
+  if (-not $dir -or -not (Test-Path -LiteralPath $dir -PathType Container)) { continue }
+  foreach ($sib in @(Get-ChildItem -LiteralPath $dir -File -Force -ErrorAction SilentlyContinue)) {
+    $n = $sib.Name
+    if ($n -eq $leaf) { continue }
+    if ($n.StartsWith($leaf + '.bak', [StringComparison]::OrdinalIgnoreCase) -or
+        $n.Equals($leaf + '.old', [StringComparison]::OrdinalIgnoreCase) -or
+        $n.Equals($stem + '.pdb', [StringComparison]::OrdinalIgnoreCase)) {
+      if (-not (Test-Protected $sib.FullName)) { Remove-Tree $sib.FullName }
+    }
+  }
+}
+# 清单文件自己也要删（plan 的 ManifestFiles 里通常已经带了它，这里兜一层）：
+# 留着它就是一份指向已消失文件的表，下次回收/卸载还会读到它。
+$mfPath = Join-Path $root 'junigrid-files.txt'
+if ((Test-Path -LiteralPath $mfPath -PathType Leaf) -and -not (Test-Protected $mfPath)) { Remove-Tree $mfPath }
+
+# 自底向上收掉「因为删了我们的文件才空掉」的目录。非空的一律留着 —— 里面是用户的东西。
+foreach ($d in @(Get-ChildItem -LiteralPath $root -Recurse -Force -Directory -ErrorAction SilentlyContinue |
+                 Sort-Object { $_.FullName.Length } -Descending)) {
+  if (Test-Protected $d.FullName) { continue }
+  if (-not (Get-ChildItem -LiteralPath $d.FullName -Force -ErrorAction SilentlyContinue | Select-Object -First 1)) {
+    Remove-Item -LiteralPath $d.FullName -Force -ErrorAction SilentlyContinue
+  }
+}
+# 根目录空了才删它自己（还有别的目录时就留着，否则会把用户资源一起端走）
+if (-not (Get-ChildItem -LiteralPath $root -Force -ErrorAction SilentlyContinue | Select-Object -First 1)) {
   Remove-Tree $root
+}
+
+# 彻底删除 = 上面那套之外，再把「我们自己的」数据清掉：设置、登录态、缓存、旧临时。
+# 它不再有权动安装目录里的任何东西 —— 除了清单登记的文件，那里面剩下的都不是我们的。
+if ($plan.PurgeUserData) {
+  Trace '[卸收] 彻底删除：再清设置、登录态、缓存与旧临时目录'
   Remove-Tree $plan.AppDataDir
   Remove-Tree $plan.LocalAppDataDir
   Remove-Tree $plan.LegacyTempDir
   foreach ($path in $plan.CustomCacheDirs) { Trace ('[卸收]   删缓存: ' + $path); Remove-Tree $path }
 } else {
-  # 普通卸载 = 「把安装目录清干净，但保留用户数据」。
-  # 安装目录里本该只有程序文件；旧版热替换留下的 .bak-*/.old/.pdb、以及清单没记到的
-  # 生成物，都靠这段递归收掉 —— 只按清单删会留下一堆残骸（实测 131MB）。
-  # 用户数据全都放在上面的受保护子树里，所以递归不会碰到它们。
-  Trace '[卸收] 普通卸载：递归清空安装目录（保留设置/登录/缓存）'
-  # 1) 删文件（带重试），跳过受保护子树
-  foreach ($f in @(Get-ChildItem -LiteralPath $root -Recurse -Force -File -ErrorAction SilentlyContinue)) {
-    if (Test-Protected $f.FullName) { continue }
-    Remove-Tree $f.FullName
-  }
-  # 2) 自底向上收掉空目录，同样跳过受保护子树；浅层后处理，保证先删子再删父
-  foreach ($d in @(Get-ChildItem -LiteralPath $root -Recurse -Force -Directory -ErrorAction SilentlyContinue |
-                   Sort-Object { $_.FullName.Length } -Descending)) {
-    if (Test-Protected $d.FullName) { continue }
-    if (-not (Get-ChildItem -LiteralPath $d.FullName -Force -ErrorAction SilentlyContinue | Select-Object -First 1)) {
-      Remove-Item -LiteralPath $d.FullName -Force -ErrorAction SilentlyContinue
-    }
-  }
-  # 3) 根目录空了才删它自己（还有受保护子树时就留着，否则会把缓存一起端走）
-  if (-not (Get-ChildItem -LiteralPath $root -Force -ErrorAction SilentlyContinue | Select-Object -First 1)) {
-    Remove-Tree $root
-  }
+  Trace '[卸收] 普通卸载：设置、登录态、缓存全部保留'
 }
 $left = @()
 if (Test-Path -LiteralPath $root) { $left += Get-ChildItem -LiteralPath $root -Force | ForEach-Object { $_.Name } }
@@ -493,7 +536,8 @@ $head = if ($plan.PurgeUserData) { '彻底删除：' } else { '卸载：' }
 if ($left.Count -eq 0) {
   ($head + '安装目录已清空，程序文件全部移除。') | Set-Content -LiteralPath $plan.ReportPath -Encoding UTF8
 } else {
-  @($head + '以下项目仍在磁盘上（不属于程序文件，或当前被占用）：') + $left |
+  $why = if ($plan.HadManifest -eq $false) { '（这份安装没有文件清单，为免误删，只删了主程序和卸载器）' } else { '（不是本程序的安装文件，或当前被占用 —— 我们一个都没动）' }
+  @($head + '以下项目仍在磁盘上' + $why + '：') + $left |
     Set-Content -LiteralPath $plan.ReportPath -Encoding UTF8
 }
 Remove-Item -LiteralPath $planPath -Force

@@ -236,6 +236,8 @@ public static partial class ContentOverrideService
                 OriginalSha256 = File.Exists(OriginalPath(gamePath, it.Asset)) ? Sha256(OriginalPath(gamePath, it.Asset)) : "",
                 AppliedSha256 = Sha256Of(it.Bytes), StoreId = storeId, Enabled = true,
                 Encoded = it.Encoded, PackTitle = packName, PackDir = packDir, Version = version,
+                // v1.6.14：记住"是在这一版下装的" —— 切走再切回来要按它恢复（切走时不会被记住）。
+                AppliedVersions = version.Length > 0 ? new List<string> { version } : new(),
                 // 装成功 ≠ 全装上了。没装上的那几个数与名字要留在账上，界面上才说得出"为什么
                 // 那几个角色没变"；只写进日志的话，等人来问的时候日志早就滚走了。
                 SkippedCount = plan.Rejects.Count,

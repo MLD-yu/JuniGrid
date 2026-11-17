@@ -68,7 +68,32 @@ public sealed partial class InstallService
             var s = Alnum(seg);
             if (s.Length >= 3 && tokens.Contains(s, StringComparer.Ordinal)) return 1;
         }
-        return 0;
+        // ④ 合并驼峰 / 缩写结尾：作者常把名字段写成几个词的连写，页面名却是拆开的一整句。
+        // 上面两档都要求"整串逐字出现"，于是这类 UID 一律 0 分 —— 实机 2026-11-15 用户报的
+        // 「明明能找到却说搜不到」里，两条都是这一档漏的：
+        //   Rafseazz.LunnaCP            → 页面 #6626「Lunna - Astray in Stardew Valley」（作者本人）
+        //   MadDog.HashtagBearFam       → 页面 #16197「Bear Family Custom NPCs - …」（上传者 maddogofblank）
+        // 判据：名字段拆出的实词（≥3 字符）里最多允许一个没在页面名出现，且至少要有一个
+        // ≥4 字符的词真的对上。宁可留一条不认，也不把"只对上 mod/UI/framework 这种泛词"的放进来。
+        var sig = new List<string>();
+        foreach (var seg in tail.Split('.', StringSplitOptions.RemoveEmptyEntries))
+            foreach (var part in CamelSplit(seg).Split(' ', StringSplitOptions.RemoveEmptyEntries))
+            {
+                var t = Alnum(part);
+                if (t.Length >= 3 && !sig.Contains(t, StringComparer.Ordinal)) sig.Add(t);
+            }
+        if (sig.Count == 0) return 0;
+        var miss = 0;
+        var hitLen = 0;
+        foreach (var t in sig)
+        {
+            // 只认"UID 词是页面词的前缀"（fam ↔ Family）；反过来会让 "Scoreboard" 从
+            // "Score" 里抠出命中，那是名字闸最该拦住的那种假阳性。
+            if (tokens.Any(pt => pt == t || pt.StartsWith(t, StringComparison.Ordinal)))
+                hitLen = Math.Max(hitLen, t.Length);
+            else miss++;
+        }
+        return miss <= 1 && hitLen >= 4 ? 1 : 0;
     }
 
     /// <summary>从父包说明里作者亲笔写下的 N 网链接中，挑出<b>唯一</b>一个对得上这个依赖的页面。
@@ -116,7 +141,34 @@ public sealed partial class InstallService
     /// "未找到对应 mod" + 裸 UID、不给链接（例：Nom0ri.RomRas →「Romanceable Rasmodia -
     /// Female Wizard」，页面号其实是对的）。这是有意的取舍 —— 认不出就不指路。</para></summary>
     internal static bool SearchHitIdentifies(string uid, string? name, string? uploader)
-        => AuthorAffinity(uid, uploader) > 0 && NameMatchScore(uid, name) > 0;
+        => AuthorAffinity(uid, uploader) > 0 ? NameMatchScore(uid, name) > 0 : SuccessorPageHoldsName(uid, name);
+
+    /// <summary>作者闸的唯一例外：<b>页面名逐字含有名字段整串</b>，但上传者不是 UID 里那个作者 ——
+    /// 也就是这个 mod 被接手了。实机 2026-11-15：<c>aedenthorn.CustomWallsAndFloors</c> 的页面
+    /// 现在是 Platonymous 的 #3010「Custom Walls And Floors (CWF)」2.1.7（aedenthorn 把一批 mod
+    /// 移交给了社区），作者闸 0 分 → 判「搜不到」，可这一页就是它的家。
+    /// <para>为什么敢放开：要求名字段是<b>至少两个实词</b>拼起来的、连写后不少于 10 个字符、
+    /// 且每个实词都在页面名里逐词对上。"Tilesheets" 这种单个通用词正是这条要挡的 ——
+    /// 实测 <c>Sharogg.Tilesheets</c> 会被「DaisyNiko's Tilesheets」白嫖（既有用例 2026-10-13
+    /// 就是钉这个的）；"Miku"（4 字符）更不行，那是作者闸存在的理由。</para></summary>
+    private static bool SuccessorPageHoldsName(string uid, string? name)
+    {
+        var dot = uid.IndexOf('.');
+        if (dot <= 0 || dot >= uid.Length - 1) return false;
+        var tail = uid[(dot + 1)..];
+        var blob = Alnum(tail);
+        if (blob.Length < 10) return false;
+        var words = new List<string>();
+        foreach (var seg in tail.Split('.', StringSplitOptions.RemoveEmptyEntries))
+            foreach (var part in CamelSplit(seg).Split(' ', StringSplitOptions.RemoveEmptyEntries))
+            {
+                var t = Alnum(part);
+                if (t.Length >= 3) words.Add(t);
+            }
+        if (words.Count < 2) return false;                 // 单个通用词不算证据（Tilesheets）
+        var tokens = NameTokens(name);
+        return words.All(w => tokens.Any(pt => pt == w || pt.StartsWith(w, StringComparison.Ordinal)));
+    }
 
     /// <summary>配置里存着的一条依赖展示信息，今天还配不配再拿出去用。
     /// <para>判据必须在<b>读取处</b>重跑一遍，光有写入处的闸不够：判据收紧之前存下的错答案
@@ -270,5 +322,68 @@ public sealed partial class InstallService
             sb.Append(c);
         }
         return sb.ToString().Trim();
+    }
+
+    /// <summary>UID 里允许出现的字符（SMAPI 建议纯 ASCII；点号是作者段/名字段的分隔）。</summary>
+    private static bool IsUidChar(char c)
+        => c < 128 && (char.IsLetterOrDigit(c) || c is '.' or '_' or '-');
+
+    /// <summary>把清单里那条依赖串洗成 UID。实机 2026-11-15 用户报的「明明能找到却搜不到」里，
+    /// 有一条在日志里长这样：<c>aedenthorn。自定义墙壁和地板…</c> —— 明显是把中文译名接在了
+    /// UID 后面（汉化包改清单留下的）。这种串拿去搜索一定 0 命中，而且跟已装列表比对也永远对不上
+    /// （于是每一轮都被重新当成"缺失"）。
+    /// <para>规则很克制：<b>只用它开头那段 ASCII 的 UID 形状</b>，且那段里必须有点号
+    /// （作者段＋名字段）才认；认不出就原样返回 —— 下游会把它判成"这条依赖串本身是坏的"，
+    /// 走人工确认，而不是继续拿一串中文去搜。</para></summary>
+    internal static string NormalizeDependencyUid(string? raw)
+    {
+        var dep = (raw ?? "").Trim();
+        if (dep.Length == 0) return dep;
+        if (dep.All(IsUidChar)) return dep;
+        var end = 0;
+        while (end < dep.Length && IsUidChar(dep[end])) end++;
+        var head = dep[..end].TrimEnd('.', '_', '-');
+        return head.Contains('.') && head.Length >= 3 ? head : dep;
+    }
+
+    /// <summary>这条依赖串看起来像不像一个 UID（作者段.名字段，纯 ASCII）。</summary>
+    internal static bool LooksLikeUniqueId(string? dep)
+    {
+        var s = (dep ?? "").Trim();
+        if (s.Length < 3 || s[0] == '.' || s[^1] == '.') return false;
+        return s.Contains('.') && s.All(IsUidChar);
+    }
+
+    /// <summary>主搜索词<b>全部 0 命中</b>时的第二轮猜测（只在真要用的时候才发请求，见
+    /// <c>SearchDependencyCandidatesAsync</c>）。
+    /// <para>根因：N 网的 <c>name</c> 过滤是<b>子串</b>匹配，不是分词。整串多一个词、少一个空格，
+    /// 就一条都搜不到 —— 而驼峰拆词产出的那一串恰好常常两头都不对：</para>
+    /// <list type="bullet">
+    /// <item><c>Rafseazz.LunnaCP</c> → "Lunna CP" = <b>0 条</b>；去掉尾部 2 字母缩写 "Lunna" = 31 条，
+    /// 本体 #6626 排第一（实测 2026-11-15）。</item>
+    /// <item><c>MadDog.HashtagBearFam</c> → "Hashtag Bear Fam" = <b>0 条</b>；去掉首词 "Bear Fam" = 22 条，
+    /// 本体 #16197 排第一。</item>
+    /// </list>
+    /// <para>只做这两种"减词"，不做同义改写：候选仍要过 <see cref="SearchHitIdentifies"/> 才敢用。</para></summary>
+    internal static IEnumerable<string> UidFallbackSearchTerms(string uid)
+    {
+        var dot = uid.IndexOf('.');
+        if (dot <= 0 || dot >= uid.Length - 1) yield break;
+        var words = CamelSplit(uid[(dot + 1)..].Trim())
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries).ToList();
+        if (words.Count < 2) yield break;
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        // ① 尾部是 2 字母缩写（CP / AT / SE）：这一截在页面名里从来不存在
+        if (words[^1].Length <= 2)
+        {
+            var t = string.Join(" ", words.Take(words.Count - 1));
+            if (t.Length >= 4 && seen.Add(t)) yield return t;
+        }
+        // ② 首词是修饰语、页面名从第二个词起（"Hashtag Bear Fam" → "Bear Fam"）。
+        // 只对 ≥3 个词的 UID 做 ——— 两个词的 UID 去掉首词只剩一个泛词（Content Patcher → "Patcher"），
+        // 那一条请求换不来任何精度。
+        if (words.Count < 3) yield break;
+        var tail = string.Join(" ", words.Skip(1));
+        if (tail.Length >= 4 && seen.Add(tail)) yield return tail;
     }
 }

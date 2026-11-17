@@ -408,7 +408,7 @@
             // （本机实测抽屉里 439 MB）。留在 UI 线程上的话，点一次「启动游戏」界面会白屏十几秒，
             // 连「启动中…」都画不出来 —— 看着就是卡死。await 让出线程，状态先渲染出来。
             LaunchResult result = await Task.Run(() => _cfg.LaunchMode == "steam"
-                ? Launcher.LaunchSteam(_cfg.SteamAppId)
+                ? Launcher.LaunchVanilla()
                 : Launcher.LaunchSmapi(_cfg.GamePath));
 
             if (result.Success)
@@ -482,8 +482,6 @@
     {
         var deadline = Environment.TickCount64 + timeoutMs;
         var hinted = false;
-        var steamGoneChecks = 0;
-        var steamSeen = false;
         try
         {
             while (!_cts.IsCancellationRequested)
@@ -498,35 +496,10 @@
                     StateHasChanged();
                     return;
                 }
-                // Steam 官方模式下 25 秒仍无游戏进程 → 大概率 Steam 在等用户处理
-                // 弹窗（家庭共享「借用游戏」确认/登录/更新），或当前账号未拥有此游戏 ——
-                // 之前只是默默干等，用户完全不知道 Steam 那边在等他点确认
                 if (!hinted && _cfg.LaunchMode == "steam" && Environment.TickCount64 >= deadline - 20_000)
                 {
                     hinted = true;
-                    ShowToast(LocService.Tr("游戏尚未启动：请查看 Steam 是否弹出确认窗口。"));
-                }
-                // Steam 被关闭 → 没人能拉起游戏了，立即取消等待（之前要干等满超时，
-                // 用户"关了 Steam 按钮还是启动中"的观感即来源于此）。
-                // steam:// 协议拉起 Steam 需要几秒：先等见到过一次 Steam 才开始检测"消失"；
-                // 若 12s 内 Steam 始终没出现，同样视为启动失败收场。
-                if (_cfg.LaunchMode == "steam")
-                {
-                    if (LauncherService.IsSteamRunning) steamSeen = true;
-                    if (steamSeen && !LauncherService.IsSteamRunning)
-                    {
-                        if (++steamGoneChecks >= 8)   // 连续 ~4s 不在才判定（防瞬间抖动）
-                        {
-                            ShowToast(LocService.Tr("Steam 已退出，已取消本次启动等待。"));
-                            return;
-                        }
-                    }
-                    else steamGoneChecks = 0;
-                    if (!steamSeen && Environment.TickCount64 >= deadline - 30_000)
-                    {
-                        ShowToast(LocService.Tr("Steam 一直没有运行，已取消本次启动等待。可先启动 Steam 后再试，或改用 SMAPI。"));
-                        return;
-                    }
+                    ShowToast(LocService.Tr("游戏尚未启动：请检查游戏窗口或错误提示。"));
                 }
                 if (Environment.TickCount64 >= deadline)
                 {
@@ -610,6 +583,20 @@
             // 赞助提示永远不许影响启动流程 —— 它挂了最坏也就是这次没弹。
             AppLog.Warn("AccountPanel", "赞助提示未能显示: " + ex.Message);
         }
+    }
+
+    /// <summary>v1.3.5：标题栏的打赏按钮直接打开收款码页（不经过「喜欢 JuniGrid 吗」那一屏）。
+    /// 与自动提示不同：这里不碰 SponsorPromptState，关掉也不会推迟下一次自动提示。</summary>
+    public void OpenSponsorPanel()
+    {
+        _sponsorLaunchCount = Math.Max(1, Cfg.Current.TotalLaunchCount);
+        _sponsorPlayHours = PlayTime.TotalSeconds <= 0
+            ? "0" : (PlayTime.TotalSeconds / 3600.0).ToString("0.0");
+        _leavingStep = null;
+        _sponsorRenderedStep = -1;
+        _sponsorStep = 1;
+        _sponsorWechat = true;
+        StateHasChanged();
     }
 
     /// <summary>把弹窗摆到屏幕上。延迟一拍是为了让「启动中…」先落地 ——
@@ -821,8 +808,10 @@
         if (string.IsNullOrWhiteSpace(err)) return LocService.Tr("未知原因");
         // 启动器这一档必须排在通用 SMAPI 判定之前：它说的不是"没装"，而是"没找到 / 认出多个"，
         // 压成「请先安装 SMAPI」会把用户引去重装（他明明装了，只是改了名）。
+        // v1.6.14：两种成因一并说 —— 换了版本之后，更常见的是"这一版压根没装 SMAPI"，
+        // 只说"去设置里选中它"会把没装的人引到一个填不出东西的输入框里。
         if (err.Contains("SMAPI 启动器", StringComparison.OrdinalIgnoreCase))
-            return LocService.Tr("没找到唯一的 SMAPI 启动器 —— 如果你把 StardewModdingAPI.exe 改了名，去「设置 → 启动项」里选中它");
+            return LocService.Tr("没找到 SMAPI 启动器 —— 这一版可能还没装（到「Mod 管理」页安装），或者你把 StardewModdingAPI.exe 改了名（去「设置 → 启动项」选中它）");
         if (err.Contains("SMAPI", StringComparison.OrdinalIgnoreCase))
             return LocService.Tr("未检测到 SMAPI，请先安装 SMAPI，或在左上角切换「官方」模式启动");
         var line = err.Split('\n')[0].Trim().TrimEnd('。', '.');

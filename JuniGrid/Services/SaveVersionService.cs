@@ -49,7 +49,12 @@ public static class SaveVersionService
     /// <summary>名字里带这四个字的留底是「退回旧档时被换下来的现有档」，不参与自动回收。</summary>
     private const string ReplacedMark = "换下来的";
 
-    /// <summary>存档目录。整个目录不存在（从没玩过）时返回 null，所有操作自动变成空动作。</summary>
+    /// <summary>存档目录。整个目录不存在（从没玩过）时返回 null，所有操作自动变成空动作。
+    /// <para>返回<b>解开符号链接后的真实路径</b>：玩家常把 <c>%APPDATA%\StardewValley</c>
+    /// 用 mklink /D 搬到别的盘（2026-11-17 实机就是 C: → E:\StardewValley）。路径字符串还写着
+    /// C:，但字节在 E: —— Directory.Move 会先按字符串根判「同盘」（C: = C:），真去改名时
+    /// 又因目标在 E: 失败，每份档白等 300ms 再走真拷贝。这里一次解到底，后续判同盘/改名
+    /// 都按真实卷来。</para></summary>
     public static string? SavesDir()
     {
         // 覆盖路径同样要求目录真的存在：否则「没有存档」这件事在沙箱里和真机上表现不一致，
@@ -58,7 +63,36 @@ public static class SaveVersionService
             return Directory.Exists(SavesDirOverride) ? SavesDirOverride : null;
         var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
             "StardewValley", "Saves");
-        return Directory.Exists(dir) ? dir : null;
+        return Directory.Exists(dir) ? ResolveRealPath(dir) : null;
+    }
+
+    /// <summary>把路径里的符号链接 / 目录联接逐段解到真实目标。任一段解不动就停在那一层
+    /// （返回已解开的前缀），绝不因为解析失败把调用方带崩。</summary>
+    internal static string ResolveRealPath(string path)
+    {
+        try
+        {
+            var full = Path.GetFullPath(path);
+            var root = Path.GetPathRoot(full);
+            if (string.IsNullOrEmpty(root)) return full;
+            var cur = root;
+            foreach (var part in full[root.Length..].Split(
+                         new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar },
+                         StringSplitOptions.RemoveEmptyEntries))
+            {
+                cur = Path.Combine(cur, part);
+                try
+                {
+                    var di = new DirectoryInfo(cur);
+                    if (!di.Exists || (di.Attributes & FileAttributes.ReparsePoint) == 0) continue;
+                    var target = di.ResolveLinkTarget(returnFinalTarget: true);
+                    if (target is not null) cur = target.FullName;
+                }
+                catch { }
+            }
+            return cur;
+        }
+        catch { return path; }
     }
 
     // ─────────────── 版本口径（单一出口：界面和切换闸门都从这里判） ───────────────
@@ -278,23 +312,86 @@ public static class SaveVersionService
     // ─────────────── ② 按版本挪走读不了的档 ───────────────
 
     /// <summary>
-    /// 抽屉根。**必须和现役存档同盘**：存档在 C:（%AppData%\StardewValley\Saves），
-    /// 抽屉若还在 E:（旧位置，staging 包下），收/放每一份都是跨盘字节拷贝
-    /// （2026-09-23 真机：10 份 × 100~1000ms = 4.6 秒，日志里全是「0 次尝试全败→走拷贝」，
-    /// 0 次尝试 = SameVolume 判否连改名都不试）。同盘后 Directory.Move 是改名 = 瞬时，这才是「瞬间切档」。
-    /// 放 LocalApplicationData（不漫游、游戏不扫这个目录）；代价是 C: 多占一份抽屉体积，
-    /// 换取收/放零拷贝 —— 用户 2026-09-23 明确要求瞬间，空间让位给速度。
+    /// 抽屉根。**必须和现役存档同盘**，否则收/放每一份都是跨盘字节拷贝。
+    /// 以前写死在 <c>%LOCALAPPDATA%\JuniGrid\saves-hidden</c>，前提是「存档在 C:」；
+    /// 2026-11-17 实机存档目录被 mklink /D 搬到了 E:，抽屉还在 C: —— 45 份档收/放
+    /// 全是真拷贝，切换版本光「存档准备」就 27.7 秒。
+    /// 现在按 <see cref="SavesDir"/> 的真实卷挑：不同卷就用存档父目录下的
+    /// <c>.junigrid-saves-hidden</c>（游戏只扫 Saves 子目录，不会看见它）；
+    /// 同卷时仍用原来的 LocalAppData 位置。
     /// </summary>
     /// <summary>测试沙箱可覆写抽屉根（与 <see cref="SavesDirOverride"/> 同理，不落配置）。</summary>
     public static string? DrawerRootOverride { get; set; }
 
-    public static string DrawerRoot => DrawerRootOverride ?? StoragePaths.SavesHiddenDir;
+    public static string DrawerRoot
+    {
+        get
+        {
+            if (DrawerRootOverride is not null) return DrawerRootOverride;
+            var legacy = StoragePaths.SavesHiddenDir;
+            var saves = SavesDir();
+            if (saves is null) return legacy;
+            var savesVol = Path.GetPathRoot(saves);
+            var legacyVol = Path.GetPathRoot(legacy);
+            if (string.Equals(savesVol, legacyVol, StringComparison.OrdinalIgnoreCase))
+                return legacy;
+            var parent = Path.GetDirectoryName(saves);
+            if (!string.IsNullOrEmpty(parent))
+            {
+                var alt = Path.Combine(parent, ".junigrid-saves-hidden");
+                try
+                {
+                    Directory.CreateDirectory(alt);
+                    try { new DirectoryInfo(alt).Attributes |= FileAttributes.Hidden; } catch { }
+                    return alt;
+                }
+                catch { }
+            }
+            return legacy;
+        }
+    }
+
+    private static int _drawerMigrated;
+
+    /// <summary>把旧 LocalAppData 抽屉里的版本目录一次性挪到新抽屉（同卷是改名，跨卷是
+    /// 拷贝+核对+删源）。只在第一次真正用到抽屉时跑；失败就留着旧目录，
+    /// <see cref="EnumerateHiddenRoots"/> 仍会枚举它，不会丢档。</summary>
+    private static void EnsureDrawerMigrated()
+    {
+        if (DrawerRootOverride is not null) return;
+        if (Interlocked.Exchange(ref _drawerMigrated, 1) == 1) return;
+        var legacy = StoragePaths.SavesHiddenDir;
+        var now = DrawerRoot;
+        if (string.Equals(Path.GetFullPath(legacy).TrimEnd(Path.DirectorySeparatorChar),
+                          Path.GetFullPath(now).TrimEnd(Path.DirectorySeparatorChar),
+                          StringComparison.OrdinalIgnoreCase)) return;
+        if (!Directory.Exists(legacy)) return;
+        try
+        {
+            foreach (var dir in Directory.GetDirectories(legacy))
+            {
+                var dst = Path.Combine(now, Path.GetFileName(dir));
+                if (Directory.Exists(dst))
+                {
+                    AppLog.Warn("存档", $"旧抽屉迁移跳过（新位置已有同名版本）：{Path.GetFileName(dir)}");
+                    continue;
+                }
+                var r = DepotDownloaderService.MoveDirectoryVerified(dir, dst, null, null, "迁移存档抽屉", null);
+                AppLog.Warn("存档", $"旧抽屉迁移：{Path.GetFileName(dir)} → {now}（{r}）");
+            }
+            try { if (!Directory.EnumerateFileSystemEntries(legacy).Any()) Directory.Delete(legacy); } catch { }
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warn("存档", "旧抽屉迁移失败（档仍在旧位置，未删除）：" + ex.Message);
+        }
+    }
 
     public static string HiddenRootOf(string pkgDir) => Path.Combine(DrawerRoot,
         Path.GetFileName(pkgDir.TrimEnd(Path.DirectorySeparatorChar, '/')));
 
     /// <summary>旧抽屉位置（E: staging 包下）。只读：EnumerateHiddenRoots 仍会枚举它，
-    /// 放回时跨盘拷一次进 Saves 后 E: 那份即空，一轮收敛到 C:；不做显式迁移、不丢数据。</summary>
+    /// 放回时拷一次进 Saves 后 E: 那份即空；新代码不再往这里写。</summary>
     private static string LegacyHiddenRootOf(string pkgDir) => Path.Combine(pkgDir, HiddenDirName);
     private static string LegacyFocusRootOf() => Path.Combine(DepotDownloaderService.StagingRoot, FocusDirName);
 
@@ -303,18 +400,18 @@ public static class SaveVersionService
     ///
     /// 为什么要这个差集：调用方（切换前的 PrepareSavesFor、启动前的 PrepareSavesForLaunch）
     /// 都是「先全放回 → 紧接着 HideUnreadable 把读不了的收回去」。无条件全放回意味着
-    /// **每一份目标版本读不了的档都必然走完一个完整往返**。而存档真身固定在 C:
-    /// （%APPDATA%\StardewValley\Saves），抽屉在缓存盘 E:，跨盘 ⇒ 改名快路径直接不上
-    /// （TryRelocateDirectory 第一行就因 SameVolume=false 返回），硬链接也用不了 ⇒ 全是真字节拷贝。
-    /// 2026-09-23 真机实测：抽屉 436 MB / 14 份，一次切换搬出 436 MB 再搬回 436 MB，
-    /// 花 14.4 秒（占整次切换约 25 秒的一半以上），而对 Saves 目录的**净改变为 0** ——
-    /// 放回的那 14 份和随后收走的那 14 份名单完全一致。
+    /// **每一份目标版本读不了的档都必然走完一个完整往返**。
+    /// 2026-09-23 真机实测：抽屉 436 MB / 14 份，一次切换搬出再搬回花 14.4 秒，
+    /// 对 Saves 的净改变为 0。2026-11-17 又撞到同一类浪费：存档目录被符号链接搬到 E:，
+    /// 而抽屉还在 C:，45 份档每次都走「改名失败 → 跨盘拷贝」，光存档准备 27.7 秒。
+    /// 现在 <see cref="DrawerRoot"/> 按真实卷选位置，同卷改名是瞬时。
     ///
     /// 稳态不变：跳过的那些档最终就该在抽屉里，改与不改结束状态相同，
     /// 所以 StashedCountAll 这个持久量不受影响（它 &gt;0 正是「绕开 Steam 直启」的判据，见 LauncherService）。
     /// 同名冲突仍无条件当场裁决 —— 那是 StashedCountAll 死结的出口，不能因为差集跳过。</summary>
     public static int RestoreHidden(Action<string>? log = null, string? readableByVersion = null)
     {
+        EnsureDrawerMigrated();
         var root = SavesDir();
         if (root is null) return 0;
         var moved = 0;
@@ -444,6 +541,7 @@ public static class SaveVersionService
     /// 半同步的那几份跳过（别搬半份档），其余尽量收；收不动的由调用方再扫进聚焦抽屉。</summary>
     public static int HideUnreadable(string? targetVersion, string pkgDir, Action<string>? log = null)
     {
+        EnsureDrawerMigrated();
         if (targetVersion is null || SavesDir() is null) return 0;
         // 半同步现场只跳过那几份，不再整段拒绝 —— 否则一份半截档会挡住全部收起，
         // 游戏列表里照样出现 1.6 档，启动闸门又弹回来（2026-09-22 13:35 真机）。
@@ -546,6 +644,18 @@ public static class SaveVersionService
             string[] nd;
             try { nd = Directory.GetDirectories(DrawerRoot); } catch { nd = Array.Empty<string>(); }
             foreach (var d in nd) yield return d;
+        }
+        // 旧 LocalAppData 抽屉：迁移失败/同名版本跳过时这里还留着版本目录，必须继续枚举，
+        // 否则那些档在界面上就"消失"了（迁移见 EnsureDrawerMigrated）。
+        var oldLocal = StoragePaths.SavesHiddenDir;
+        if (!string.Equals(Path.GetFullPath(oldLocal).TrimEnd(Path.DirectorySeparatorChar),
+                           Path.GetFullPath(DrawerRoot).TrimEnd(Path.DirectorySeparatorChar),
+                           StringComparison.OrdinalIgnoreCase)
+            && Directory.Exists(oldLocal))
+        {
+            string[] olds;
+            try { olds = Directory.GetDirectories(oldLocal); } catch { olds = Array.Empty<string>(); }
+            foreach (var d in olds) yield return d;
         }
         // 旧抽屉（E: staging 下）只读排空：放回时跨盘拷一次进 Saves，E: 那份随即变空，
         // 一轮之后全部收敛到 C:。不显式迁移、不丢数据。

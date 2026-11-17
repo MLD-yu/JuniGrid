@@ -71,15 +71,21 @@
                             || (!Cfg.Current.EnableBuiltinWebDownload && !Cfg.Current.NexusIsPremium);
                         // v1.04.0：已装判定优先于一键安装开关 —— 无论开关与否，「Mod 列表已有该 mod」都要显示
                         var installLabel = _installing ? Loc.T("安装中…")
-                            : _smapiLabel ?? (alreadyInstalled ? (HasUpdate ? Loc.T("更新")
-                                // 覆盖包装完不在 Mods 列表里，说「Mod 列表已有该 mod」是假的 → 只说已安装
-                                : _installedFolder is null ? Loc.T("已安装") : Loc.T("Mod 列表已有该 mod"))
-                            : browserOnly ? Loc.T("在浏览器安装") : Loc.T("安装"));
-                        // SMAPI 不需要例外：已装就禁用，跟其它 mod 一条规矩。换适配版是 Mod 页
-                        // 那条按游戏版本选包的通道干的活，不在这里给一个点得动的口子。
-                        var disableInstall = _installing || (alreadyInstalled && !HasUpdate);
+                            : _smapiLabel ?? (alreadyInstalled
+                                // 已装但已是最新：按钮照样要能点 —— 它的用途是「换版本」，
+                                // 不是「再装一次同一个包」。
+                                ? (HasUpdate ? Loc.T("更新") : Loc.T("更换版本"))
+                                : browserOnly ? Loc.T("在浏览器安装") : Loc.T("安装"));
+                        // ⚠ v1.6.1：这里原先是 `alreadyInstalled && !HasUpdate` —— 已装且已是最新
+                        // 就整颗按钮 disabled，于是**版本选择弹窗永远打不开**：想把 2.1.7 降回 2.0.0、
+                        // 想从 AT 素材包换成 CP 主包、想重装一份干净的，全都只能去 N 网网页手点。
+                        // 用户看到的就是「下载的版本切换不了」（2026-11-15 反馈）。
+                        // 现在只保留 SMAPI 这一条例外：它换适配版是 Mod 页那条「按游戏版本选包」
+                        // 的通道干的活，详情页不给口子（跟原注释同一理由）。
+                        var disableInstall = _installing || (_smapiInstalled && !HasUpdate);
                     }
-                    <button class="jg-dl4-cta" @onclick="OpenVersionPicker" disabled="@disableInstall">
+                    <button class="jg-dl4-cta" @onclick="OpenVersionPicker" disabled="@disableInstall"
+                            data-tip='@(alreadyInstalled && !HasUpdate && !_smapiInstalled ? Loc.T("打开文件列表：换主文件 / 可选包 / 旧版本") : null)'>
                         @installLabel
                         <span class="jg-dl4-cta-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px"><path d="M12 3v12"/><polyline points="7 10 12 15 17 10"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg></span>
                     </button>
@@ -228,8 +234,12 @@
                                     <button type="button" class="jg-sort-trigger jg-pick-vdd-btn"
                                             @onclick="TogglePickCat"
                                             aria-expanded="@(_pickCatOpen ? "true" : "false")">
-                                        <span class="jg-pick-vdd-t @(_pickedCategory.Length == 0 ? "jg-pick-vdd-ph" : "")">
-                                            @(_pickedCategory.Length == 0 ? Loc.T("未分类") : _pickedCategory)
+                                        <span data-notrans class="jg-pick-vdd-t @(_pickedCategory.Length == 0 ? "jg-pick-vdd-ph" : "")">
+                                            @(_pickedCategory.Length == 0 ? Loc.T("未分类") : CategoryLabel(_pickedCategory))
+                                            @if (IsRecommendedCategory(_pickedCategory))
+                                            {
+                                                <span class="jg-category-recommend">@Loc.T("推荐")</span>
+                                            }
                                         </span>
                                         @* 箭头旋转交给 dropdownToggle 的 GSAP（back.out），别在这里加 .flip 类，
                                            两套 transform 会互相覆盖 *@
@@ -259,8 +269,14 @@
                                                 // 在下载弹窗里删分类是越界（2026-11-07 用户要求）。
                                                 <div class="jg-profile-item @(!_newCatOpen && _pickedCategory == cc ? "active" : "")">
                                                     @CategoryIconBadge(cc)
-                                                    <button type="button" class="jg-profile-name"
-                                                            @onclick="() => PickCategory(cc)">@cc</button>
+                                                    <button type="button" class="jg-profile-name" data-notrans
+                                                            @onclick="() => PickCategory(cc)">
+                                                        @CategoryLabel(cc)
+                                                        @if (IsRecommendedCategory(cc))
+                                                        {
+                                                            <span class="jg-category-recommend">@Loc.T("推荐")</span>
+                                                        }
+                                                    </button>
                                                 </div>
                                             }
                                         </div>
@@ -343,7 +359,13 @@
                                         // 同上：详情页只负责选，分类的增删都归 Mods 页管。
                                         <div class="jg-profile-item @(!_newCatOpen && string.Equals(_pickedCat, cc, StringComparison.OrdinalIgnoreCase) ? "active" : "")">
                                             @CategoryIconBadge(cc)
-                                            <button type="button" class="jg-profile-name" @onclick="() => PickCatPick(cc)">@cc</button>
+                                            <button type="button" class="jg-profile-name" data-notrans @onclick="() => PickCatPick(cc)">
+                                                @CategoryLabel(cc)
+                                                @if (IsRecommendedCategory(cc))
+                                                {
+                                                    <span class="jg-category-recommend">@Loc.T("推荐")</span>
+                                                }
+                                            </button>
                                         </div>
                                     }
                                 </div>
@@ -419,6 +441,12 @@
                                                 {
                                                     <span class="@ReqBadgeClass(r.State)">@ReqBadgeText(r.State)</span>
                                                 }
+                                                @* 两份清单本来就各写各的：manifest 是作者给 SMAPI 的、官网那张表是作者给玩家看的。
+                                                   官网没登记不等于 manifest 乱写，只说一句「那边没写」，别让它看着像错误。 *@
+                                                @if (!NexusRegistered(r))
+                                                {
+                                                    <span class="jg-req-only">@Loc.T("官网未登记")</span>
+                                                }
                                             </span>
                                             <span class="jg-req-notes">@(string.IsNullOrWhiteSpace(r.Notes) ? "—" : r.Notes)</span>
                                         </div>
@@ -453,7 +481,13 @@
                                 }
                                 if (nexusReqs.Count > 0)
                                 {
-                                    <div class="jg-req-sub" style="@(manifestReqs.Count > 0 ? "margin-top:10px" : null)">@Loc.T("Nexus 要求")</div>
+                                    <div class="jg-req-sub" style="@(manifestReqs.Count > 0 ? "margin-top:10px" : null)">@Loc.T("Nexus 要求（manifest 未声明）")</div>
+                                    @if (manifestReqs.Count > 0)
+                                    {
+                                        @* 这一句是给「为什么两边不一样」的：玩家看到官网写了前置、列表却没报缺，
+                                           第一反应是启动器漏检；其实 SMAPI 根本不读这张表。 *@
+                                        <div class="jg-req-src-note">@Loc.T("这张表是作者手填给玩家看的；SMAPI 只按 manifest 判定，下面这些没写进 manifest，不会因此跳过本模组。")</div>
+                                    }
                                     <div class="jg-req-table">
                                         <div class="jg-req-th"><span>@Loc.T("模组名称")</span><span>@Loc.T("注释")</span></div>
                                         @foreach (var r in nexusReqs)
@@ -471,7 +505,8 @@
                                                     else { @r.ModName }
                                                     @if (!IsReqInstalled(r))
                                                     {
-                                                        <span class="@(IsReqOptional(r) ? "jg-req-optional" : "jg-req-missing")">@(IsReqOptional(r) ? Loc.T("可选未装") : Loc.T("未安装"))</span>
+                                                        var siteState = ReqSiteState(r);
+                                                        <span class="@ReqBadgeClass(siteState)">@ReqBadgeText(siteState)</span>
                                                     }
                                                 </span>
                                                 <span class="jg-req-notes">@(string.IsNullOrWhiteSpace(r.Notes) ? "—" : r.Notes)</span>
@@ -825,6 +860,10 @@
     private bool _pickCatOpen;
     /// <summary>本次要归入的分类；"" = 未分类（与 Mods 页的分段口径一致）。</summary>
     private string _pickedCategory = "";
+    private string _recommendedCategory = "";
+    private string _recommendedCategorySource = "";
+    private bool _categoryChoiceTouched;
+    private int _categoryRecommendationRequest;
     /// <summary>单文件安装前的「选分类」小弹窗开着没。</summary>
     private bool _catPickOpen;
     /// <summary>小弹窗里等着的那个文件（确认后接着装它）。</summary>
@@ -998,6 +1037,10 @@
         _fileBusyId = null;
         _fileMsg = null;
         _installMsg = null;
+        _recommendedCategory = "";
+        _categoryRecommendationRequest++;
+        _pickOpen = false;
+        _catPickOpen = false;
 
         if (!NexusService.IsAuthenticated)
         {
@@ -1169,7 +1212,7 @@
         if (_mod is null) return;
         if (!NexusService.IsAuthenticated)
         {
-            _installMsg = LocService.Tr("请先在「设置 → Nexus」里填入 API key 才能一键安装");
+            _installMsg = LocService.Tr("请先在「设置 → Nexus」登录 Nexus 账号才能一键安装");
             return;
         }
         if (!Cfg.Current.EnableOneClickInstall)
@@ -1239,7 +1282,7 @@
         if (_mod is null || _pickOpen) return;
         if (!NexusService.IsAuthenticated)
         {
-            _installMsg = LocService.Tr("请先在「设置 → Nexus」里填入 API key 才能一键安装");
+            _installMsg = LocService.Tr("请先在「设置 → Nexus」登录 Nexus 账号才能一键安装");
             return;
         }
         if (!Cfg.Current.EnableOneClickInstall)
@@ -1265,14 +1308,26 @@
         ResetNewCategoryInput();   // 上次点过 ＋ 就收着，别让输入框一打开就挂在那儿
         // 已经装过且在某个分类里 → 预选上，重装不会顺手把归类清掉
         _pickedCategory = CurrentCategoryOfMod();
+        _recommendedCategory = "";
+        _categoryChoiceTouched = false;
+        var modId = ModId;
         StateHasChanged();
 
+        await LoadCategoryRecommendationAsync();
+        if (_disposed || ModId != modId || !_pickOpen) return;
+        if (!_categoryChoiceTouched && _pickedCategory.Length == 0) _pickedCategory = _recommendedCategory;
         // 复用 04 Files 的懒加载（同一次请求，开过手风琴就不再发）
         if (_files is null) await LoadFilesAsync();
+        if (_disposed || ModId != modId || !_pickOpen) return;
 
         var primary = PickPrimaryFiles;
-        _pickedFileId = primary.Count > 0 ? primary[0].FileId
-            : _files is { Count: > 0 } ? _files[0].FileId : 0;
+        // v1.6.1：已装过就预选**正装着的那个文件** —— 换版本时先看见「我现在是哪个」，
+        // 再改选别的；旧行为无条件预选最新 MAIN，降版本的人一打开就对着新版，
+        // 手一快点了下载又装回最新（用户反馈的「切换不了版本」有一半是这么来的）。
+        var currentFile = _files?.FirstOrDefault(f => IsInstalledFile(f.FileId));
+        _pickedFileId = currentFile?.FileId
+            ?? (primary.Count > 0 ? primary[0].FileId
+                : _files is { Count: > 0 } ? _files[0].FileId : 0);
         StateHasChanged();
     }
 
@@ -1374,8 +1429,10 @@
     /// 图标配置跟 Mods 页共用 <c>ModCategoryIcon</c>；没设过 = 默认小鸡，所以每行都有图。
     /// <para>新建行传 <see cref="NewCatIconKey"/>：选中的图先进草稿，等分类真建出来才落盘。</para></summary>
     private RenderFragment CategoryIconBadge(string category) => @<button
-        type="button" class="jg-cat-icon jg-cat-icon-row" data-tip='@Loc.T("点图标换一个")'
-        aria-label='@Loc.T("点图标换一个")'
+        type="button" class="jg-cat-icon jg-cat-icon-row"
+        disabled="@IsPendingCategory(category)"
+        data-tip='@Loc.T(IsPendingCategory(category) ? "下载安装后可修改图标" : "点图标换一个")'
+        aria-label='@Loc.T(IsPendingCategory(category) ? "下载安装后可修改图标" : "点图标换一个")'
         @onclick="() => OpenCatIconPicker(category)" @onclick:stopPropagation="true">
         @if (CategoryIconUrl(category) is { } u)
         {
@@ -1442,13 +1499,7 @@
     private string CatIconPickLabel()
         => _catIconPickKey == NewCatIconKey
             ? Loc.T("新分类")
-            : _catIconPickKey.Length > 0 ? _catIconPickKey : Loc.T("未分类");
-
-    /// <summary>有没有「可选」的分类。只有默认（未分类）时这一层整个不出现 ——
-    /// 一个只有「未分类」一项的下拉/弹窗，等于让用户白点一步。</summary>
-    private bool HasCategoryChoices
-        => Cfg.Current.ModUserCategoryOrder.Any(x => !string.IsNullOrWhiteSpace(x))
-           || Cfg.Current.ModUserCategory.Values.Any(v => !string.IsNullOrWhiteSpace(v));
+            : _catIconPickKey.Length > 0 ? CategoryLabel(_catIconPickKey) : Loc.T("未分类");
 
     /// <summary>可选分类。顺序与 Mods 页的分段/右侧导航一致：新建的在最前
     /// （ModUserCategoryOrder 是建分类时追加的，倒过来读就是最新在前）。
@@ -1466,12 +1517,63 @@
                      .Distinct(StringComparer.OrdinalIgnoreCase)
                      .OrderBy(x => x, StringComparer.OrdinalIgnoreCase))
             list.Add(c);
+        if (_recommendedCategory.Length > 0 && !list.Contains(_recommendedCategory, StringComparer.OrdinalIgnoreCase))
+            list.Insert(0, _recommendedCategory);
         return list;
     }
+
+    private async Task LoadCategoryRecommendationAsync()
+    {
+        _recommendedCategory = "";
+        _recommendedCategorySource = "";
+        var request = ++_categoryRecommendationRequest;
+        var modId = ModId;
+        var cfg = Cfg.Current;
+        var gamePath = cfg.GamePath;
+        try
+        {
+            var info = await NexusApi.GetModAsync(modId);
+            if (info?.CategoryId is not int categoryId) return;
+            if (!cfg.NexusCategories.ContainsKey(categoryId))
+            {
+                var categories = await NexusApi.GetCategoriesAsync();
+                if (categories is { Count: > 0 })
+                {
+                    cfg.NexusCategories = categories;
+                    Cfg.Save(cfg);
+                }
+            }
+            if (!cfg.NexusCategories.TryGetValue(categoryId, out var name)) return;
+            var display = ModCategoryUtil.NexusCategoryName(name, Loc.Lang);
+            if (_disposed || request != _categoryRecommendationRequest || ModId != modId
+                || !string.Equals(Cfg.Current.GamePath, gamePath, StringComparison.OrdinalIgnoreCase)) return;
+            _recommendedCategorySource = name;
+            _recommendedCategory = ModCategoryUtil.Recommend(name, display, CategoryChoices(), cfg.ModOfficialCategoryNames);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warn("ModDetail", "分类推荐读取失败：" + ex.Message);
+        }
+    }
+
+    private string CategoryLabel(string category)
+        => IsPendingCategory(category) && _recommendedCategorySource.Length > 0
+            ? ModCategoryUtil.NexusCategoryName(_recommendedCategorySource, Loc.Lang)
+            : ModCategoryUtil.CategoryLabel(Cfg.Current, category, Loc.Lang);
+
+    private bool IsRecommendedCategory(string category)
+        => _recommendedCategory.Length > 0
+           && string.Equals(category, _recommendedCategory, StringComparison.OrdinalIgnoreCase);
+
+    private bool IsPendingCategory(string category)
+        => IsRecommendedCategory(category)
+           && !Cfg.Current.ModUserCategoryOrder.Concat(Cfg.Current.ModUserCategory.Values.SelectMany(ModCategoryUtil.Split))
+               .Contains(category, StringComparer.OrdinalIgnoreCase);
 
     /// <summary>展开「新建分类」输入框（两个弹窗共用）。</summary>
     private void OpenNewCategoryInput()
     {
+        _categoryChoiceTouched = true;
         // 2026-11-09：进「新建」= 还没定分类 —— 小弹窗里上一次点中的行要一起取消高亮，
         // 否则看着像「既选了 111 又在新建」。下拉那处不动 _pickedCategory：
         // 它显示的是这个 mod 当前所在的分类（事实），不是待选值。
@@ -1589,6 +1691,7 @@
 
     private async Task PickCategory(string c)
     {
+        _categoryChoiceTouched = true;
         _pickedCategory = c ?? "";
         await ClosePickCat();
         StateHasChanged();
@@ -1606,6 +1709,7 @@
     /// 否则输入框留在那儿，看着像还要新建一个、和已经选中的分类打架。</para></summary>
     private void PickCatPick(string c)
     {
+        _categoryChoiceTouched = true;
         if (_newCatOpen)
         {
             ResetNewCategoryInput();
@@ -1620,6 +1724,7 @@
     /// <summary>清回未分类。</summary>
     private void ClearCatPick()
     {
+        _categoryChoiceTouched = true;
         ResetNewCategoryInput();
         _pickedCat = "";
     }
@@ -1629,47 +1734,13 @@
     {
         var f = _catPickFile;
         var cat = _pickedCat;
+        var source = IsRecommendedCategory(cat) ? _recommendedCategorySource : null;
         _catPickOpen = false;
         _catPickFile = null;
         _pickedCat = "";
         ResetNewCategoryInput();
         if (f is null) return;
-        await InstallFileCore(f, cat);
-    }
-
-    /// <summary>装完之后把这一页装出来的目录归入所选分类。
-    /// 键取顶层目录 —— 与 Mods 页的登记单位一致（捆绑包记顶层，散装记自己的文件夹）；
-    /// 一个都不给 = 从分类表里摘掉。整段失败只记日志，绝不因为归类没写进去就说安装失败。
-    /// <para>一个 mod 只属于一个分类（2026-11-09 晚用户口径），这里写的就是单个值。
-    /// 老配置里可能还留着 <c>"9,10"</c> 这种历史多值：读取侧（Mods 页 <c>CategoryOfGroup</c>）
-    /// 本来就只认第一个，用户下次在这页选一次分类就会被覆盖成单值。</para></summary>
-    private void ApplyInstalledCategory(string category)
-    {
-        if (!HasCategoryChoices) return;      // 没有分类可选：不凭空往分类表里写东西
-        try
-        {
-            _scanCache = null;    // 刚装完，缓存必然是旧的
-            var mods = ScanLocal(Cfg.Current.GamePath)
-                .Where(m => m.NexusModId == ModId).ToList();
-            if (mods.Count == 0) return;
-            var cfg = Cfg.Current;
-            foreach (var m in mods)
-            {
-                var i = m.Folder.IndexOf('/');
-                var key = i > 0 ? m.Folder[..i] : m.Folder;
-                // 与列表页同一口径（顶层）；老兜底留下的完整 folder 键顺手清掉
-                if (!string.Equals(key, m.Folder, StringComparison.OrdinalIgnoreCase))
-                    cfg.ModUserCategory.Remove(m.Folder);
-                if (category.Length == 0) cfg.ModUserCategory.Remove(key);
-                else cfg.ModUserCategory[key] = category;
-            }
-            // 逗号里的每个分类都要进名单，否则「第二个分类」在列表里没有段位、会垫到最下面
-            foreach (var one in ModCategoryUtil.Split(category))
-                if (!cfg.ModUserCategoryOrder.Contains(one, StringComparer.OrdinalIgnoreCase))
-                    cfg.ModUserCategoryOrder.Add(one);
-            Cfg.Save(cfg);
-        }
-        catch (Exception ex) { AppLog.Warn("ModDetail", $"[分类] 安装后归类失败：{ex.Message}"); }
+        await InstallFileCore(f, cat, source);
     }
 
     /// <summary>弹窗里的「下载并安装」：指定 fileId 走完整安装管线。
@@ -1692,6 +1763,9 @@
 
         _pickBusy = true;
         _installMsg = null;
+        var category = PickedIsContentOverride ? null : _pickedCategory;
+        var categorySource = category is not null && IsRecommendedCategory(category) ? _recommendedCategorySource : null;
+        var modId = ModId;
         if (_pickVddOpen) await ClosePickVdd();
         if (_pickCatOpen) await ClosePickCat();
         _pickOpen = false;
@@ -1700,7 +1774,7 @@
 
         try
         {
-            var err = await Installer.InstallModDirectAsync(ModId, f.FileId, f.Name);
+            var err = await Installer.InstallModDirectAsync(modId, f.FileId, f.Name, category, categorySource);
             if (err is null)
             {
                 _scanCache = null;
@@ -1708,7 +1782,6 @@
                     .FirstOrDefault(m => m.NexusModId == ModId)?.Folder;
                 _overlayInstalled = _installedFolder is null
                     && ModService.OverlayAppliedForMod(Cfg.Current.GamePath, Cfg.Current, ModId);
-                ApplyInstalledCategory(_pickedCategory);
                 await RefreshSmapiStateAsync(freshRead: true);
                 _ = Toast(LocService.Tf("{0} 安装完成", f.Name), "ok");
             }
@@ -1789,11 +1862,27 @@
         return _localMods.Any(m => string.Equals(m.Name?.Trim(), n, StringComparison.OrdinalIgnoreCase));
     }
 
-    /// <summary>官网 Requirements 没有"是否必需"的结构化字段，只有注释栏（notes）作者会写
-    /// "Required." / "Optional"（实测 Miku skin for Abigail 的 Seasonal Outfits = Optional）。
-    /// 只认以 optional 开头的写法；认不出仍按必需的红标处理，宁可多提示不误吞。</summary>
-    private static bool IsReqOptional(NexusRequirementEx r) =>
-        (r.Notes ?? "").TrimStart().StartsWith("optional", StringComparison.OrdinalIgnoreCase);
+    /// <summary>官网 Requirements 没有"是否必需"的结构化字段，只有注释栏，作者写什么就什么。
+    /// <para>v1.10.x：原来只认<b>以</b> optional <b>开头</b>的写法，实测 2026-11-15 抽样 40 个页面，
+    /// 注释栏清一色是 <c>Optional</c> / <c>Recommended</c> / <c>Optional | Recommended</c> /
+    /// <c>If using Custom Kissing Mod Patch</c> —— 这些全是作者在说"不装也行"，却因为不在开头
+    /// 被当成硬缺失打红标。</para></summary>
+    private static bool IsReqOptional(NexusRequirementEx r) => NotesSay(r, "optional", "可选");
+
+    /// <summary>官网标成「推荐」的那一类：装了好用，不装也不缺东西。与 Optional 分开只为文案
+    /// 准确 —— 作者写 Recommended 的意思不是"你可以不要"，是"建议装"。</summary>
+    private static bool IsReqRecommended(NexusRequirementEx r)
+        => !IsReqOptional(r) && NotesSay(r, "recommended", "if using", "推荐");
+
+    private static bool NotesSay(NexusRequirementEx r, params string[] words)
+    {
+        var n = (r.Notes ?? "").Trim();
+        return n.Length > 0 && words.Any(w => n.Contains(w, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>官网那一行该给哪一档徽标：可选 → 橙、推荐 → 橙、其余按硬缺失。</summary>
+    private static string ReqSiteState(NexusRequirementEx r)
+        => IsReqOptional(r) ? "optional" : IsReqRecommended(r) ? "recommended" : "missing";
 
     /// <summary>详情页「要求」的一行。State 为 null = 已就位；否则是徽标：
     /// missing = 没装，optional = 可选且没装，stale = 装了但版本低于 manifest 要求。</summary>
@@ -1888,15 +1977,26 @@
     private static string ReqBadgeClass(string state) => state switch
     {
         "optional" => "jg-req-optional",
+        "recommended" => "jg-req-optional",
         "stale" => "jg-req-old",
         _ => "jg-req-missing",
     };
     private string ReqBadgeText(string state) => state switch
     {
         "optional" => Loc.T("可选未装"),
+        "recommended" => Loc.T("推荐未装"),
         "stale" => Loc.T("版本过旧"),
         _ => Loc.T("未安装"),
     };
+
+    /// <summary>官网那张表里有没有跟这一行同一条前置。<b>数据没到、或拉取失败时一律返回 true</b>
+    /// —— 「官网未登记」这种结论只有在确实读到过表之后才敢说；把它安在加载中的样子上，
+    /// 会让人以为作者漏登记，实际只是网络还没回来。</summary>
+    private bool NexusRegistered(ReqRow r)
+    {
+        if (_requirements is null || _reqFailed) return true;
+        return _requirements.Any(x => SameReq(r, x));
+    }
 
     /// <summary>官网表的一行是否已被 manifest 那半段说过（同 N 网页面号，或名字对得上）。</summary>
     private static bool SameReq(ReqRow x, NexusRequirementEx r)
@@ -2069,27 +2169,33 @@
         if (!LooksLikeContentOverrideFile(f))
         {
             _catPickFile = f;
-            // 2026-11-07：不再预选任何分类（以前会预选当前分类，甚至预选到「未分类」）。
-            // 一个都不选、直接点「不分类，直接安装」就是未分类，和以前空选的语义一致。
-            _pickedCat = "";
+            _pickedCat = CurrentCategoryOfMod();
+            _recommendedCategory = "";
+            _categoryChoiceTouched = false;
+            var modId = ModId;
             ResetNewCategoryInput();
             _catPickOpen = true;
             StateHasChanged();
+            await LoadCategoryRecommendationAsync();
+            if (_disposed || ModId != modId || !_catPickOpen || _catPickFile != f) return;
+            if (!_categoryChoiceTouched && _pickedCat.Length == 0) _pickedCat = _recommendedCategory;
+            StateHasChanged();
             return;
         }
-        await InstallFileCore(f, "");
+        await InstallFileCore(f, null);
     }
 
-    private async Task InstallFileCore(NexusFileInfo f, string category)
+    private async Task InstallFileCore(NexusFileInfo f, string? category, string? categorySource = null)
     {
         if (_fileBusyId is not null) return;
         _fileBusyId = f.FileId;
         _fileMsg = LocService.Tf("正在安装 {0}…", f.Name);
+        var modId = ModId;
         StateHasChanged();
         try
         {
             // 指定 fileId —— 装的就是列表里这一条，不是「最新 MAIN」
-            var err = await Installer.InstallModDirectAsync(ModId, f.FileId, f.Name);
+            var err = await Installer.InstallModDirectAsync(modId, f.FileId, f.Name, category, categorySource);
             if (err is null)
             {
                 _scanCache = null;   // 磁盘变了，本地扫描缓存立即失效
@@ -2097,7 +2203,6 @@
                     .FirstOrDefault(m => m.NexusModId == ModId)?.Folder;
                 _overlayInstalled = _installedFolder is null
                     && ModService.OverlayAppliedForMod(Cfg.Current.GamePath, Cfg.Current, ModId);
-                ApplyInstalledCategory(category);
                 _fileMsg = LocService.Tf("已安装 {0}", f.Name);
                 await RefreshSmapiStateAsync(freshRead: true);
             }

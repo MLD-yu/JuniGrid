@@ -1,7 +1,9 @@
+using System.Globalization;
 using System.Security.AccessControl;
 using System.Security.Cryptography;
 using System.Security.Principal;
 using System.Text;
+using System.Text.RegularExpressions;
 using JuniGrid.Manifest;
 
 namespace JuniGrid.ManifestTool;
@@ -9,14 +11,15 @@ namespace JuniGrid.ManifestTool;
 /// <summary>
 /// 发版时的清单签名工具（离线跑，私钥不在这台机器以外的任何地方）。
 ///
-/// <para>四个子命令：
+/// <para>五个子命令：
 /// <list type="bullet">
 ///   <item><c>keygen</c> —— 生成密钥对。私钥落到你指定的目录（务必放仓库外），公钥打印出来，
 ///   贴进 <c>JuniGrid.Manifest/ManifestTrust.cs</c> 的 <c>PublicKeySpkiBase64</c>。</item>
 ///   <item><c>make</c> —— 给一个 setup.exe 生成清单并签名：算 sha256/大小、写 latest.json、
 ///   出 latest.json.sig。这两个文件就是要发布到静态托管上的东西。</item>
-///   <item><c>sign</c> —— 只签一份已有的 latest.json。</item>
-///   <item><c>verify</c> —— 用内置公钥验一份清单+签名（发布前自检）。</item>
+///   <item><c>sign</c> —— 只签一份已有的文件（latest.json 或 game-versions.json 都行）。</item>
+///   <item><c>verify</c> —— 用内置公钥验签（只看签名，不看内容）。</item>
+///   <item><c>catalog</c> —— 校验游戏版本表的结构（schema/字段/重复项），可顺带验签。</item>
 /// </list>
 ///
 /// <para>用法示例：
@@ -42,6 +45,7 @@ public static class Program
                 case "make": return Make(opt);
                 case "sign": return Sign(opt);
                 case "verify": return Verify(opt);
+                case "catalog": return Catalog(opt);
                 default: Usage(); return 2;
             }
         }
@@ -68,6 +72,10 @@ public static class Program
 
               verify --manifest <latest.json> --sig <latest.json.sig>
                 用内置公钥验签（发布前自检）。
+
+              catalog --file <game-versions.json> [--stamp] [--sig <game-versions.json.sig>]
+                校验游戏版本表（schema/字段/重复项/顺序提示），--stamp 把 updated_at
+                改成当前时间，--sig 顺带验签。发布前必跑。
             """);
     }
 
@@ -193,6 +201,86 @@ public static class Program
         Console.WriteLine($"✓ 验签通过（密钥 {keyId}）");
         if (doc is not null)
             Console.WriteLine($"  版本 {doc.Version} / {doc.Size} 字节 / sha256 {doc.Sha256}");
+        return 0;
+    }
+
+    // ── catalog ───────────────────────────────────────────────────────────────
+    /// <summary>
+    /// 校验游戏版本表（<c>game-versions.json</c>）。
+    ///
+    /// <para>为什么单独一条命令：<see cref="Verify"/> 只验签、不管内容 —— 签一份字段写错的表
+    /// 也能"验签通过"。而版本表决定「用户点下载时从哪个 manifest 拉本体」，也决定版本比较的
+    /// 先后（存档能不能读），写错一行是静默错的。所以发布前必须过一遍结构校验。</para>
+    /// </summary>
+    private static int Catalog(Dictionary<string, string> opt)
+    {
+        var file = opt.GetValueOrDefault("file") ?? throw new ArgumentException("缺少 --file");
+        if (!File.Exists(file)) throw new FileNotFoundException("找不到版本表", file);
+
+        if (opt.ContainsKey("stamp"))
+        {
+            var text = File.ReadAllText(file);
+            var now = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ");
+            // 只改这一行，其余字节（缩进、条目排版）原样保留 —— 这个文件是给人手工编辑的，
+            // 用 JsonSerializer 重写会把 52 条压成 300 行、diff 全红。
+            var replaced = Regex.Replace(text, "(\"updated_at\"\\s*:\\s*\")[^\"]*(\")",
+                m => m.Groups[1].Value + now + m.Groups[2].Value);
+            if (string.Equals(replaced, text, StringComparison.Ordinal))
+            {
+                Console.Error.WriteLine("⚠ 文件里没找到 updated_at 字段，时间戳没改");
+            }
+            else
+            {
+                File.WriteAllText(file, replaced, new UTF8Encoding(false));
+                Console.WriteLine($"updated_at → {now}");
+            }
+        }
+
+        var bytes = File.ReadAllBytes(file);
+        var doc = GameVersionCatalogDocument.Parse(bytes);
+        if (doc is null)
+        {
+            Console.Error.WriteLine("✗ 版本表不合规 —— 别发布");
+            Console.Error.WriteLine("  常见原因：schema 不是 1；manifest 含非数字或为空；");
+            Console.Error.WriteLine("           版本号里有空格/斜杠/中文；同名版本或同一 manifest 出现两次。");
+            return 1;
+        }
+
+        Console.WriteLine($"AppID    : {doc.AppId}{(doc.AppId == "413150" ? "" : "   ⚠ 不是星露谷的 413150")}");
+        Console.WriteLine($"Depot    : {(string.IsNullOrEmpty(doc.DepotId) ? "(未写)" : doc.DepotId)}");
+        Console.WriteLine($"版本数   : {doc.Versions.Count}");
+        Console.WriteLine($"最新     : {doc.Versions[0].Version}  → manifest {doc.Versions[0].Manifest}");
+        Console.WriteLine($"最旧     : {doc.Versions[^1].Version}  → manifest {doc.Versions[^1].Manifest}");
+        Console.WriteLine($"更新时间 : {doc.UpdatedAt}");
+        if (!string.IsNullOrWhiteSpace(doc.UpdatedAt)
+            && DateTime.TryParse(doc.UpdatedAt, CultureInfo.InvariantCulture,
+                DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out var at))
+        {
+            var age = DateTime.UtcNow - at;
+            if (age > TimeSpan.FromDays(180))
+                Console.Error.WriteLine($"⚠ 这份表已经 {age.Days} 天没动过 —— 星露谷期间更新过版本？");
+        }
+
+        var sigPath = opt.GetValueOrDefault("sig");
+        if (!string.IsNullOrWhiteSpace(sigPath))
+        {
+            if (!File.Exists(sigPath)) { Console.Error.WriteLine($"✗ 找不到签名文件：{sigPath}"); return 1; }
+            var sigText = File.ReadAllText(sigPath);
+            if (!ManifestTrust.VerifyBase64(bytes, sigText, out var keyId))
+            {
+                Console.Error.WriteLine("✗ 验签不过 —— 表内容和签名对不上，别发布");
+                return 1;
+            }
+            if (!string.IsNullOrWhiteSpace(doc.KeyId)
+                && !string.Equals(doc.KeyId, keyId, StringComparison.OrdinalIgnoreCase))
+            {
+                Console.Error.WriteLine($"✗ 表里自述密钥 {doc.KeyId}，实际是 {keyId} 签的");
+                return 1;
+            }
+            Console.WriteLine($"✓ 验签通过（密钥 {keyId}）");
+        }
+
+        Console.WriteLine("✓ 版本表合规");
         return 0;
     }
 

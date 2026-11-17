@@ -18,6 +18,8 @@ public sealed partial class ModService
         // 所以取文件一律用 PackRoot，落盘才用宿主目录。
         var packRoot = Path.GetFullPath(Path.Combine(tempDir, plan.PackRoot.Replace('/', Path.DirectorySeparatorChar)));
         var c = cfg.Current;
+        // 盖的是哪个版本的 Mods —— 账本要跟着版本走，否则切走之后这些包会被当成"失效"
+        var version = UpdateService.ReadLocalGameVersion(gamePath) ?? "";
         var written = 0;
         var skipped = 0;
         var adopted = 0;
@@ -50,7 +52,7 @@ public sealed partial class ModService
                 // 所以补账。补得了的前提是原版备份还在 —— 没备份就绝不伪造 origHash，
                 // 否则「删除」会把宿主自己那份文件当成"覆盖包新增的"直接删掉。
                 if (OverlayLive(c, key, local) || !File.Exists(bakFile)) { skipped++; continue; }
-                if (!TryAdoptOverlay(c, plan, key, dst, local, src, dstPath, Sha256Of(bakFile), nexusModId, packName))
+                if (!TryAdoptOverlay(c, plan, key, dst, local, src, dstPath, Sha256Of(bakFile), nexusModId, packName, version))
                     return $"「{Path.GetFileName(hostDir)}」里的文件正被占用，覆盖未完成：{dst}";
                 if (moved) notes?.Add(MovedNote(dst));
                 adopted++;
@@ -81,6 +83,7 @@ public sealed partial class ModService
                     OriginalSha256 = origHash,
                     AppliedSha256 = Sha256Of(dstPath),
                     StoreId = storeId,
+                    GameVersion = version,
                     Enabled = true,
                 };
                 // 文件槽位只有一个：这份占上了，同一个文件上的其它包一律记成"关着" ——
@@ -133,7 +136,8 @@ public sealed partial class ModService
     /// <summary>把一份"文件已经在位但账没了"的覆盖重新记账：不重写文件（内容一样，重抄没有意义），
     /// 只补记录 + 补副本，让卡片、开关和「还原」重新有入口。</summary>
     private static bool TryAdoptOverlay(JuniGridConfig c, OverlayPlan plan, string key, string rel,
-        string local, string src, string dst, string origHash, int? nexusModId, string packName)
+        string local, string src, string dst, string origHash, int? nexusModId, string packName,
+        string gameVersion = "")
     {
         try
         {
@@ -148,6 +152,7 @@ public sealed partial class ModService
                 OriginalSha256 = origHash,
                 AppliedSha256 = Sha256Of(dst),
                 StoreId = storeId,
+                GameVersion = gameVersion,
                 Enabled = true,
             };
             foreach (var sib in OverlaySiblings(c, c.Overlays[key], key))
@@ -194,8 +199,9 @@ public sealed partial class ModService
     /// 一重放就把人家手改的内容盖掉。真正的自动重放放在<b>我们刚换过那个目录</b>的当下
     /// （<see cref="ReapplyOverlaysForHost"/>），扫描只负责把剩下的报成失效。
     /// ByHost 给列表行的徽标用，StaleKeys 给清单弹窗逐行标红用。</para></summary>
-    public static OverlayReport OverlayHealth(string gamePath, JuniGridConfig cfg)
+    public static OverlayReport OverlayHealth(string gamePath, JuniGridConfig cfg, string? currentVersion = null)
     {
+        currentVersion ??= UpdateService.ReadLocalGameVersion(gamePath);
         var byHost = new Dictionary<string, (int Total, int Stale)>(StringComparer.OrdinalIgnoreCase);
         var stale = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         // 同一个宿主文件上可以有好几个汉化包各占一条账（磁盘槽位只有一个），所以按文件分组判：
@@ -204,6 +210,10 @@ public sealed partial class ModService
                      StringComparer.OrdinalIgnoreCase))
         {
             var rows = grp.ToList();
+            // 别的版本装的包在这台机器的 Mods 里本来就不该有宿主 —— 判它"失效"是拿错了尺子。
+            // 整组都属于别的版本才跳过：同一文件上可能挂着两个版本的账，其中一条属于当前版本。
+            if (rows.All(kv => OverlayFromOtherVersion(kv.Value, currentVersion)))
+                continue;
             var activeKey = rows.FirstOrDefault(kv => kv.Value.Enabled).Key;
             var hostDir = ResolveHostDir(gamePath, rows[0].Value.Host);
             var file = hostDir is null ? null
@@ -211,6 +221,8 @@ public sealed partial class ModService
             var hash = file is not null && File.Exists(file) ? Sha256Of(file) : null;
             foreach (var (key, rec) in rows)
             {
+                // 同一文件上另一版本留下的账同样不参与判定（它不属于这一版）
+                if (OverlayFromOtherVersion(rec, currentVersion)) continue;
                 var ours = hash is not null && hash == rec.AppliedSha256;
                 // "正常" = 磁盘状态和开关一致：开着该是我们的文件在位，关着该是不在位
                 var alive = activeKey is null ? !ours
@@ -222,6 +234,142 @@ public sealed partial class ModService
             }
         }
         return new OverlayReport(byHost, stale);
+    }
+
+    /// <summary>版本号归一：只取前三段数字（"1.6.15.0" / "1.6.15" 是同一版；读不出来给空串）。</summary>
+    public static string NormalizeGameVersion(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return "";
+        var parts = raw.Trim().TrimStart('v', 'V').Split('.');
+        return parts.Length >= 3 ? string.Join('.', parts.Take(3)) : raw.Trim();
+    }
+
+    /// <summary>这条覆盖账是不是<b>别的游戏版本</b>装上去的。
+    /// <para>空版本一律算「当前版本」：那是这个字段上线前的旧账，或者实在归不了版 ——
+    /// 宁可多报一次失效，也不许把真失效藏进"其它版本"里。</para></summary>
+    public static bool OverlayFromOtherVersion(OverlayRecord rec, string? currentVersion)
+    {
+        var v = NormalizeGameVersion(rec.GameVersion);
+        var cur = NormalizeGameVersion(currentVersion);
+        return v.Length > 0 && cur.Length > 0 && !v.Equals(cur, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>旧账归版：把没有 <see cref="OverlayRecord.GameVersion"/> 的覆盖记到它真正所在的版本上。
+    /// <para>判据只有一条 —— <b>宿主目录出现在哪个版本的 Mods 快照里</b>：当前游戏 Mods 优先，
+    /// 其次版本缓存包、切换时的孤儿备份、半截包隔离区。都找不到就留空（版本不明，
+    /// 仍按"宿主没了"判失效），绝不靠时间戳猜。</para>
+    /// <para>为什么必须有这一步：这些账是字段上线前记的，玩家已经切过版本（实机 2026-11-15：
+    /// 12 个汉化包全挂在已经不存在的宿主上，整页红色），不归版的话新逻辑对它们一点都不生效。</para>
+    /// <para>返回改了几条。调用方负责落盘。</para></summary>
+    public static int StampOverlayVersions(string gamePath, JuniGridConfig cfg)
+    {
+        var blanks = cfg.Overlays.Values.Where(r => string.IsNullOrWhiteSpace(r.GameVersion)).ToList();
+        if (blanks.Count == 0) return 0;
+        var snaps = VersionSnapshots(gamePath);
+        if (snaps.Count == 0) return 0;
+        var stamped = 0;
+        foreach (var rec in blanks)
+        {
+            foreach (var (version, modsRoot) in snaps)
+            {
+                if (HostDirUnder(modsRoot, rec.Host) is null) continue;
+                rec.GameVersion = version;
+                stamped++;
+                break;
+            }
+        }
+        if (stamped > 0)
+            AppLog.Info("Mods", $"[覆盖包] {stamped} 条旧账已按宿主所在版本归版（其余 {blanks.Count - stamped} 条仍未归版）");
+        return stamped;
+    }
+
+    /// <summary>可能存着某个版本 Mods 的地方：当前游戏目录 + 版本缓存包 + 孤儿备份 + 半截包隔离区。
+    /// 只列顶层目录，不递归 —— 这一步每次重扫都要跑（只对有旧账的时候），不能扫出 IO 风暴。</summary>
+    internal static List<(string Version, string ModsRoot)> VersionSnapshots(string gamePath)
+    {
+        var list = new List<(string, string)>();
+        void Add(string? version, string? modsRoot)
+        {
+            if (string.IsNullOrWhiteSpace(version) || string.IsNullOrWhiteSpace(modsRoot)) return;
+            if (!Directory.Exists(modsRoot)) return;
+            list.Add((version.Trim(), modsRoot));
+        }
+
+        var cur = UpdateService.ReadLocalGameVersion(gamePath);
+        Add(cur, Path.Combine(gamePath, "Mods"));
+
+        string[] tops;
+        try { tops = Directory.GetDirectories(DepotDownloaderService.StagingRoot); }
+        catch { return list; }
+        foreach (var dir in tops)
+        {
+            var name = Path.GetFileName(dir);
+            if (name.Equals("_smapi-pool", StringComparison.OrdinalIgnoreCase)
+                || name.Equals("_saves-backup", StringComparison.OrdinalIgnoreCase)
+                || name.Equals("_quarantine", StringComparison.OrdinalIgnoreCase)) continue;
+            if (name.Equals("_mods-orphan", StringComparison.OrdinalIgnoreCase))
+            {
+                // _mods-orphan/<版本>/Mods；_no-smapi / _copyleft 这些分区名不是版本号
+                try
+                {
+                    foreach (var sub in Directory.GetDirectories(dir))
+                    {
+                        var v = Path.GetFileName(sub);
+                        if (v.StartsWith('_')) continue;
+                        Add(v, Path.Combine(sub, "Mods"));
+                    }
+                }
+                catch { }
+                continue;
+            }
+            if (name.Equals("_incomplete", StringComparison.OrdinalIgnoreCase))
+            {
+                // <appId>-<depotId>-<版本>-<yyyyMMdd_HHmmss>
+                try
+                {
+                    foreach (var sub in Directory.GetDirectories(dir))
+                        Add(VersionFromDirName(Path.GetFileName(sub)), Path.Combine(sub, "Mods"));
+                }
+                catch { }
+                continue;
+            }
+            if (name.StartsWith('_')) continue;
+            Add(VersionFromDirName(name), Path.Combine(dir, "Mods"));
+        }
+        // 当前版本永远排第一（宿主就在这一版的 Mods 里，这是最硬的证据）；
+        // 其余按快照新旧排 —— 同一个 mod 两个版本都装过时，最近写过的那份才是这次覆盖所属的版本。
+        var curRoot = Path.Combine(gamePath, "Mods");
+        return list
+            .OrderBy(s => s.Item2.Equals(curRoot, StringComparison.OrdinalIgnoreCase) ? 0 : 1)
+            .ThenByDescending(s => SafeWriteTime(s.Item2))
+            .ToList();
+    }
+
+    /// <summary>目录的写入时间；拿不到就当"很旧"（不影响它被选中，只影响同分时的先后）。</summary>
+    private static DateTime SafeWriteTime(string dir)
+    {
+        try { return Directory.GetLastWriteTime(dir); } catch { return DateTime.MinValue; }
+    }
+
+    /// <summary>版本包/隔离区目录名 → 版本号：<c>&lt;appId&gt;-&lt;depotId&gt;-&lt;版本&gt;[-&lt;时间戳&gt;]</c>。
+    /// 前两段是纯数字 id，不是版本的一部分 —— 「413150-413151-1.6.15」直接拿来比版本会永远对不上。</summary>
+    internal static string VersionFromDirName(string name)
+    {
+        var s = StripStamp(name);
+        var parts = s.Split('-');
+        if (parts.Length >= 3 && parts[0].All(char.IsDigit) && parts[1].All(char.IsDigit))
+            s = string.Join('-', parts.Skip(2));
+        return s;
+    }
+
+    /// <summary>去掉目录名尾部的 <c>-20261115_180758</c> 时间戳。</summary>
+    internal static string StripStamp(string name)
+    {
+        var i = name.LastIndexOf('-');
+        if (i <= 0 || i == name.Length - 1) return name;
+        var tail = name[(i + 1)..];
+        return tail.Length == 15 && tail[8] == '_' && tail.All(c => char.IsDigit(c) || c == '_')
+            ? name[..i] : name;
     }
 
     /// <summary>覆盖记录的键：宿主 | 包内相对路径 | 来源槽位。

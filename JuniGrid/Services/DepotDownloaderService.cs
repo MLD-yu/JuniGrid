@@ -32,12 +32,31 @@ public sealed partial class DepotDownloaderService
     private const int MaxSteamSessions = 3;
     private static readonly SemaphoreSlim SessionGate = new(MaxSteamSessions, MaxSteamSessions);
     private static int _sessionHeld;
+    private static readonly ConcurrentDictionary<long, SessionSlot> LiveSlots = new();
+    private static long _slotSeq;
 
     /// <summary>是否已有 Steam 会话在飞（正在下载，或正在等人扫码）。</summary>
     public static bool SteamSessionBusy => Volatile.Read(ref _sessionHeld) > 0;
 
     /// <summary>当前在飞的会话数（测试台与诊断用）。</summary>
     public static int SteamSessionCount => Volatile.Read(ref _sessionHeld);
+
+    /// <summary>
+    /// 回收孤儿会话：调用方必须先确认「没有 DD 进程 + 没有下载任务」—— 那时还占着闸的
+    /// 只可能是卡死没退出的登录/扫码收尾路（2026-11-16 实机：三路占满后授权窗再也打不开）。
+    /// Dispose 幂等（靠 LiveSlots 摘登记），真主人后来退出时不会二次归还。
+    /// </summary>
+    public static int ReapOrphanSessions()
+    {
+        var n = 0;
+        foreach (var kv in LiveSlots.ToArray())
+        {
+            kv.Value.Dispose();
+            n++;
+        }
+        if (n > 0) AppLog.Warn("SteamSession", $"回收孤儿会话 {n} 路（无 DD 进程且无下载任务）");
+        return n;
+    }
 
     private static int _loginIdSeed = Random.Shared.Next(1000, 999_999) * 1000;
 
@@ -53,15 +72,23 @@ public sealed partial class DepotDownloaderService
     {
         await SessionGate.WaitAsync(ct);
         Interlocked.Increment(ref _sessionHeld);
-        return new SessionSlot();
+        var slot = new SessionSlot(Interlocked.Increment(ref _slotSeq));
+        LiveSlots[slot.Id] = slot;
+        AppLog.Info("SteamSession", $"占会话 #{slot.Id} held={Volatile.Read(ref _sessionHeld)}");
+        return slot;
     }
 
     private sealed class SessionSlot : IDisposable
     {
+        public long Id { get; }
+        public SessionSlot(long id) => Id = id;
+
         public void Dispose()
         {
+            if (!LiveSlots.TryRemove(Id, out _)) return;   // 已被孤儿回收过：不二次归还
             Interlocked.Decrement(ref _sessionHeld);
             try { SessionGate.Release(); } catch (SemaphoreFullException) { }
+            AppLog.Info("SteamSession", $"还会话 #{Id} held={Volatile.Read(ref _sessionHeld)}");
         }
     }
 
@@ -103,6 +130,14 @@ public sealed partial class DepotDownloaderService
     public sealed record Progress(string State, int? Percent, string? Line = null, bool? Queued = null);
 
     public sealed class DepotException(string message) : Exception(message);
+
+    /// <summary>
+    /// 本机这个安装目录下没有可用的 Steam 登录凭据（DD 的凭据在 IsolatedStorage 里按 exe 路径
+    /// 分桶，见 Login.cs 的 <c>CredentialMissingMarker</c>）—— 下载器会转而向 stdin 要密码，
+    /// 而窗口程序里没有人能敲。这不是网络问题，重试没有意义，唯一出路是去设置页重新扫码。
+    /// 单独一个类型，是为了让调用方能把「已授权」标记撤回，免得用户下次点「下载」又白等一遍。
+    /// </summary>
+    public sealed class AuthRequiredException(string message) : Exception(message);
 
     public DepotDownloaderService() { }
 

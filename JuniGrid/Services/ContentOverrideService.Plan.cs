@@ -64,7 +64,11 @@ public static partial class ContentOverrideService
         if (plan.VariantItems.TryGetValue(asset, out var facts))
             r.VariantFacts = facts.Select(v => new ContentOverrideVariant(v.Label, v.Note)).ToList();
         r.Version = OriginalVersionSegment(gamePath);
-        if (r.Enabled) r.AppliedAtUtc = DateTime.UtcNow;
+        if (r.Enabled)
+        {
+            r.AppliedAtUtc = DateTime.UtcNow;
+            r.MarkApplied(r.Version);      // v1.6.14：换配色也是"在这一版下应用了"
+        }
         // 候选清单跟着这次解析的结果刷新（原包被人动过时，界面上不该还列着没了的那版）
         if (plan.VariantLabels.TryGetValue(asset, out var fresh)) r.Variants = fresh;
         cfg.Save(cfg.Current);

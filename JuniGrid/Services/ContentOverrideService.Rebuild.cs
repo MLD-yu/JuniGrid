@@ -326,6 +326,8 @@ public static partial class ContentOverrideService
                     OriginalSha256 = origHash, AppliedSha256 = mine, StoreId = storeId, Enabled = on,
                     Encoded = inPlace.Encoded,
                     Version = origVer.Length > 0 ? origVer : OriginalVersionSegment(gamePath),
+                    // 从盘上认回来的账：只有在位的那条才算"这一版应用过"（关着的随时可能切回来）。
+                    AppliedVersions = on ? new List<string> { origVer.Length > 0 ? origVer : OriginalVersionSegment(gamePath) } : new(),
                     SkippedCount = plan.Rejects.Count, SkippedNote = string.Join("\n", plan.Rejects.Take(8)),
                     ResizedCount = plan.Resized.Count, ResizedNote = string.Join("\n", plan.Resized.Take(8)),
                     Variants = plan.VariantLabels.TryGetValue(it.Asset, out var vs) ? vs : new(),

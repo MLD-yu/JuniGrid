@@ -156,29 +156,74 @@ public sealed partial class ModService
     public (HashSet<string> Enabled, HashSet<string> Disabled) HiddenChildUids { get; private set; }
         = (new HashSet<string>(StringComparer.OrdinalIgnoreCase), new HashSet<string>(StringComparer.OrdinalIgnoreCase));
 
-    /// <summary>顶层自带 manifest 的包，往下再看一层把子包 UID 收进隐藏集合。
-    /// 只读 UID、不建条目；子包与顶层同 UID（包内又塞了一份）时不收，免得把判重逻辑绕晕。</summary>
+    /// <summary>顶层自带 manifest 的包，往下把所有层级的子包 UID 收进隐藏集合。
+    /// 只读 UID、不建条目；子包与顶层同 UID（包内又塞了一份）时不收，免得把判重逻辑绕晕。
+    /// <para>v1.10.x 三处修正（都会让「装着的前置」被判成「缺依赖」，属误报）：</para>
+    /// <list type="number">
+    /// <item>原来只走<b>一层</b>：真实捆绑包常常是 <c>包/[子包]/[孙包]</c>
+    /// （实测 Durin's Rest、Timberline Falls 都是这种两层结构），孙包的 UID 收不到。</item>
+    /// <item>原来用 <c>System.Text.Json</c> 严格读 + <c>TryGetProperty("UniqueID")</c> 大写敏感：
+    /// SMAPI 内置 mod 的 manifest 写的是 <c>"UniqueId"</c>，宽松 JSON（注释、尾随逗号）也直接抛，
+    /// 两种都会静默留空。</item>
+    /// <item>原来遇到坏 manifest 就 <c>continue</c>，连它的子目录都不再看 —— 一个坏壳能带走整棵子树。</item>
+    /// </list></summary>
     private static void CollectHiddenChildUids(string topDir, string? ownUid, bool topDisabled,
         HashSet<string> on, HashSet<string> off)
     {
-        foreach (var sub in Directory.EnumerateDirectories(topDir))
+        // 广度优先、显式队列：visited 防符号链接成环；深度封顶 3 层——
+        // 真实捆绑包最多两层（包/[子包]/[孙包]），再往下走的都是素材树，白花扫描时间。
+        var queue = new Queue<(string Dir, int Depth)>();
+        var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        queue.Enqueue((topDir, 0));
+        while (queue.Count > 0)
         {
-            var name = Path.GetFileName(sub);
-            if (name.StartsWith('.') || name.Equals("assets", StringComparison.OrdinalIgnoreCase)) continue;
-            var mf = Path.Combine(sub, "manifest.json");
-            if (!File.Exists(mf)) continue;
-            string uid;
-            try
+            var (parent, depth) = queue.Dequeue();
+            if (depth >= 3) continue;
+            IEnumerable<string> subs;
+            try { subs = Directory.EnumerateDirectories(parent); }
+            catch { continue; }
+            foreach (var sub in subs)
             {
-                using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(mf));
-                uid = doc.RootElement.TryGetProperty("UniqueID", out var u) ? (u.GetString() ?? "").Trim() : "";
+                if (!visited.Add(sub)) continue;
+                var name = Path.GetFileName(sub);
+                // 点前缀 = 已禁用，它的子包 UID 由 Scan 自己建条目；这几个是素材/本地化目录不是 mod
+                if (name.StartsWith('.') || IsPayloadDir(name)) continue;
+
+                var mf = Path.Combine(sub, "manifest.json");
+                if (File.Exists(mf)) CollectOne(mf, ownUid, topDisabled, on, off);
+                // 无论这一层有没有 manifest 都往下走：坏壳/中间层目录不该截断整棵子树
+                queue.Enqueue((sub, depth + 1));
             }
-            catch { continue; }   // 子目录里的坏 manifest 由 BuildModEntry/兜底那套说话，这里不重复报
-            if (string.IsNullOrWhiteSpace(uid)) continue;
-            if (!string.IsNullOrWhiteSpace(ownUid) && uid.Equals(ownUid, StringComparison.OrdinalIgnoreCase)) continue;
-            (topDisabled ? off : on).Add(uid);
         }
     }
+
+    /// <summary>素材/本地化这类目录名：下面不可能再住一个 SMAPI mod，别为了找 UID 去遍历它们。</summary>
+    private static bool IsPayloadDir(string name)
+        => name.Equals("assets", StringComparison.OrdinalIgnoreCase)
+           || name.Equals("content", StringComparison.OrdinalIgnoreCase)
+           || name.Equals("i18n", StringComparison.OrdinalIgnoreCase)
+           || name.Equals("data", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>读一个子包 manifest 的 UniqueID 收进隐藏集。宽松解析 + 忽略大小写取键，
+    /// 与 <see cref="BuildModEntry"/> 同一套读法（两处读法不一致就会一边认得出、一边认不出）。</summary>
+    private static void CollectOne(string manifestPath, string? ownUid, bool topDisabled,
+        HashSet<string> on, HashSet<string> off)
+    {
+        try
+        {
+            var cleaned = TryReadManifestCleaned(manifestPath);
+            if (cleaned is null) return;
+            var root = Newtonsoft.Json.Linq.JObject.Parse(cleaned);
+            var tk = root.GetValue("UniqueID", StringComparison.OrdinalIgnoreCase);
+            if (tk?.Type != Newtonsoft.Json.Linq.JTokenType.String) return;
+            var uid = ((string)tk).Trim();
+            if (uid.Length == 0) return;
+            if (!string.IsNullOrWhiteSpace(ownUid) && uid.Equals(ownUid.Trim(), StringComparison.OrdinalIgnoreCase)) return;
+            (topDisabled ? off : on).Add(uid);
+        }
+        catch { /* 坏 manifest 由 BuildModEntry/兜底那套说话，这里不重复报 */ }
+    }
+
 
     public IReadOnlyList<ModEntry> Scan(string gamePath)
     {

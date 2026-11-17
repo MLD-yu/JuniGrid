@@ -25,6 +25,7 @@ public static class Program
     [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr hWnd);
     [DllImport("user32.dll")] private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
     [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+    [DllImport("user32.dll")] private static extern bool MoveWindow(IntPtr hWnd, int x, int y, int w, int h, bool repaint);
 
     public static int Main(string[] args)
     {
@@ -47,6 +48,7 @@ public static class Program
                 case "wheel": Wheel(int.Parse(args[1]), int.Parse(args[2]), int.Parse(args[3])); return 0;
                 case "drag": Drag(int.Parse(args[1]), int.Parse(args[2]), int.Parse(args[3]), int.Parse(args[4]), args.Length > 5 ? int.Parse(args[5]) : 24); return 0;
                 case "front": Front(FindHwnd(args[1])); return 0;
+                case "move": Move(args[1], int.Parse(args[2]), int.Parse(args[3]), int.Parse(args[4]), int.Parse(args[5])); return 0;
                 case "keys": Keys(string.Join(' ', args.Skip(1))); return 0;
                 default: Console.WriteLine(Usage); return 1;
             }
@@ -63,7 +65,16 @@ public static class Program
         "  click <窗口名子串> <名字或Id>     点击元素\n" +
         "  clickxy <x> <y> [right]         按坐标点击\n" +
         "  front <窗口名子串>               置前\n" +
+        "  move <窗口名子串> <x> <y> <w> <h>  移动/缩放窗口（可给负坐标挪出屏幕）\n" +
         "  keys <文本>                      发送按键文本";
+
+    private static void Move(string sub, int x, int y, int w, int h)
+    {
+        var hwnd = FindHwnd(sub);
+        if (hwnd == IntPtr.Zero) throw new Exception("找不到窗口：" + sub);
+        MoveWindow(hwnd, x, y, w, h, true);
+        Console.WriteLine(JsonSerializer.Serialize(new { hwnd = hwnd.ToInt64(), x, y, w, h }));
+    }
 
     private static void Shot(string path)
     {

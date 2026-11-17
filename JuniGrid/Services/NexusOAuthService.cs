@@ -30,9 +30,14 @@ public sealed class NexusOAuthService
     public string? LastError { get; private set; }
 
     private readonly ConfigService _cfg;
+    private readonly NexusWebDownloadService _web;
     private static readonly HttpClient Http = CreateClient();
 
-    public NexusOAuthService(ConfigService cfg) => _cfg = cfg;
+    public NexusOAuthService(ConfigService cfg, NexusWebDownloadService web)
+    {
+        _cfg = cfg;
+        _web = web;
+    }
 
     private static HttpClient CreateClient()
     {
@@ -119,6 +124,8 @@ public sealed class NexusOAuthService
             return null;
         }
 
+        var abandoned = false;
+        using var flow = CancellationTokenSource.CreateLinkedTokenSource(ct);
         try
         {
             var auth = AuthorizeUrl + "?client_id=" + Uri.EscapeDataString(ClientId)
@@ -127,11 +134,14 @@ public sealed class NexusOAuthService
                      + "&state=" + Uri.EscapeDataString(state)
                      + "&code_challenge=" + Uri.EscapeDataString(challenge)
                      + "&code_challenge_method=S256";
-            AppLog.Warn("NOAUTH", "打开浏览器进行 OAuth2 授权");
-            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(auth) { UseShellExecute = true });
+            await OpenAuthorizePageAsync(auth, () =>
+            {
+                abandoned = true;
+                try { flow.Cancel(); } catch (ObjectDisposedException) { }   // 关窗恰好撞上流程刚结束
+            });
 
             // 接住唯一一次重定向：解析 GET /auth/callback?code=…&state=…，回应一次后关闭。
-            var (code, gotState, error) = await CaptureCallbackAsync(listener, ct);
+            var (code, gotState, error) = await CaptureCallbackAsync(listener, flow.Token);
             if (!string.IsNullOrEmpty(error)) { LastError = error; return null; }
             if (string.IsNullOrEmpty(code)) { LastError = LocService.Tr("授权未完成"); return null; }
             if (gotState != state) { LastError = LocService.Tr("state 不匹配 —— 回调并非来自本次登录"); return null; }
@@ -162,7 +172,13 @@ public sealed class NexusOAuthService
             c.NexusProfileUrl = user.ProfileUrl ?? "";
             c.NexusIsPremium = user.IsPremium;
             _cfg.Save(c);
+            await _web.CompleteAuthorizeAsync();
             return user;
+        }
+        catch (OperationCanceledException) when (abandoned)
+        {
+            LastError = LocService.Tr("授权窗口已关闭");
+            return null;
         }
         catch (OperationCanceledException ex) when (!ct.IsCancellationRequested)
         {
@@ -183,6 +199,32 @@ public sealed class NexusOAuthService
             LastError = DescribeLoginFailure(ex);
             return null;
         }
+        finally
+        {
+            _web.EndAuthorize();
+        }
+    }
+
+    /// <summary>默认在内置 Nexus 网页里授权：登录落在下载通道那个 profile，网页账号一并登上，
+    /// 窗口顶栏还能「使用其它账号登录」。用户关了内置网页下载、或窗口起不来时，退回系统浏览器。</summary>
+    private async Task OpenAuthorizePageAsync(string auth, Action onAbandoned)
+    {
+        if (_cfg.Current.EnableBuiltinWebDownload)
+        {
+            try
+            {
+                await _web.OpenAuthorizeAsync(auth, onAbandoned);
+                AppLog.Info("NOAUTH", "在内置 Nexus 网页里进行 OAuth2 授权");
+                return;
+            }
+            catch (Exception ex)
+            {
+                AppLog.Warn("NOAUTH", "内置网页打不开，改用系统浏览器授权：" + ex.Message);
+                _web.EndAuthorize();
+            }
+        }
+        AppLog.Warn("NOAUTH", "打开浏览器进行 OAuth2 授权");
+        System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(auth) { UseShellExecute = true });
     }
 
     /// <summary>把登录请求的异常按「坏在哪一层」翻成一句能照着做的话，并把完整异常链记进日志。

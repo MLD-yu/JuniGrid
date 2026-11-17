@@ -7,7 +7,6 @@
 @inject SteamService Steam
 @inject NexusService NexusApi
 @inject NexusOAuthService OAuth
-@inject NexusWebDownloadService NexusWeb
 @inject NavigationManager Nav
 @inject IJSRuntime JS
 @inject StorageService Storage
@@ -47,7 +46,7 @@
                         }
                         else
                         {
-                            <text>@Loc.T("Steam 客户端级登录，切换账号请在 Steam 里操作；下载历史版本前需扫码授权")</text>
+                            <text>@Loc.T("Steam 客户端级登录，切换账号请在 Steam 里操作；下载历史版本前需登录授权")</text>
                         }
                     </div>
                 </div>
@@ -57,7 +56,7 @@
                 }
                 else
                 {
-                    <button class="jg-nexus-login-btn" @onclick="OpenDdQr">@Loc.T("扫码授权")</button>
+                    <button class="jg-nexus-login-btn" @onclick="OpenDdQr">@Loc.T("登录授权")</button>
                 }
             </div>
             <div style="display:flex;align-items:center;gap:10px;">
@@ -82,82 +81,174 @@
                     <button class="jg-nexus-login-btn" @onclick='() => Nav.NavigateTo("/nexus?login=1")'>@Loc.T("登录")</button>
                 }
             </div>
-            <div style="display:flex;align-items:center;gap:10px;padding-top:8px;border-top:1px solid var(--jg-border,#e5e7eb);">
-                @* v1.3.40：只显示登录状态，不显示头像/昵称。
-                   Nexus 新版页面把用户名藏进了个人主页，网页会话又没法可靠地证明自己是哪个号 ——
-                   显示 API 账号的身份有冒充风险（网页可能被切成别的号），所以干脆不显示。 *@
-                <img src="assets/nav/nexus.svg" alt="Nexus 网页" style="width:36px;height:36px;border-radius:50%;object-fit:cover;" />
-                <div style="flex:1">
-                    <div style="font-weight:600;">@Loc.T("内置 Nexus 网页") · @Loc.T(_nexusWebSignedIn ? "已登录" : "未登录")</div>
-                    <div style="font-size:12px;opacity:.65">@Loc.T("用于应用内下载")</div>
-                </div>
-                @* 一颗按钮，永远是「打开内置网页」：登录 / 换号 / 退出都在那个窗口里做
-                   （Nexus 页面自己的 Sign out 就能退），这里不再摆二选一的按钮。 *@
-                <button class="jg-nexus-login-btn" @onclick="OpenNexusWebLogin">@Loc.T("打开内置网页")</button>
-            </div>
         </div>
     </div>
 
-    @* ─── Steam 下载授权：扫码弹窗 ─── *@
+    @* ─── Steam 下载授权：左账密 / 右扫码 并排（仿 Steam 官方登录页）───
+       任何时刻只有一路登录活着：点「登录」取消扫码，点扫码刷新取消账密（同账号两路会互踢）。 *@
     @if (_ddQrOpen)
     {
-        @* 用全站 .jg-modal-overlay（z-index 99998）：内联的 1000 会被 .jg-sort-dd(9500) 盖过，
-           导致扫码进行中还能点背后的语言/主题下拉 *@
-        <div class="jg-modal-overlay" @onclick="CloseDdQr">
-            <div class="jg-modal" style="padding:18px 22px" @onclick:stopPropagation>
-                <div style="font-weight:600;margin-bottom:10px">@Loc.T("Steam 扫码授权")</div>
+        @* 遮罩不关窗：密码敲一半、验证码刚复制好时，点别处不该把整个登录丢掉；关它只用下面的按钮。 *@
+        <div class="jg-modal-overlay" data-backdrop-keep>
+            <div class="jg-modal jg-steam-login" @onclick:stopPropagation>
+                <div class="jg-steam-cols">
+                    @* 左：账号密码。标签在上、输入框满列宽、主按钮贴在列底 —— 与右列二维码底边齐平。 *@
+                    <div class="jg-steam-col">
+                        <div class="jg-steam-col-title">@Loc.T("用账号名称登录")</div>
+                        <label class="jg-steam-label" for="jg-dd-acc">@Loc.T("账号名称")</label>
+                        <input id="jg-dd-acc" class="jg-ver-input" placeholder="@Loc.T("登录名，不是昵称")"
+                               @bind="_ddPwdAccount" @bind:event="oninput" disabled="@_ddPwdBusy"
+                               @onkeydown="OnDdLoginKeyDown"/>
+                        <label class="jg-steam-label" for="jg-dd-pwd">@Loc.T("密码")</label>
+                        <input id="jg-dd-pwd" class="jg-ver-input" type="password" placeholder="@Loc.T("Steam 密码")"
+                               @bind="_ddPwdPassword" @bind:event="oninput" disabled="@_ddPwdBusy" autocomplete="off"
+                               @onkeydown="OnDdLoginKeyDown"/>
+                        @if (!string.IsNullOrEmpty(_ddPwdError))
+                        {
+                            <div class="jg-qr-err jg-steam-err">@Loc.T(_ddPwdError)</div>
+                        }
+                        <div class="jg-steam-actions">
+                            <button type="button" class="jg-steam-submit" disabled="@_ddPwdBusy"
+                                    @onclick="RunDdPasswordAsync">
+                                @if (_ddPwdBusy)
+                                {
+                                    <span class="jg-steam-submit-busy"><span class="jg-login-spinner"></span>@Loc.T("正在登录…")</span>
+                                }
+                                else
+                                {
+                                    @Loc.T("登录")
+                                }
+                            </button>
+                        </div>
+                    </div>
 
-                @if (!string.IsNullOrEmpty(_ddQrError))
-                {
-                    <div class="jg-qr-err">@Loc.T(_ddQrError)</div>
-                }
-
-                @if (_ddQrLines is { Count: >= 27 })
-                {
-                    @* 矢量码：白底 + 静区足，手机比 PNG data URI 好扫；台子按码自己的比例收（不占方形） *@
-                    <div class="jg-qr-stage vector">
-                        <QrAsciiImage Lines="_ddQrLines" Size="340" />
+                    <div class="jg-steam-col">
+                        <div class="jg-steam-col-title">@Loc.T("或者用二维码登录")</div>
+                        @if (_ddQrLines is { Count: >= 27 })
+                        {
+                            <div class="jg-qr-stage vector"><QrAsciiImage Lines="_ddQrLines" Size="420" /></div>
+                            <div class="jg-qr-hint">@Loc.T(DdQrScanHint)</div>
+                        }
+                        else if (!string.IsNullOrEmpty(_ddQrDataUri))
+                        {
+                            <div class="jg-qr-stage">
+                                <img class="qr" src="@_ddQrDataUri" alt='@Loc.T("扫码登录")' @onerror="OnQrImgError"/>
+                            </div>
+                            <div class="jg-qr-hint">@Loc.T(DdQrScanHint)</div>
+                        }
+                        else if (_ddQrFailed)
+                        {
+                            @* 失败只说一件事 + 原位刷新，不堆长文案 *@
+                            <div class="jg-qr-stage fail">
+                                <div class="veil"></div>
+                                <button type="button" class="jg-qr-refresh" title="@Loc.T("刷新二维码")"
+                                        @onclick="RestartQrAsync">⟳</button>
+                            </div>
+                            <div class="jg-qr-hint">@Loc.T("二维码获取失败")</div>
+                        }
+                        else if (_ddQrBusy)
+                        {
+                            <div class="jg-qr-stage"><div class="veil"></div><div class="hub"><div class="ring"></div></div></div>
+                            <div class="jg-qr-hint">@Loc.T("正在获取二维码…")</div>
+                        }
+                        else if (_ddDone)
+                        {
+                            @* 授权成功那一瞬：右栏也跟着表个态，别在这 600ms 里还摆一颗刷新按钮 *@
+                            <div class="jg-qr-stage"><div class="veil"></div><div class="hub"><div class="ring"></div></div></div>
+                            <div class="jg-qr-hint">@Loc.T("授权成功")</div>
+                        }
+                        else if (_ddPwdBusy)
+                        {
+                            @* 账密那路在跑：右栏只说明「这一路在用」，不再摆刷新按钮 ——
+                               那颗按钮曾经在登录成功的瞬间被点到，把已经在关的弹窗又拉回运行态。
+                               提示行兼作实时进度位（连接重试/收尾等），高度有预留不跳窗。 *@
+                            <div class="jg-qr-stage"><div class="veil"></div><div class="hub"><div class="ring"></div></div></div>
+                            <div class="jg-qr-hint">@(string.IsNullOrEmpty(_ddPwdLive) ? Loc.T("正在用账号密码登录…") : _ddPwdLive)</div>
+                        }
+                        else
+                        {
+                            <div class="jg-qr-stage fail">
+                                <div class="veil"></div>
+                                <button type="button" class="jg-qr-refresh" title="@Loc.T("刷新二维码")"
+                                        @onclick="RestartQrAsync">⟳</button>
+                            </div>
+                            <div class="jg-qr-hint">@Loc.T("扫码登录")</div>
+                        }
                     </div>
-                    <div class="jg-qr-hint">@Loc.T(DdQrScanHint)</div>
-                }
-                else if (!string.IsNullOrEmpty(_ddQrDataUri))
-                {
-                    <div class="jg-qr-stage">
-                        <img class="qr" src="@_ddQrDataUri" alt='@Loc.T("扫码授权")'
-                             @onerror="OnQrImgError"/>
-                    </div>
-                    <div class="jg-qr-hint">@Loc.T(DdQrScanHint)</div>
-                }
-                else if (!string.IsNullOrEmpty(_ddQrError) && !_ddQrBusy)
-                {
-                    <div class="jg-qr-stage fail">
-                        <div class="veil"></div>
-                        <div class="hub"><span class="bang">!</span></div>
-                    </div>
-                }
-                else
-                {
-                    @* 连接中：模糊码底 + 加载环，下面一行短进度（长文案会撑破弹窗，截到 48 字） *@
-                    <div class="jg-qr-stage">
-                        <div class="veil"></div>
-                        <div class="hub"><div class="ring"></div></div>
-                    </div>
-                    <div class="jg-qr-hint">@(string.IsNullOrWhiteSpace(_ddQrState) ? Loc.T("正在连接…") : DdQrHint)</div>
-                }
-
-                <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:12px">
-                    @if (_ddQrBusy)
+                </div>
+                <div class="jg-steam-footer">
+                    @if (_ddQrFailed)
                     {
-                        @* 出码截止是 20 秒，不该让人干等：点一下 1 秒内掐掉这一路马上重开，
-                           而且这次重开不占用重试次数（用户主动要的，不是失败） *@
-                        <button type="button" class="jg-path-btn" @onclick="KickQrRetry">@Loc.T("立即重开")</button>
+                        <button type="button" class="jg-path-btn" @onclick="GoSteamDownload">@Loc.T("改用 Steam 下载（免扫码）")</button>
                     }
-                    <button type="button" class="jg-path-btn" @onclick="CloseDdQr">@(_ddQrBusy ? Loc.T("取消") : Loc.T("关闭"))</button>
+                    <button type="button" class="jg-path-btn" @onclick="CloseDdQr">@((_ddQrBusy || _ddPwdBusy) ? Loc.T("取消") : Loc.T("关闭"))</button>
                 </div>
             </div>
         </div>
     }
 
+
+    @* ─── Steam Guard 验证码：独立弹窗 + CodeSlots 式槽位输入 ───
+       输满 5 位自动提交；提交后弹窗留着等 Steam 的判定 ——
+       判错：红染倒序退场后再要一次；判对：登录收尾统一关窗。 *@
+    @if (_ddGuardOpen)
+    {
+        <div class="jg-modal-overlay jg-guard-overlay" data-backdrop-keep>
+            <div class="jg-modal jg-guard-modal">
+                <div class="jg-modal-title">@Loc.T("Steam Guard 验证码")</div>
+                <div class="jg-guard-sub">
+                    @if (_ddGuardSuccess)
+                    {
+                        @* 空分支是故意的：否则会落到下面 else，把「请输入验证码」在成功那 1.2s 里又摆回来 *@
+                    }
+                    else if (_ddGuardError)
+                    {
+                        <span class="jg-guard-err">@Loc.T("上一条验证码不正确，请重新输入")</span>
+                    }
+                    else if (_ddGuardBusy)
+                    {
+                        <span class="jg-guard-busy"><span class="jg-login-spinner"></span>@Loc.T(string.IsNullOrEmpty(_ddGuardPrompt) ? "正在连接 Steam，连接后自动提交…" : "正在验证…")</span>
+                    }
+                    else
+                    {
+                        <span>@Loc.T("输入手机令牌 App 或邮箱里的 5 位验证码，输满自动提交")</span>
+                    }
+                </div>
+                <div id="jg-guard-slots" class="gs">
+                    <div class="gs-row">
+                        <input class="gs-input" type="text" autocomplete="one-time-code" aria-label="Steam Guard code" />
+                        @for (var i = 0; i < 5; i++)
+                        {
+                            <span class="gs-slot"><span class="gs-fill"></span><span class="gs-digit"></span></span>
+                        }
+                        <span class="gs-caret"><span class="gs-caret-line"></span></span>
+                        <span class="gs-wash" aria-hidden="true">
+                            <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5 5L20 6.5"/></svg>
+                        </span>
+                    </div>
+                </div>
+                <div>
+                    <button type="button" class="jg-guard-cancel" disabled="@((_ddGuardBusy && !string.IsNullOrEmpty(_ddGuardPrompt)) || _ddGuardSuccess)"
+                            @onclick="CancelGuardPopup">@Loc.T("取消")</button>
+                </div>
+            </div>
+        </div>
+    }
+
+    @* 手机确认与验证码弹窗互斥，仅按 Steam 返回的验证方式显示。 *@
+    @if (_ddMobileConfirm)
+    {
+        <div class="jg-modal-overlay jg-guard-overlay" data-backdrop-keep>
+            <div class="jg-modal jg-guard-modal">
+                <div class="jg-modal-title">@Loc.T("使用 Steam 手机应用来确认登录…")</div>
+                <div class="jg-mobile-wait"><span class="jg-login-spinner large"></span></div>
+                <div style="display:flex; gap:8px; justify-content:center; flex-wrap:wrap;">
+                    <button type="button" class="jg-guard-cancel" @onclick="SwitchToCodeLogin">@Loc.T("改为输入代码")</button>
+                    <button type="button" class="jg-guard-cancel" @onclick="CancelGuardPopup">@Loc.T("取消")</button>
+                </div>
+            </div>
+        </div>
+    }
 
     @* ── i18n：界面语言（复用 Mod 管理页同款自定义下拉，不用原生 select）── *@
     <div class="jg-card" style="margin-top:12px">
@@ -217,7 +308,7 @@
                 <span style="font-weight:600">@Loc.T("启动项")</span>
                 <span class="jg-help-tip">
                     <span class="jg-help-tip-btn">?</span>
-                    <span class="jg-help-tip-bubble">@Loc.T("默认启动游戏目录下的 StardewModdingAPI.exe。如果你把它改了名（比如改成 SMAPI.exe），这里留空也能自动认出来；认不出来就点「浏览...」手动指定，之后每次启动都用它。")</span>
+                    <span class="jg-help-tip-bubble">@Loc.T("留空 = 每次启动都按当前游戏目录自动认：先找 StardewModdingAPI.exe，找不到就在根目录里认出改了名的壳（SMAPI.exe、启动MOD.exe 都行，改名不影响它的版本信息）。切换游戏版本后也是按当时的目录重新认，不需要为每个版本各填一次。")</span>
                 </span>
             </div>
             <input class="jg-ver-input" style="margin-top:6px" @bind="_launcherExe" @bind:after="OnLauncherTyped"
@@ -436,26 +527,9 @@
                                 {
                                     <div class="jg-acc-item">
                                         <span class="jg-acc-item-name">@Loc.T(v.Label)</span>
-                                        <span class="jg-acc-item-size">@ResumableDownload.FormatBytes(v.SizeBytes)</span>
+                                        <span class="jg-acc-item-size">@(v.SizeBytes < 0 ? Loc.T("大小未知") : ResumableDownload.FormatBytes(v.SizeBytes))</span>
                                         <button type="button" class="jg-mini-btn danger-outline"
                                                 @onclick="() => AskDeleteVerCache(v)">@Loc.T("删除")</button>
-                                    </div>
-                                }
-                                @* 版本包之外的附属目录：删的代价不同的东西分行放（SMAPI 本体删了要重装、
-                                   Mod 暂存里是用户的东西 → 那条走回收站），每条带「?」讲清是什么。 *@
-                                @foreach (var b in _verBuckets)
-                                {
-                                    <div class="jg-acc-item">
-                                        <span class="jg-acc-item-name" style="display:flex;align-items:center;gap:6px">
-                                            @Loc.T(b.Kind.Name)
-                                            <span class="jg-help-tip">
-                                                <span class="jg-help-tip-btn">?</span>
-                                                <span class="jg-help-tip-bubble">@Loc.T(b.Kind.Tip)</span>
-                                            </span>
-                                        </span>
-                                        <span class="jg-acc-item-size">@(b.Bytes < 0 ? Loc.T("计算中…") : ResumableDownload.FormatBytes(b.Bytes))</span>
-                                        <button type="button" class="jg-mini-btn danger-outline"
-                                                @onclick="() => AskDeleteBucket(b)">@Loc.T("删除")</button>
                                     </div>
                                 }
                             </div>
@@ -598,7 +672,7 @@
     </div>
 }
 
-@if (_pendingCleanId is not null || _confirmCleanAll || _pendingDeleteVer is not null || _pendingBucket is not null)
+@if (_pendingCleanId is not null || _confirmCleanAll || _pendingDeleteVer is not null)
 {
     <div class="jg-modal-overlay" @onclick="CancelClean">
         <div class="jg-modal" @onclick:stopPropagation>
@@ -703,10 +777,6 @@
     private string _nexusName = "";
     private string? _nexusAvatar;
     private bool   _nexusPremium;
-    private string? _nexusWebName;
-    /// <summary>v1.3.39：网页那边是否已登录。Nexus 新版页头不吐用户名，
-    /// 靠 #login-status 判状态 —— 至少能显示「已登录」，而不是一直挂着「登录」按钮。</summary>
-    private bool _nexusWebSignedIn;
     private bool   _sponsorWechat = true;
     private bool   _showForgotQr;          // 关于页的「忘记备注」二维码弹窗
 
@@ -721,64 +791,46 @@
         StateHasChanged();
     }
 
-    private async Task OpenNexusWebLogin()
-    {
-        try
-        {
-            await NexusWeb.OpenAccountWindowAsync();
-        }
-        catch (Exception ex)
-        {
-            AppLog.Warn("NexusWeb", "打开内置 Nexus 网页窗口失败：" + ex);
-            _ = JS.InvokeVoidAsync("junigridJs.toast", LocService.Tr("内置 Nexus 网页窗口打开失败") + "：" + ex.Message, "err");
-        }
-    }
-    private void OnNexusWebSignInChanged(bool signedIn)
-    {
-        _ = InvokeAsync(() =>
-        {
-            _nexusWebSignedIn = signedIn;
-            if (!signedIn) _nexusWebName = null;
-            StateHasChanged();
-        });
-    }
-
-    private void OnNexusWebAccountChanged(string? name)
-    {
-        _ = InvokeAsync(() =>
-        {
-            // 只存「真的拿到账号名」这一种情况；null 就是未登录 —— 界面据此二选一显示按钮
-            _nexusWebName = string.IsNullOrWhiteSpace(name) ? null : name;
-            StateHasChanged();
-        });
-    }
-
-    private async Task LogoutNexusWeb()
-    {
-        try
-        {
-            await NexusWeb.LogoutWebAccountAsync();
-            _nexusWebName = null;   // 未登录 → 按钮切回「登录」
-            _nexusWebSignedIn = false;
-            StateHasChanged();
-            _ = JS.InvokeVoidAsync("junigridJs.toast", LocService.Tr("已退出内置 Nexus 网页账号"));
-        }
-        catch (Exception ex)
-        {
-            AppLog.Warn("NexusWeb", "退出内置网页账号失败：" + ex.Message);
-            _ = JS.InvokeVoidAsync("junigridJs.toast", LocService.Tr("无法退出网页账号，请先关闭内置 Nexus 窗口"), "err");
-        }
-        StateHasChanged();
-    }
-
-    // ─── Steam 下载授权（DepotDownloader 扫码）───
+    // ─── Steam 下载授权（左账密 / 右扫码 并排；任何时刻只有一路活着）───
     private bool _ddQrOpen;
-    private bool _ddQrBusy;
+    private bool _ddQrBusy;      // 扫码那路在跑
+    private bool _ddQrFailed;    // 扫码那路以失败告终（非被切走）→ 只显示「二维码获取失败」+刷新
     private string? _ddQrDataUri;
     private IReadOnlyList<string>? _ddQrLines;
     private string _ddQrState = "";
-    private string? _ddQrError;
     private CancellationTokenSource? _ddQrCts;
+
+    // ─── 账号密码登录（密码只在内存里活一次）───
+    private bool _ddPwdBusy;     // 账密那路在跑
+    private string? _ddPwdError; // 账密表单/登录错误，只挂在左栏
+    private string _ddPwdAccount = "";
+    private string _ddPwdPassword = "";
+    private bool _ddGuardOpen;
+    private string _ddGuardCode = "";
+    private string _ddGuardPrompt = "";
+    private bool _ddGuardError;
+    private bool _ddGuardBusy;
+    private bool _ddGuardSuccess;
+    private string _ddPwdLive = "";
+    private bool _ddMobileConfirm;
+    // 本次账密登录的密码暂存：表单那份开跑即抹（界面上不留第二份），但「改为输入验证码」
+    // 回落要重开一路，得拿得到它。跑完/关窗/成功三处都清，生命周期与原先的局部变量等价。
+    private string? _ddPwdRunPassword;
+    private bool _ddPreferCode;
+    private bool _guardMounted;
+    private DotNetObjectReference<Settings>? _guardRef;
+    private TaskCompletionSource<string?>? _ddGuardTcs;
+
+    // 验证已通过到授权落盘期间，禁止重开或取消登录。
+    private bool _ddDone;
+
+    /// <summary>每开窗一次自增。成功后那次「延时关窗」要认这一代：用户在 600ms 里关掉又重开，
+    /// 旧的那次关窗不能把刚打开的新窗顺手关掉。</summary>
+    private int _ddOpenGen;
+
+    /// <summary>每开一路登录就自增。被取消的那一路收尾时会拿着旧值回来 —— 不认这一代，
+    /// 就会把「已取消」写进用户刚刚切过去的另一种登录方式的状态里。</summary>
+    private int _ddRunGen;
 
     /// <summary>弹窗里那行进度。服务一直在报（重取新码、连第几个 CM 节点），只是原先界面写死了
     /// 「正在连接…」没接上 —— 用户看到的就是「一直卡在正在连接」。长文案会撑破弹窗，截到 48 字。</summary>
@@ -794,8 +846,9 @@
 
     private void OnQrImgError()
     {
-        _ddQrError = LocService.Tr("二维码图片加载失败，请点取消后重试");
-        StateHasChanged();
+        if (_ddDone) return;
+        _ddQrFailed = true;
+        ClearDdQrImage();
     }
 
     private bool DdAuthorized => Cfg.Current.DepotQrLoggedIn;
@@ -812,15 +865,37 @@
 
     private void OpenDdQr()
     {
-        // 同账号只允许一路 Steam 会话：下载在飞时再起一路扫码，会把那一路顶掉（实测互踢）
-        if (DepotDownloaderService.SteamSessionBusy)
+        if (_ddDone) return;
+        // 只拦「真有版本在下载/排队」：下载与授权共用 Steam 会话，下载在飞时重新授权会互踢。
+        // 不能按 SteamSessionBusy 一刀切 —— 占着会话的可能只是上一路扫码/登录的收尾进程
+        // （2026-11-16 实机：没有下载却报「有版本正在下载」，授权窗再也打不开）。
+        // 会话闸本身允许 3 路并发（唯一 loginid 不互踢），满了才拦。
+        if (Center.Snapshot().Any(t => t.Kind == "gameversion" && t.Status is "running" or "paused"))
         {
             _ = JS.InvokeVoidAsync("junigridJs.toast", LocService.Tr("有版本正在下载，等它下完（或先在任务中心取消）再重新授权"), "err");
             return;
         }
+        // 没有下载也没有 DD 进程 ⇒ 占着闸的只可能是卡死的收尾路：回收孤儿会话再开门
+        if (!System.Diagnostics.Process.GetProcessesByName("DepotDownloader").Any())
+            DepotDownloaderService.ReapOrphanSessions();
+        if (DepotDownloaderService.SteamSessionCount >= 3)
+        {
+            _ = JS.InvokeVoidAsync("junigridJs.toast", LocService.Tr("Steam 会话已满（3 路都在跑），等一路结束再重新授权"), "err");
+            return;
+        }
+        // 重开＝放弃旧路：先掐再换 CTS。不掐的话旧扫码/账密路没人取消，占着会话闸
+        // 一直重试到自然死（2026-11-16 实机：开+刷新凑满 3 路，关窗后授权再也打不开）。
+        CancelQrRun();
+        CancelPwdRun();
         _ddQrOpen = true;
+        _ddDone = false;
+        _ddOpenGen++;
+        _ddPwdPassword = "";
+        _ddGuardCode = "";
+        _ddGuardOpen = false;
         ClearDdQrImage();
-        _ddQrError = null;
+        _ddQrFailed = false;
+        _ddPwdError = null;
         _ddQrState = "正在准备扫码组件…";
         _ddQrBusy = true;
         _ddQrCts = new CancellationTokenSource();
@@ -844,9 +919,11 @@
 
     private async Task RunDdQrAsync()
     {
+        var gen = ++_ddRunGen;
         var progress = new Progress<DepotDownloaderService.Progress>(p =>
             _ = InvokeAsync(() =>
             {
+                if (gen != _ddRunGen) return;   // 已经被切走的那一路，不许再改界面
                 _ddQrState = string.IsNullOrEmpty(p.Line) ? p.State : p.Line;
                 StateHasChanged();
             }));
@@ -855,63 +932,370 @@
             var account = await DepotQr.QrLoginOnlyAsync(
                 dataUri => InvokeAsync(() =>
                 {
+                    if (gen != _ddRunGen) return;
                     _ddQrDataUri = dataUri;
                     StateHasChanged();
                 }),
                 progress, _ddQrCts?.Token ?? CancellationToken.None,
                 onAsciiLines: lines => InvokeAsync(() =>
                 {
+                    if (gen != _ddRunGen) return;
                     _ddQrLines = lines;
                     StateHasChanged();
                 }),
                 // 上一张码随 Steam 连接一起作废了：撤干净，等下一路刷出的新码
-                onStale: () => InvokeAsync(ClearDdQrImage));
+                onStale: () => InvokeAsync(() => { if (gen == _ddRunGen) ClearDdQrImage(); }));
 
-            await InvokeAsync(() =>
-            {
-                var cfg = Cfg.Current;
-                cfg.DepotQrLoggedIn = true;
-                if (!string.IsNullOrWhiteSpace(account)) cfg.SteamCmdAccount = account.Trim();
-                Cfg.Save(cfg);
-                _ddQrBusy = false;
-                _ddQrState = "授权成功";
-                ClearDdQrImage();   // 撤掉旧码，避免成功后还显示二维码
-                _ = JS.InvokeVoidAsync("junigridJs.toast", LocService.Tr("Steam 下载授权成功，历史版本下载已免密"));
-                StateHasChanged();
-            });
-            // 稍候自动关窗，让用户看到 toast / 状态
-            await Task.Delay(900, CancellationToken.None);
-            await InvokeAsync(() =>
-            {
-                if (!_ddQrBusy)
-                {
-                    _ddQrOpen = false;
-                    StateHasChanged();
-                }
-            });
+            await CompleteDdLoginAsync(account, gen);
         }
         catch (Exception ex)
         {
             await InvokeAsync(() =>
             {
+                if (gen != _ddRunGen) return;   // 用户已经切到账密/关窗：别把"已取消"盖到别人头上
                 _ddQrBusy = false;
-                _ddQrError = ex is OperationCanceledException ? "已取消" : ex.Message;
+                // 被切走/关窗的取消不算失败；真失败才挂「二维码获取失败」+原位刷新
+                _ddQrFailed = ex is not OperationCanceledException;
                 ClearDdQrImage();   // 走到这儿那张 challenge 已经作废，不许留在屏上让人扫
             });
         }
     }
 
-    /// <summary>撤掉界面上的二维码。出过码后再失败 ⇒ challenge 已随 DD 进程退出作废，
-    /// 留着就是让人扫一张死码（手机端只报「加载二维码失败」，实测 03:45:20 出码 / 03:45:36 掉线）。</summary>
-    /// <summary>「立即重开」：掐掉当前这一路连接，马上开下一路（服务层 1 秒内响应，
-    /// 且不占用重试次数）。省得人对着 20 秒出码截止干等。</summary>
-    private void KickQrRetry()
+    /// <summary>登录成功后的统一收尾（扫码 / 账密两条路共用）。</summary>
+    private async Task CompleteDdLoginAsync(string account, int gen, bool cancelRun = true)
     {
-        DepotDownloaderService.RequestKickNow();
-        _ddQrState = "正在按你的要求重开一路连接…";
+        var openGen = _ddOpenGen;
+        var completed = false;
+        await InvokeAsync(() =>
+        {
+            if (gen != _ddRunGen) return;
+            var cfg = Cfg.Current;
+            cfg.DepotQrLoggedIn = true;
+            if (!string.IsNullOrWhiteSpace(account)) cfg.SteamCmdAccount = account.Trim();
+            // 记进令牌名单：下次这个账号走账密登录时知道本机有令牌可复用（两趟防任意密码）
+            if (!string.IsNullOrWhiteSpace(account)
+                && !cfg.SteamTokenAccounts.Contains(account.Trim(), StringComparer.OrdinalIgnoreCase))
+                cfg.SteamTokenAccounts.Add(account.Trim());
+            Cfg.Save(cfg);
+
+            // 成功即掐掉另一路。原先这里只看 busy 标志、不掐进程：用户在等登录时点过
+            // 「刷新二维码」，那一路会把 _ddQrBusy 顶成 true，下面那句「没人在跑才关窗」
+            // 就永远不成立 —— 弹窗从此关不掉（2026-11-16 实测：成功后 120ms 点刷新 → 挂死）。
+            if (cancelRun) { try { _ddQrCts?.Cancel(); } catch { } }
+            _ddRunGen++;                    // 旧登录进度不再写回已关闭的界面
+            _ddQrBusy = false;
+            _ddPwdBusy = false;
+            _ddQrFailed = false;
+            _ddPwdError = null;
+            _ddGuardOpen = false;
+            _ddGuardSuccess = false;
+            _ddGuardTcs?.TrySetResult(null);
+            _ddGuardTcs = null;
+            _ddGuardCode = "";
+            _ddGuardBusy = false;
+            _ddMobileConfirm = false;
+            _ddPwdRunPassword = null;
+            _ddPwdPassword = "";      // 成功即抹掉表单里那一份
+            _ddQrState = "授权成功";
+            ClearDdQrImage();   // 撤掉旧码，避免成功后还显示二维码
+            _ddDone = true;
+            _ddQrOpen = false;
+            completed = true;
+            _ = JS.InvokeVoidAsync("junigridJs.toast", LocService.Tr("Steam 下载授权成功，历史版本下载已免密"));
+            StateHasChanged();
+        });
+        if (!completed) return;
+        await Task.Delay(600, CancellationToken.None);
+        await InvokeAsync(() =>
+        {
+            if (openGen != _ddOpenGen) return;   // 期间被关掉又重开：这次关窗作废
+            _ddDone = false;
+            _ddQrOpen = false;
+            StateHasChanged();
+        });
+    }
+
+    // ─── 账号密码登录 ───────────────────────────────────────────────────────
+
+    /// <summary>掐掉扫码那路（点「登录」时调用）。同账号两路登录会互踢，必须先取消；
+    /// gen 自增让被取消那路收尾时认不出自己，不会把状态写回界面。</summary>
+    private void CancelQrRun()
+    {
+        if (_ddQrBusy) { try { _ddQrCts?.Cancel(); } catch { } }
+        _ddRunGen++;
+        _ddQrBusy = false;
+        _ddQrFailed = false;
+        _ddQrState = "";
+        ClearDdQrImage();
+    }
+
+    /// <summary>掐掉账密那路（点扫码刷新时调用），放掉等 Guard 码的 Task。</summary>
+    private void CancelPwdRun()
+    {
+        if (_ddPwdBusy) { try { _ddQrCts?.Cancel(); } catch { } }
+        _ddRunGen++;
+        _ddPwdBusy = false;
+        _ddGuardOpen = false;
+        _ddGuardCode = "";
+        _ddGuardBusy = false;
+        _ddGuardSuccess = false;
+        _ddMobileConfirm = false;
+        _ddGuardTcs?.TrySetResult(null);
+        _ddGuardTcs = null;
+    }
+
+    /// <summary>右栏刷新 / 启动扫码：先取消账密，再开一路扫码。</summary>
+    private void RestartQrAsync()
+    {
+        if (_ddDone) return;   // 已经成功、正在关窗：别把收尾那一下顶掉
+        CancelPwdRun();
+        CancelQrRun();   // 刷新也是换一路：旧扫码路不掐就是占闸僵尸（同上实机）
+        _ddPwdError = null;
+        _ddQrFailed = false;
+        _ddQrState = "正在准备扫码组件…";
+        _ddQrBusy = true;
+        _ddQrCts = new CancellationTokenSource();
+        StateHasChanged();
+        _ = RunDdQrAsync();
+    }
+
+    /// <summary>账密表单里按 Enter = 点「登录」（登录中/收尾中不重复触发）。</summary>
+    private async Task OnDdLoginKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter" && !_ddPwdBusy && !_ddDone) await RunDdPasswordAsync();
+    }
+
+    /// <summary>本机 DD 是否存过这个账号的令牌：决定账密登录走单趟还是两趟。
+    /// 名单外 = 无令牌可复用 → 单趟真验且只问一次验证码；名单内 = 两趟防「任意密码成功」。
+    /// 旧配置没名单时用当前已授权账号兜底（令牌桶里至少必有它）。</summary>
+    private bool TokenLikelyPresent(string account)
+    {
+        var c = Cfg.Current;
+        return c.SteamTokenAccounts.Contains(account, StringComparer.OrdinalIgnoreCase)
+            || (c.DepotQrLoggedIn && string.Equals(c.SteamCmdAccount, account, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private async Task RunDdPasswordAsync()
+    {
+        if (_ddDone) return;   // 上一次已经成功，正在关窗
+        // 扫码还在跑（哪怕手机已确认、仍在加载）→ 先掐掉它，账密接管。两路不能并存。
+        CancelQrRun();
+        if (!System.Diagnostics.Process.GetProcessesByName("DepotDownloader").Any())
+            DepotDownloaderService.ReapOrphanSessions();
+        var acc = (_ddPwdAccount ?? "").Trim();
+        var pwd = _ddPwdPassword ?? "";
+        if (acc.Length == 0)
+        {
+            _ddPwdError = LocService.Tr("请填写 Steam 账号名（登录名，不是昵称）");
+            StateHasChanged();
+            return;
+        }
+        if (pwd.Length == 0)
+        {
+            _ddPwdError = LocService.Tr("请填写 Steam 密码");
+            StateHasChanged();
+            return;
+        }
+
+        // 立刻从表单状态里抹掉：界面上不再留第二份，只有本次运行持有它（_ddPwdRunPassword，
+        // 供「改为输入验证码」回落重开；跑完/关窗即清）。
+        // 服务层不存字段、不写日志（DescribeArgsForLog 打码）、不进 config —— 见 PasswordLoginOnlyAsync。
+        _ddPwdRunPassword = pwd;
+        var preferCode = _ddPreferCode;
+        _ddPreferCode = false;
+        _ddPwdPassword = "";
+        _ddPwdError = null;
+        _ddGuardError = false;
+        _ddGuardBusy = false;
+        _ddGuardSuccess = false;
+        _ddGuardOpen = preferCode;
+        _ddGuardCode = "";
+        _ddGuardPrompt = "";
+        _ddPwdLive = "";
+        _ddMobileConfirm = false;
+        _ddPwdBusy = true;
+        _ddQrState = "正在用账号密码登录…";
+        _ddQrCts = new CancellationTokenSource();
+        StateHasChanged();
+
+        var gen = ++_ddRunGen;
+        var progress = new Progress<DepotDownloaderService.Progress>(p =>
+            _ = InvokeAsync(() => HandleDdPasswordProgress(p, gen)));
+        try
+        {
+            await DepotQr.PasswordLoginOnlyAsync(
+                acc, pwd, TokenLikelyPresent(acc), AskDdGuardCodeAsync, progress, _ddQrCts.Token, preferCode,
+                onAuthenticated: account => CompleteDdLoginAsync(account, gen, cancelRun: false));
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warn("DepotDownloader", "账密登录未成功：" + ex.Message);
+            await InvokeAsync(() =>
+            {
+                if (gen != _ddRunGen) { AppLog.Warn("DepotDownloader", "账密登录收尾被丢弃（已被切走）"); return; }
+                _ddDone = false;
+                _ddPwdRunPassword = null;
+                _ddPwdBusy = false;
+                _ddGuardOpen = false;
+                _ddGuardCode = "";
+                _ddGuardBusy = false;
+                _ddGuardSuccess = false;
+                _ddMobileConfirm = false;
+                _ddPwdError = ex is OperationCanceledException ? null : ex.Message;
+                StateHasChanged();
+            });
+        }
+    }
+
+    private void HandleDdPasswordProgress(DepotDownloaderService.Progress p, int gen)
+    {
+        if (gen != _ddRunGen || _ddDone) return;
+        _ddQrState = string.IsNullOrEmpty(p.Line) ? p.State : p.Line;
+        _ddPwdLive = p.State;
+        if (p.Line is not null && DepotDownloaderService.LooksLikeGuardCodeRejected(p.Line))
+        {
+            _ddGuardError = true;
+            _ddGuardBusy = false;
+            _ = JS.InvokeVoidAsync("junigridJs.guardSlotsError");
+        }
+        if (p.Line is not null && DepotDownloaderService.LooksLikeMobileConfirmPrompt(p.Line))
+            _ddMobileConfirm = true;
+        if (p.Line is not null && DepotDownloaderService.LooksLikeLoginSuccess(p.Line))
+        {
+            _ddDone = true;
+            _ddQrOpen = false;
+            _ddMobileConfirm = false;
+            ShowGuardSuccess();
+        }
         StateHasChanged();
     }
 
+    /// <summary>
+    /// 服务层要 Guard 码时的回调。<b>必须</b>走 InvokeAsync 到 UI 线程再改状态；
+    /// 同时挂上取消令牌 —— 用户关窗时服务那一路会抛取消，这个 Task 不能永远挂着。
+    /// </summary>
+    private async Task<string?> AskDdGuardCodeAsync(string prompt, CancellationToken guardCt)
+    {
+        var tcs = new TaskCompletionSource<string?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        await InvokeAsync(() =>
+        {
+            if (_ddDone || !_ddPwdBusy || guardCt.IsCancellationRequested)
+            {
+                tcs.TrySetResult(null);
+                return;
+            }
+            var pendingCode = _ddGuardOpen && _ddGuardBusy && _ddGuardTcs is null ? _ddGuardCode : "";
+            _ddGuardTcs = tcs;
+            _ddGuardPrompt = (prompt ?? "").Trim();
+            _ddGuardCode = pendingCode;
+            _ddGuardBusy = pendingCode.Length > 0;
+            _ddGuardSuccess = false;
+            _ddMobileConfirm = false;
+            _ddGuardOpen = true;
+            _ddQrState = "需要 Steam Guard 验证码";
+            if (pendingCode.Length > 0)
+            {
+                _ddGuardTcs = null;
+                tcs.TrySetResult(pendingCode);
+            }
+            StateHasChanged();
+        });
+        using var reg = (_ddQrCts?.Token ?? CancellationToken.None)
+            .Register(() => tcs.TrySetResult(null));
+        // 问码绑进程生命周期：进程退了（手机批准/令牌命中/失败）登录不再需要码，
+        // 弹窗立刻收掉 —— 不许出现「进程死了弹窗还在问码」的僵尸态。
+        // 成功洗白态例外：它有自己的 1.2s 退场计时。
+        using var regGuard = guardCt.Register(() =>
+        {
+            tcs.TrySetResult(null);
+            _ = InvokeAsync(() =>
+            {
+                if (_ddGuardTcs != tcs || _ddGuardSuccess) return;
+                _ddGuardOpen = false;
+                _ddGuardBusy = false;
+                _ddGuardTcs = null;
+                StateHasChanged();
+            });
+        });
+        return await tcs.Task;
+    }
+
+    private void SubmitDdGuardCode()
+    {
+        if (_ddDone) return;
+        var code = (_ddGuardCode ?? "").Trim();
+        if (code.Length == 0) return;
+        var tcs = _ddGuardTcs;
+        _ddGuardTcs = null;
+        // 弹窗不关：切「正在验证」态等 Steam 判定。判错：红染 drain 后再要一次；
+        // 判对：成功行触发洗白+对勾，1.2s 后自动退场。
+        _ddGuardBusy = true;
+        _ddQrState = tcs is null ? "正在连接 Steam，连接后自动提交…" : "正在提交验证码…";
+        StateHasChanged();
+        tcs?.TrySetResult(code);
+    }
+
+    /// <summary>验证通过：整行槽位洗白 + 对勾升起（CodeSlots 的 success 形状），1.2s 后收弹窗。</summary>
+    private void ShowGuardSuccess()
+    {
+        if (!_ddGuardOpen || _ddGuardSuccess) return;
+        _ddGuardSuccess = true;
+        _ddGuardBusy = false;
+        _ddGuardError = false;
+        _ = JS.InvokeVoidAsync("junigridJs.guardSlotsSuccess");
+        var gen = _ddRunGen;
+        _ = Task.Delay(1200).ContinueWith(_ => InvokeAsync(() =>
+        {
+            if (gen != _ddRunGen || !_ddGuardSuccess) return;
+            _ddGuardOpen = false;
+            _ddGuardSuccess = false;
+            _ddGuardTcs = null;
+            StateHasChanged();
+        }));
+    }
+
+    [JSInvokable]
+    public void OnGuardSlotsComplete(string code)
+    {
+        _ddGuardCode = code;
+        SubmitDdGuardCode();
+    }
+
+    [JSInvokable]
+    public void OnGuardSlotsEdit()
+    {
+        if (!_ddGuardError) return;
+        _ddGuardError = false;
+        StateHasChanged();
+    }
+
+    /// <summary>弹窗取消 = 终止本次登录尝试（只放掉验证码的话 DD 会干等到静默超时）。</summary>
+    private void CancelGuardPopup()
+    {
+        if (_ddDone) return;
+        CancelPwdRun();
+        StateHasChanged();
+    }
+
+    private bool PrepareCodeLogin()
+    {
+        if (_ddPwdRunPassword is null || _ddDone) return false;
+        _ddPwdPassword = _ddPwdRunPassword;
+        _ddPreferCode = true;
+        CancelPwdRun();
+        _ddGuardOpen = true;
+        _ddGuardPrompt = "";
+        StateHasChanged();
+        return true;
+    }
+
+    private void SwitchToCodeLogin()
+    {
+        if (PrepareCodeLogin()) _ = RunDdPasswordAsync();
+    }
+
+    /// <summary>撤掉界面上的二维码。出过码后再失败 ⇒ challenge 已随 DD 进程退出作废，
+    /// 留着就是让人扫一张死码（手机端只报「加载二维码失败」，实测 03:45:20 出码 / 03:45:36 掉线）。</summary>
     private void ClearDdQrImage()
     {
         _ddQrDataUri = null;
@@ -921,9 +1305,46 @@
 
     private void CloseDdQr()
     {
-        if (_ddQrBusy) { try { _ddQrCts?.Cancel(); } catch { } }
+        if (_ddDone)
+        {
+            _ddQrOpen = false;
+            StateHasChanged();
+            return;
+        }
+        _ddRunGen++;
+        if (_ddQrBusy || _ddPwdBusy) { try { _ddQrCts?.Cancel(); } catch { } }
+        // 关窗等于放弃：把密码与等码状态一起清掉，别让它们在组件里活到下次打开
+        _ddPwdRunPassword = null;
+        _ddPwdPassword = "";
+        _ddGuardCode = "";
+        _ddGuardOpen = false;
+        _ddGuardBusy = false;
+        _ddGuardSuccess = false;
+        _ddMobileConfirm = false;
+        _ddGuardTcs?.TrySetResult(null);
+        _ddGuardTcs = null;
+        _ddQrBusy = false;
+        _ddPwdBusy = false;
+        _ddQrFailed = false;
+        _ddPwdError = null;
         _ddQrOpen = false;
+        // 关窗也要抬 gen：成功后的那次延时关窗会认这一代，别让它落到下一次打开的窗上；
+        // _ddDone 必须一起清，否则它会一直挂着，把下次「登录」直接拦掉。
+        _ddDone = false;
+        _ddOpenGen++;
         StateHasChanged();
+    }
+
+    /// <summary>扫码这条路走不通时的出口：回首页开「游戏版本管理」，用面板里的
+    /// 「用 Steam 下载」——它借本机 Steam 客户端已经建立的会话，不碰 Steam 登录中继。
+    /// 不留这条路的话，人只会在这个弹窗里反复点「立即重开」，而网络那一跳根本没变。</summary>
+    private void GoSteamDownload()
+    {
+        try { _ddQrCts?.Cancel(); } catch { }
+        _ddQrOpen = false;
+        _ = JS.InvokeVoidAsync("junigridJs.toast",
+            LocService.Tr("在「游戏版本管理」里点「用 Steam 下载」，选中要的版本即可（不用扫码）"), "info");
+        Nav.NavigateTo("/");
     }
 
     private void DdRevoke()
@@ -931,7 +1352,7 @@
         var cfg = Cfg.Current;
         cfg.DepotQrLoggedIn = false;
         Cfg.Save(cfg);
-        _ = JS.InvokeVoidAsync("junigridJs.toast", LocService.Tr("已解除 Steam 下载授权，下次下载需重新扫码"));
+        _ = JS.InvokeVoidAsync("junigridJs.toast", LocService.Tr("已解除 Steam 下载授权，下次下载需重新登录授权"));
         StateHasChanged();
     }
 
@@ -940,8 +1361,6 @@
         _steam = Steam.GetProfile();
         var cfg = Cfg.Current;
         _nexusName = cfg.NexusUserName;
-        _nexusWebName = NexusWeb.AccountName;   // 拿不到就是 null（未登录），别用占位文案伪装成"已知"
-        _nexusWebSignedIn = NexusWeb.SignedIn;
         _nexusPremium = cfg.NexusIsPremium;
         // v1.08.2：只信 image/* 的缓存 —— 旧版本曾把 profile_url（网页链接）的下载结果当头像缓存，
         // data:text/html 之类坏数据每次进页都命中，头像自然「对不上」
@@ -1148,7 +1567,6 @@
     // ─── v1.4.4：游戏版本缓存手风琴 ───
     private bool _verAccOpen;
     private List<DepotDownloaderService.StagedPackage> _verCaches = new();
-    private (StorageService.StagingBucketKind Kind, string Path, long Bytes)[] _verBuckets = Array.Empty<(StorageService.StagingBucketKind, string, long)>();
 
     private void LoadVerCaches()
     {
@@ -1163,21 +1581,6 @@
             AppLog.Warn("Storage", "列出版本缓存失败: " + ex.Message);
             _verCaches = new();
         }
-        LoadVerBuckets();
-    }
-
-    /// <summary>depot-staging 里的附属目录。大小要遍历目录树（Mods 备份可能几百 MB），
-    /// 所以先以「计算中」占位、后台算完再填 —— 直接在本方法里算会卡住 UI 线程。</summary>
-    private void LoadVerBuckets()
-    {
-        var rows = StorageService.ListStagingBuckets();
-        _verBuckets = rows;
-        if (rows.Length == 0) return;
-        _ = Task.Run(() =>
-        {
-            var filled = StorageService.ListStagingBuckets();
-            _ = InvokeAsync(() => { _verBuckets = filled; StateHasChanged(); });
-        });
     }
 
     /// <summary>v1.4.5：下载任务结束自动刷新手风琴列表（之前只在展开时加载一次，
@@ -1212,7 +1615,6 @@
     // 版本缓存是硬删（Depot.DeleteStagedPackage → Directory.Delete），不进回收站、删了要重下几 GB
     // 才回得来，所以走上面那个确认弹窗；点「删除」只记目标，确认才真删。
     private DepotDownloaderService.StagedPackage? _pendingDeleteVer;
-    private (StorageService.StagingBucketKind Kind, string Path, long Bytes)? _pendingBucket;
     private void AskDeleteVerCache(DepotDownloaderService.StagedPackage pkg)
     {
         _pendingDeleteVer = pkg;
@@ -1273,40 +1675,10 @@
     private bool _confirmCleanAll;
 
     private string ConfirmTitle => _pendingDeleteVer is not null ? "删除版本缓存"
-        : _pendingBucket is not null ? (_pendingBucket.Value.Kind.Danger ? Loc.F("移出{0}", Loc.T(_pendingBucket.Value.Kind.Name)) : Loc.F("删除{0}", Loc.T(_pendingBucket.Value.Kind.Name)))
         : _confirmCleanAll ? "一键清理缓存" : "清理缓存";
-    private string ConfirmOkLabel => _pendingDeleteVer is not null || _pendingBucket is not null
-        ? Loc.T(_pendingBucket is { } pb && pb.Kind.Danger ? "确认移出" : "确认删除") : Loc.T("确认清理");
-    private string ConfirmBody => _pendingDeleteVer is not null ? DeleteVerConfirmText
-        : _pendingBucket is not null ? BucketConfirmText : CleanConfirmText;
-
-    private string BucketConfirmText
-    {
-        get
-        {
-            var b = _pendingBucket!.Value;
-            return b.Kind.Danger
-                ? Loc.F("{0}（{1}）里的 mod 会移到游戏卸载回收站，不直接删。\n\n{2}\n\n反悔的话：在「缓存与存储」那行「游戏卸载回收站」里能拿回来；清空那个回收站之后就真没了。", Loc.T(b.Kind.Name), ResumableDownload.FormatBytes(b.Bytes), Loc.T(b.Kind.Tip))
-                : Loc.F("{0}（{1}）将被删除。\n\n{2}", Loc.T(b.Kind.Name), ResumableDownload.FormatBytes(b.Bytes), Loc.T(b.Kind.Tip));
-        }
-    }
-
-    private void AskDeleteBucket((StorageService.StagingBucketKind Kind, string Path, long Bytes) b)
-    {
-        _pendingBucket = b; _pendingCleanId = null; _confirmCleanAll = false; _pendingDeleteVer = null;
-    }
-
-    private async Task DoDeleteBucket()
-    {
-        var b = _pendingBucket;
-        _pendingBucket = null;
-        if (b is null) return;
-        var msg = await Storage.CleanStagingBucketAsync(b.Value.Kind.Key);
-        _cats = Storage.GetCategories();
-        LoadVerCaches();
-        await InvokeAsync(StateHasChanged);
-        await JS.InvokeVoidAsync("junigridJs.toast", msg);
-    }
+    private string ConfirmOkLabel => _pendingDeleteVer is not null
+        ? Loc.T("确认删除") : Loc.T("确认清理");
+    private string ConfirmBody => _pendingDeleteVer is not null ? DeleteVerConfirmText : CleanConfirmText;
 
     private string DeleteVerConfirmText
     {
@@ -1323,7 +1695,6 @@
     private async Task DoConfirm()
     {
         if (_pendingDeleteVer is not null) await DoDeleteVerCache();
-        else if (_pendingBucket is not null) await DoDeleteBucket();
         else await DoClean();
     }
 
@@ -1337,6 +1708,7 @@
             {
                 var n = _cats.Count(x => x.Cleanable && x.Id != "vercache");
                 var message = Loc.T("将逐个清理全部可清理缓存（不含游戏版本缓存 —— 每个版本的去留在版本管理里单独决定）。\n\n")
+                    + Loc.T("SMAPI 本体、没归到版本的 Mod、没搬完的残包也一起清；后两者里的 mod 移入游戏卸载回收站，不直接删。\n\n")
                     + Loc.T("正在使用的文件会自动跳过；游戏卸载回收站清空后无法恢复。");
                 if (hasPausedCheckpoint)
                     message += "\n\n" + Loc.T("下载缓存也会清理暂停任务的断点；之后继续这些任务时需要重新下载。");
@@ -1355,7 +1727,7 @@
     private void AskCleanAll() { _pendingCleanId = null; _confirmCleanAll = true; }
     private void CancelClean()
     {
-        _pendingCleanId = null; _confirmCleanAll = false; _pendingDeleteVer = null; _pendingBucket = null;
+        _pendingCleanId = null; _confirmCleanAll = false; _pendingDeleteVer = null;
     }
 
     private async Task DoClean()
@@ -1368,6 +1740,10 @@
             // 版本缓存不参与一键清理 —— 每个历史版本的去留在版本管理里单独决定
             foreach (var c in _cats.Where(x => x.Cleanable && x.Id != "vercache").ToList())
                 await Storage.CleanCategoryAsync(c.Id);
+            // 附属目录（SMAPI 本体 / 没归到版本的 Mod / 没搬完的残包）不再单独成行，
+            // 跟一键清理走；后两者里的 mod 由 CleanStagingBucketAsync 移入游戏卸载回收站。
+            foreach (var b in StorageService.ListStagingBuckets())
+                await Storage.CleanStagingBucketAsync(b.Kind.Key);
             await JS.InvokeVoidAsync("junigridJs.toast", LocService.Tr("全部缓存已处理完（版本缓存不受影响），详见任务记录"));
         }
         else if (id is not null)
@@ -1428,13 +1804,12 @@
     public void Dispose()
     {
         Loc.OnChanged -= OnLocChanged;
-        NexusWeb.AccountNameChanged -= OnNexusWebAccountChanged;
-        NexusWeb.SignedInChanged -= OnNexusWebSignInChanged;
         Mem.OnSnapshot -= OnMemSnap;
         ConfigService.Saved -= OnCfgSaved;   // v1.1.4
         Storage.OnStats -= OnStorageStats;
         Center.OnChanged -= OnCenterChangedForVerCache;
         _sliderCb?.Dispose();
+        _guardRef?.Dispose();
     }
 
     // v1.1.4：配置被其它入口改动（悬浮球右键隐藏等）时，把「打开任务管理悬浮窗」
@@ -1457,8 +1832,6 @@
     {
         // i18n：语言切换后就地重渲染本页（不整页 reload，避免闪一下）
         Loc.OnChanged += OnLocChanged;
-        NexusWeb.AccountNameChanged += OnNexusWebAccountChanged;
-        NexusWeb.SignedInChanged += OnNexusWebSignInChanged;
         await LoadAccountsAsync();
         _gamePath = Cfg.Current.GamePath;        _oneClickInstall = Cfg.Current.EnableOneClickInstall;
         _builtinWeb = Cfg.Current.EnableBuiltinWebDownload;
@@ -1521,6 +1894,20 @@
                 _ = JS.InvokeVoidAsync("junigridJs.elasticInit", _thresholdSlider, "threshold", (double)_memThresholdPercent, _sliderCb);
             }
             catch { }
+        }
+
+        // Guard 弹窗的槽位输入：开 → 挂载 JS；关 → 拆监听。弹窗 DOM 由 @if 管，
+        // 这里只补 JS 侧的生命周期（重渲染不会重建槽位节点，监听一直有效）。
+        if (_ddGuardOpen && !_guardMounted)
+        {
+            _guardMounted = true;
+            _guardRef ??= DotNetObjectReference.Create(this);
+            await JS.InvokeVoidAsync("junigridJs.guardSlotsInit", "#jg-guard-slots", _guardRef);
+        }
+        else if (!_ddGuardOpen && _guardMounted)
+        {
+            _guardMounted = false;
+            await JS.InvokeVoidAsync("junigridJs.guardSlotsDestroy");
         }
     }
     private void ToggleOneClick()
@@ -1598,55 +1985,57 @@
             : LocService.Tr("已保存游戏目录（未检测到 SMAPI，可通过首页「Steam 官方」启动游玩）"));
     }
 
-    /// <summary>启动项状态行。没指定时说清「会自动认」；指定了但文件不在要当场变红 ——
-    /// 用户填完一个错路径再点启动，看到的会是「未找到 SMAPI」，那是二次困惑。</summary>
+    /// <summary>启动项状态行。<b>一切以「这一次实际会用哪个」为准</b>（<see cref="SmapiLauncher.Resolve"/>）——
+    /// 那一份判定同时管着启动、日志与报错文案，状态行自说自话的话，用户看到的和真跑起来的会是两回事。
+    /// <para>v1.6.14：填过的路径失效时不再直接报红。切换游戏版本后那份绝对路径必然指不到新目录，
+    /// 而改名的壳本来就能靠版本资源认出来 —— 这时继续按目录识别才是用户要的结果，
+    /// 只在"识别也失败了"的时候才需要他动手。</para></summary>
     private void RefreshLauncherStatus()
     {
         var configured = (_launcherExe ?? "").Trim();
-        if (configured.Length == 0)
+        var pick = SmapiLauncher.Resolve(_gamePath, configured);
+
+        // 指定的那份真的在 ⇒ 按它说（还没落盘的用户输入也算）
+        if (pick.Origin == LauncherOrigin.Custom && pick.ExePath is { } custom)
         {
-            var pick = SmapiLauncher.Resolve(_gamePath, null);
-            switch (pick.Origin)
-            {
-                case LauncherOrigin.Standard:
-                    (_launcherStatus, _launcherWarn) =
-                        (LocService.Tr("默认：使用游戏目录下的 StardewModdingAPI.exe"), false);
-                    break;
-                case LauncherOrigin.Renamed:
-                    (_launcherStatus, _launcherWarn) = (LocService.Tf(
-                        "已自动识别到改名的启动器：{0}（想固定下来就点「浏览...」选中它）", pick.ExeName), false);
-                    break;
-                case LauncherOrigin.Ambiguous:
-                    (_launcherStatus, _launcherWarn) = (LocService.Tf(
-                        "游戏目录里有多个像 SMAPI 启动器的 exe（{0}），无法确定用哪个 —— 请点「浏览...」指定",
-                        string.Join("、", pick.Candidates.Select(Path.GetFileName))), true);
-                    break;
-                default:
-                    (_launcherStatus, _launcherWarn) = (LocService.Tr(
-                        "游戏目录里没找到 SMAPI 启动器 —— 如果你把 StardewModdingAPI.exe 改了名，请点「浏览...」选中它"), true);
-                    break;
-            }
+            // SMAPI 的壳按「自己所在的目录」找本体 —— 指到别处（桌面、下载文件夹）基本启动不起来，
+            // 但仍然允许保存，只把话说在前面。
+            if (!IsInGameRoot(custom, _gamePath))
+                (_launcherStatus, _launcherWarn) = (LocService.Tf(
+                    "使用指定启动项：{0}（它不在游戏目录下，SMAPI 可能找不到游戏本体）", Path.GetFileName(custom)), true);
+            else
+                (_launcherStatus, _launcherWarn) = (LocService.Tf("使用指定启动项：{0}", Path.GetFileName(custom)), false);
             return;
         }
 
-        if (!File.Exists(configured))
+        // 剩下的都是"按目录自动识别"的结果。填过东西却没生效时，要先把这句话说出来，
+        // 否则用户会以为「已自动识别到 X」是对他那一行的确认。
+        var prefix = configured.Length > 0 && pick.Warning is not null ? pick.Warning + "；" : "";
+        switch (pick.Origin)
         {
-            (_launcherStatus, _launcherWarn) =
-                (LocService.Tf("这个文件不存在：{0}", configured), true);
-            return;
+            case LauncherOrigin.Standard:
+                (_launcherStatus, _launcherWarn) =
+                    (prefix + LocService.Tr("自动：使用游戏目录下的 StardewModdingAPI.exe"), false);
+                break;
+            case LauncherOrigin.Renamed:
+                (_launcherStatus, _launcherWarn) = (prefix + LocService.Tf(
+                    "已自动识别到改名的启动器：{0}（留空即可，换版本会按当时的目录重新认）", pick.ExeName), false);
+                break;
+            case LauncherOrigin.Ambiguous:
+                (_launcherStatus, _launcherWarn) = (prefix + LocService.Tf(
+                    "游戏目录里有多个像 SMAPI 启动器的 exe（{0}），无法确定用哪个 —— 请点「浏览...」指定",
+                    string.Join("、", pick.Candidates.Select(Path.GetFileName))), true);
+                break;
+            default:
+                // 分成两种：装过 SMAPI（有 smapi-internal）但壳不见了 vs 这一版压根没装。
+                // 两种情况该做的事完全不同 —— 一个要去找壳，一个要去装 SMAPI。
+                var installed = !string.IsNullOrWhiteSpace(_gamePath)
+                                && Directory.Exists(Path.Combine(_gamePath, "smapi-internal"));
+                (_launcherStatus, _launcherWarn) = installed
+                    ? (LocService.Tr("这个游戏目录装过 SMAPI，但找不到启动器（可能被删掉或改成了认不出来的名字）—— 点「浏览...」选中它，或重新安装一次 SMAPI"), true)
+                    : (LocService.Tr("这个版本的游戏目录里还没装 SMAPI —— 到「Mod 管理」页点「下载安装 SMAPI」即可，装好后这里会自动认出来"), false);
+                break;
         }
-
-        // SMAPI 的壳按「自己所在的目录」找本体 —— 指到别处（桌面、下载文件夹）基本启动不起来，
-        // 但仍然允许保存，只把话说在前面。
-        if (!IsInGameRoot(configured, _gamePath))
-        {
-            (_launcherStatus, _launcherWarn) = (LocService.Tf(
-                "使用指定启动项：{0}（它不在游戏目录下，SMAPI 可能找不到游戏本体）", Path.GetFileName(configured)), true);
-            return;
-        }
-
-        (_launcherStatus, _launcherWarn) =
-            (LocService.Tf("使用指定启动项：{0}", Path.GetFileName(configured)), false);
     }
 
     private static bool IsInGameRoot(string exePath, string? gamePath)
@@ -1703,9 +2092,13 @@
                     LocService.Tr("认出多个候选，无法确定用哪个 —— 请点「浏览...」自己选"), "err");
                 break;
             default:
-                _ = JS.InvokeVoidAsync("junigridJs.toast",
-                    LocService.Tr("没找到 SMAPI 启动器，请确认游戏目录，或点「浏览...」手动指定"), "err");
-                break;
+                // 不再一律说"没找到，去手动指定"：这一版压根没装 SMAPI 时，手动指定是个死胡同。
+                // 状态行那边已经按「装过 / 没装过」分好了话，直接把它说给用户听。
+                RefreshLauncherStatus();
+                _ = JS.InvokeVoidAsync("junigridJs.toast", _launcherStatus,
+                    _launcherWarn ? "err" : "ok");
+                StateHasChanged();
+                return;
         }
         RefreshLauncherStatus();
         StateHasChanged();

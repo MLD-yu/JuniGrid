@@ -186,6 +186,9 @@ public sealed partial class DepotDownloaderService
         if (!Directory.Exists(src)) return DirMove.Renamed;   // 没东西可搬，等同于「已不在源侧」
 
         var t = new PhaseTimer();
+        // 回收站先并进 src：整棵改名会连 dest 一起删，不并过来 dest 那份就蒸发了。
+        // 必须排在 MoveAsideForeignEntries 之前 —— 否则 dest 独有的回收站会被当外来物扫进隔离区。
+        if (Directory.Exists(dest)) MergeTrash(dest, src);
         if (graveDir is not null && Directory.Exists(dest))
             MoveAsideForeignEntries(dest, src, graveDir);
         t.Lap(LocService.Tr("让位"));
@@ -225,7 +228,10 @@ public sealed partial class DepotDownloaderService
         t.Lap(LocService.Tr("核对"));
         if (bad == 0)
         {
-            DeleteTreeParallel(src);
+            // 回收站不混进批量拷贝（可达数 GB），删源之前单独并过去；
+            // 并不干净就只删其余部分，回收站留在源侧 —— 宁可留一份看得见的，也不许删。
+            if (MergeTrash(src, dest)) DeleteTreeParallel(src);
+            else ClearDirectoryParallel(src);
             // 源壳子删不掉多半是瞬时句柄：短等一轮再试。⚠ 别把退避拉太长 —— 占用方是
             // 页面 watcher 这类"不会自己松手"的东西时，长退避只是白等（实测一次多花 8 秒）。
             // 原来是 200+400+800 三轮共 1.4 秒，真机日志显示这 1.4 秒每次都在白等
@@ -245,7 +251,9 @@ public sealed partial class DepotDownloaderService
             {
                 // 源已消失，或只剩删不掉的空目录壳子 —— 内容完整落在 dest，移动语义兑现。
                 if (Directory.Exists(src))
-                    AppLog.Warn("DepotDownloader", $"{label}：拷贝并核对通过，但源空壳删不干净（占用），残留 {src}");
+                    AppLog.Warn("DepotDownloader", Directory.Exists(Path.Combine(src, TrashFolderName))
+                        ? $"{label}：拷贝并核对通过，但回收站没能完全并过去，留在源侧未删：{src}"
+                        : $"{label}：拷贝并核对通过，但源空壳删不干净（占用），残留 {src}");
                 t.Report("DepotDownloader", Directory.Exists(src)
                     ? LocService.Tf("{0}：走拷贝，源空壳残留", label)
                     : $"{label}：走拷贝（改名不通）");
@@ -340,7 +348,7 @@ public sealed partial class DepotDownloaderService
     }
 
     /// <summary>源里有多少文件在目标缺失或大小不符（回收站不计，与拷贝口径一致）。</summary>
-    private static int CountCopyMismatches(string src, string dest)
+    internal static int CountCopyMismatches(string src, string dest)
     {
         int bad = 0;
         try
@@ -370,7 +378,7 @@ public sealed partial class DepotDownloaderService
     /// <summary>src 和 dest 顶层名字几乎对不上 = 不是「把当前版本存回抽屉」的合法快照
     /// （半截恢复 / 切换竞态 / 放错目录）。这时 Replace 会把抽屉里那份完整的毁掉或扫进孤儿区。
     /// dest 不足 5 项、或看不清 → 不拦（沿用原行为）。</summary>
-    private static bool LooksUnlikeSnapshot(string src, string dest)
+    internal static bool LooksUnlikeSnapshot(string src, string dest)
     {
         try
         {
@@ -405,6 +413,65 @@ public sealed partial class DepotDownloaderService
         }
         catch { }
         return false;
+    }
+
+    /// <summary>Mods 回收站的文件夹名。它是用户取回已删 mod 的地方（TrashService 只从现役
+    /// 游戏目录读它），可达数 GB，所以不混进批量拷贝 —— 但绝不能跟着整棵删除蒸发。</summary>
+    private const string TrashFolderName = ".junigrid_trash";
+
+    /// <summary>把 <paramref name="fromDir"/> 的回收站并进 <paramref name="toDir"/> 的回收站。
+    /// 回收站是扁平一层（<c>.junigrid_trash\&lt;mod 文件夹&gt;</c>），重名加时间戳后缀让位，
+    /// 与 TrashService.Restore 的口径一致。
+    /// <para>为什么需要它：整棵改名会连 dest 一起删、拷贝路径核对通过后会连 src 一起删，
+    /// 两处都会把回收站带走（2026-11-16 审查实测）。做法是「要留下的东西先并进要保留的那一侧」：
+    /// 改名前把 dest 的并进 src，删源前把 src 的并进 dest。</para>
+    /// 返回 true = fromDir 侧已不再有回收站内容，可以安全整棵删 fromDir；
+    /// false = 还有东西搬不动，调用方必须跳过它、绝不删。</summary>
+    private static bool MergeTrash(string fromDir, string toDir)
+    {
+        var from = Path.Combine(fromDir, TrashFolderName);
+        if (!Directory.Exists(from)) return true;
+        var to = Path.Combine(toDir, TrashFolderName);
+        var stuck = 0;
+        try
+        {
+            Directory.CreateDirectory(to);
+            foreach (var e in Directory.EnumerateFileSystemEntries(from).ToList())
+            {
+                var nm = Path.GetFileName(e);
+                var target = Path.Combine(to, nm);
+                try
+                {
+                    if (Directory.Exists(target) || File.Exists(target))
+                        target = Path.Combine(to, nm + "_" + DateTime.Now.ToString("yyyyMMdd_HHmmss"));
+                    if (Directory.Exists(e))
+                    {
+                        if (!TryRelocateDirectory(e, target).Moved)
+                        {
+                            ParallelCopyDirectory(e, target, skipTrash: false, null, "回收站");
+                            if (CountCopyMismatches(e, target) != 0) { stuck++; continue; }
+                            DeleteTreeParallel(e);
+                        }
+                    }
+                    else File.Move(e, target);
+                }
+                catch (Exception ex)
+                {
+                    stuck++;
+                    AppLog.Warn("DepotDownloader", $"回收站条目「{nm}」并不过去（{ex.Message}），留在 {from}");
+                }
+            }
+            try { Directory.Delete(from); } catch { }
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warn("DepotDownloader", $"回收站合并失败（{ex.Message}），留在 {from}");
+        }
+        var left = Directory.Exists(from) && Directory.EnumerateFileSystemEntries(from).Any();
+        if (left || stuck > 0)
+            AppLog.Warn("DepotDownloader",
+                $"回收站没有完全并入 {to}（{stuck} 项搬不动），源侧保留不删：{from}");
+        return !left;
     }
 
     /// <summary>并行删整棵树：先删文件再删目录，比 Directory.Delete(true) 的串行递归快很多。</summary>
@@ -509,16 +576,19 @@ public sealed partial class DepotDownloaderService
         catch { }
     }
 
+    /// <summary>读体积缓存。<b>-1 = 不知道</b>（没有缓存文件 / 读不出来），不是 0 ——
+    /// 一个装着本体的包不可能是 0 字节，把"不知道"显示成"0 B"还挨着删除按钮，
+    /// 会被读成"没什么可丢"（2026-11-16 实测：1.6.14 包 659.3 MB 显示成 0 B）。</summary>
     private static long ReadSizeCache(string stagingDir)
     {
         try
         {
             var p = Path.Combine(stagingDir, ".junigrid-size");
-            if (File.Exists(p) && long.TryParse(File.ReadAllText(p).Trim(), out var v) && v > 0)
+            if (File.Exists(p) && long.TryParse(File.ReadAllText(p).Trim(), out var v) && v >= 0)
                 return v;
         }
         catch { }
-        return 0;
+        return -1;
     }
 
     /// <summary>
@@ -550,7 +620,7 @@ public sealed partial class DepotDownloaderService
             }
             catch { }
 
-            long linked = 0;
+            long linked = 0, failed = 0;
             var srcFiles = Directory.EnumerateFiles(src, "*", SearchOption.AllDirectories)
                 .Where(f => !(skipTrash && Path.GetRelativePath(src, f)
                     .Contains("junigrid_trash", StringComparison.OrdinalIgnoreCase)))
@@ -567,9 +637,15 @@ public sealed partial class DepotDownloaderService
                 }
                 catch
                 {
-                    try { File.Copy(f, to, overwrite: true); } catch { }
+                    try { File.Copy(f, to, overwrite: true); }
+                    catch { Interlocked.Increment(ref failed); }
                 }
             });
+            // 单文件失败不再无声无息：调用方仍必须逐文件核对（这里只负责留下证据），
+            // 但「链成一个就报 100%」而日志里一片空白，正是半截快照被当备份成功的成因。
+            if (failed > 0)
+                AppLog.Warn("DepotDownloader",
+                    $"{label}：{failed} 个文件既链接不上也拷不过去，副本不完整（调用方须逐文件核对）");
             if (linked > 0)
             {
                 progress?.Report(new Progress(LocService.Tf("{0}… 100%（硬链接）", label), 100));
@@ -644,18 +720,15 @@ public sealed partial class DepotDownloaderService
         });
     }
 
-    private static void CopyGameBodyParallel(string staging, string gamePath, IProgress<Progress>? progress)
+    /// <summary>「本体文件」的唯一定义：Mods / smapi / 共享存储 / 我们自己的元数据都不算。
+    /// 铺进游戏目录（CopyGameBodyParallel）与收进版本包后的核对（VerifyBodyTree）共用这一份，
+    /// 两边口径一分叉，核对就会把故意跳过的东西报成"缺文件"。</summary>
+    private static List<string> EnumerateBodyFiles(string root)
     {
-        var stagingFull = Path.GetFullPath(staging);
-        var gameFull = Path.GetFullPath(gamePath);
-        var sameVolume = string.Equals(
-            Path.GetPathRoot(stagingFull), Path.GetPathRoot(gameFull),
-            StringComparison.OrdinalIgnoreCase);
-
         var files = new List<string>();
-        foreach (var file in Directory.EnumerateFiles(staging, "*", SearchOption.AllDirectories))
+        foreach (var file in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
         {
-            var rel = Path.GetRelativePath(staging, file);
+            var rel = Path.GetRelativePath(root, file);
             if (rel.StartsWith(".DepotDownloader", StringComparison.OrdinalIgnoreCase)) continue;
             if (rel.Equals(ManifestMetaName, StringComparison.OrdinalIgnoreCase)) continue;
             if (Path.GetFileName(rel).Equals(".junigrid-size", StringComparison.OrdinalIgnoreCase)) continue;
@@ -676,6 +749,18 @@ public sealed partial class DepotDownloaderService
                 continue;
             files.Add(file);
         }
+        return files;
+    }
+
+    private static void CopyGameBodyParallel(string staging, string gamePath, IProgress<Progress>? progress)
+    {
+        var stagingFull = Path.GetFullPath(staging);
+        var gameFull = Path.GetFullPath(gamePath);
+        var sameVolume = string.Equals(
+            Path.GetPathRoot(stagingFull), Path.GetPathRoot(gameFull),
+            StringComparison.OrdinalIgnoreCase);
+
+        var files = EnumerateBodyFiles(staging);
 
         // 同盘优先硬链接：游戏本体只读使用，链接≈瞬时，切版本从「拷几百 MB」变成「建目录项」。
         // 链接失败（跨盘/权限/不支持）再整树 robocopy，最后才逐文件拷贝。

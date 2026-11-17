@@ -117,6 +117,13 @@ public static class StoragePaths
     /// </summary>
     public static string DepotStagingDir => InCache("depot-staging");
 
+    /// <summary>
+    /// 签名版本表（<c>game-versions.json</c> + <c>.sig</c>）的本机缓存目录。
+    /// 跟随缓存目录：里面只是「上一次验签通过的远端副本」，删掉下次启动会重下，
+    /// 断网时退回内嵌的那份，没有副作用。
+    /// </summary>
+    public static string GameVersionMetaDir => InCache("meta");
+
     /// <summary>历史遗留的版本缓存位置（v1.4.4 前写死在 LocalAppData）。</summary>
     public static string LegacyDepotStagingDir => Path.Combine(LocalAppDataDir, "depot-staging");
 

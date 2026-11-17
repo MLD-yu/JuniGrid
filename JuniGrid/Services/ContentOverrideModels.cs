@@ -1,4 +1,5 @@
 using System.IO;
+using System.Linq;
 
 namespace JuniGrid.Services;
 
@@ -34,6 +35,18 @@ public sealed class ContentOverrideRecord
     public string Version { get; set; } = "";
     /// <summary>原包备份的文件夹名（asset-packs 下；空 = 老账或备份失败，打开文件夹时回落到副本目录）。</summary>
     public string PackDir { get; set; } = "";
+    /// <summary>这个文件<b>在哪些游戏版本下被用户应用过</b>（v1.6.14）。
+    /// <para>为什么必须按版本记：覆盖字节写在 <c>&lt;游戏&gt;\Content</c> 里，而切换版本会把整个
+    /// 本体换掉 —— 1.6.15 上应用过的包，切到 1.5.0 时盘上已经变回 1.5.0 的原版。
+    /// 只靠全局一个 <see cref="Enabled"/>，切过去要么被自动盖回来（用户没在 1.5.0 上做过任何决定），
+    /// 要么切回 1.6.15 时不知道自己该恢复（用户看到「换个版本就还原了」）。</para>
+    /// <para>语义：表里有的版本 = 用户在那个版本下按过「应用」，切过去就该自动重编重盖；
+    /// 表里没有 = 那个版本保持原版。切版本前的自动还原<b>不动</b>这张表，用户手动「全部还原」
+    /// 才会把当前版本从这里划掉。</para>
+    /// <para>空表 = 老账（这个字段上线前记的），由 <c>BackfillAppliedVersions</c> 按
+    /// 「开着 + <see cref="Version"/>」回填，猜不出就不填。</para>
+    /// </summary>
+    public List<string> AppliedVersions { get; set; } = new();
     public bool Enabled { get; set; } = true;
     /// <summary>true = 由包里的 PNG 编码而来；false = 包自带的 XNB 原样拷。</summary>
     public bool Encoded { get; set; }
@@ -73,6 +86,26 @@ public sealed class ContentOverrideRecord
     /// 存名字不存 id：分类表本身也缓存在配置里，两处都要联网才能读出一句话，
     /// 而这一页离线也得能按分类分组。没有页号的包留空 ⇒ 归进「未分类」，不编一个分类给它。</summary>
     public string CategoryName { get; set; } = "";
+
+    /// <summary>这一条在 <paramref name="version"/> 下是不是"用户应用过"。空版本一律 false
+    /// （认不出版本时不该替它假设任何一边）。</summary>
+    public bool AppliedOn(string? version)
+        => !string.IsNullOrWhiteSpace(version)
+           && AppliedVersions.Any(v => v.Equals(version, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>记下「用户在这个版本下应用过」。</summary>
+    public void MarkApplied(string? version)
+    {
+        if (string.IsNullOrWhiteSpace(version) || AppliedOn(version)) return;
+        AppliedVersions.Add(version);
+    }
+
+    /// <summary>记下「用户在这个版本下还原了 / 关掉了」—— 切回这个版本时它就该是原版。</summary>
+    public void MarkReverted(string? version)
+    {
+        if (string.IsNullOrWhiteSpace(version)) return;
+        AppliedVersions.RemoveAll(v => v.Equals(version, StringComparison.OrdinalIgnoreCase));
+    }
 }
 
 /// <summary>一个配色的界面事实：标签 + 它自己的说明。顺序与 <see cref="ContentOverrideRecord.Variants"/> 一致。</summary>

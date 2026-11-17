@@ -791,6 +791,10 @@ public sealed class TaskItem
     /// 「暂停一下再继续，进度归零」。记住 fileId 才能让重发落到同一个 zip 上、接上断点。</para></summary>
     public long? DownloadFileId { get; set; }
 
+    // null = 未选择分类；空字符串 = 明确选择未分类，重启后继续仍须保留这个区别。
+    public string? InstallCategory { get; set; }
+    public string? InstallCategorySource { get; set; }
+
     /// <summary>这一路到底有没有报过速度。版本下载（DepotDownloader）压根不输出字节数，
     /// 从没报过 —— 界面据此显示「—」而不是 0.00 M/s，那是个假数字。</summary>
     [JsonIgnore]

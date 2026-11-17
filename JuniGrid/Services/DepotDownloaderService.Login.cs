@@ -98,6 +98,10 @@ public sealed partial class DepotDownloaderService
         if (!string.IsNullOrEmpty(current)) return current;
         var am = Regex.Match(trimmed, "Logging in user '(.+?)'");
         if (am.Success) return am.Groups[1].Value;
+        // DD 3.x 账密/令牌这两条路都是这么打的：Logging 'oicz73157' into Steam3...
+        // 它出现在**验密码之前**，只用来记「这趟是谁」，绝不能当成功判据（见 LooksLikeLoginSuccess）。
+        am = Regex.Match(trimmed, @"Logging '(.+?)' into Steam3");
+        if (am.Success) return am.Groups[1].Value;
         // 3.x 扫码成功：Success! Next time you can login with -username xxx -remember-password
         am = Regex.Match(trimmed, @"-username\s+(\S+)");
         if (am.Success && !am.Groups[1].Value.StartsWith('-')) return am.Groups[1].Value;
@@ -106,16 +110,147 @@ public sealed partial class DepotDownloaderService
         return current;
     }
 
-    private static bool LooksLikeLoginSuccess(string trimmed)
+    /// <summary>
+    /// 「这一行能证明登录已经过了 Steam 那道关」。
+    ///
+    /// <para><b>曾经把 <c>"Done!"</c> 也算成功，这是个真伤</b>：DD 连上 CM 就打
+    /// <c>Connecting to Steam3... Done!</c>（重试时是另起一行的 <c> Done!</c>），
+    /// 那一步跟账号密码一点关系都没有。于是 <c>stopWhen</c> 在「刚连上、还没验密码」时就成立，
+    /// 进程被杀（退出码 -1），上层再按 <c>authorized</c> 判成功 —— 随便填什么账号密码都「登录成功」。
+    /// 2026-11-16 实测：<c>-username zz_fake_acct_9999 -password definitely_wrong_pw_123</c>
+    /// 的输出正是 <c>Connecting to Steam3... Done!</c> → <c>Logging '...' into Steam3...</c> →
+    /// <c>InvalidPassword</c>，而前两行都会被旧判据命中。</para>
+    ///
+    /// <para>只保留**验过之后**才会出现的行：<c>Success! Next time you can login with…</c>、
+    /// <c>Got N licenses for account!</c>、<c>Got depot key</c>。</para>
+    /// </summary>
+    internal static bool LooksLikeLoginSuccess(string trimmed)
     {
         return trimmed.Contains("Success!", StringComparison.OrdinalIgnoreCase)
             || trimmed.Contains("Next time you can login with", StringComparison.OrdinalIgnoreCase)
-            || trimmed.Contains("Done!", StringComparison.OrdinalIgnoreCase)
             || trimmed.Contains("Got depot key", StringComparison.OrdinalIgnoreCase)
             || trimmed.Contains("licenses for account", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static bool LooksLikeNetworkFailure(string text)
+    /// <summary>RunDepotDownloaderAsync 的专用退出码：DD 要 stdin 输入（要 Steam 密码），
+    /// 说明本机没有保存的登录凭据。上层据此直接收手，不再当网络故障重开一路。</summary>
+    private const int ExitNeedsCredentials = -2;
+
+    /// <summary>
+    /// 凭据缺失时塞进 tail 的标记行。措辞刻意避开 LooksLikeNetworkFailure 认的
+    /// Timeout / Trying again 等词 —— 它不是网络问题，别被当成可重试的失败。
+    /// <para><b>DD 的凭据放在哪（2026-11-12 实机查清，别再照旧注释猜"安装目录下的 account.config"）：</b>
+    /// DD 3.4 的 <c>AccountSettingsStore</c> 用 <c>IsolatedStorageFile.GetUserStoreForAssembly()</c> 落盘，
+    /// 实际文件是 <c>%LOCALAPPDATA%\IsolatedStorage\&lt;user&gt;\&lt;id&gt;\Url.&lt;hash&gt;\AssemFiles\account.config</c>，
+    /// 那个 <c>Url.&lt;hash&gt;</c> 是<b>按 DepotDownloader.exe 所在路径分桶</b>的。所以「换安装目录 / 重装到别处」
+    /// 等于换了个空桶：之前扫的码在这儿根本看不见，DD 便转去要密码。而 <c>cfg.DepotQrLoggedIn</c>
+    /// 是应用自己的标记、当然还是 true —— 这正是"界面说已授权、下载却一直失败"的由来。</para>
+    /// </summary>
+    internal const string CredentialMissingMarker = "[JuniGrid] 本机没有保存的 Steam 登录凭据（需要重新登录授权）";
+
+    /// <summary>
+    /// trim 裁剪版 DepotDownloader 的死法（2026-11-13 实测，稳定复现）：protobuf-net 的反射被
+    /// 裁剪掉，走通 CM 后 QR 认证必抛 <c>Failed to authenticate with Steam: Property Get method
+    /// was not found</c>。安装器旧版优先打包的 <c>DepotDownloader-win-x64-trimmed.zip</c> 就是这种。
+    /// 命中它说明<b>换网络路线没用</b> —— 只能把工具换成官方构建（见 RunWithNetworkRetryAsync 的自愈）。
+    /// </summary>
+    internal const string BrokenTrimmedBuildMarker = "Property Get method was not found";
+
+    /// <summary>DD 找不到保存的登录凭据时会转去 stdin 要密码。这条提示是 Console.Write 打出来的、
+    /// **不带换行**，行式泵永远吐不出这一行 —— 只能去读那截还没成行的缓冲。
+    /// 判据来自 DD 源码（Program.InitializeSteam）：只有 LoginTokens 里没有这个账号时才会问密码，
+    /// 所以命中它就等于「令牌不在」，不是网络问题。</summary>
+    internal static bool LooksLikeCredentialPrompt(string text) =>
+        text.Contains("Enter account password", StringComparison.OrdinalIgnoreCase)
+        || text.Contains("Enter the password for", StringComparison.OrdinalIgnoreCase);
+
+    // ── 账号密码登录（-password 路径）─────────────────────────────────────────
+    //
+    // 下面这几条判据的文案**不是猜的**：2026-11-14 直接从随包的 DepotDownloader.dll 与
+    // SteamKit2.dll 的 UTF-16 字符串表里抠出来的原句 ——
+    //   "STEAM GUARD! Please enter your 2-factor auth code from your authenticator app:"
+    //   "STEAM GUARD! Please enter the auth code sent to the email at <mail>:"
+    //   "Please enter the authentication code sent to your email address:"
+    //   "STEAM GUARD! Use the Steam Mobile App to confirm your sign in..."   ← 要的是手机点确认
+    //   "The previous 2-factor auth code you have provided is incorrect."
+    //   "Unable to login to Steam3: {0}"（{0} 是 EResult 名，如 InvalidPassword）
+    //
+    // 为什么必须区分「输码」和「手机确认」：默认路是设备批准（DD 轮询等手机点「批准」），
+    // 只有用户明确回落输码时才加 -no-mobile。两条路里写 stdin 都只对输码路有用 —— 报错文案完全不同。
+    // 所有判据都做成纯函数，钉在 test/JuniGridTestHarness/DepotPasswordLoginTests.cs 里。
+
+    /// <summary>DD/SteamKit 在等用户敲 Steam Guard 验证码（邮箱码或手机令牌码）。
+    /// 注意「上一条码是错的」那句里也含 "2-factor auth code"，必须先排除掉，
+    /// 否则输入错一次就会把「你上次错了」当成「请再输一次」再弹一次空框。</summary>
+    internal static bool LooksLikeGuardCodePrompt(string text)
+    {
+        if (string.IsNullOrEmpty(text)) return false;
+        if (LooksLikeGuardCodeRejected(text)) return false;
+        return text.Contains("2-factor auth code", StringComparison.OrdinalIgnoreCase)
+            || text.Contains("auth code sent to the email", StringComparison.OrdinalIgnoreCase)
+            || text.Contains("authentication code sent to your email", StringComparison.OrdinalIgnoreCase)
+            || text.Contains("Steam Guard code", StringComparison.OrdinalIgnoreCase)
+            // 中文系统上 SteamKit 仍打英文原句，但这几条留着兜住本地化构建/未来改版
+            || text.Contains("验证码", StringComparison.Ordinal)
+            || text.Contains("授权码", StringComparison.Ordinal);
+    }
+
+    /// <summary>上一条 Guard 码被 Steam 判错 —— 要把「已经问过一次」的状态放开，让人能再输。</summary>
+    internal static bool LooksLikeGuardCodeRejected(string text) =>
+        text.Contains("2-factor auth code you have provided is incorrect", StringComparison.OrdinalIgnoreCase)
+        || text.Contains("TwoFactorCodeMismatch", StringComparison.OrdinalIgnoreCase)
+        || text.Contains("InvalidLoginAuthCode", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Steam 要的是「在手机上批准登录」，不是输码。写 stdin 无效，只能提示用户去看手机。</summary>
+    internal static bool LooksLikeMobileConfirmPrompt(string text) =>
+        text.Contains("confirm your sign in", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>设备确认轮询失败（超时/拒绝/会话作废）：DD 把 AuthenticationException 的
+    /// Message 原样打出（"Failed to poll status"），EResult 枚举不在句子里 ⇒ 只能认这句。
+    /// 配合「进过手机确认流程且没成功」使用，把「批准没完成」和网络失败分开说。</summary>
+    internal static bool LooksLikeAuthPollFailed(string text) =>
+        !string.IsNullOrEmpty(text)
+        && text.Contains("Failed to authenticate with Steam", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// 账号密码这一层的「重开没用」类失败：密码错、被限流、被风控。
+    /// <para>为什么不能重试：Steam 对连续密码失败有递增冷却，自动重开只会把用户锁得更久。
+    /// 所以这里认出就必须**当场上抛**，不许走 RunWithNetworkRetryAsync 的换路重试。</para>
+    /// </summary>
+    internal static bool LooksLikeBadCredentials(string text)
+    {
+        if (string.IsNullOrEmpty(text)) return false;
+        return text.Contains("InvalidPassword", StringComparison.OrdinalIgnoreCase)
+            || text.Contains("AccountLoginDeniedThrottle", StringComparison.OrdinalIgnoreCase)
+            || text.Contains("AccountLoginDeniedNeedTwoFactor", StringComparison.OrdinalIgnoreCase)
+            || text.Contains("RateLimitExceeded", StringComparison.OrdinalIgnoreCase)
+            || text.Contains("LoginDenied", StringComparison.OrdinalIgnoreCase)
+            || text.Contains("InvalidLoginAuthCode", StringComparison.OrdinalIgnoreCase)
+            || text.Contains("Expired", StringComparison.OrdinalIgnoreCase) && text.Contains("AuthCode", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// 给日志用的命令行描述：<c>-password</c> 后面那一项永远打成 <c>***</c>。
+    ///
+    /// <para>为什么要有这个函数而不是直接不记日志：出问题时「这一路到底带了哪些参数」是
+    /// 第一手证据（有没有 -no-mobile、loginid 冲没冲突）。把密码掩掉就能两全。
+    /// 掩码判据按**位置**认（前一项是 -password），不按内容猜 —— 密码里出现 "***" 也无所谓。</para>
+    /// </summary>
+    internal static string DescribeArgsForLog(IReadOnlyList<string> args)
+    {
+        var sb = new StringBuilder();
+        for (var i = 0; i < args.Count; i++)
+        {
+            if (i > 0) sb.Append(' ');
+            var a = args[i];
+            if (i > 0 && args[i - 1].Equals("-password", StringComparison.OrdinalIgnoreCase))
+                a = "***";
+            sb.Append(a.Contains(' ') || a.Contains('"') ? "\"" + a.Replace("\"", "") + "\"" : a);
+        }
+        return sb.ToString();
+    }
+
+    internal static bool LooksLikeNetworkFailure(string text)
     {
         if (string.IsNullOrEmpty(text)) return false;
         return text.Contains("Unable to get steam3 credentials", StringComparison.OrdinalIgnoreCase)
@@ -129,14 +264,19 @@ public sealed partial class DepotDownloaderService
             || text.Contains("Socket closed", StringComparison.OrdinalIgnoreCase);
     }
 
-    /// <summary>连不上 Steam 登录服务时的统一对策。CM 段、二维码失败段、「长时间无响应」段共用一份 ——
-    /// 免得改了一处、另一处还在教用户配分流。v1.2.4 前这里写的是「Clash 设 DIRECT / 开 TUN」，
-    /// 实测 DD 的 HttpClient 根本不读注册表系统代理，分流规则对它无效；能动的只有我们
-    /// 替它注入 HTTPS_PROXY（见 ApplyDdProxyEnv），所以对策改成「确认代理开的是系统代理模式」。</summary>
-    static string LoginProxyAdvice() => LocService.Tr(
-        "国内访问 Steam 的登录接口时好时坏，与 Clash 的分流规则无关。" +
-        "启动器会自动跟随你开启的 Windows 系统代理 —— 若本机代理没生效，请确认代理软件开的是「系统代理」模式；" +
-        "也可以换手机热点或开加速器后重试。");
+    /// <summary>「超时」和「连不上」是两种坏法，处置不同，不许混说：
+    /// 超时是这条链路慢（重开同一张网也可能成），连不上是中继列表都拿不到。
+    /// DD 只有前者会打 timeout 字样；我们自己的截止行带「N 秒内」，一起算超时。</summary>
+    internal static bool LooksLikeTimeout(string text) =>
+        text.Contains("Timeout", StringComparison.OrdinalIgnoreCase)
+        || text.Contains("timed out", StringComparison.OrdinalIgnoreCase)
+        || text.Contains("秒内没等到", StringComparison.Ordinal)
+        || text.Contains("秒内未拿到", StringComparison.Ordinal);
+
+    /// <summary>网络失败统一补的那半句对策 —— 四处共用，别各自写一遍。
+    /// ⚠ 别写成「去 Clash 设 DIRECT / 开 TUN」：实测 DD 的 HttpClient 不读注册表系统代理，
+    /// 分流规则对它无效，能动的只有我们替它注入的 HTTPS_PROXY（见 ApplyDdProxyEnv）。</summary>
+    static string NetworkRemedy() => LocService.Tr("，换手机热点或换个代理节点再试。");
 
     /// <summary>失败该怎么说 —— 按**实际断在哪一段**分，不再一律甩锅 CM。
     /// 实测踩过：登录一路成功（"授权成功""已连上 Steam"都打了），断的是 CDN 分片，
@@ -151,7 +291,7 @@ public sealed partial class DepotDownloaderService
             || t.Contains("Failed to find any server", StringComparison.OrdinalIgnoreCase)
             || t.Contains("sending the request", StringComparison.OrdinalIgnoreCase))
             return LocService.Tr("登录是通的，断在从 Steam 内容服务器（CDN）拉数据：换手机热点或开加速器重试即可，改代理的分流规则没用。");
-        return LocService.Tr("连不上 Steam 登录服务：") + LoginProxyAdvice();
+        return LocService.Tr(LooksLikeTimeout(t) ? "连 Steam 中继超时" : "连不上 Steam 登录中继") + NetworkRemedy();
     }
 
     /// <summary>工具装在程序安装目录（插件内容，跟 JuniGrid 走，不进缓存）。</summary>
@@ -219,7 +359,20 @@ public sealed partial class DepotDownloaderService
         }
         catch (Exception ex) { AppLog.Warn("DepotDownloader", "工具迁移失败: " + ex.Message); }
 
-        if (File.Exists(DepotDownloaderExe)) return;
+        if (File.Exists(DepotDownloaderExe))
+        {
+            // 打包进来的可能是 framework 构建（目录里没有 coreclr.dll）：本机没有 .NET 9+ 时
+            // 那个 exe 根本起不来。与其让用户看到一串看不懂的启动失败，就地换成自包含构建
+            // （会走下面的下载逻辑，直连 + GitHub 镜像）。换装失败保留原组件并返回 ——
+            // 不许把「换装失败」升级成「工具没了」。
+            if (!File.Exists(Path.Combine(DepotDownloaderDir, "coreclr.dll")) && !HasCompatibleDotnetRuntime())
+            {
+                AppLog.Warn("DepotDownloader", "工具是 framework 构建但本机没有 .NET 9+ 运行时，换装自包含版…");
+                try { Directory.Delete(DepotDownloaderDir, true); }
+                catch (Exception ex) { AppLog.Warn("DepotDownloader", "换装失败（保留原组件）: " + ex.Message); return; }
+            }
+            else return;
+        }
 
         try { Directory.CreateDirectory(DepotDownloaderDir); }
         catch (Exception ex)
@@ -297,6 +450,49 @@ public sealed partial class DepotDownloaderService
         finally
         {
             _depotEnsureGate.Release();
+        }
+    }
+
+    /// <summary>
+    /// 把坏掉的工具（旧裁剪版，见 <see cref="BrokenTrimmedBuildMarker"/>）换掉，重下官方构建。
+    /// 走的就是 EnsureDepotDownloaderAsync 的既有下载链（直连 + GitHub 镜像 + SHA 校验）。
+    ///
+    /// <para><b>为什么是「先改名再造、成了才删」而不是直接 Delete</b>：重下要过 GitHub，
+    /// 国内经常整个域名不可达（2026-11-13 实测：release 直链 10 秒超时）。先删再下的话，
+    /// 一次下载失败就把用户仅有的组件删干净了 —— 之后连「准备扫码组件」都过不去，
+    /// 比原来的登录缺陷更糟。这里先把旧目录挪成 .broken，新组件装成了才删备份，装不成再挪回来。</para>
+    /// </summary>
+    private async Task ReinstallBrokenDepotDownloaderAsync(CancellationToken ct)
+    {
+        AppLog.Warn("DepotDownloader", $"组件命中裁剪版缺陷（{BrokenTrimmedBuildMarker}），换装官方构建");
+        var backup = DepotDownloaderDir.TrimEnd(Path.DirectorySeparatorChar) + ".broken";
+        try
+        {
+            if (Directory.Exists(backup)) Directory.Delete(backup, true);
+            if (Directory.Exists(DepotDownloaderDir)) Directory.Move(DepotDownloaderDir, backup);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warn("DepotDownloader", "移走坏组件失败，放弃换装: " + ex.Message);
+            return;
+        }
+
+        try
+        {
+            await EnsureDepotDownloaderAsync(null, ct);
+            if (!File.Exists(DepotDownloaderExe)) throw new DepotException("换装后仍然没有 DepotDownloader.exe");
+            try { Directory.Delete(backup, true); } catch { }
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warn("DepotDownloader", "重下官方构建失败，恢复原组件: " + ex.Message);
+            try
+            {
+                if (Directory.Exists(DepotDownloaderDir)) Directory.Delete(DepotDownloaderDir, true);
+                if (Directory.Exists(backup)) Directory.Move(backup, DepotDownloaderDir);
+            }
+            catch { }
+            throw;
         }
     }
 
@@ -386,14 +582,24 @@ public sealed partial class DepotDownloaderService
     private static bool IsQrDarkChar(char c) =>
         c is '█' or '▀' or '▄' or '■' or '▓' or '▒' or '●' or '#' or '@';
 
-    private static bool LooksLikeQrLine(string line)
+    private static bool LooksLikeQrLine(string line) => IsQrRow(line, inBlock: false);
+
+    /// <summary>
+    /// 这一行是不是二维码矩阵的一行。
+    ///
+    /// <para><paramref name="inBlock"/> 为 true 时允许<b>整行全白</b>：DD 打的码上下各带 4 行
+    /// 纯空格静区，QR 矩阵内部也可能出现整行全白的数据行。旧判据只认「含黑块」的行，于是这些行
+    /// 被当成空行丢掉 —— 2026-11-13 真机日志里就是「29 行 × 37 格」：宽度含左右静区、高度只剩码体，
+    /// 行列不方，ZXing 必然解不出来，界面永远停在「正在生成二维码」。</para>
+    /// </summary>
+    private static bool IsQrRow(string line, bool inBlock)
     {
         if (line.Length < 20) return false;
         var dark = 0;
         foreach (var c in line)
             if (IsQrDarkChar(c)) dark++;
             else if (!char.IsWhiteSpace(c)) return false;
-        return dark >= 8;
+        return inBlock || dark >= 8;
     }
 
     private static string UrlToDataUri(string url)
@@ -485,6 +691,17 @@ public sealed partial class DepotDownloaderService
         var onLine = new Action<string>(line =>
         {
             var trimmed = line.Trim();
+            var qrRow = line.TrimEnd('\r');
+
+            // 二维码行必须最先收：静区行整行是空格（trim 后为空），会被下面的「空行忽略」吃掉。
+            // 缺行 ⇒ 矩阵错位 ⇒ ZXing 解不出来（2026-11-13 真机就卡在这里，DD 明明已经在出码）。
+            if (IsQrRow(qrRow, inBlock: qr.Count > 0))
+            {
+                if (qr.Count == 0) AppLog.Warn("DepotDownloader", "二维码开始输出（DD ASCII 码）");
+                qr.Add(qrRow);
+                return;
+            }
+
             if (trimmed.Length == 0) return;
             AppLog.Warn("DepotDownloader", "DD: " + trimmed);
 
@@ -502,9 +719,8 @@ public sealed partial class DepotDownloaderService
                 catch (Exception ex) { AppLog.Warn("DepotDownloader", "URL 生成二维码失败: " + ex.Message); }
             }
 
-            // QR 行禁止 Trim：行尾空格是白模块
-            if (LooksLikeQrLine(line)) { qr.Add(line.TrimEnd('\r')); return; }
-            if (qr.Count >= 27)
+            // 非码行 = 这张码画完了（DD 换码时会打 "The QR code has changed:"，块间不会粘连）
+            if (qr.Count >= 20)
             {
                 var snapshot = qr.ToArray();
                 qr.Clear();
@@ -523,10 +739,10 @@ public sealed partial class DepotDownloaderService
                     }, ct);
                 }
             }
-            else if (qr.Count > 0 && qr.Count < 27 && !LooksLikeQrLine(line))
+            else if (qr.Count > 0)
             {
-                // 二维码中间夹了非码行：保留已收集行，等凑齐；仅在明显中断时清空
-                if (trimmed.Contains("ERROR", StringComparison.OrdinalIgnoreCase)) qr.Clear();
+                // 码画到一半来了非码行（多为 DD 报错/换码提示）：残码扫了只会失败，丢掉重收
+                qr.Clear();
             }
 
             account = TryParseAccount(trimmed, account);
@@ -582,6 +798,12 @@ public sealed partial class DepotDownloaderService
         // 已扫码授权 → 优先本机令牌；无账号名时退回 -qr
         var useToken = tokenAvailable && !string.IsNullOrWhiteSpace(knownAccount);
         progress?.Report(new Progress(useToken ? LocService.Tr("正在用本机授权连接 Steam…") : LocService.Tr("正在连接 Steam…"), null));
+
+        // 令牌登录同样要连 CM 拿 depot key —— 和扫码一样吃 270xx 黑洞，所以同样走体检路线
+        // （体检结果缓存 3 分钟，令牌快路径不会因此多等）。
+        LoginRoutePlan routePlan = await SteamLoginRoute.BuildPlanAsync(ct);
+        if (!useToken) progress?.Report(new Progress(routePlan.Describe(), null));
+
         var args = $"-app {appId} -depot {depotId} -manifest {manifestId} -dir \"{staging}\" -remember-password -max-downloads 16{(resuming ? " -verify-all" : "")} -loginid {NextLoginId()}";
         args += useToken ? $" -username {knownAccount!.Trim()}" : " -qr";
 
@@ -595,23 +817,25 @@ public sealed partial class DepotDownloaderService
                 line.Contains("STEAM GUARD", StringComparison.OrdinalIgnoreCase))
                 SilenceTimeoutMs = 300000;
         }, progress, ct, kickoffDeadlineMs: KickoffDeadlineMs, onBeforeRetry: ResetQrState,
-            stopWhen: () => manifestGiveUp);
+            stopWhen: () => manifestGiveUp, plan: routePlan);
 
+        // ⚠ 这里**不再**自动回退扫码。唯一的调用方是后台版本下载（VersionDownloadService），
+        // onDataUri 是个空委托 —— 回退到 -qr 等于起一路没人看得见二维码的登录：DD 会每 22 秒
+        // 刷一张新码（kickedOffAny=true 后静默看门狗永不触发），任务就永远挂在 0%「下载中」。
+        // 凭据丢了只能由人去设置页扫一次，这里负责把话说清楚。
         var joinedFail = string.Join("\n", tail);
-        if (useToken && exitCode != 0 && !HasGameBinary(staging)
-            && (joinedFail.Contains("password", StringComparison.OrdinalIgnoreCase)
-                || (failure is not null && failure.Contains("password", StringComparison.OrdinalIgnoreCase))))
+        if (exitCode == ExitNeedsCredentials
+            || (useToken && exitCode != 0 && !HasGameBinary(staging)
+                && (joinedFail.Contains("password", StringComparison.OrdinalIgnoreCase)
+                    || (failure is not null && failure.Contains("password", StringComparison.OrdinalIgnoreCase)))))
         {
-            AppLog.Warn("DepotDownloader", "令牌路径失败，自动回退扫码");
-            progress?.Report(new Progress(LocService.Tr("本机授权失效，改用扫码…"), null));
-            try { if (Directory.Exists(staging)) Directory.Delete(staging, true); } catch { }
-            Directory.CreateDirectory(staging);
-            WriteManifestMeta(staging, manifestId);
-            ResetQrState();
-            useToken = false;
-            args = $"-app {appId} -depot {depotId} -manifest {manifestId} -dir \"{staging}\" -remember-password -max-downloads 16{(resuming ? " -verify-all" : "")} -loginid {NextLoginId()} -qr";
-            (exitCode, tail) = await RunWithNetworkRetryAsync(args, onLine, progress, ct,
-                onBeforeRetry: ResetQrState);
+            AppLog.Warn("DepotDownloader",
+                $"本机没有可用的 Steam 登录凭据（exit={exitCode}），需要重新登录授权");
+            throw new AuthRequiredException(LocService.Tr(
+                "Steam 登录凭据不在当前安装目录里 —— 下载器要重新登录一次才能下历史版本" +
+                "（重装到别的位置、换过安装目录后都会这样）。" +
+                "请到「设置 → Steam 平台」点「登录授权」，登录后再回来点「下载」；" +
+                "同一目录下以后再升级都不用重新授权。"));
         }
 
         if (exitCode != 0 || !HasGameBinary(staging))
@@ -629,7 +853,7 @@ public sealed partial class DepotDownloaderService
                 var who = string.IsNullOrWhiteSpace(account) ? knownAccount : account;
                 throw new DepotException(
                     $"当前 Steam 账号{(string.IsNullOrWhiteSpace(who) ? "" : $"（{who}）")}没有《星露谷物语》的下载许可，" +
-                    "无法下载历史版本。请改用拥有本体的账号在设置里重新扫码授权。");
+                    "无法下载历史版本。请改用拥有本体的账号在设置里重新登录授权。");
             }
             if (tail.Any(l => l.Contains("password", StringComparison.OrdinalIgnoreCase)) && !useToken)
                 throw new DepotException("本机登录令牌已失效，请重新点击「扫码登录并下载」扫一次码");
@@ -745,6 +969,9 @@ public sealed partial class DepotDownloaderService
         var qrGen = 0;
         var qrDecoding = false;
 
+        // 只看一眼「是不是已经在收码」（决定全白行算不算码行），不参与结算
+        int WatchQrCount() { lock (qrLock) return qr.Count; }
+
         void FlushQr()
         {
             string[] snapshot;
@@ -788,6 +1015,21 @@ public sealed partial class DepotDownloaderService
         var onLine = new Action<string>(line =>
         {
             var trimmed = line.Trim();
+            var qrRow = line.TrimEnd('\r');
+
+            // 二维码行必须最先收（含整行全白的静区行）：静区行 trim 后为空，会被「空行忽略」吃掉，
+            // 缺行 ⇒ 矩阵错位 ⇒ ZXing 解不出来。2026-11-13 真机就卡在这一步。
+            if (IsQrRow(qrRow, inBlock: WatchQrCount() > 0))
+            {
+                lock (qrLock)
+                {
+                    if (qr.Count == 0) AppLog.Warn("DepotDownloader", "二维码开始输出（DD ASCII 码）");
+                    qr.Add(qrRow);
+                }
+                ScheduleFlush();
+                return;
+            }
+
             if (trimmed.Length == 0) return;
             AppLog.Warn("DepotDownloader", "DD-qr: " + trimmed);
 
@@ -800,14 +1042,6 @@ public sealed partial class DepotDownloaderService
                     EmitQr(UrlToDataUri(challengeUrl), challengeUrl, null);
                 }
                 catch (Exception ex) { AppLog.Warn("DepotDownloader", "URL 生成二维码失败: " + ex.Message); }
-            }
-
-            // QR 行禁止 Trim：行尾空格是白模块
-            if (LooksLikeQrLine(line))
-            {
-                lock (qrLock) qr.Add(line.TrimEnd('\r'));
-                ScheduleFlush();
-                return;
             }
 
             // 非码文来了 ⇒ 这张码必定画完了，立刻结算（比 500ms 静默那条快）
@@ -851,15 +1085,25 @@ public sealed partial class DepotDownloaderService
             }
         });
 
+        // 出码之前先体检「直连 / 系统代理」两条路（并行，1～7 秒）。
+        // 值这一步的理由：以前每一路都只用注入的那条代理，代理把 Steam 登录域判错时，
+        // 重开多少次都是同一个结果 —— 现在按体检结论决定顺序，并且每次尝试换一条路。
+        progress?.Report(new Progress(LocService.Tr("正在检查 Steam 连接（直连 / 代理）…"), null));
+        var plan = await SteamLoginRoute.BuildPlanAsync(ct);
+        progress?.Report(new Progress(plan.Describe(), null));
+        // 两条都不通 ⇒ 别拿 6 次 × 20 秒骗人，快速试两轮就把真实原因交回去。
+        // 有一路通 ⇒ 6 轮换着走（单路约三成时 P(全失败) 从 1-(2/3)³≈30% 降到 1-(2/3)⁶≈9%，
+        // 而且换路能把「代理节点临时挂了 / 直连被临时掐了」这两种情况自动跨过去）。
+        var attempts = plan.AnyOk ? 6 : 2;
+
         progress?.Report(new Progress(LocService.Tr("正在连接 Steam 中继…"), null));
         // 每路到点没出码就重开（新进程等于重新抽一次 CM 列表）。实测出码是双峰的 ——
         // 要成就是 2–5 秒，不成就是 DD 自己 10 轮退避烧满 60 秒，所以截止不会误杀
-        // 「本来会成」的那一路。成功率约 1/3 → P(至少一路出码) ≈ 1-(2/3)^3 ≈ 70%，
-        // 最坏 3×20+退避 ≈ 80 秒（旧配置 2×64 ≈ 130 秒）。
+        // 「本来会成」的那一路。
         var (code, tail) = await RunWithNetworkRetryAsync(
             $"-app 413150 -qr -remember-password -manifest-only -max-downloads 4 -loginid {NextLoginId()}",
-            onLine, progress, ct, maxAttempts: 3, kickoffDeadlineMs: KickoffDeadlineMs,
-            stopWhen: () => authorized,
+            onLine, progress, ct, maxAttempts: attempts, kickoffDeadlineMs: KickoffDeadlineMs,
+            stopWhen: () => authorized, plan: plan,
             onBeforeRetry: () =>
             {
                 // 死码必须撤干净：界面上留着旧码就是让人去扫一张废的。
@@ -898,7 +1142,14 @@ public sealed partial class DepotDownloaderService
                     throw new DepotException(
                         "二维码已失效 —— 出码后 Steam 连接就断了，这张码扫了手机只会报「加载二维码失败」。" +
                         "请等界面刷出新码后再扫；多次刷新都失败再按下面的网络建议处理。");
-                throw new DepotException(LocService.Tr("连不上 Steam 服务器（CM 握手已重试 3 次）。") + LoginProxyAdvice());
+                // 把「试过几条路、几条路当时是通的」一起说出来：只说「重试 3 次」等于让人
+                // 猜是不是自己网络的问题。这一行进日志后，下次看日志就能知道当时坏在哪一跳。
+                var routesTried = plan.Verdicts.Count == 0
+                    ? ""
+                    : "，" + string.Join("、", plan.Verdicts.Select(v => v.Route.Display + (v.Ok ? "当时通" : "当时就不通")));
+                throw new DepotException(
+                    LocService.Tf("连不上 Steam 服务器（换了 {0} 次路都失败{1}）", attempts, routesTried)
+                    + NetworkRemedy());
             }
             if (!qrEmitted)
                 throw new DepotException(
@@ -915,11 +1166,261 @@ public sealed partial class DepotDownloaderService
         return account ?? "";
     }
 
+    /// <summary>Steam 限流（不是密码错）：短时间密码/验证码尝试过多后的临时拒绝。</summary>
+    internal static bool LooksLikeRateLimited(string text)
+    {
+        if (string.IsNullOrEmpty(text)) return false;
+        return text.Contains("RateLimitExceeded", StringComparison.OrdinalIgnoreCase)
+            || text.Contains("AccountLoginDeniedThrottle", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// 账号密码登录（<c>-password</c> 路径）—— 扫码走不通时的备用入口。
+    ///
+    /// <para><b>为什么需要它</b>：二维码是 <c>https://s.team/q/1/...</c>，手机端扫码后要自己去
+    /// 访问 Steam。国内手机没加速器时这一步会一直转圈，用户看到的就是"管理器出码失败"，
+    /// 但 PC 端其实一切正常。账密这条路完全不经过手机，是唯一能绕开它的登录方式。</para>
+    ///
+    /// <para><b>密码怎么传</b>：必须走 <c>-password</c> 参数，不能写 stdin —— DD 的
+    /// <c>Util.ReadPassword()</c> 用 <c>Console.ReadKey</c> 逐字符读，重定向输入时直接抛
+    /// "Cannot read keys when ... console input has been redirected"（这就是
+    /// <c>LooksLikeCredentialPrompt</c> 那条分支存在的原因）。Steam Guard 码不同，那一步是
+    /// <c>Console.ReadLine</c>，可以写 stdin（见 <see cref="RunDepotDownloaderAsync"/>）。</para>
+    ///
+    /// <para><b>秘密的生命周期</b>：密码只作为 <see cref="ProcessStartInfo.ArgumentList"/> 的一项
+    /// 存在于本次进程启动前后；不写 config、不写日志（<see cref="DescribeArgsForLog"/> 打码）、
+    /// 不进崩溃转储。登录成功后 <c>-remember-password</c> 让 DD 把**令牌**写进它自己的
+    /// IsolatedStorage，之后所有下载都走 <c>-username</c> 静默路径，不再需要密码。</para>
+    /// </summary>
+    /// <param name="requestGuardCode">Steam 要 Guard 码时回调（参数是 DD 的原始提示）。返回 null 表示用户放弃。</param>
+    public async Task<string> PasswordLoginOnlyAsync(
+        string account, string password, bool tokenLikelyPresent,
+        Func<string, CancellationToken, Task<string?>> requestGuardCode,
+        IProgress<Progress>? progress = null, CancellationToken ct = default, bool preferCode = false,
+        Func<string, Task>? onAuthenticated = null)
+    {
+        if (string.IsNullOrWhiteSpace(account))
+            throw new DepotException(LocService.Tr("请填写 Steam 账号名（登录名，不是昵称）"));
+        if (string.IsNullOrEmpty(password))
+            throw new DepotException(LocService.Tr("请填写 Steam 密码"));
+
+        // 与下载/扫码共用同一把会话闸：同一账号两路登录会互踢
+        using var session = await HoldSteamSessionAsync(ct);
+        await EnsureDepotDownloaderAsync(new Progress<string>(msg => progress?.Report(new Progress(msg, null))), ct);
+        // 等用户敲 Guard 码的时间算在静默窗口里 —— 人翻手机找码可能要半分钟
+        SilenceTimeoutMs = 300000;
+
+        var loginName = account.Trim();
+        var singlePass = !tokenLikelyPresent;
+        // 顺序与扫码路保持一致（-manifest-only 让 DD 登完就退）。
+        // 设备批准是默认路（与官方客户端一致：手机点「批准」直接登录，不用输码）。
+        // -no-mobile 会让 DD 的 AcceptDeviceConfirmationAsync 返回 false ⇒ 不轮询批准；
+        // 而 Steam 的手机推送在建会话时就发出、拦不掉 ⇒ 点批准没反应、只能输码
+        // （2026-11-17 用户报障，DD 3.4.0 ConsoleAuthenticator 源码实锤）。
+        // 只有用户在弹窗里明确点「改为输入验证码」时才加它。
+        //
+        // ⚠ -remember-password 分两趟用，原因见下面那段注释。
+        List<string> BuildArgs(bool persist)
+        {
+            var list = new List<string>
+            {
+                "-app", "413150",
+                "-manifest-only",
+                "-max-downloads", "4",
+                "-loginid", NextLoginId().ToString(),
+                "-username", loginName,
+                "-password", password,
+            };
+            if (preferCode) list.Add("-no-mobile");
+            if (persist) list.Add("-remember-password");
+            return list;
+        }
+
+        progress?.Report(new Progress(LocService.Tr("正在检查 Steam 连接（直连 / 代理）…"), null));
+        var plan = await SteamLoginRoute.BuildPlanAsync(ct);
+        progress?.Report(new Progress(plan.Describe(), null));
+
+        // ── 两趟登录：第一趟真验密码，第二趟才把免密令牌落盘 ──────────────────
+        // 为什么不能一趟搞定：`-remember-password` 在 DD 里不只是「登完把令牌写下来」——
+        // 它会让 DD 先去 IsolatedStorage 找这个账号的令牌，**命中就直接用令牌登录，
+        // -password 根本不参与校验**。2026-11-16 实测（同一个 exe、同一个账号名，
+        // 密码分别填 fake_pw_1/2/3）：带这个参数三趟全是 "Got 57 licenses for account!"；
+        // 去掉它立刻变成 InvalidPassword。于是「本机已授权过」的机器上，随便什么密码都显示登录成功。
+        // 令牌复用本身是合理的，问题在于用户没法用密码登录来**确认自己填对了**，
+        // 也没法用它换到一个密码确实正确的账号上 —— 所以第一趟不带这个参数，逼 DD 认真验。
+        async Task<string> RunPassAsync(bool persist, CancellationToken passCt)
+        {
+            var background = persist && !singlePass;
+            var passProgress = background ? null : progress;
+            var args = BuildArgs(persist);
+            AppLog.Warn("DepotDownloader",
+                (singlePass ? "账号密码登录·单趟（验密码+存令牌）参数：" : persist ? "账号密码登录·第二趟（存令牌）参数：" : "账号密码登录·第一趟（验密码）参数：")
+                + DescribeArgsForLog(args));
+
+            string? seenAccount = null;
+            var authorized = false;
+            var guardRejected = false;
+            var mobileConfirmSeen = false;
+
+            var onLine = new Action<string>(line =>
+            {
+                var trimmed = line.Trim();
+                if (trimmed.Length == 0) return;
+                AppLog.Warn("DepotDownloader", "DD-pwd: " + trimmed);
+
+                seenAccount = TryParseAccount(trimmed, seenAccount);
+                if (LooksLikeLoginSuccess(trimmed))
+                {
+                    authorized = true;
+                    // 成功行必须报给 UI：Guard 弹窗要靠它演「验证通过」洗白，
+                    // 手机确认弹窗要靠它立刻收掉（此前这些行被 EngineLineToChinese 漏掉）
+                    passProgress?.Report(new Progress(LocService.Tr("Steam 授权成功，正在收尾…"), null, trimmed));
+                }
+
+                if (LooksLikeGuardCodeRejected(trimmed))
+                {
+                    guardRejected = true;
+                    passProgress?.Report(new Progress(LocService.Tr("Steam Guard 验证码不正确，请重新输入"), null, trimmed));
+                    return;
+                }
+                if (LooksLikeGuardCodePrompt(trimmed))
+                {
+                    passProgress?.Report(new Progress(LocService.Tr("需要 Steam Guard 验证码"), null, trimmed));
+                    return;
+                }
+                // 设备确认路（默认）：Steam 要的是手机上点批准，输码无效，弹窗说清楚去点。
+                if (LooksLikeMobileConfirmPrompt(trimmed))
+                {
+                    if (!mobileConfirmSeen)
+                    {
+                        mobileConfirmSeen = true;
+                        guardRejected = false;
+                        passProgress?.Report(new Progress(
+                            LocService.Tr("这次登录要手机确认：打开手机 Steam App，点「批准登录」…"), null, trimmed));
+                    }
+                    return;
+                }
+                if (trimmed.Contains("ERROR", StringComparison.OrdinalIgnoreCase) ||
+                    trimmed.Contains("FAILED", StringComparison.OrdinalIgnoreCase))
+                    passProgress?.Report(new Progress(Shorten(trimmed), null, trimmed));
+                else
+                {
+                    var zh = EngineLineToChinese(trimmed);
+                    if (zh is not null) passProgress?.Report(new Progress(zh, null, trimmed));
+                }
+
+                static string Shorten(string s) => s.Length > 80 ? s[..80] + "…" : s;
+            });
+
+            passProgress?.Report(new Progress(LocService.Tr("正在用账号密码登录 Steam…"), null));
+
+            // maxAttempts=2：只给「网络抖一下」一次机会。真正的密码错/风控已经在
+            // RunWithNetworkRetryAsync 里被 LooksLikeBadCredentials 拦下、不会重试。
+            // kickoffDeadlineMs=30s：连接阶段熔断 —— DD 自己连 CM 失败会内部退避重试十轮
+            // （实测每轮 ~108s，烧掉十几分钟，界面一直「正在登录」）。30s 没有任何真实进展
+            // 就掐掉重开换路；「等用户输码/手机批准」不算网络停滞，见 RunDepotDownloaderAsync 的豁免。
+            var (code, tail) = await RunWithNetworkRetryAsync(
+                "", onLine, passProgress, passCt, maxAttempts: 2, kickoffDeadlineMs: 30000,
+                stopWhen: () => authorized, plan: plan,
+                askGuard: background ? null : requestGuardCode, argList: args);
+
+            var joined = string.Join("\n", tail);
+            if (string.IsNullOrWhiteSpace(seenAccount))
+                foreach (var t in tail)
+                {
+                    seenAccount = TryParseAccount(t, seenAccount);
+                    if (!string.IsNullOrWhiteSpace(seenAccount)) break;
+                }
+
+            // DD 「再次要码」的固定句式里自带 "previous ... incorrect"，那是提示不是判决：
+            // 只要后面出现过验过之后才有的行（authorized），这条就不能算失败。
+            if ((guardRejected || LooksLikeGuardCodeRejected(joined)) && !authorized)
+                throw new DepotException(LocService.Tr(
+                    "Steam Guard 验证码不正确或已过期。重新点一次「账号密码登录」再输新码。"));
+            if (LooksLikeBadCredentials(joined))
+            {
+                AppLog.Warn("DepotDownloader", "账密登录被拒，DD 输出尾部：" + joined);
+                // 限流和密码错必须分开说：把 RateLimitExceeded 报成「密码不正确」
+                // 会让人反复重输密码/验证码，越试越限（2026-11-16 实机踩坑）
+                throw new DepotException(LooksLikeRateLimited(joined)
+                    ? LocService.Tr("Steam 临时限制了这次登录（短时间密码/验证码尝试过多），不是密码错：等几分钟再试，或改用扫码登录（扫码不受此限制）。")
+                    : LocService.Tr(
+                        "Steam 账号或密码不正确。若确认无误，多半是这次登录被 Steam 风控拦了（短时间多次尝试、"
+                        + "换网络环境、异地登录都会触发）：等几分钟再试，或改用扫码登录。"));
+            }
+            if (mobileConfirmSeen && !authorized && LooksLikeAuthPollFailed(joined))
+                throw new DepotException(LocService.Tr(
+                    "手机批准没有完成：Steam 的确认窗口只有几分钟，超时或在手机上点了拒绝都会这样。重新登录并及时点「批准」，或在弹窗里点「改为输入验证码」。"));
+            if (LooksLikeMobileConfirmPrompt(joined) && !authorized)
+                throw new DepotException(LocService.Tr(
+                    "Steam 要求先在手机 App 上批准这次登录，但确认没有完成。在手机上点「批准」后重试，或改用扫码登录。"));
+
+            // 判据里不许再有「看到账号名就算成功」：`Logging 'x' into Steam3...` 是验密码**之前**
+            // 就打出来的。要么见到验过之后才有的行（authorized），要么 DD 自己干净退 0。
+            var success = authorized
+                          || (code == 0 && !LooksLikeNetworkFailure(joined) && !LooksLikeBadCredentials(joined));
+            if (!success)
+            {
+                if (LooksLikeNetworkFailure(joined))
+                {
+                    AppLog.Warn("DepotDownloader", "账密登录网络失败，DD 输出尾部：" + joined);
+                    throw new DepotException(
+                        LocService.Tr(LooksLikeTimeout(joined)
+                            ? "连 Steam 中继超时"
+                            : "连不上 Steam 登录中继"));
+                }
+                var hint = tail.LastOrDefault(t => !t.StartsWith("[JuniGrid]", StringComparison.Ordinal)) ?? "";
+                throw new DepotException(
+                    LocService.Tf("账号密码登录未完成（退出码 {0}）。", code) + hint);
+            }
+
+            AppLog.Warn("DepotDownloader",
+                $"账号密码登录第{(singlePass ? "单" : persist ? "二" : "一")}趟完成 account={seenAccount ?? "?"} exit={code}");
+            return string.IsNullOrWhiteSpace(seenAccount) ? loginName : seenAccount;
+        }
+
+        var resolved = await RunPasswordLoginPassesAsync(
+            tokenLikelyPresent, RunPassAsync, onAuthenticated, progress, ct);
+        progress?.Report(new Progress(LocService.Tr("登录成功"), 100));
+        AppLog.Warn("DepotDownloader", $"账号密码登录完成 account={resolved}");
+        return resolved;
+    }
+
+    internal static async Task<string> RunPasswordLoginPassesAsync(bool tokenLikelyPresent,
+        Func<bool, CancellationToken, Task<string>> runPass, Func<string, Task>? onAuthenticated,
+        IProgress<Progress>? progress, CancellationToken ct)
+    {
+        var resolved = await runPass(!tokenLikelyPresent, ct);
+        if (onAuthenticated is not null) await onAuthenticated(resolved);
+        if (!tokenLikelyPresent) return resolved;
+
+        // 已验证的登录不受窗口取消影响，后台令牌保存单独限时。
+        using var persistCts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        try
+        {
+            await runPass(true, persistCts.Token);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warn("DepotDownloader", "保存免密登录令牌失败（本次登录已成功，不影响本次授权）：" + ex.Message);
+            progress?.Report(new Progress(
+                LocService.Tr("登录成功，但免密令牌没存下来；下次下载可能还要再登一次"), null));
+        }
+        return resolved;
+    }
+
+
     /// <summary>
     /// 把 DepotDownloader 输出的 ASCII 二维码还原成原始 URL，再用 QRCoder 生成标准 PNG data URI。
     /// 返回 (dataUri, 解码出的 URL)。
+    ///
+    /// <para><b>为什么先裁白边再补静区</b>：DD 打的码上下各带 4 行纯空格静区，而收集端只认
+    /// 「含黑块」的行（纯空格行看起来就是空行）—— 于是矩阵拿到 29 行 × 37 格：宽度含左右静区、
+    /// 高度却只有码本身。行列不方，ZXing 必然解不出（2026-11-13 真机：DD 明明打出码了，界面一直
+    /// 停在「正在生成二维码」，日志是「28行×37格」）。所以这里不假设外边距存在：
+    /// 先裁到「最外一圈黑模块」的内容边界，再统一补规范 4 模块静区 —— 有没有静区行都能解。</para>
     /// </summary>
-    private static (string DataUri, string Url) QrAsciiToDataUriAndUrl(IReadOnlyList<string> lines)
+    internal static (string DataUri, string Url) QrAsciiToDataUriAndUrl(IReadOnlyList<string> lines)
     {
         // 各行等长化（含行尾空白模块）；每模块 1 或 2 字符
         var maxLen = 0;
@@ -929,28 +1430,71 @@ public sealed partial class DepotDownloaderService
         // 29×29 的 QR 模块宽约 58 字符（2 字符/模块）或 29（1 字符/模块）
         var twoCharPerCell = maxLen >= lines.Count * 1.5;
         var cells = twoCharPerCell ? (maxLen + 1) / 2 : maxLen;
-        var rgb = new byte[lines.Count * cells * 3];
+        var dark = new bool[lines.Count, cells];
         for (var r = 0; r < lines.Count; r++)
         {
             var l = lines[r].PadRight(maxLen);
             for (var c = 0; c < cells; c++)
             {
-                bool black;
                 if (twoCharPerCell)
                 {
                     var i0 = c * 2;
-                    black = IsQrDarkChar(l[i0]) || (i0 + 1 < l.Length && IsQrDarkChar(l[i0 + 1]));
+                    dark[r, c] = IsQrDarkChar(l[i0]) || (i0 + 1 < l.Length && IsQrDarkChar(l[i0 + 1]));
                 }
-                else black = IsQrDarkChar(l[Math.Min(c, l.Length - 1)]);
-                var i = (r * cells + c) * 3;
-                rgb[i] = rgb[i + 1] = rgb[i + 2] = black ? (byte)0 : (byte)255;
+                else dark[r, c] = IsQrDarkChar(l[Math.Min(c, l.Length - 1)]);
             }
         }
-        var src = new ZXing.RGBLuminanceSource(rgb, cells, lines.Count);
+
+        // 裁到内容边界（去掉四周全白行/列）
+        int top = 0, bottom = dark.GetLength(0) - 1, left = 0, right = cells - 1;
+        while (top <= bottom && RowIsLight(dark, top, left, right)) top++;
+        while (bottom >= top && RowIsLight(dark, bottom, left, right)) bottom--;
+        while (left <= right && ColIsLight(dark, left, top, bottom)) left++;
+        while (right >= left && ColIsLight(dark, right, top, bottom)) right--;
+        if (top > bottom || left > right) throw new DepotException("二维码里没有黑模块，无法解析");
+
+        const int quiet = 4;                      // 规范静区下限
+        const int scale = 8;                      // 每模块 8 像素：ZXing 的检测器在 30~40 像素的小图上会认不出定位符
+        var rows = bottom - top + 1;
+        var cols = right - left + 1;
+        var side = Math.Max(rows, cols) + quiet * 2;   // 正方形画布（码必须是方的）
+        var px = side * scale;
+        var rgb = new byte[px * px * 3];
+        rgb.AsSpan().Fill(255);
+        var offY = (side - rows) / 2;
+        var offX = (side - cols) / 2;
+        for (var r = 0; r < rows; r++)
+            for (var c = 0; c < cols; c++)
+            {
+                if (!dark[top + r, left + c]) continue;
+                for (var dy = 0; dy < scale; dy++)
+                {
+                    var rowStart = ((offY + r) * scale + dy) * px * 3;
+                    for (var dx = 0; dx < scale; dx++)
+                    {
+                        var i = rowStart + ((offX + c) * scale + dx) * 3;
+                        rgb[i] = rgb[i + 1] = rgb[i + 2] = 0;
+                    }
+                }
+            }
+
+        var src = new ZXing.RGBLuminanceSource(rgb, px, px);
         var reader = new ZXing.QrCode.QRCodeReader();
         var result = reader.decode(new ZXing.BinaryBitmap(new ZXing.Common.HybridBinarizer(src)))
-                   ?? throw new DepotException($"二维码内容解析失败（{lines.Count}行×{cells}格，行宽{maxLen}）");
+                   ?? throw new DepotException($"二维码内容解析失败（内容 {rows}行×{cols}格，行宽{maxLen}）");
         return (UrlToDataUri(result.Text), result.Text);
+
+        static bool RowIsLight(bool[,] m, int r, int from, int to)
+        {
+            for (var c = from; c <= to; c++) if (m[r, c]) return false;
+            return true;
+        }
+
+        static bool ColIsLight(bool[,] m, int c, int from, int to)
+        {
+            for (var r = from; r <= to; r++) if (m[r, c]) return false;
+            return true;
+        }
     }
 
     /// <summary>
@@ -959,17 +1503,24 @@ public sealed partial class DepotDownloaderService
     /// 先让调用方把死码从界面上撤掉、并放开重新出码的开关）。
     /// </summary>
     private async Task<(int ExitCode, List<string> Tail)> RunWithNetworkRetryAsync(
-        string args, Action<string> onLine, IProgress<Progress>? progress, CancellationToken ct,
+        string? args, Action<string> onLine, IProgress<Progress>? progress, CancellationToken ct,
         int maxAttempts = 5, int kickoffDeadlineMs = 0, Action? onBeforeRetry = null,
-        Func<bool>? stopWhen = null)
+        Func<bool>? stopWhen = null, LoginRoutePlan? plan = null,
+        Func<string, CancellationToken, Task<string?>>? askGuard = null, IReadOnlyList<string>? argList = null)
     {
         List<string> lastTail = new();
         int lastCode = 1;
         var afterDeadQr = false;
         var deadQrRetries = 0;
         var manualKicks = 0;
+        var healedBrokenBuild = false;
         for (var attempt = 1; attempt <= maxAttempts; attempt++)
         {
+            // v1.4.7：每一次尝试换一条路（直连 ⇄ 系统代理）。以前每一路都只用注入的那条代理，
+            // 于是「代理把 Steam 登录域判给了一个连不通的节点」时，重开 3 次 / 5 次 / 22 次
+            // 结果完全一样 —— 看着像随机失败，其实一次都没换过路。见 SteamLoginRoute。
+            var route = plan?.RouteFor(attempt);
+            var routeTag = plan is { Routes.Count: > 1 } && route is not null ? $" · {route.Display}" : "";
             if (attempt > 1)
             {
                 // 用户主动踢的这一次不算进重试次数（他不是失败方，不该因为点了按钮而更早放弃）；
@@ -983,8 +1534,8 @@ public sealed partial class DepotDownloaderService
                 progress?.Report(new Progress(manual
                     ? LocService.Tr("按你的要求重开一路连接…")
                     : afterDeadQr
-                    ? LocService.Tf("二维码已失效，正在重新获取（第 {0}/{1} 次）…", attempt, maxAttempts)
-                    : $"连不上 Steam 服务器，重开一路再试（第 {attempt}/{maxAttempts} 次）…", 0));
+                    ? LocService.Tf("二维码已失效，正在重新获取（第 {0}/{1} 次{2}）…", attempt, maxAttempts, routeTag)
+                    : LocService.Tf("连不上 Steam 服务器，换一条路再试（第 {0}/{1} 次{2}）…", attempt, maxAttempts, routeTag), 0));
                 await Task.Delay(delay, ct);
             }
             afterDeadQr = false;
@@ -995,22 +1546,45 @@ public sealed partial class DepotDownloaderService
                 if (line.Contains("Use the Steam Mobile App", StringComparison.OrdinalIgnoreCase) ||
                     line.IndexOf(BlockChar) >= 0)
                     gotQr = kickedOffAny = true;
-                // 登录已过 / 已在枚举 / 已在下载 ⇒ 这一路活着，别再按「卡住」掐它
+                // 登录已过 / 已在枚举 / 已在下载 / 已在等用户输码 ⇒ 这一路活着，别再按「卡住」掐它
                 else if (LooksLikeLoginSuccess(line) ||
                          line.Contains("Got AppInfo", StringComparison.OrdinalIgnoreCase) ||
                          line.Contains("Processing depot", StringComparison.OrdinalIgnoreCase) ||
+                         LooksLikeGuardCodePrompt(line) ||
                          DepotProgressRx.IsMatch(line))
                     kickedOffAny = true;
                 onLine(line);
             });
             var (code, tail) = await RunDepotDownloaderAsync(args, wrapped, ct, () => kickedOffAny,
-                kickoffDeadlineMs, stopWhen, onKick: () => manualKicks++);
+                kickoffDeadlineMs, stopWhen, onKick: () => manualKicks++, route: route,
+                askGuard: askGuard, argList: argList);
             lastCode = code;
             lastTail = tail;
+            // 这一路真的动起来了（出码 / 登录过 / 在下）⇒ 这条路值得下次优先
+            if (kickedOffAny && route is not null) SteamLoginRoute.RememberGood(route);
+            // 本机没凭据：再开一路只会再要一遍密码，立刻交回上层（上层会说「去重新扫码」）
+            if (code == ExitNeedsCredentials) return (code, tail);
             // 授权已经成了（stopWhen 是我们自己掐的进程）→ 别再按「失败」重开一路
             if (stopWhen?.Invoke() == true) return (code, tail);
-            // 正常退出、或不是网络类的失败（账号/权限/令牌错）→ 不再重试
             var joined = string.Join("\n", tail);
+            // 密码错 / 被风控 / Guard 码错：换一条网络路完全没用，而且 Steam 对连续密码失败
+            // 有递增冷却 —— 自动重开只会把用户锁得更久。认出就必须当场收手。
+            if (LooksLikeBadCredentials(joined) || LooksLikeGuardCodeRejected(joined)) return (code, tail);
+            // 坏掉的裁剪版组件（BrokenTrimmedBuildMarker）：这不是网络问题，换一条路还是同一个错 ——
+            // 把工具删了重下官方构建再试。只自动修一次；修完还坏就当场说清楚，别再循环撞墙。
+            if (joined.Contains(BrokenTrimmedBuildMarker, StringComparison.OrdinalIgnoreCase))
+            {
+                if (healedBrokenBuild)
+                    throw new DepotException(
+                        "下载器组件损坏（旧裁剪版的已知缺陷），自动换成完整组件后仍未恢复。" +
+                        "请删除安装目录下的 tools\\DepotDownloader 文件夹后重试，或重装 JuniGrid。");
+                healedBrokenBuild = true;
+                maxAttempts++;   // 组件坏了不是用户的网络问题，不该占掉重试额度
+                progress?.Report(new Progress(LocService.Tr("下载器组件有缺陷（旧裁剪版），正在自动换成完整组件…"), null));
+                await ReinstallBrokenDepotDownloaderAsync(ct);
+                continue;
+            }
+            // 正常退出、或不是网络类的失败（账号/权限/令牌错）→ 不再重试
             var netLoss = LooksLikeNetworkFailure(joined) ||
                           LooksLikeNetworkFailure(tail.Count > 0 ? tail[^1] : "");
             if (code == 0 || !netLoss) return (code, tail);
@@ -1023,8 +1597,14 @@ public sealed partial class DepotDownloaderService
                 deadQrRetries++;
                 afterDeadQr = true;
             }
-            if (attempt == maxAttempts) return (code, tail);
+            if (attempt == maxAttempts)
+            {
+                // 一整轮都没成 ⇒ 体检结论已经过期（网况变了/节点挂了），下次点重试要重新体检
+                SteamLoginRoute.Invalidate();
+                return (code, tail);
+            }
         }
+        SteamLoginRoute.Invalidate();
         return (lastCode, lastTail);
     }
 
@@ -1107,73 +1687,153 @@ public sealed partial class DepotDownloaderService
     }
 
     /// <summary>起 DD 子进程前，把 Windows 系统代理翻译成它听得懂的环境变量。
-    /// 刻意不给设置项：用户开着「系统代理」就已经表过态了，我们只是把一个它不读的信号转述过去。
-    /// 代价是代理本身是坏的时会被带上 —— 但那种情况下浏览器同样不通，玩家先看到的是别的问题。</summary>
+    /// 刻意不给设置项：用户开着「系统代理」就已经表过态了，我们只是把一个它不读的信号转述过去。</summary>
     static void ApplyDdProxyEnv(ProcessStartInfo psi) => ApplyDdProxyEnv(psi, ReadSystemProxy());
 
     /// <summary>注入本身单独拆一个重载，是为了能在测试台里喂固定地址做断言：
-    /// 直接测上面那个的话，结果取决于跑测试这台机器的注册表，换台机器就退化成空断言。
-    /// 撤掉这一行注入，F11（假 DD 转储自己拿到的环境）立刻转红。</summary>
+    /// 直接测上面那个的话，结果取决于跑测试这台机器的注册表，换台机器就退化成空断言。</summary>
     internal static void ApplyDdProxyEnv(ProcessStartInfo psi, string? proxy)
-    {
-        if (string.IsNullOrEmpty(proxy))
-        {
-            AppLog.Warn("DepotDownloader", "DD 代理注入 → 无（未开启系统代理，直连 Steam）");
-            return;
-        }
-        // 两个都设：目录请求走 HttpClient、CM 会话走 ClientWebSocket，.NET 在不同入口上读的变量名
-        // 不完全一样，少设一个就可能出现「一半流量走了代理、一半直连」这种更难查的状态。
-        psi.Environment["HTTPS_PROXY"] = proxy;
-        psi.Environment["HTTP_PROXY"] = proxy;
-        AppLog.Warn("DepotDownloader", $"DD 代理注入 → {proxy}（来源：系统代理）");
-    }
+        => SteamLoginRoute.ApplyEnv(psi, LoginRoute.ForProxy(proxy), proxy);
+
+    /// <summary>
+    /// 按「这一次要走哪条路」注入。三条写法收在
+    /// <see cref="SteamLoginRoute.ApplyEnv"/> 里 —— 因为「直连」在开了系统代理的机器上
+    /// 并不是「什么都不设」（.NET 会退回注册表代理），必须显式写 NO_PROXY 白名单。
+    /// </summary>
+    internal static void ApplyDdProxyEnv(ProcessStartInfo psi, LoginRoute? route)
+        => SteamLoginRoute.ApplyEnv(psi, route, ReadSystemProxy());
 
     /// <summary>跑一次 DepotDownloader，逐行回调输出；75 秒无输出判定无响应（扫码等待期自动放宽）。
     /// 整体放线程池执行 —— 内部 TryTake 带超时会阻塞线程，绝不能跑在 Blazor UI 线程上（实测整界面冻结）。</summary>
     private static Task<(int ExitCode, List<string> Tail)> RunDepotDownloaderAsync(
-        string args, Action<string> onLine, CancellationToken ct,
+        string? args, Action<string> onLine, CancellationToken ct,
         Func<bool>? kickedOff = null, int kickoffDeadlineMs = 0, Func<bool>? stopWhen = null,
-        Action? onKick = null)
+        Action? onKick = null, LoginRoute? route = null,
+        Func<string, CancellationToken, Task<string?>>? askGuard = null, IReadOnlyList<string>? argList = null)
     {
         return Task.Run(async () =>
         {
             var psi = new ProcessStartInfo
             {
                 FileName = DepotDownloaderExe,
-                Arguments = args,
                 WorkingDirectory = DepotDownloaderDir,
                 UseShellExecute = false,
                 CreateNoWindow = true,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
+                // 标准输入必须接管：DD 在「本机没有令牌」时会去 stdin 要密码。
+                // 窗口程序没有控制台，若不接管就会走进 Util.ReadPassword() 的 ReadKey —— 直接崩/卡死，
+                // 而外层一行输出都收不到，只能当成网络超时，重试 5 轮后报「连不上 Steam」。
+                // ⚠ 接管后**不要立刻 Close()**：实测关掉管道 DD 会在 ReadLine 上抛未处理异常当场崩掉，
+                // 连那句提示都还没落到我们手里；留着管道不动它就会停在 ReadLine 上等，提示留在
+                // 半截缓冲里，我们 1 秒内就能认出来并掐进程（见下面的 LooksLikeCredentialPrompt）。
+                // 账号密码登录时这条管道另有用途：Guard 码那一步 DD 读的是 Console.ReadLine，
+                // 可以安全地写进去（与密码不同 —— 密码必须走 -password 参数，见 PasswordLoginOnlyAsync）。
+                RedirectStandardInput = true,
                 // 实测：DepotDownloader 重定向输出使用系统 GBK（936）编码
                 StandardOutputEncoding = Encoding.GetEncoding(936),
                 StandardErrorEncoding = Encoding.GetEncoding(936),
+                // 输入方向也对齐：Guard 码是 ASCII，但保持同一套编码免得中文用户名之类的扩展字符被截断
+                StandardInputEncoding = Encoding.GetEncoding(936),
             };
+            // 参数两种给法：既有调用传拼好的字符串（DD 自己的参数里没有用户输入，安全）；
+            // 带密码这一路必须走 ArgumentList —— 密码里出现空格 / 双引号 / 结尾反斜杠时，
+            // 手拼命令行会被 Win32 的参数解析截断，DD 收到的是半个密码，报的却是「密码错误」。
+            if (argList is { Count: > 0 })
+            {
+                foreach (var a in argList) psi.ArgumentList.Add(a);
+            }
+            else
+            {
+                psi.Arguments = args ?? "";
+            }
             // DD 不读 Windows 系统代理，代理得由我们塞进它的环境变量（见 ApplyDdProxyEnv）
-            ApplyDdProxyEnv(psi);
+            ApplyDdProxyEnv(psi, route);
 
             using var proc = new Process { StartInfo = psi };
             proc.Start();
             var tail = new List<string>();
             var bc = new BlockingCollection<string>(new ConcurrentQueue<string>());
+            // 还没成行的那截缓冲：DD 的密码提示不带换行，只能从这里认出来。
+            // out / err 各一份 —— 共用一个的话，另一边吐一行就会把提示冲掉。
+            var partialOut = new System.Text.StringBuilder();
+            var partialErr = new System.Text.StringBuilder();
+            object partialOutGate = new(), partialErrGate = new();
             ct.Register(() => { try { proc.Kill(entireProcessTree: true); } catch { } });
 
-            var pumpOut = PumpDepotAsync(proc.StandardOutput, bc, ct);
-            var pumpErr = PumpDepotAsync(proc.StandardError, bc, ct);
+            var pumpOut = PumpDepotAsync(proc.StandardOutput, bc, ct, partialOut, partialOutGate);
+            var pumpErr = PumpDepotAsync(proc.StandardError, bc, ct, partialErr, partialErrGate);
             _ = Task.WhenAll(pumpOut, pumpErr).ContinueWith(_ => bc.CompleteAdding(), TaskScheduler.Default);
 
             var startedAt = Environment.TickCount64;
             var lastLineAt = Environment.TickCount64;
-            // 有出码截止或有「拿到授权就收工」的判据时按秒轮询（否则维持原来的单次长阻塞）
-            var takeMs = kickoffDeadlineMs > 0 || stopWhen is not null
-                ? Math.Min(SilenceTimeoutMs, 1000) : SilenceTimeoutMs;
+            // 每秒醒一次：既要盯出码截止，也要盯那截「要密码」的半行缓冲（它永远不会自己成行）
+            var takeMs = Math.Min(SilenceTimeoutMs, 1000);
             var aborted = false;
+            var needsCredential = false;
             var stopAt = 0L;
+
+            string PartialSnapshot()
+            {
+                string a, b;
+                lock (partialOutGate) a = partialOut.ToString();
+                lock (partialErrGate) b = partialErr.ToString();
+                return a + "\n" + b;
+            }
+            void KillForCredentials()
+            {
+                needsCredential = true;
+                try { proc.Kill(entireProcessTree: true); } catch { }
+            }
+
+            // ── Steam Guard 验证码（只走账号密码这一路）────────────────────────
+            // DD 的那一步读的是 Console.ReadLine，所以可以安全地往 stdin 写一行；
+            // **密码不行**：ReadPassword() 用的是 Console.ReadKey，重定向输入时会直接抛
+            // "Cannot read keys when ... console input has been redirected" —— 密码只能走
+            // -password 参数（见 PasswordLoginOnlyAsync）。
+            // 等用户输入的这段时间必须留在别的线程上：行泵还得继续排空，否则 DD 判错后
+            // 打出的「上一条码不正确」会堵在管道里，我们就永远问不出第二次。
+            //
+            // ⚠ 问码请求必须绑进程生命周期（guardCts）：手机批准 / 令牌命中会让登录在
+            // 「码还没输」时就完成，进程随即被掐 —— 若不把挂着的问码 Task 放掉，弹窗就成
+            // 僵尸：继续问码、输进去写进死进程、毫无反馈，看起来像「随便输什么都成功」。
+            // 进程一退（或授权已成）就 Cancel，UI 侧据此立刻收弹窗。
+            using var guardCts = new CancellationTokenSource();
+            ct.Register(() => { try { guardCts.Cancel(); } catch { } });
+            var guardAsked = false;
+            void MaybeAskGuard(string text)
+            {
+                if (askGuard is null || guardAsked || guardCts.IsCancellationRequested) return;
+                if (!LooksLikeGuardCodePrompt(text)) return;
+                guardAsked = true;
+                var prompt = text;
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        var code = await askGuard(prompt, guardCts.Token).ConfigureAwait(false);
+                        if (string.IsNullOrWhiteSpace(code)) return;   // 用户取消：留给超时兜底
+                        if (proc.HasExited) return;                    // 进程已退：写了也白写
+                        await proc.StandardInput.WriteLineAsync(code.Trim()).ConfigureAwait(false);
+                        await proc.StandardInput.FlushAsync().ConfigureAwait(false);
+                        lock (tail) { tail.Add("[JuniGrid] 已提交 Steam Guard 验证码"); }
+                    }
+                    catch { /* 进程已退 / 管道已关：交给后面的失败判定，不在这里冒泡 */ }
+                }, CancellationToken.None);
+            }
             try
             {
                 while (true)
                 {
+                    // 第一优先：DD 在等密码输入。这一条不是网络问题，重开一百次也只会再问一遍，
+                    // 而且它永远等不到人敲 —— 必须当场收手，别耗到出码截止再当成"连不上"。
+                    if (!needsCredential && LooksLikeCredentialPrompt(PartialSnapshot()))
+                    { KillForCredentials(); break; }
+                    // 其次：在等 Steam Guard 码。这条提示同样可能不带换行（Console.Write），
+                    // 只能从半截缓冲里认。判错那句也可能留在半截缓冲里 —— 同样要放开 guardAsked。
+                    var snap = PartialSnapshot();
+                    if (LooksLikeGuardCodeRejected(snap)) guardAsked = false;
+                    MaybeAskGuard(snap);
                     // 用户按了「立即重开」：1 秒内掐掉这一路，别让他等满 20 秒出码截止。
                     // 只在「还在等第一张码」时生效 —— 已经出码或已经在下载时掐进程会打断正经进度，
                     // 而那张码本来每 22 秒自动换一张，不需要手动踢。TakeKick 放最后，
@@ -1189,7 +1849,11 @@ public sealed partial class DepotDownloaderService
                     // 卡住时能一路拖到 300 秒静默上限 —— 07:25:48 那次就是这么把弹窗挂死的）。
                     // 免密票据在打印「Next time you can login with -remember-password」时已落盘，
                     // 所以再等 2.5 秒收尾就掐进程，别让人对着不动的弹窗干等。
-                    if (stopAt == 0 && stopWhen?.Invoke() == true) stopAt = Environment.TickCount64 + 2500;
+                    if (stopAt == 0 && stopWhen?.Invoke() == true)
+                    {
+                        stopAt = Environment.TickCount64 + 2500;
+                        try { guardCts.Cancel(); } catch { }   // 登录已成：挂着的问码立刻作废
+                    }
                     if (stopAt != 0 && Environment.TickCount64 >= stopAt)
                     { try { proc.Kill(entireProcessTree: true); } catch { } break; }
                     if (!bc.TryTake(out var line, takeMs))
@@ -1198,17 +1862,35 @@ public sealed partial class DepotDownloaderService
                         var now = Environment.TickCount64;
                         // 实测 DD 连 Steam CM 单次成功率约 1/3，而它自己那 10 轮退避要烧掉 60 秒；
                         // 到点还没二维码就掐掉重开 —— 新进程等于重新抽一次 CM 列表，比干等退避快得多。
+                        // 豁免「等用户」：半截缓冲里是要码/手机批准提示时，停滞的是人不是网络，
+                        // 不能按连接截止掐（账密路 30s 熔断也走这里）。
+                        var waitSnap = PartialSnapshot();
                         if (kickoffDeadlineMs > 0 && !(kickedOff?.Invoke() ?? false)
+                            && !LooksLikeGuardCodePrompt(waitSnap) && !LooksLikeMobileConfirmPrompt(waitSnap)
                             && now - startedAt >= kickoffDeadlineMs)
                         { aborted = true; try { proc.Kill(entireProcessTree: true); } catch { } break; }
-                        if (kickoffDeadlineMs > 0 && now - lastLineAt < SilenceTimeoutMs) continue;
+                        // 静默窗口与二维码截止无关：账密那条路没有码可等（kickoffDeadlineMs=0），
+                        // 这里若跟着 kickoffDeadlineMs 一起短路，DD 刚启动还一个字都没打时就会被
+                        // 判成「长时间无响应」—— 实测 1 秒就误杀，报的还是网络问题。
+                        if (now - lastLineAt < SilenceTimeoutMs) continue;
                         try { proc.Kill(entireProcessTree: true); } catch { }
                         ct.ThrowIfCancellationRequested();
-                        throw new DepotException(LocService.Tr("连接 Steam 长时间无响应（可能令牌失效或网络断开）。") + LoginProxyAdvice());
+                        throw new DepotException(LocService.Tr("连接 Steam 长时间无响应（可能令牌失效或网络断开）") + NetworkRemedy());
                     }
                     lastLineAt = Environment.TickCount64;
                     if (line.Length == 0) continue;
+                    // 提示也可能被换行收成一行（有的版本问完会补一个空行），也别漏
+                    if (!needsCredential && LooksLikeCredentialPrompt(line))
+                    {
+                        lock (tail) { tail.Add(line); if (tail.Count > 40) tail.RemoveAt(0); }
+                        KillForCredentials();
+                        break;
+                    }
                     lock (tail) { tail.Add(line); if (tail.Count > 40) tail.RemoveAt(0); }
+                    // 输错了要把「已经问过」的状态放开，否则第二次提示进来时会被 guardAsked 拦住，
+                    // 用户就只能干等超时（实测 DD 判错后会立刻再问一次，这一步不能漏）。
+                    if (LooksLikeGuardCodeRejected(line)) guardAsked = false;
+                    MaybeAskGuard(line);
                     try { onLine(line); } catch { }
                 }
             }
@@ -1216,7 +1898,14 @@ public sealed partial class DepotDownloaderService
 
             await Task.WhenAll(pumpOut, pumpErr);
             try { await proc.WaitForExitAsync(CancellationToken.None); } catch { }
+            try { guardCts.Cancel(); } catch { }   // 进程退了：问码弹窗不许比进程活得久
             ct.ThrowIfCancellationRequested();
+            if (needsCredential)
+            {
+                // 不是网络失败：用专用退出码交回上层，让它直接说「去设置重新扫码」而不是重开一路
+                lock (tail) tail.Add(CredentialMissingMarker);
+                return (ExitNeedsCredentials, tail);
+            }
             if (aborted)
             {
                 // 造一条 DD 自己的失败措辞，让外层「网络类失败」判定认出它并立刻重开一路
@@ -1228,8 +1917,11 @@ public sealed partial class DepotDownloaderService
         }, ct);
     }
 
-    /// <summary>按行泵：换行/回车都视为行分隔（DepotDownloader 的进度条用 \r 刷新）。</summary>
-    private static async Task PumpDepotAsync(StreamReader reader, BlockingCollection<string> bc, CancellationToken ct)
+    /// <summary>按行泵：换行/回车都视为行分隔（DepotDownloader 的进度条用 \r 刷新）。
+    /// <paramref name="partial"/> 是"还没等到分隔符"的那截原文的镜像 —— DD 追问密码的提示
+    /// 用 Console.Write 打出、不带换行，永远成不了一行，上层只能靠它认出来。</summary>
+    internal static async Task PumpDepotAsync(StreamReader reader, BlockingCollection<string> bc,
+        CancellationToken ct, StringBuilder partial, object partialGate)
     {
         try
         {
@@ -1247,8 +1939,18 @@ public sealed partial class DepotDownloaderService
                     if (c == '\n' || c == '\r')
                     {
                         if (buf.Length > 0) { bc.Add(buf.ToString()); buf.Clear(); }
+                        // 只镜像短前缀：密码提示、进度条前缀都在几十字符内，
+                        // 攒着整段会把一个长行（分片哈希）也拷进锁里
+                        lock (partialGate) { partial.Clear(); }
                     }
-                    else buf.Append(c);
+                    else
+                    {
+                        buf.Append(c);
+                        lock (partialGate)
+                        {
+                            if (partial.Length < 512) partial.Append(c);
+                        }
+                    }
                 }
             }
             if (buf.Length > 0) bc.Add(buf.ToString());

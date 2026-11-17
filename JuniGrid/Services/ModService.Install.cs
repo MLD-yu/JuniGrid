@@ -158,9 +158,16 @@ public sealed partial class ModService
             // 子包命中即可，与 InstallUpdate 的 expectedUniqueId 语义一致）。
             if (requireUniqueId is not null && !ManifestsContainUid(allManifests, requireUniqueId))
             {
+                // 先读再删：temp 里的 manifest 是唯一能说明"这包到底是什么"的物证。
+                // 把包里<b>真实</b>的 UID 带回去（形如 "uniqueid-mismatch|Platonymous.CWF"）：
+                // 「页面被接手 / 作者改过 UID」和「搜错页面」在界面上长得一样，只有这一条证据
+                // 能让用户看懂"为什么 N 网明明有同名页面、就是装不上这个前置"。
+                var found = ReadManifestUids(allManifests);
                 TryDelete(temp);
                 modName = null;
-                return UidMismatchError;
+                return found.Count == 0
+                    ? UidMismatchError
+                    : UidMismatchError + "|" + string.Join(",", found.Take(4));
             }
 
             // v1.1.5：与"没有 manifest 就拒绝"同一策略——manifest 是坏 JSON / 空文件 /

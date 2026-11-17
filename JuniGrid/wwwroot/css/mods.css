@@ -1,3 +1,17 @@
+.jg-mods-count { display: inline-flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.jg-auto-category {
+    border: 1px solid var(--jg-line-strong);
+    border-radius: 999px;
+    padding: 2px 9px;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-size: 11px;
+    cursor: pointer;
+}
+.jg-auto-category:hover { background: var(--jg-well); }
+.jg-auto-category:disabled { opacity: .5; cursor: default; }
+
 .jg-mini-btn {
     padding: 4px 10px;
     border-radius: 8px;
@@ -747,30 +761,103 @@ html[data-theme="dark"] .jg-newver:hover:not(:disabled) {
 .jg-cat-head-menu { position: absolute; right: 0; top: calc(100% + 4px); z-index: 40; background: var(--jg-glass-95); border: 1px solid var(--jg-line); border-radius: 10px; padding: 5px; box-shadow: 0 10px 30px rgba(0, 0, 0, .18); min-width: 150px; }
 .jg-cat-head-menu .jg-sort-item { display: block; width: 100%; text-align: left; }
 
-/* v1.3.48：杠列封顶 + 自己滚（overflow:hidden ⇒ 不出滚动条这根装饰，滚轮由 JS 接手）；
-   卡片留在列外面，纵向位置跟被悬停的那根杠（--jg-cat-card-y 由 JS 写）。
-   z-index 70 必须高过吸顶筛选栏的 60 —— 以前卡片压在它下面，悬停最上面几根杠时卡片被拦腰盖住。 */
-.jg-catnav { position: fixed; right: 4px; top: 50%; transform: translateY(-50%); z-index: 70; }
-.jg-catnav-list { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; padding: 8px 2px; max-height: calc(100vh - 96px); overflow: hidden; }
-/* v1.3.47：短杠只是画出来的线，点击热区放大到 28×16 —— 以前热区=线本身（14×3），
-   非得精准落在线上才点得动（实机反馈：悬停能看到名字，点击却没反应）。 */
-.jg-catnav-dash { flex: none; width: 28px; height: 16px; border: 0; padding: 0; background: transparent; cursor: pointer; display: flex; align-items: center; justify-content: flex-end; }
-.jg-catnav-dash::before { content: ""; display: block; width: 14px; height: 3px; border-radius: 2px; background: var(--jg-line-strong); opacity: .55; transition: width .15s ease, opacity .15s ease, background .15s ease; }
-.jg-catnav-dash:hover::before, .jg-catnav-dash.hot::before { width: 22px; opacity: 1; background: var(--jg-text); }
-.jg-catnav-card { position: absolute; right: 28px; top: var(--jg-cat-card-y, 50%); transform: translateY(-50%); min-width: 150px; max-width: 240px; padding: 10px 12px; background: var(--jg-glass-95); border: 1px solid var(--jg-line); border-radius: 12px; box-shadow: 0 12px 34px rgba(0, 0, 0, .2); backdrop-filter: blur(8px); pointer-events: none; }
-/* 2026-11-10：卡片里跟着分类图标走（与段头同一张图）。文字行只剩名字，所以底边距收掉，
-   否则卡片下沿会多出一条空白。 */
-.jg-catnav-title { font-size: 12.5px; font-weight: 700; color: var(--jg-text); display: flex; align-items: center; gap: 7px; }
-.jg-catnav-title span { font-weight: 500; color: var(--jg-text-3); }
-.jg-catnav-icon {
-    width: 20px; height: 20px; flex: none; border-radius: 5px; overflow: hidden;
-    display: flex; align-items: center; justify-content: center;
-    background: var(--jg-well); box-shadow: inset 0 0 0 1px var(--jg-line);
+/* ── 2026-11-17：分类抽屉（照网易云「播放列表」的形态）────────────────────────
+   抽屉贴着窗口右边缘，只圆左侧两角 —— 右边不留缝、不描边，靠左侧一层大阴影把它托起来。
+   高度 = mod 显示区（标题栏 40 + 顶导航 50 以下）的 2/3，并在这块区域里垂直居中：
+   顶导航高 50 ⇒ 显示区顶边 90，抽屉高 (100vh-90)*2/3 = 66.6667vh - 60，
+   上沿 = 90 + (100vh-90)/6 = 16.6667vh + 75。
+   开关就是抽屉左边那只把手：收起 "<" / 展开 ">"（同一个 chevron 转 180°，带过渡）。
+   原「右侧一列短杠 + 悬停分类卡片」整套删掉（用户实机反馈那层浮卡挡内容），只留这一颗按钮。 */
+:root {
+    --jg-cat-drawer-w: clamp(240px, 22vw, 300px);
+    --jg-cat-drawer-h: calc(66.6667vh - 60px);
 }
-.jg-catnav-icon img { display: block; max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain; }
-.jg-catnav-title .jg-catnav-name { font-weight: 700; color: var(--jg-text); }
-.jg-catnav-row { font-size: 12px; color: var(--jg-text-2); padding: 2px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.jg-catnav-more { font-size: 11.5px; color: var(--jg-text-3); margin-top: 4px; }
+
+/* 把手：收起时贴在窗口右边缘，展开时跟着抽屉左沿一起滑出去。
+   z-index 9802 高于抽屉本体 9801 —— 它永远压在抽屉边上，不会被盖住。
+   这一组 9800+ 是为了压过存档/排序下拉那条 9000（遮罩）/9500（菜单）的层级：
+   以前抽屉只有 90 出头，存档下拉会浮到分类列表上面（用户截图）。 */
+.jg-catnav {
+    position: fixed; right: 0; top: calc(50% + 45px); transform: translateY(-50%);
+    z-index: 9802; display: flex; align-items: center;
+    transition: right 300ms cubic-bezier(.22, .61, .36, 1);
+}
+.jg-catnav.open { right: calc(var(--jg-cat-drawer-w) - 1px); }
+/* 右边框去掉：贴窗口边时是与边距融为一体，展开时是与抽屉拼成一张皮。
+   圆角只留左侧两角，方向刚好和抽屉一致。 */
+.jg-catnav-open {
+    width: 32px; height: 58px; padding: 0 0 0 1px;
+    display: grid; place-items: center;
+    border: 1px solid var(--jg-line); border-right: 0;
+    border-radius: 12px 0 0 12px;
+    background: var(--jg-card); color: var(--jg-text-2);
+    cursor: pointer;
+    box-shadow: -10px 0 24px rgba(0, 0, 0, .10);
+    transition: background .16s ease, color .16s ease;
+}
+.jg-catnav-open:hover, .jg-catnav-open.active { background: var(--jg-well); color: var(--jg-text); }
+.jg-catnav-chev { display: block; transition: transform 300ms cubic-bezier(.22, .61, .36, 1); }
+.jg-catnav.open .jg-catnav-chev { transform: rotate(180deg); }
+
+/* 抽屉本体：全高、贴右、只圆左边两角。
+   节点一直在 DOM 里（空壳），用 transition 进出 —— 连点开关时 transform 从「当前值」
+   接着往回走，不会像 keyframes 那样每次重头播、闪一下。
+   关着时 visibility:hidden（脱离 Tab 顺序）＋ pointer-events:none（不接点击），
+   visibility 的 300ms 延迟是为了让滑出动画播完再真正隐藏。 */
+.jg-category-list-overlay { position: fixed; top: 40px; right: 0; bottom: 0; left: 0; z-index: 9800; background: transparent; }
+.jg-category-list-panel {
+    position: fixed; top: calc(16.6667vh + 75px); right: 0; bottom: auto;
+    height: var(--jg-cat-drawer-h);
+    z-index: 9801;
+    width: var(--jg-cat-drawer-w);
+    display: flex; flex-direction: column; overflow: hidden; outline: none;
+    border: 1px solid var(--jg-line); border-right: 0;
+    border-radius: 18px 0 0 18px;
+    background: var(--jg-card); color: var(--jg-text);
+    box-shadow: -28px 0 64px rgba(0, 0, 0, .16);
+    transform: translateX(100%);
+    visibility: hidden;
+    pointer-events: none;
+    transition: transform 300ms cubic-bezier(.22, .61, .36, 1),
+                visibility 0s linear 300ms;
+}
+.jg-category-list-panel.open {
+    transform: translateX(0);
+    visibility: visible;
+    pointer-events: auto;
+    transition: transform 300ms cubic-bezier(.22, .61, .36, 1),
+                visibility 0s linear 0s;
+}
+@media (prefers-reduced-motion: reduce) {
+    .jg-catnav, .jg-catnav-chev { transition: none; }
+    .jg-category-list-panel { transition: none; }
+}
+
+/* 头：标题 + 数量，右边只留一颗 ×（Esc / 点外面也能关）。
+   行高按网易云那种松快感来：54px 一行、图标 36 见方。 */
+.jg-category-list-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex: none; padding: 22px 20px 10px; }
+.jg-category-list-head h2 { margin: 0; font-size: 17px; font-weight: 700; letter-spacing: -.01em; display: flex; align-items: baseline; gap: 8px; }
+.jg-category-list-head h2 span { color: var(--jg-text-3); font-size: 12px; font-weight: 400; }
+.jg-category-list-close { width: 30px; height: 30px; padding: 4px; border: 0; border-radius: 8px; background: transparent; color: var(--jg-text-3); cursor: pointer; display: grid; place-items: center; }
+.jg-category-list-close:hover { background: var(--jg-well); color: var(--jg-text); }
+/* 不写 scrollbar-width：一旦指定它，Chromium（WebView2）会整份忽略 ::-webkit-scrollbar，
+   退回系统原生粗条 —— 交给 base.css 那套 6px 圆头。 */
+.jg-category-list-body { min-height: 0; flex: 1; overflow-y: auto; padding: 2px 12px 18px; overscroll-behavior: contain; }
+.jg-category-list-item {
+    display: flex; align-items: center; gap: 12px; width: 100%; min-height: 54px;
+    padding: 8px 10px; border: 0; border-radius: 12px; background: transparent; color: inherit;
+    cursor: pointer; font-family: inherit; text-align: left;
+    transition: background .13s ease;
+}
+.jg-category-list-item:hover { background: var(--jg-well); }
+.jg-category-list-icon { width: 38px; height: 38px; flex: none; border-radius: 9px; overflow: hidden; display: flex; align-items: center; justify-content: center; background: var(--jg-well); }
+.jg-category-list-icon img { width: 100%; height: 100%; padding: 4px; object-fit: contain; }
+.jg-category-list-icon .jg-cat-icon-ph { width: 16px; height: 16px; border-radius: 4px; }
+.jg-category-list-name { min-width: 0; flex: 1; font-size: 13.5px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.jg-category-list-count { flex: none; font-size: 11.5px; color: var(--jg-text-3); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.jg-catnav-open:focus-visible, .jg-category-list-close:focus-visible, .jg-category-list-item:focus-visible { outline: 2px solid var(--jg-text); outline-offset: -2px; }
+html[data-theme="dark"] .jg-category-list-panel { box-shadow: -28px 0 64px rgba(0, 0, 0, .55); }
+html[data-theme="dark"] .jg-catnav-open { box-shadow: -10px 0 24px rgba(0, 0, 0, .45); }
 
 .jg-cat-dialog { min-width: 340px; max-width: 420px; }
 /* 2026-11-09：本地导入（拖放 / 从文件安装）的分类弹窗 —— 标题下多一行说明，
@@ -782,7 +869,6 @@ html[data-theme="dark"] .jg-newver:hover:not(:disabled) {
 .jg-cat-pick.muted { color: var(--jg-text-3); }
 .jg-cat-empty { font-size: 12px; color: var(--jg-text-3); }
 .jg-cat-err { font-size: 12px; color: #c0392b; margin-top: 6px; }
-html[data-theme="dark"] .jg-catnav-card { background: rgba(30, 32, 36, .92); }
 
 /* v1.3.46：分类选择弹窗 —— 照「存档」下拉的竖排列表（一行一个分类、选中整行高亮、右侧 ×、底部虚线＋） */
 /* v1.3.48：分类一多就把弹窗顶得老长 —— 改成名单自己滚（一行约 30px，一屏 8 行），
@@ -801,6 +887,16 @@ html[data-theme="dark"] .jg-catnav-card { background: rgba(30, 32, 36, .92); }
 .jg-cat-head { cursor: pointer; user-select: none; padding: 6px 4px; margin: 10px 0 2px; border-radius: 8px; transition: background .12s ease; }
 .jg-cat-head:hover { background: var(--jg-hover); }
 .jg-cat-head:first-child { margin-top: 2px; }
+/* 2026-11-17：从分类抽屉跳过来、平滑滚动落到段头后闪一下 —— 吸顶工具条会吃掉一截
+   可视区，落点经常"看着没动"；一次 720ms 的浅底 + 描边脉冲，眼睛能钉住是哪一段。 */
+.jg-cat-head.jg-cat-flash { animation: jg-cat-head-flash 720ms cubic-bezier(.22, .61, .36, 1); }
+@keyframes jg-cat-head-flash {
+    0%   { background: transparent; box-shadow: 0 0 0 0 transparent; }
+    15%  { background: var(--jg-hover-strong); box-shadow: 0 0 0 2px var(--jg-line-strong); }
+    55%  { background: var(--jg-hover); box-shadow: 0 0 0 2px var(--jg-line); }
+    100% { background: transparent; box-shadow: 0 0 0 0 transparent; }
+}
+@media (prefers-reduced-motion: reduce) { .jg-cat-head.jg-cat-flash { animation: none; } }
 /* 收起时整段变淡（箭头已被复选框取代，靠这个表达"这一段是收着的"） */
 .jg-cat-head.collapsed .jg-cat-icon { opacity: .5; }
 .jg-cat-head-name { font-size: 13px; font-weight: 700; color: var(--jg-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -1163,3 +1259,85 @@ html[data-theme="dark"] .jg-tag.danger {
 .jg-hosttag-nav:hover { background: var(--jg-hover, rgba(127,127,127,.12)); }
 .jg-hosttag-nav[data-missing]:hover { background: rgba(232, 17, 35, 0.18); }
 .jg-hosttag-nav:focus-visible { outline: 2px solid var(--jg-accent); outline-offset: 1px; }
+
+/* ============================================================
+   「这次启动跑不起来」汇总块（v1.10.x）
+   原来是「一行 flex-wrap 塞三段话 + 按钮」，主位给了最小的那个数，
+   其余挂在「另有…」后面，读起来像报错日志。改成：
+   标题一行给总数（与筛选栏同口径），下面每档一行、各自带按钮或说明。
+   颜色全部走令牌 —— 深色下 #c50f1f 那类硬编码红字几乎看不清。
+   ============================================================ */
+.jg-depbar {
+    margin-top: 12px;
+    padding: 12px 16px 10px;
+    border-left: 3px solid #f2b544;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.jg-depbar-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+.jg-depbar-title {
+    font-size: 13px;
+    color: var(--jg-text-2);
+}
+.jg-depbar-title b {
+    font-size: 16px;
+    font-weight: 700;
+    color: var(--jg-text);
+    margin: 0 2px;
+}
+.jg-depbar-src {
+    font-size: 11.5px;
+    color: var(--jg-text-4);
+    white-space: nowrap;
+}
+/* v1.10.x+：动作挪到卡片右边缘。原来按钮紧跟文字后面，两行的起点各不相同
+   （「查看列表」x≈214、「一键安装/更新依赖」x≈282），右边还留一大片空 —— 看着像随手撒的。
+   现在标题行末尾用 .jg-depbar-tail 整块顶到右边（备注 + 按钮）；行内按钮自带 margin-left:auto，
+   两枚胶囊的右边缘对齐，等于排成一列动作区。 */
+.jg-depbar-tail {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+.jg-depbar-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    padding-top: 6px;
+    border-top: 1px solid var(--jg-line);
+}
+.jg-depbar-k {
+    font-size: 12.5px;
+    color: var(--jg-text-2);
+    min-width: 200px;
+}
+.jg-depbar-v {
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--jg-text);
+    font-variant-numeric: tabular-nums;
+}
+.jg-depbar-hint {
+    font-size: 11.5px;
+    color: var(--jg-text-3);
+    line-height: 1.45;
+}
+.jg-depbar-btn {
+    padding: 6px 14px;
+    font-size: 12.5px;
+    flex-shrink: 0;
+}
+/* 行内按钮贴右：整行若只有一个按钮（没有 tail）也照样落在卡片右边缘。
+   v1.10.x+ 起行内的说明文字和按钮都收进 .jg-depbar-tail，所以这条只在直系子节点生效，
+   避免 tail 内部的按钮也被顶开（那样说明文字会重新脱离按钮，回到「悬在行中间」）。 */
+.jg-depbar-row > .jg-depbar-btn {
+    margin-left: auto;
+}

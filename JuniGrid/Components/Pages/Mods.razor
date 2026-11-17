@@ -76,7 +76,16 @@
                     }
                 }
                 else if (_initialLoading) { <span>@Loc.T("正在加载 mod 列表…")</span> }
-                else { <text>@Loc.F("共 {0} 个（{1} 已启用）", CountRows(_mods), CountRows(_mods.Where(m => !m.Disabled)))</text> }
+                else
+                {
+                    <span class="jg-mods-count">@Loc.F("共 {0} 个（{1} 已启用）", CountRows(_mods), CountRows(_mods.Where(m => !m.Disabled)))
+                        <button type="button" class="jg-auto-category" disabled="@_autoCategoryBusy"
+                                data-tip='@Loc.T("仅整理未分类的 MOD，已有分类保持不变")'
+                                @onclick="AutoCategorize">
+                            @(_autoCategoryBusy ? Loc.T("分类中…") : Loc.T("一键分类"))
+                        </button>
+                    </span>
+                }
             </div>
         </div>
         <div style="display:flex;align-items:center;gap:8px">
@@ -274,11 +283,6 @@
     </div>
     }
 
-    @if (!_showTrash && _rowsLoaded && _mods.Count == 0)
-    {
-        <div class="jg-card" style="margin-top:12px"> @Loc.T("Mods 文件夹为空或未定位到游戏。请先在「设置」里选择游戏目录。") </div>
-    }
-
     @* ── v0.34.0 工具条：排序在前 → 筛选 chips → 搜索（点击向右延伸，SVG 图标） ── *@
     @* ★★ 回收站视图下整条工具条不渲染：它自带 40px 高 + 12px 上边距 + 粘性背景，
        只剩一个搜索按钮时会撑出一条横贯页面的空白带（用户截图实测）。
@@ -343,21 +347,115 @@
     </div>
     }
 
-    @* ── v1.2.0：缺失依赖横幅 + 一键安装 ── *@
-    @if (!_initialLoading && TotalMissingUids.Count > 0)
+    @* ── v1.2.0：缺失依赖横幅 + 一键安装 ──
+       v1.10.x：从「一行挤三种数字」改成整块汇总 —— 标题给总数（与筛选栏「缺依赖」同一个口径），
+       下面按<b>出路</b>分档（互斥口径见 DepRowKindOf）。
+       v1.10.x+：分档从四行砍到<b>两行</b>。实机反馈是「这一块太长，看不完」——
+       「依赖装着但上次没加载起来」「它自己就不兼容 / 装坏了」这两档<b>装不出解法</b>
+       （SMAPI 已经拒收，只能换版本或停用），留在横幅上纯属解释文字，占掉三行还压住列表；
+       它们仍照旧算进标题那个总数，成因在「查看列表」里每一行都写着（见行内红字）。
+       留下的两档都是<b>点了能动手</b>的：缺依赖 → 一键装，依赖被禁 → 一键开。 *@
+    @* ★★ 回收站视图下整块不渲染（v1.10.x+）：这段讲的是「上一次启动有哪些 mod 加载失败」，
+       跟回收站里的快照毫无关系。它原来挂在 @if (_showTrash) 外面，于是切到回收站会先看到
+       「回收站：0 个 mod」再看到「12 个 mod 跑不起来」，读起来像回收站里坏了 12 个（用户截图报的）。
+       同理 _showTrash 下也不去算这两份 UID 清单 —— 白跑一遍全表。 *@
+    @{
+        var depSum = _initialLoading || _showTrash ? default : DepSummary;
+        var offDepUids = _initialLoading || _showTrash ? new List<string>() : AllDisabledDepUids();
+        // 「要动手」的依赖并集（已剔除同页分支 —— 那些再下载也解不开，没有按钮可给）。
+        var totalMissing = _initialLoading || _showTrash ? new List<string>() : TotalMissingUids;
+        // 被砍掉的那两档只藏在总数里，鼠标停在标题上一秒就能拆开看 —— 不然「12」和下面那个「1」
+        // 对不上，用户第一反应是「剩下 11 个呢」，又得去列表里数（实机 2026-11-15 的报障原话）。
+        var depTip = depSum.Dead + depSum.Self > 0
+            ? Loc.F("其中 {0} 个缺依赖、{1} 个的依赖上次没起来、{2} 个自身不兼容", depSum.Missing, depSum.Dead, depSum.Self)
+            : null;
+    }
+    @if (!_showTrash && !_initialLoading && _loadReportChecked && depSum.Total > 0)
     {
-        <div class="jg-card" style="margin-top:12px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;border-left:3px solid #f2b544">
-            <span style="font-size:13px"> @Loc.T("检测到") <b>@TotalMissingUids.Count</b>@Loc.F(" 个依赖没装或版本过旧，影响 {0} 个 mod ", MissingAffectedMods)</span>
-            <button class="jg-pill-dark" style="padding:7px 16px;font-size:12.5px"
-                    disabled="@(_depInstalling || Installer.Busy)"
-                    @onclick="() => AskInstallMissingDeps(null)">
-                @(_depInstalling ? Loc.T("正在安装…（进度见右下角任务）") : Loc.T("一键安装/更新依赖"))
-            </button>
-            <button class="jg-pill-ghost" style="padding:7px 14px;font-size:12.5px"
-                    @onclick='() => SetFilter("missing")'>@Loc.T("查看列表")</button>
+        <div class="jg-card jg-depbar">
+            <div class="jg-depbar-head">
+                @* v1.10.x+：标题只说一件事 —— 有多少个 mod 这次启动没跑起来。
+                   原来写「这次启动有 12 个 mod 跑不起来」，语序绕、还带个「这次」的时效暗示。 *@
+                <span class="jg-depbar-title" data-tip='@depTip'>@Loc.T("有") <b>@depSum.Total</b> @Loc.T("个 mod 在启动时无法加载")</span>
+                @* v1.10.x+：备注与按钮整块顶到右边缘 —— 与下面行内那枚按钮排成一条竖线。
+                   原来按钮就跟在标题后面，两行按钮左右错开（x≈214 / x≈282），右边空一大块。 *@
+                <span class="jg-depbar-tail">
+                    @if (_loadReport.Any)
+                    {
+                        @* 对账口径：SMAPI 上次自己说跳过了几条。两边差得多就说明还有一类没归因
+                           （用户第一次就是拿这个差发现漏报的）。 *@
+                        <span class="jg-depbar-src"
+                              data-tip='@Loc.T("来自 SMAPI-latest.txt 的「Skipped mods」段，是上一次启动的事实")'>
+                            @Loc.F("SMAPI 自己报了 {0} 个", _loadReport.Skips.Count)
+                        </span>
+                    }
+                    <button class="jg-pill-ghost jg-depbar-btn"
+                            @onclick='() => SetFilter("missing")'>@Loc.T("查看列表")</button>
+                </span>
+            </div>
+
+            @if (depSum.Missing > 0 && totalMissing.Count > 0)
+            {
+                @* v1.10.x+：这一行原来只剩一枚按钮孤零零贴在右边（左边空着、「共 N 个依赖要下」
+                   悬在行中间）。用户要求两件事：左边补回前提「缺少依赖或依赖版本过旧」，
+                   那句话说的事要和按钮连读，所以挪进 tail 紧贴按钮左侧。
+                   同页分支把那批依赖全剔光时整行不渲染：没有可下的包，按钮就是假的 ——
+                   与「依赖没加载/自身不兼容」两档同一处置（总数照算，成因写在行内红字）。 *@
+                <div class="jg-depbar-row">
+                    <span class="jg-depbar-k">@Loc.T("缺少依赖或依赖版本过旧")</span>
+                    <span class="jg-depbar-tail">
+                        <span class="jg-depbar-hint">@Loc.F("共 {0} 个依赖要下", totalMissing.Count)</span>
+                        <button class="jg-pill-dark jg-depbar-btn"
+                                disabled="@(_depInstalling || Installer.Busy)"
+                                @onclick="() => AskInstallMissingDeps(null)">
+                            @(_depInstalling ? Loc.T("正在安装…（进度见右下角任务）") : Loc.T("一键安装/更新依赖"))
+                        </button>
+                    </span>
+                </div>
+            }
+
+            @if (depSum.Off > 0)
+            {
+                @* SMAPI 眼里「关掉的依赖」= 「没装的依赖」：依赖方同样整条 Skipped。
+                   实机 2026-11-15：70 个 mod 被关（含 SpaceCore / Json Assets / FTM 等框架），
+                   25 个依赖方被跳过，而横幅只报了那 1 条真的没装的。 *@
+                <div class="jg-depbar-row">
+                    <span class="jg-depbar-k">@Loc.T("依赖装着，但被禁用了")</span>
+                    <span class="jg-depbar-v">@Loc.F("{0} 个 mod", depSum.Off)</span>
+                    @* 与上一行同一套排法：说明紧贴按钮，别悬在行中间。 *@
+                    <span class="jg-depbar-tail">
+                        <span class="jg-depbar-hint">@Loc.F("共 {0} 个依赖关着", offDepUids.Count)</span>
+                        <button class="jg-pill-dark jg-depbar-btn"
+                                disabled="@_depEnabling"
+                                @onclick="EnableAllDisabledDeps">
+                            @(_depEnabling ? Loc.T("正在启用…") : Loc.T("全部启用"))
+                        </button>
+                    </span>
+                </div>
+            }
+
+            @* ★★ v1.10.x+：这里原来还有两行 ——
+               「依赖装着，但上次没加载起来（6）」与「它自己就不兼容 / 装坏了（5）」。
+               它们都对得上总数，也都归因正确，但<b>一行按钮都没有</b>：SMAPI 已经拒收，
+               装不出新东西，只能换版本或停用。三行解释压在列表上方，整块就没人读了。
+               现在这两档只进标题的总数，读法变成「12 个没跑起来，其中 1 个缺依赖能一键装」；
+               想逐条看是哪几个，点标题右边「查看列表」—— 那里每行都写着成因，
+               行内还有第四档红字（见 BlockedByDep）。 *@
+
+            @if (depSum.SmapiOld > 0)
+            {
+                <div class="jg-depbar-row">
+                    <span class="jg-depbar-k">@Loc.T("manifest 要的 SMAPI 比本机新")</span>
+                    <span class="jg-depbar-v">@Loc.F("{0} 个 mod", depSum.SmapiOld)</span>
+                    <span class="jg-depbar-hint">@Loc.F("本机 SMAPI 是 {0}，升级 SMAPI 才能加载", _smapiVersion)</span>
+                </div>
+            }
+
             @if (_depError is not null)
             {
-                <span style="color:#c50f1f;font-size:12.5px">@Loc.T(_depError)</span>
+                <div class="jg-depbar-row">
+                    <span style="color:#c50f1f;font-size:12.5px">@Loc.T(_depError)</span>
+                </div>
             }
         </div>
     }
@@ -592,7 +690,7 @@
                     {
                         <span class="jg-ov-secmark"></span>
                     }
-                    <span class="jg-cat-head-name">@sec.Label</span>
+                    <span data-notrans class="jg-cat-head-name">@sec.Label</span>
                     <span class="jg-cat-head-n">@Loc.F("{0} 个", sec.Items.Count)</span>
                     <button class="jg-cat-check @(secSel == 2 ? "on" : secSel == 1 ? "some" : "")"
                             role="checkbox" aria-checked="@(secSel == 2 ? "true" : secSel == 1 ? "mixed" : "false")"
@@ -633,6 +731,8 @@
                 // 行尾要用的三个值在这里算好：Razor 只允许在循环体顶层写语句，
                 // 写进 <div> 里会被当普通文本输出（编译报「不存在名称 swOn」就是这个）
                 var swOn = !gone && g.AnyOn;
+                // 别的版本装的包：这一版没有它的宿主，开关/重盖都无从下手 —— 只能看和删
+                var foreign = g.Foreign;
                 var ovMenu = OverlayMenuId(g);
                 @* 整行点击 = 选中（与 mod 行同一套 .selected 高亮）。行尾那几个控件各自
                    stopPropagation，点开关/删除不会顺手把行选上。 *@
@@ -661,7 +761,14 @@
                             {
                                 @OverlayHostTag(hostMod, host, hostJumpId)
                             }
-                            @if (gone)
+                            @if (foreign)
+                            {
+                                @* 别的版本装的：不报失效、不亮红点，只把"它在哪一版"说出来。
+                                   否则切一次版本就整页红色，用户会以为包坏了（实机 2026-11-15）。 *@
+                                <span class="jg-tag"
+                                      data-tip='@Loc.F("这个覆盖包装在 {0} 上 —— 当前版本没有它的宿主，切回 {0} 就会恢复", g.ForeignVersion)'>@Loc.F("属于 {0}", g.ForeignVersion)</span>
+                            }
+                            else if (gone)
                             {
                                 @* tooltip 只留一句：以前那段把「原因 + 该怎么做」全写进去了，
                                    悬停出来是一条横贯整行的长条（截图 2026-11-10），读都不想读。
@@ -680,7 +787,14 @@
                             }
                         </div>
                         <div class="jg-modrow-desc">
-                            @Loc.T(g.AnyOn ? "已启用" : "已停用")
+                            @if (foreign)
+                            {
+                                @Loc.F("{0} 上已启用", g.ForeignVersion)
+                            }
+                            else
+                            {
+                                @Loc.T(g.AnyOn ? "已启用" : "已停用")
+                            }
                             @if (rec.AppliedAtUtc > DateTime.MinValue)
                             {
                                 <text> · </text>
@@ -695,8 +809,10 @@
                            重新盖一次 —— 以前这里干脆不给开关，用户只能选中这行再去下面
                            批量条点「启用」，两步且要猜。 *@
                         <button type="button" class="jg-modrow-switch jg-squish-host @(swOn ? "on" : "")" role="switch"
-                                aria-checked="@swOn"
-                                data-tip="@(gone
+                                aria-checked="@swOn" disabled="@foreign"
+                                data-tip="@(foreign
+                                    ? Loc.F("这个包装在 {0} 上 —— 当前版本没有它的宿主，切回 {0} 才能开关它", g.ForeignVersion)
+                                    : gone
                                     ? Loc.T("这个覆盖包已失效（宿主里没有它要盖的文件了）—— 开关是关的，点一下按留下的副本重新盖")
                                     : (g.AnyOn ? Loc.T("关闭即停用此覆盖包") : Loc.T("打开即启用此覆盖包")))"
                                 @onclick="() => OnOverlaySwitch(g)">
@@ -774,7 +890,7 @@
                         <span class="jg-cat-icon-ph"></span>
                     }
                 </button>
-                <span class="jg-cat-head-name" title='@Loc.T("双击重命名分类")'
+                <span data-notrans class="jg-cat-head-name" title='@Loc.T("双击重命名分类")'
                       @ondblclick="() => OpenCategoryRename(sec.Key)"
                       @ondblclick:stopPropagation="true">@sec.Label</span>
                 <span class="jg-cat-head-n">@Loc.F("{0} 个", sec.Groups.Sum(g => g.Items.Count))</span>
@@ -1003,6 +1119,14 @@
                                           data-tip='@Loc.T("点击启动依赖")'
                                           @onclick="() => EnableItsDependencies(m)" @onclick:stopPropagation="true">@Loc.T("依赖被禁")</span>
                                 }
+                                @* v1.10.x：上一次启动就被 SMAPI 挡在门外的行。不兼容、前置没加载这两类
+                                   在 manifest 上一个字都看不出来，只能靠日志对账 —— 不标出来，
+                                   玩家会一直以为「装着就该生效」。 *@
+                                @{ var lastSkip = LastRunSkip(m); }
+                                @if (lastSkip is not null)
+                                {
+                                    <span class="jg-tag broken" data-tip="@SkipTip(m, lastSkip)">@Loc.T("上次未加载")</span>
+                                }
                                 @* v1.2.5：SMAPI 社区兼容性库点名「在当前游戏版本上有问题」的 mod。
                                    只标负面判定 —— 库里查不到的（实测本机约 1/3）一律不标，
                                    否则玩家会把"没数据"读成"已检查通过"。点徽标直达替代版本。 *@
@@ -1030,11 +1154,11 @@
                             <div class="jg-modrow-desc">
                                 @if (GetNexusCategory(m) is { } _cat)
                                 {
-                                    <span class="jg-cat">@_cat</span>
+                                    <span data-notrans class="jg-cat">@ModCategoryUtil.NexusCategoryName(_cat, Loc.Lang)</span>
                                 }
                                 @(string.IsNullOrWhiteSpace(m.Description) ? m.Folder : m.Description)
                             </div>
-                            @if (missing.Count > 0)
+                            @if (!m.Disabled && missing.Count > 0)
                             {
                                 @* v1.2.5：显示解析出的 mod 名而不是裸 UID —— 玩家看到
                                    "ChaseXavier.Miku" 这种字符串并不能知道要下哪个 mod。
@@ -1049,7 +1173,18 @@
                                         var depUid = missing[i];
                                         var depDi = _depNames.TryGetValue(depUid, out var dd) ? dd : null;
                                         var depId = depDi?.ModId ?? InstalledDepNexusId(depUid);
-                                        @if (depId is > 0)
+                                        var fork = SamePageFork(depUid);
+                                        @if (fork is not null && depId is > 0)
+                                        {
+                                            @* 同页分支：这一页两代 mod 名字封面全同，只写名字等于没解释 ——
+                                               把要求的 UID 与已装的 UID 都摆出来，玩家才看得出
+                                               「缺的」和「装着的」差在哪（差一个作者段）。 *@
+                                            <button type="button" class="jg-dep-link" @onclick:stopPropagation="true"
+                                                    title="@ForkTip(depUid, fork)"
+                                                    @onclick="() => OpenDepByUid(depUid, depId)">@DepLabel(depUid)</button>
+                                            <span>@Loc.F("（需要 {0}；已装同一页面的 {1}，重新下载无法解决）", depUid, fork.UniqueID.Trim())</span>
+                                        }
+                                        else if (depId is > 0)
                                         {
                                             <button type="button" class="jg-dep-link" @onclick:stopPropagation="true"
                                                     title="@Loc.T("点击查看 mod 详情")"
@@ -1061,6 +1196,55 @@
                                         }
                                     }
                                 </div>
+                            }
+                            @{ var offDepsRow = m.Disabled ? null : DisabledDeps(m); }
+                            @if (offDepsRow is { Count: > 0 })
+                            {
+                                @* v1.10.x：和「缺少依赖」一样显眼地写在行里。SMAPI 对禁用依赖的处置
+                                   与「没装」完全一致（整条跳过），只在标签栏挂一个「依赖被禁」，
+                                   玩家翻列表时根本对不上「我明明装了 SpaceCore」这件事。 *@
+                                <div class="jg-mod-updmsg failed" style="white-space:normal">
+                                    @Loc.F(" 依赖被禁用：{0} ", "")
+                                    @for (var i = 0; i < offDepsRow.Count; i++)
+                                    {
+                                        if (i > 0) { <text>、</text> }
+                                        <span>@DepLabel(offDepsRow[i])</span>
+                                    }
+                                    <button type="button" class="jg-dep-link" @onclick:stopPropagation="true"
+                                            title="@Loc.T("把上面这些依赖重新启用")"
+                                            @onclick="() => EnableItsDependencies(m)">@Loc.T("启用")</button>
+                                </div>
+                            }
+                            @{ var deadDepsRow = m.Disabled ? null : NotLoadedDeps(m); }
+                            @if (deadDepsRow is { Count: > 0 })
+                            {
+                                @* 第四档：依赖装着、启用着，上次却没加载起来。SMAPI 因此把这一行整条跳过，
+                                   而磁盘上怎么看都是"依赖齐了" —— 不写出来，玩家永远查不到原因。
+                                   这一路没有「一键修」：只能去换那个依赖的版本，或修好它本身。 *@
+                                <div class="jg-mod-updmsg failed" style="white-space:normal">
+                                    @Loc.F(" 依赖装着但上次没加载：{0} ", "")
+                                    @for (var i = 0; i < deadDepsRow.Count; i++)
+                                    {
+                                        if (i > 0) { <text>、</text> }
+                                        <span>@DepLabel(deadDepsRow[i].Uid)</span>
+                                        <span style="opacity:.75">（@SkipShadow(deadDepsRow[i].Skip)）</span>
+                                    }
+                                </div>
+                            }
+                            @{
+                                // BlockedByDep 的成因上一行已经逐条写过了（「依赖装着但上次没加载：AeroCore（…）」），
+                                // 再补一句「它要的前置「AeroCore」自己也没加载起来」＝ 同一件事说两遍。
+                                // 实机 2026-11-15：曲速网络那行就有两条几乎一样的红字，反而看不出哪句是原因。
+                                var skipCoveredByDeps = lastSkip is { Kind: SmapiLoadReport.SkipKind.BlockedByDep }
+                                                        && deadDepsRow is { Count: > 0 };
+                            }
+                            @if (lastSkip is
+                                { Kind: SmapiLoadReport.SkipKind.Incompatible or SmapiLoadReport.SkipKind.BlockedByDep or SmapiLoadReport.SkipKind.DllMissing }
+                                && !skipCoveredByDeps)
+                            {
+                                @* 这几类光看磁盘永远看不出来：DLL 按旧版游戏编的、前置自己没加载起来、
+                                   manifest 说的 DLL 根本不在。写在行里，玩家才知道「不是没装、是这版跑不了」。 *@
+                                <div class="jg-mod-updmsg failed" style="white-space:normal">@SkipTip(m, lastSkip)</div>
                             }
                             @if (stale.Count > 0)
                             {
@@ -1160,31 +1344,58 @@
 
         @if (!_showTrash && _rowsLoaded && FilteredMods.Count == 0)
         {
-            @* 两种"空"是两件事，分开说：被条件筛空了 ≠ 一个都没装。
+            @* 三种"空"是三件事，分开说：没定位到游戏 ≠ 被条件筛空了 ≠ 一个都没装。
+               v1.6.14：原先顶上还挂着一行「Mods 文件夹为空或未定位到游戏」，跟这里的空态
+               说的是同一件事，等于同一屏说两遍（用户截图）。现在把它并进来：
+               没定位到游戏才提设置，已定位但空的就只留「还没有装 mod」。
                样式与图二那套空态共用（.jg-pk-empty* 是全局类，不是 packs 页专属）。 *@
             var bySearch = SearchText.Trim().Length > 0;
             var byFilter = _filter != "all";
             <div class="jg-pk-empty jg-mods-empty">
-                @if (bySearch || byFilter)
+                @if (!GameLocated)
                 {
-                    <svg class="jg-pk-empty-art" viewBox="0 0 220 120" fill="none" aria-hidden="true">
-                        <rect x="30" y="20" width="96" height="13" rx="6.5" stroke="currentColor" stroke-width="2.5" opacity=".4"/>
-                        <rect x="30" y="46" width="70" height="13" rx="6.5" stroke="currentColor" stroke-width="2.5" opacity=".26"/>
-                        <rect x="30" y="72" width="86" height="13" rx="6.5" stroke="currentColor" stroke-width="2.5" opacity=".16"/>
-                        <circle cx="146" cy="56" r="26" stroke="currentColor" stroke-width="2.5" opacity=".9"/>
-                        <path d="m166 76 18 18" stroke="currentColor" stroke-width="3" stroke-linecap="round" opacity=".9"/>
-                        <path d="M136 56h20" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" opacity=".9"/>
+                    @* 文件夹空着不给加号 —— 这会儿还没有「往哪儿加」的答案 *@
+                    <svg class="jg-pk-empty-art" viewBox="0 0 220 180" fill="none" aria-hidden="true">
+                        <path d="M36 76a12 12 0 0 1 12-12h40l16 18h68a12 12 0 0 1 12 12v54a12 12 0 0 1-12 12H48a12 12 0 0 1-12-12V76Z"
+                              stroke="currentColor" stroke-width="2.5" stroke-linejoin="round" opacity=".55"/>
+                        <path d="M36 94h148" stroke="currentColor" stroke-width="2.5" opacity=".2"/>
+                        <path d="M176 26l3.6 8.8 8.8 3.6-8.8 3.6-3.6 8.8-3.6-8.8-8.8-3.6 8.8-3.6Z" fill="currentColor" opacity=".5"/>
+                    </svg>
+                    <div class="jg-pk-empty-title">@Loc.T("还没定位到游戏")</div>
+                    <button type="button" class="jg-pill-dark" @onclick='() => Nav.NavigateTo("settings")'>
+                        <svg class="jg-pt-act-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/><circle cx="9" cy="6" r="2" fill="currentColor" stroke="none"/><circle cx="15" cy="12" r="2" fill="currentColor" stroke="none"/><circle cx="8" cy="18" r="2" fill="currentColor" stroke="none"/></svg> @Loc.T("去设置选游戏目录")
+                    </button>
+                    <div class="jg-pk-empty-note">@Loc.T("选好目录后，这里的 mod 列表会自动读出来。")</div>
+                }
+                else if (bySearch || byFilter)
+                {
+                    @* v1.6.14：同 220×180 画布重排 —— 三条占左边一列，放大镜压在右下，
+                       原来是图上下一共只有 74 单位，放大镜被压成横躺的椭圆。 *@
+                    <svg class="jg-pk-empty-art" viewBox="0 0 220 180" fill="none" aria-hidden="true">
+                        <rect x="26" y="48" width="88" height="14" rx="7" stroke="currentColor" stroke-width="2.5" opacity=".4"/>
+                        <rect x="26" y="76" width="66" height="14" rx="7" stroke="currentColor" stroke-width="2.5" opacity=".26"/>
+                        <rect x="26" y="104" width="78" height="14" rx="7" stroke="currentColor" stroke-width="2.5" opacity=".16"/>
+                        <circle cx="154" cy="92" r="34" stroke="currentColor" stroke-width="2.5" opacity=".9"/>
+                        <path d="m179 117 18 18" stroke="currentColor" stroke-width="3" stroke-linecap="round" opacity=".9"/>
+                        <path d="M140 92h28" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" opacity=".9"/>
                     </svg>
                     <div class="jg-pk-empty-title">@Loc.T("没有符合条件的 mod")</div>
                     @* 不放按钮：清搜索词就在右上搜索框的 ✕，换档就在上面那排 chips —— 屏上已有的出口不重复给。 *@
                 }
                 else
                 {
-                    <svg class="jg-pk-empty-art" viewBox="0 0 220 120" fill="none" aria-hidden="true">
-                        <path d="M56 34h30l9 11h59a8 8 0 0 1 8 8v33a8 8 0 0 1-8 8H56a8 8 0 0 1-8-8V42a8 8 0 0 1 8-8Z" stroke="currentColor" stroke-width="2.5" opacity=".9"/>
-                        <path d="M48 63h114" stroke="currentColor" stroke-width="2.5" opacity=".35"/>
-                        <path d="M110 74v22M99 85h22" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" opacity=".9"/>
-                        <path d="M176 24l2.6 6 6 2.6-6 2.6-2.6 6-2.6-6-6-2.6 6-2.6Z" fill="currentColor" opacity=".85"/>
+                    @* v1.6.14：画布从 220×120 改到 220×180（与 .jg-pk-empty-art 的盒子同比例）。
+                       文件夹本身也从 142×63 拉到 148×96 —— 原来那条横线上下各只剩 30 来像素，
+                       加号被压成一个小十字，整张图看着像一条扁带。 *@
+                    <svg class="jg-pk-empty-art" viewBox="0 0 220 180" fill="none" aria-hidden="true">
+                        @* 文件夹：后片带 tab，前片用一条折痕分出厚度 *@
+                        <path d="M36 76a12 12 0 0 1 12-12h40l16 18h68a12 12 0 0 1 12 12v54a12 12 0 0 1-12 12H48a12 12 0 0 1-12-12V76Z"
+                              stroke="currentColor" stroke-width="2.5" stroke-linejoin="round" opacity=".9"/>
+                        <path d="M36 94h148" stroke="currentColor" stroke-width="2.5" opacity=".32"/>
+                        @* 加号：落在前片正中 *@
+                        <path d="M110 113v28M96 127h28" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" opacity=".9"/>
+                        @* 右上角那点光 *@
+                        <path d="M176 26l3.6 8.8 8.8 3.6-8.8 3.6-3.6 8.8-3.6-8.8-8.8-3.6 8.8-3.6Z" fill="currentColor" opacity=".85"/>
                     </svg>
                     <div class="jg-pk-empty-title">@Loc.T("还没有装 mod")</div>
                     <button type="button" class="jg-pill-dark" @onclick='() => Nav.NavigateTo("nexus")'>
@@ -1197,44 +1408,70 @@
     </div>
 </div>
 
-@* v1.3.46：按分类视图的右侧导航 —— 一根短杠一个分类；悬停出卡（分类名 + 前几个 mod），
-   点击平滑滚到分段标题。按分类视图且列表里真有分段时才显示。
-   v1.3.48：杠列自己是一层（.jg-catnav-list）—— 标签多到一屏放不下时它封顶并可用滚轮滚，
-   卡片留在这一层外面（放进滚动区会被 overflow 裁掉），纵向位置由 JS 跟着被悬停的那根杠走。 *@
-@if (!_showTrash && !_initialLoading && _categorySections.Count > 0)
+@* 2026-11-17：分类抽屉 —— 照网易云「播放列表」的形态：贴着窗口右边缘、从标题栏下沿一路到底，
+   只圆左侧两角，右边与窗口边距融为一体。开关就是抽屉左边那只把手：收起时 "<"、展开时 ">"，
+   箭头跟着抽屉一起翻转，进出都走同一条过渡。
+   原「右侧一列短杠 + 悬停分类卡片」整套删掉 —— 用户实机反馈那层浮卡挡内容，只留这一颗按钮。 *@
+@if (!_showTrash && !_initialLoading && _filter != "overlay")
 {
-    <div class="jg-catnav" @onmouseleave="() => _categoryHover = null">
-        <div class="jg-catnav-list">
-            @foreach (var sec in _categorySections)
-            {
-                <button class="jg-catnav-dash @(_categoryHover == sec.Key ? "hot" : "")"
-                        aria-label="@sec.Label"
-                        @onmouseenter="() => HoverCategory(sec.Key)"
-                        @onclick="() => ScrollToCategory(sec.Key)"></button>
-            }
-        </div>
-        @if (_categoryHover is not null && CategorySectionOf(_categoryHover) is { } hov)
+    <div class="jg-catnav @(_categoryListOpen ? "open" : "")">
+        <button type="button" class="jg-catnav-open @(_categoryListOpen ? "active" : "")"
+                data-tip='@Loc.T(_categoryListOpen ? "收起分类列表" : "打开分类列表")'
+                aria-label='@Loc.T(_categoryListOpen ? "收起分类列表" : "打开分类列表")'
+                aria-expanded="@(_categoryListOpen ? "true" : "false")" aria-controls="jgCategoryList"
+                @onclick="ToggleCategoryList">
+            <svg class="jg-catnav-chev" viewBox="0 0 24 24" width="18" height="18" fill="none"
+                 stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M14.5 6 8.5 12l6 6" />
+            </svg>
+        </button>
+    </div>
+    @if (_categoryListOpen)
+    {
+        <div class="jg-category-list-overlay" aria-hidden="true" @onclick="CloseCategoryList"></div>
+    }
+    @* 节点一直在 DOM 里（空壳、藏到屏幕右侧外）—— transition 才有稳定的初值，
+       连点开关时 transform 从当前值接着走，不会像「挂了又删」那样闪。
+       内容只在打开期间渲染：分类计数要遍历整份 mod 列表，关着就不该反复算。 *@
+    <aside id="jgCategoryList" class="jg-category-list-panel @(_categoryListOpen ? "open" : "")"
+           role="dialog" aria-labelledby="jgCategoryListTitle" aria-modal="false"
+           aria-hidden="@(_categoryListOpen ? "false" : "true")"
+           tabindex="-1" data-notrans @onkeydown="OnCategoryListKey">
+        @if (_categoryListMounted)
         {
-            <div class="jg-catnav-card">
-                @* 2026-11-10：卡片左边也放分类图标 —— 右侧那根杠只有 14px 线、卡片里原先只有名字，
-                   光看「222」根本记不住是哪个分类（用户实机反馈）。图标 20px 方框 + contain，
-                   跟段头那颗是同一张图、同一套缓存。 *@
-                <div class="jg-catnav-title">
-                    <span class="jg-catnav-icon">
-                        @if (CategoryIconUrl(hov.Key) is { } hovIcon)
-                        {
-                            <img src="@hovIcon" alt="" draggable="false" />
-                        }
-                        else
-                        {
-                            <span class="jg-cat-icon-ph"></span>
-                        }
-                    </span>
-                    <span class="jg-catnav-name">@hov.Label</span>
-                </div>
+            var categories = CategoryListFor(Cfg.Current, _mods, Loc.Lang);
+            <div class="jg-category-list-head">
+                <h2 id="jgCategoryListTitle">@Loc.T("分类列表")<span>@categories.Count</span></h2>
+                <button type="button" class="jg-category-list-close" aria-label='@Loc.T("关闭")' @onclick="CloseCategoryList">
+                    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+                        <path d="m6 6 12 12M18 6 6 18" />
+                    </svg>
+                </button>
+            </div>
+            <div class="jg-category-list-body">
+                @foreach (var category in categories)
+                {
+                    var key = category.Key;
+                    <button type="button" class="jg-category-list-item" @key="key" data-category-key="@key"
+                            data-tip='@Loc.T("点击定位此分类")'
+                            @onclick="() => SelectCategoryFromList(key)">
+                        <span class="jg-category-list-icon">
+                            @if (CategoryIconUrl(key) is { } icon)
+                            {
+                                <img src="@icon" alt="" draggable="false" loading="lazy" />
+                            }
+                            else
+                            {
+                                <span class="jg-cat-icon-ph"></span>
+                            }
+                        </span>
+                        <span class="jg-category-list-name">@category.Label</span>
+                        <span class="jg-category-list-count">@Loc.F("{0} 个 MOD", category.Count)</span>
+                    </button>
+                }
             </div>
         }
-    </div>
+    </aside>
 }
 
 @* ── 批量操作悬浮条（左键多选后出现）── *@
@@ -1290,11 +1527,14 @@
 @if (!_showTrash && _filter == "overlay" && _overlaySelected.Count > 0)
 {
     var ovSel = SelectedOverlayGroups();
-    var ovAnyOn = ovSel.Any(g => g.AnyOn);
+    @* 属于别的版本的包不参与启停/更新：这一版没有它的宿主，点了只会报错。
+       删除照旧可用 —— 切走再也不回去的人需要能把旧账清掉。 *@
+    var ovAct = ovSel.Where(g => !g.Foreign).ToList();
+    var ovAnyOn = ovAct.Any(g => g.AnyOn);
     @* 失效的也算"可以启用"：对它们点启用就是按留的副本重新盖一次（见 BatchSetOverlayEnabled），
        否则选中一批全开着但已经失效的包时，这颗按钮是灰的，用户没有别的重试入口。 *@
-    var ovAnyOff = ovSel.Any(g => !g.AnyOn || g.Stale > 0);
-    var ovAnyUpd = ovSel.Any(g => g.HasUpdate && g.Rec.NexusModId is int && g.UpdateFileId != 0);
+    var ovAnyOff = ovAct.Any(g => !g.AnyOn || g.Stale > 0);
+    var ovAnyUpd = ovAct.Any(g => g.HasUpdate && g.Rec.NexusModId is int && g.UpdateFileId != 0);
     <div class="jg-batchbar-anchor">
     <div class="jg-batchbar">
         <span class="jg-batchbar-count">@Loc.F("已选择 {0} 个", ovSel.Count)</span>
@@ -1372,7 +1612,7 @@
                     <div class="jg-profile-item @(!_categoryNewOpen && CommonCategory() == c ? "active" : "")">
                         @* 2026-11-10：每行前面带分类图标（默认小鸡），点图标就地换 —— 不用先加进去再回头改 *@
                         @CatIconButton(c, "jg-cat-icon-row")
-                        <button class="jg-profile-name" @onclick="() => AssignSelectedCategory(c)">@c</button>
+                        <button class="jg-profile-name" data-notrans @onclick="() => AssignSelectedCategory(c)">@CategoryLabel(c)</button>
                         <button class="jg-profile-del" data-tip='@Loc.T("删除这个分类（mod 回到未分类，不删 mod）")'
                                 aria-label='@Loc.T("删除这个分类")'
                                 @onclick="() => DeleteCategory(c)">×</button>
@@ -1439,7 +1679,7 @@
                     var cc = c;
                     <div class="jg-profile-item @(!_localPackNewOpen && string.Equals(_localPackCat, cc, StringComparison.OrdinalIgnoreCase) ? "active" : "")">
                         @CatIconButton(cc, "jg-cat-icon-row")
-                        <button class="jg-profile-name" @onclick="() => PickLocalPackCat(cc)">@cc</button>
+                        <button class="jg-profile-name" data-notrans @onclick="() => PickLocalPackCat(cc)">@CategoryLabel(cc)</button>
                     </div>
                 }
             </div>
@@ -1677,6 +1917,12 @@
                                     {
                                         <div style="font-size:11px;opacity:.5;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">@u</div>
                                     }
+                                    @* 归因：这个依赖是谁写的 manifest。「它没出现在 SMAPI 报错里，凭什么缺它」
+                                       这个问题只能靠这一行回答 —— 报错里说的是依赖方的名字，不是它的。 *@
+                                    @if (NeedersText(u) is { Length: > 0 } needers)
+                                    {
+                                        <div style="font-size:11px;opacity:.62;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">@needers</div>
+                                    }
                                 </div>
                             </div>
                         }
@@ -1861,6 +2107,14 @@
     private void ToggleTrash()
     {
         _showTrash = !_showTrash;
+        // 分类抽屉只在 Mod 管理视图存在：切走时把状态一起归零，切回来不会剩下一只 ">" 把手。
+        if (_showTrash)
+        {
+            _categoryListOpen = false;
+            _categoryListMounted = false;
+            _categoryListFocusPending = false;
+            _catListRev++;
+        }
         if (_showTrash)
         {
             // 每次切入都快速校验目录签名；未变化时 TrashService 直接回内存缓存，不递归扫文件。
@@ -2142,6 +2396,18 @@
 
     /// <summary>过旧版本（1.0/1.1 等）：没有 GitHub 一键包，按钮只链到 Nexus。</summary>
     private bool SmapiUnsupported => UpdateService.IsSmapiUnsupported(_gameVer ?? Updater.GetGameVersion(Cfg.Current.GamePath));
+
+    /// <summary>v1.6.14：游戏目录到底定没定 —— 空态要靠它区分「一个 mod 都没装」和
+    /// 「还不知道去哪儿读 mod」。目录被移走/改名也算没定位（Scan 只会返回空列表，
+    /// 光看 _mods.Count 分不出来）。</summary>
+    private bool GameLocated
+    {
+        get
+        {
+            var p = Cfg.Current.GamePath;
+            return !string.IsNullOrWhiteSpace(p) && System.IO.Directory.Exists(p);
+        }
+    }
 
     /// <summary>v1.1.8：已装 SMAPI 是否已落在推荐的大版本线上（3.7.3 vs 3.7 算匹配；4.x vs 3.x 不匹配）。</summary>
     private static bool SmapiMatchesRecommend(string installed, string recommended)
@@ -2776,7 +3042,10 @@
         ("enabled",   "已启用"),
         ("disabled",  "已禁用"),
         ("updatable", "可更新"),
-        ("missing",   "缺依赖"),
+        // v1.10.x：从「缺依赖」改叫「跑不起来」。这一栏早就装了四档（缺依赖 / 依赖被禁 /
+        // 依赖没加载 / 自身不兼容），只写「缺依赖」会让人对着 AeroCore 问「它缺哪门子依赖」——
+        // 实机 2026-11-15 用户原话就是「这个 mod 没出现在报错里，却显示缺少此依赖」。
+        ("missing",   "无法加载"),
         // 这条不叫"失效"：它含的是 SMAPI 清单给的维护状态（需非官方版/有替代版/已过期…），
         // 实测这些 mod 大多照样被 SMAPI 正常加载，叫"失效"会让人以为不能用。
         ("broken",    "维护存疑"),
@@ -2789,7 +3058,7 @@
     private string? FilterTip(string key) => key switch
     {
         "broken" => Loc.T("SMAPI 兼容性清单给的维护状态（需非官方版 / 有替代版 / 已失效 / 已过期 / 作者弃养）"),
-        // 「缺依赖」不再给提示：那句子太长，横在筛选条上方挡视线，标签本身已经说清了
+        "missing" => Loc.T("依赖缺失 / 被禁 / 过旧，或版本不适用"),
         _ => null,
     };
 
@@ -2797,6 +3066,74 @@
     /// 结果平铺 —— 否则「可更新 2」还要先躲开一堆分类段头才看得见那两行。
     /// v1.9.x：覆盖包同样是"找东西"的视图，而且它压根不是 ModEntry，不能进分类分段。</summary>
     private bool IsStatusFilter => _filter is "updatable" or "missing" or "broken" or "overlay";
+
+    /// <summary>「这一行在 SMAPI 那边会不会因依赖问题被跳过」—— 筛选与计数共用一条判据。
+    /// <para>v1.10.x：把「依赖被禁用」并进来。实机 2026-11-15：用户关掉 70 个 mod（含 SpaceCore、
+    /// Json Assets、Farm Type Manager、Custom Companions、Shop Tile Framework 等框架），
+    /// SMAPI 因此跳过 25 个依赖方，而「缺依赖」筛出来只剩 1 条 —— 其余 24 条的依赖在磁盘上确实
+    /// 装着，只是关着，而 SMAPI 对「关掉的依赖」和「没装的依赖」处置完全一样。</para>
+    /// <para>「上次启动被 SMAPI 跳过」也在内：不兼容、前置加载失败这两类从 manifest 上看不出来，
+    /// 只能拿日志对账（见 SmapiLoadReport）。</para>
+    /// <para>v1.10.x+：<b>禁用态的行一律不算</b>。SMAPI 压根没看它们（没进加载队列，就不会出现在
+    /// 「Skipped mods」里），拿这一行的依赖问题去指控等于凭空造一条 —— 实机 2026-11-15 用户报
+    /// 「这个 mod 没出现在报错里，却显示缺少此依赖」，就是 21 条禁用态行把「缺依赖」从 11 撑到 20+。
+    /// 行内仍照常写红字（一旦启用就会踩），只是不进筛选、不计数。</para></summary>
+    private bool HasDepProblem(ModEntry m)
+        => !m.Disabled
+           && (MissingDeps(m).Count > 0
+               || DisabledDeps(m).Count > 0
+               || StaleDeps(m).Count > 0
+               || NotLoadedDeps(m).Count > 0
+               || SmapiTooOldNeed(m) is not null
+               || LastRunSkip(m) is not null);
+
+    /// <summary>「这次跑不起来」的行按<b>出路</b>分档 —— 横幅上的几行就是这几个数。
+    /// <para>必须互斥：同一行同时缺依赖 + 上游没加载的情况很常见，若各档各算一遍，
+    /// 用户把横幅上的数加一遍会发现比筛选栏那个总数还多（实机 2026-11-15 就踩过
+    /// 「缺依赖 12 但横幅写 1」的反向版本 —— 数字对不上，整块提示就没人信了）。
+    /// 优先级按「能不能动手」排：去装 &gt; 去开 &gt; 去换版本 &gt; 只能放弃。</para></summary>
+    private enum DepRowKind { None, Missing, DisabledDep, NotLoaded, SelfBroken, SmapiOld }
+
+    private DepRowKind DepRowKindOf(ModEntry m)
+    {
+        if (m.Disabled) return DepRowKind.None;
+        if (MissingDeps(m).Count > 0 || StaleDeps(m).Count > 0) return DepRowKind.Missing;
+        if (DisabledDeps(m).Count > 0) return DepRowKind.DisabledDep;
+        if (NotLoadedDeps(m).Count > 0) return DepRowKind.NotLoaded;
+        // 剩下「日志点名跳过、但依赖这边一条都对不上」的：自身不兼容 / DLL 不在 / 上游断了。
+        // 这几条从磁盘上永远看不出来，却是上面那一串的根 —— 必须单独有个数，否则
+        // 12 行里有 5 行在横幅上找不到归属。
+        if (LastRunSkip(m) is not null) return DepRowKind.SelfBroken;
+        if (SmapiTooOldNeed(m) is not null) return DepRowKind.SmapiOld;
+        return DepRowKind.None;
+    }
+
+    /// <summary>横幅的六个数（总 / 缺依赖 / 依赖被禁 / 依赖没加载 / 自身跑不起来 / SMAPI 太旧）。
+    /// 分档要遍历全表 ×（缺依赖集合 + 禁用集合 + 日志匹配），一次渲染会被横幅和筛选栏问好几遍，
+    /// 所以算一次记住 —— 失效点只有两处：重扫（<c>ReindexMods</c>）与日志重读
+    /// （<c>RebuildNotLoadedIndex</c>）。</summary>
+    private (int Total, int Missing, int Off, int Dead, int Self, int SmapiOld)? _depSummaryCache;
+
+    private (int Total, int Missing, int Off, int Dead, int Self, int SmapiOld) DepSummary
+    {
+        get
+        {
+            if (_depSummaryCache is { } hit) return hit;
+            int miss = 0, off = 0, dead = 0, self = 0, old = 0;
+            foreach (var m in _mods)
+                switch (DepRowKindOf(m))
+                {
+                    case DepRowKind.Missing: miss++; break;
+                    case DepRowKind.DisabledDep: off++; break;
+                    case DepRowKind.NotLoaded: dead++; break;
+                    case DepRowKind.SelfBroken: self++; break;
+                    case DepRowKind.SmapiOld: old++; break;
+                }
+            var r = (miss + off + dead + self + old, miss, off, dead, self, old);
+            _depSummaryCache = r;
+            return r;
+        }
+    }
 
     /// <summary>已装 UniqueID 集合（v1.2.3：指向 ReindexMods 维护的缓存，不再每次访问全表重建）。</summary>
     private HashSet<string> InstalledUids => _installedUids;
@@ -2818,8 +3155,8 @@
                     // v1.1.4：缺依赖筛选 —— 含 ContentPackFor 宿主缺失（SMAPI 同样会 Skipped）
                     // 版本过旧的那批也在这里：SMAPI 对两者的处置是同一条（依赖方不加载）
                     // v1.9.x：manifest 要的 SMAPI 比本机新的也归这里 —— 同样是整条跳过
-                    q = q.Where(m => MissingDeps(m).Count > 0 || StaleDeps(m).Count > 0
-                        || SmapiTooOldNeed(m) is not null);
+                    // v1.10.x：依赖被禁用、日志里上次启动被跳过，一并算「跑不起来的依赖问题」
+                    q = q.Where(HasDepProblem);
                     break;
                 case "broken":
                     q = q.Where(IsBroken);
@@ -2858,8 +3195,7 @@
         "enabled" => CountRows(_mods.Where(m => !m.Disabled)),
         "disabled" => CountRows(_mods.Where(m => m.Disabled)),
         "updatable" => CountRows(_mods.Where(IsUpdatable)),
-        "missing" => CountRows(_mods.Where(m => MissingDeps(m).Count > 0 || StaleDeps(m).Count > 0
-            || SmapiTooOldNeed(m) is not null)),
+        "missing" => CountRows(_mods.Where(HasDepProblem)),
         "broken" => CountRows(_mods.Where(IsBroken)),
         "overlay" => AllOverlayGroups().Count,
         _ => 0,
@@ -3044,6 +3380,12 @@
         public string? NewVersion { get; init; }
         /// <summary>N 网那条新 MAIN 的 fileId —— 「更新」按钮直接按它装，不走"最新 MAIN"再猜一次。</summary>
         public long UpdateFileId { get; init; }
+        /// <summary>非 null = 这个包是 <b>别的游戏版本</b>装的（值就是那个版本号）。
+        /// <para>Mods\ 整包按版本换，覆盖文件住在宿主目录里，所以它跟着版本走 —— 切走之后
+        /// 宿主不在了，账还在。这类包不是"失效"，只是不在这场版本里：不能报警、不能重盖，
+        /// 也不该出现在红点里（实机 2026-11-15：切到 1.6.14 后 12 个汉化包全红）。</para></summary>
+        public string? ForeignVersion { get; init; }
+        public bool Foreign => ForeignVersion is not null;
     }
 
     /// <summary>覆盖包全局分组（跨宿主）。<see cref="OverlayGroups"/> 是它在「某个宿主」上的切片。
@@ -3053,20 +3395,28 @@
     private IReadOnlyList<OverlayGroup> AllOverlayGroups()
     {
         if (_overlayCache is not null && _overlayCacheRev == _overlayRev) return _overlayCache;
+        // 版本口径只取一次：覆盖包判「属于哪一版」用它，跟 Mods 行那条隔离规则同一把尺子。
+        var curVer = ModService.NormalizeGameVersion(UpdateService.ReadLocalGameVersion(Cfg.Current.GamePath));
         var list = Cfg.Current.Overlays
             .GroupBy(kv => (Host: ModService.NormalizeOverlayHost(kv.Value.Host),
                             Slot: ModService.OverlaySlotOf(kv.Key)))
             .Select(g =>
             {
                 var first = g.First().Value;
+                // 整组都属于别的版本才算外来 —— 同一个文件上可能挂着两版的账。
+                var foreign = g.All(kv => ModService.OverlayFromOtherVersion(kv.Value, curVer));
                 var baseRec = new OverlayGroup(
                     first.Host,
                     g.Key.Slot,
                     g.Select(kv => kv.Key).OrderBy(k => k, StringComparer.OrdinalIgnoreCase).ToList(),
                     first,
                     g.Any(kv => kv.Value.Enabled),
-                    g.Count(kv => _overlayHealth.StaleKeys.Contains(kv.Key)));
-                return _overlayUpdates.TryGetValue(g.Key.Slot, out var up) && up.Has
+                    foreign ? 0 : g.Count(kv => _overlayHealth.StaleKeys.Contains(kv.Key)))
+                {
+                    ForeignVersion = foreign ? ModService.NormalizeGameVersion(first.GameVersion) : null,
+                };
+                // 宿主不在这一版的 Mods 里，就没有"装新版"这回事 —— 别给一个点下去必然失败的按钮
+                return !foreign && _overlayUpdates.TryGetValue(g.Key.Slot, out var up) && up.Has
                     ? baseRec with { HasUpdate = true, NewVersion = up.Ver, UpdateFileId = up.FileId }
                     : baseRec;
             })
@@ -3110,11 +3460,26 @@
         var sections = new List<OverlaySection>();
         var portraits = new List<OverlayGroup>();
         var orphans = new List<OverlayGroup>();
+        // 别的版本装的包单独成段（按版本分）：它们既不是"失效"，也不是"宿主被你删了"，
+        // 塞进「未安装宿主 mod」只会让整页看着像出了事。
+        var foreigns = new Dictionary<string, List<OverlayGroup>>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var grp in AllOverlayGroups()
                      .GroupBy(g => ModService.NormalizeOverlayHost(g.Host), StringComparer.OrdinalIgnoreCase))
         {
             var items = grp.ToList();
+            var foreignItems = items.Where(g => g.Foreign).ToList();
+            if (foreignItems.Count > 0)
+            {
+                foreach (var fg in foreignItems)
+                {
+                    var ver = fg.ForeignVersion ?? "";
+                    if (!foreigns.TryGetValue(ver, out var bucket)) foreigns[ver] = bucket = new List<OverlayGroup>();
+                    bucket.Add(fg);
+                }
+                items = items.Where(g => !g.Foreign).ToList();
+                if (items.Count == 0) continue;
+            }
             if (grp.Key.Length > 0 && HostIndex().TryGetValue(grp.Key, out var m))
             {
                 // 段内顺序沿用 AllOverlayGroups 的「失效 → 新版 → 名字」，GroupBy 保序
@@ -3145,6 +3510,9 @@
         }
         Add("portrait", LocService.Tr("头像"), null, portraits, true);
         Add("nohost", LocService.Tr("未安装宿主 mod"), null, orphans, true);
+        // 外来的放在最后：要处理的东西在前面，这里只是"它们在，但不在这一版"
+        foreach (var (ver, items) in foreigns.OrderByDescending(kv => kv.Key, StringComparer.OrdinalIgnoreCase))
+            Add("v:" + ver, LocService.Tf("属于 {0} 的覆盖包", ver), null, items, true);
         return sections;
     }
 
@@ -3199,8 +3567,9 @@
     private void InvalidateOverlayCache() => _overlayRev++;
 
     /// <summary>筛选按钮上那颗红点的依据：有失效的，或者有新版本的。
-    /// <para>只算「包」不算文件：一个汉化重打包上百年逐文件记录，按条数报会把 1 个包说成 146。</para></summary>
-    private int OverlayAttentionCount => AllOverlayGroups().Count(g => g.Stale > 0 || g.HasUpdate);
+    /// <para>只算「包」不算文件：一个汉化重打包上百年逐文件记录，按条数报会把 1 个包说成 146。</para>
+    /// <para>属于其它版本的包不算：它们在这一版本来就没宿主，红点点亮只会让人以为包坏了（实机 2026-11-15）。</para></summary>
+    private int OverlayAttentionCount => AllOverlayGroups().Count(g => !g.Foreign && (g.Stale > 0 || g.HasUpdate));
 
     /// <summary>覆盖包的「有没有新版」。
     /// <para>与 Mods 行不同：覆盖包不在 <c>Mods\</c> 里，没有 <see cref="ModEntry"/>，
@@ -3473,8 +3842,13 @@
 
     private async Task BatchSetOverlayEnabled(bool disabled)
     {
-        var groups = SelectedOverlayGroups();
-        if (groups.Count == 0) return;
+        var groups = SelectedOverlayGroups().Where(g => !g.Foreign).ToList();
+        if (groups.Count == 0)
+        {
+            _ = JS.InvokeVoidAsync("junigridJs.toast",
+                LocService.Tr("选中的覆盖包都属于其它游戏版本 —— 当前版本没有它们的宿主，切回那一版才能启停"), "err");
+            return;
+        }
 
         var ok = 0;
         var reapplied = 0;
@@ -3761,7 +4135,7 @@
         {
             "unofficial" => Loc.T("官方版没跟上当前游戏版本，社区出了非官方跟进版"),
             "workaround" => Loc.T("原版有已知问题，社区给了替代版本"),
-            "broken"     => Loc.T("社区兼容性库判定它在当前游戏版本上跑不起来"),
+            "broken"     => Loc.T("社区兼容性库判定它在当前游戏版本上无法加载"),
             "obsolete"   => Loc.T("游戏本体已经实现了，这个 mod 不再需要"),
             "abandoned"  => Loc.T("作者已弃养，将来大概率跟不上新版本"),
             _            => Loc.T("社区兼容性库判定这个 mod 在当前游戏版本上有问题"),
@@ -3942,6 +4316,12 @@
     private void SetFilter(string key)
     {
         _filter = key;
+        // 切筛选 = 整页内容换掉：抽屉当场收起，不播那 300ms 滑出（下面的列表已经变了，
+        // 再留着它只会盖住新内容）。_catListRev++ 同时作废还在等卸载的收尾任务。
+        _categoryListOpen = false;
+        _categoryListMounted = false;
+        _catListRev++;
+        _categoryListFocusPending = false;
         // 覆盖包的勾选只在覆盖包视图里有效：切走就清掉，免得底部批量条跟着跑到别的视图里。
         if (key != "overlay") _overlaySelected.Clear();
         // v1.1.4：切换过滤后由 OnAfterRender 的 animatedListInit 重绑新行观察器。
@@ -3954,6 +4334,11 @@
     // v0.36.0：mod 列表 AnimatedList 滚动效果（进入视口 scale/opacity + 顶底渐变）
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
+        if (_categoryListFocusPending && _categoryListOpen)
+        {
+            _categoryListFocusPending = false;
+            try { await JS.InvokeVoidAsync("junigridJs.focusElement", "#jgCategoryList"); } catch { }
+        }
         // v1.3.51：把长按拖拽的回调交给 JS（只需一次；JS 那边自己挂 pointer 监听）。
         // 放在最前 —— 下面渐进渲染那段每帧都会提前 return，排在它后面要等全部行画完才轮到。
         // ⚠ 以前这里 catch 空吞：WebView2 若缓存了旧版 JS（index.html 的 ?v= 没顶掉），
@@ -4195,17 +4580,27 @@
 
     /// <summary>已装、但当前被禁用的依赖 —— MissingDeps 的另一半。缺依赖是"没装"，
     /// 这条是"装着但关了"，两种在 SMAPI 那边的结果一样（依赖方被 Skipped），
-    /// 但在启动器这边的出路完全不同：一个要去装，一个只要拨开关。</summary>
+    /// 但在启动器这边的出路完全不同：一个要去装，一个只要拨开关。
+    /// <para>v1.10.x：结果按 folder 缓存，随 ReindexMods 失效 —— 列表行、筛选、计数
+    /// 每次渲染都要问一遍，而它原本每次都重建 List + 查集合。</para></summary>
     private List<string> DisabledDeps(ModEntry m)
     {
-        if (_disabledUids.Count == 0) return new List<string>();
-        var deps = m.Dependencies.Concat(m.ContentPackIds).ToList();
-        if (deps.Count == 0) return new List<string>();
-        var uids = InstalledUids;
-        return deps.Where(d => !string.IsNullOrWhiteSpace(d)
-                && uids.Contains(d) && _disabledUids.Contains(d))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
+        if (_disabledDepsCache.TryGetValue(m.Folder, out var cached)) return cached;
+        var result = new List<string>();
+        if (_disabledUids.Count > 0)
+        {
+            var uids = InstalledUids;
+            foreach (var d in m.Dependencies.Concat(m.ContentPackIds))
+            {
+                var dep = d?.Trim();
+                if (string.IsNullOrWhiteSpace(dep)) continue;
+                if (!uids.Contains(dep) || !_disabledUids.Contains(dep)) continue;
+                if (result.Any(x => x.Equals(dep, StringComparison.OrdinalIgnoreCase))) continue;
+                result.Add(dep);
+            }
+        }
+        _disabledDepsCache[m.Folder] = result;
+        return result;
     }
 
     /// <summary>点「依赖被禁」标签 → 把那些被禁用的依赖启用。走正常启用路径
@@ -4270,13 +4665,37 @@
         return list;
     }
 
-    /// <summary>这一行需要动手的依赖 = 没装的 + 装得不够新的（一键安装那条通道两者同走）。</summary>
+    /// <summary>这一行需要动手的依赖 = 没装的 + 装得不够新的（一键安装那条通道两者同走）。
+    /// 「同页分支」除外：解析到的页面当前主文件就是本机已装的那份（UID 不同），再下也是
+    /// 同一个包 —— 横幅计数、确认弹窗、行菜单都从这份清单取数，剔除后三处口径一致；
+    /// 行内红字照旧写明原因（MissingDeps 不受影响，筛选与总数仍算它）。</summary>
     private List<string> DepsToInstall(ModEntry m)
     {
         var all = new List<string>(MissingDeps(m));   // 拷贝：MissingDeps 返回的是缓存里那个列表本体
+        all.RemoveAll(u => SamePageFork(u) is not null);
         foreach (var s in StaleDeps(m))
             if (!all.Contains(s.Uid, StringComparer.OrdinalIgnoreCase)) all.Add(s.Uid);
         return all;
+    }
+
+    /// <summary>这个依赖是谁要的（只算已启用的行，最多点名两个）。安装弹窗里那行小字。
+    /// <para>用户实机问过：「这个 mod 根本没出现在 SMAPI 报错里，凭什么说缺它」。
+    /// 原因是 SMAPI 的 Skipped 块写的是<b>依赖方</b>的名字（「杜林休息农舍装饰区…需要
+    /// aedenthorn.CustomWallsAndFloors」），从不单独点名那个没装的依赖 —— 所以必须在弹窗里
+    /// 把"谁写的这条 manifest"写出来，否则这条依赖看起来就像是凭空冒出来的。</para></summary>
+    private string NeedersText(string uid)
+    {
+        var names = new List<string>();
+        foreach (var m in _mods)
+        {
+            if (m.Disabled) continue;
+            if (!DepsToInstall(m).Contains(uid, StringComparer.OrdinalIgnoreCase)) continue;
+            names.Add(string.IsNullOrWhiteSpace(m.Name) ? m.Folder : m.Name.Trim());
+        }
+        if (names.Count == 0) return "";
+        return names.Count > 2
+            ? Loc.F("{0} 等 {1} 个 mod 需要它", string.Join("、", names.Take(2)), names.Count)
+            : Loc.F("{0} 需要它", string.Join("、", names));
     }
 
     // ------------------------------------------------------------------
@@ -4446,6 +4865,10 @@
             return Loc.F("{0}（本机 {1}，需要 ≥{2}）", shown, stale.Have, stale.Need);
         }
         if (_depNames.TryGetValue(uid, out var di) && !string.IsNullOrWhiteSpace(di.Name)) return di.Name!;
+        // 「装着但被禁用」的依赖不走网络解析（它不是"缺"，没有搜索的必要），
+        // 名字直接取本机条目 —— 否则行里只能显示 Esca.FarmTypeManager 这种串。
+        if (_nameByUid.TryGetValue(uid, out var localName) && !string.IsNullOrWhiteSpace(localName))
+            return localName;
         if (ModService.BundledParentOf(uid, InstalledUids) is string parentUid)
         {
             var pe = _mods.FirstOrDefault(m => string.Equals(m.UniqueID.Trim(), parentUid,
@@ -4474,15 +4897,212 @@
         }
     }
 
-    /// <summary>横幅那行的「影响 N 个 mod」—— 只算依赖问题（没装 / 版本过旧），因为横幅的按钮
-    /// 是「一键安装依赖」，修不了 SMAPI 太旧的那批。筛选栏的计数另算一路（见 CountFor）。</summary>
-    private int MissingAffectedMods => _mods.Count(m => MissingDeps(m).Count > 0 || StaleDeps(m).Count > 0);
+    /// <summary>「依赖装着、启用着、上次却没加载起来」的 UID（去重）。
+    /// v1.10.x+：横幅上那一行已经撤了（<b>没有按钮</b>，只能换版本或修好它本身），
+    /// 只剩 <see cref="DepSummary"/> 里的 <c>Dead</c> 那个数进总数、进标题的悬停拆账。</summary>
+    private List<string> NotLoadedDepUids()
+    {
+        var set = new List<string>();
+        foreach (var m in _mods)
+        {
+            if (m.Disabled) continue;
+            foreach (var (uid, _) in NotLoadedDeps(m))
+                if (!set.Contains(uid, StringComparer.OrdinalIgnoreCase)) set.Add(uid);
+        }
+        return set;
+    }
+
+    /// <summary>全部「装着、被禁用、且确实有已启用 mod 依赖它」的 UID（去重）。
+    /// 横幅那句「另有 N 个依赖被禁用」与「全部启用」共用这一份清单。</summary>
+    private List<string> AllDisabledDepUids()
+    {
+        var set = new List<string>();
+        foreach (var m in _mods)
+        {
+            if (m.Disabled) continue;
+            foreach (var u in DisabledDeps(m))
+                if (!set.Contains(u, StringComparer.OrdinalIgnoreCase)) set.Add(u);
+        }
+        return set;
+    }
+
+    private bool _depEnabling;
+
+    /// <summary>横幅「全部启用」：把这些依赖的<b>条目</b>批量启用。
+    /// 走 <see cref="BatchSetDisabled"/>（后台线程 + 改名 + 缓存迁移），
+    /// 不逐个调 <see cref="SetDisabled"/> —— 每调一次都要重扫/重建索引，十几个依赖就是十几轮。</summary>
+    private async Task EnableAllDisabledDeps()
+    {
+        if (_depEnabling) return;
+        var uids = AllDisabledDepUids();
+        if (uids.Count == 0) return;
+
+        var folders = new List<string>();
+        foreach (var uid in uids)
+        {
+            var dep = _mods.FirstOrDefault(x => !string.IsNullOrWhiteSpace(x.UniqueID)
+                && x.UniqueID.Trim().Equals(uid, StringComparison.OrdinalIgnoreCase));
+            // 没有条目的 UID = 捆绑包里不单独成行的子包：它随顶层一起开关，
+            // 而那个顶层本身就是列表里的一行（且是禁用态），下面那轮按包名兜住。
+            if (dep is { Disabled: true }) folders.Add(dep.Folder);
+        }
+        // 隐藏子包兜底：顶层被禁用时子包 UID 不在 _mods 里，但它所属的顶层行在 ——
+        // 按「UID 以某顶层包的 UID 为前缀」把顶层也带上，一次改完就都开了。
+        foreach (var m in _mods)
+        {
+            if (!m.Disabled || string.IsNullOrWhiteSpace(m.UniqueID)) continue;
+            var own = m.UniqueID.Trim();
+            if (folders.Contains(m.Folder, StringComparer.OrdinalIgnoreCase)) continue;
+            if (uids.Any(u => u.StartsWith(own + ".", StringComparison.OrdinalIgnoreCase)
+                              || own.StartsWith(u + ".", StringComparison.OrdinalIgnoreCase)))
+                folders.Add(m.Folder);
+        }
+
+        folders = folders.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        if (folders.Count == 0)
+        {
+            ShowNotice("err", Loc.T("这些依赖都是捆绑包里不单独成行的子包 —— 直接在列表里启用它所属的那个包即可"));
+            return;
+        }
+
+        _depEnabling = true;
+        try
+        {
+            await BatchSetDisabled(false, folders);
+        }
+        finally
+        {
+            _depEnabling = false;
+        }
+    }
 
     /// <summary>manifest 声明的最低 SMAPI 版本高于本机实际会加载的版本 → 返回它要求的那一串。
     /// SMAPI 对这种情况的处置与缺前置一样：整条 Skipped（实机 2026-10-29：StardewUI 要 4.5.2、
     /// 实际跑 4.5.1）。判据在 <see cref="DependencyRules.SmapiTooOldNeed"/>，测试舱直接跑它。</summary>
     private string? SmapiTooOldNeed(ModEntry m)
         => DependencyRules.SmapiTooOldNeed(m.MinApiVersion, _smapiVersion);
+
+    // ------------------------------------------------------------------
+    // v1.10.x：拿上一次启动的 SMAPI 日志对账
+    // ------------------------------------------------------------------
+    /// <summary>上次启动 SMAPI 说了什么「这些 mod 没加载进去」。只读不写；日志变了（mtime/长度）
+    /// 才重新解析。<see cref="SmapiLoadReport.Empty"/> = 没有日志或读不到，界面一律不指控。</summary>
+    private SmapiLoadReport _loadReport = SmapiLoadReport.Empty;
+
+    /// <summary>日志「读过了」—— 无论读到没有、读成没读成。横幅等这个标记再画：
+    /// 日志是异步读的，首帧那份空报告会把数字算小，画出来就是一帧「1 个 mod 跑不起来」再跳成 12。</summary>
+    private bool _loadReportChecked;
+
+    /// <summary>上次启动被 SMAPI 跳过的行：UniqueID → 跳过原因。依赖判据的<b>第四档</b>靠它。
+    /// <para>实机 2026-11-15：SMAPI 跳过 11 条，面板「缺依赖」只报 1 条 —— 另外 6 条（Warp Network、
+    /// Durin's Rest 全家）的前置在磁盘上装着、启用着，只是<b>它自己这次也没起来</b>
+    /// （AeroCore 不兼容当前游戏版本、AntiSocial NPCs 的 DLL 不在）。这一环在 manifest 上
+    /// 一个字都看不出来，只能拿日志对账。</para></summary>
+    private Dictionary<string, SmapiLoadReport.Skip> _notLoadedByUid = new(StringComparer.OrdinalIgnoreCase);
+
+    private readonly Dictionary<string, List<(string Uid, SmapiLoadReport.Skip Skip)>> _notLoadedDepsCache
+        = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>拿日志重算「哪些已启用的行上次没加载起来」。<see cref="_loadReport"/> 或 mod 列表一变就要重来。</summary>
+    private void RebuildNotLoadedIndex()
+    {
+        var map = new Dictionary<string, SmapiLoadReport.Skip>(StringComparer.OrdinalIgnoreCase);
+        if (_loadReport.Any)
+            foreach (var m in _mods)
+            {
+                if (m.Disabled || string.IsNullOrWhiteSpace(m.UniqueID)) continue;
+                var s = _loadReport.Match(m.Name, m.Version);
+                if (s is not null) map[m.UniqueID.Trim()] = s;
+            }
+        _notLoadedByUid = map;
+        _notLoadedDepsCache.Clear();
+        _depSummaryCache = null;
+        // ⚠ 分组结果也必须作废：它的缓存键是（_mods / 已装 UID / 筛选 / 搜索 / 排序 / 分类版本），
+        // <b>不含日志这一路</b>。而从详情页返回时组件是新建的 —— 首帧 _loadReport 还是 Empty，
+        // 筛选先按「只有 manifest 层面的问题」算出一份结果并缓存；日志 200ms 后到、横幅跟着变成 12，
+        // 列表却命中旧缓存停在 1 行。实机 2026-11-15 用户看到的就是「横幅说 12，列表只有 1 行」。
+        _groupsCache = null;
+    }
+
+    /// <summary>这一行依赖里「装着、启用着、上次却没加载起来」的那批（连同原因）。
+    /// SMAPI 对它们的处置与「没装」完全一样：依赖方整条 Skipped。</summary>
+    private List<(string Uid, SmapiLoadReport.Skip Skip)> NotLoadedDeps(ModEntry m)
+    {
+        if (_notLoadedDepsCache.TryGetValue(m.Folder, out var cached)) return cached;
+        var result = new List<(string Uid, SmapiLoadReport.Skip Skip)>();
+        if (_notLoadedByUid.Count > 0)
+            foreach (var d in m.Dependencies.Concat(m.ContentPackIds))
+            {
+                var dep = d?.Trim();
+                if (string.IsNullOrWhiteSpace(dep)) continue;
+                if (!_notLoadedByUid.TryGetValue(dep, out var skip)) continue;
+                if (result.Any(x => x.Uid.Equals(dep, StringComparison.OrdinalIgnoreCase))) continue;
+                result.Add((dep, skip));
+            }
+        _notLoadedDepsCache[m.Folder] = result;
+        return result;
+    }
+
+    /// <summary>被跳过的原因压成半句话 —— 塞在行内红字里，不能整段搬 SMAPI 原文。</summary>
+    private string SkipShadow(SmapiLoadReport.Skip s) => s.Kind switch
+    {
+        SmapiLoadReport.SkipKind.Incompatible => Loc.T("不兼容当前游戏版本"),
+        SmapiLoadReport.SkipKind.BlockedByDep => Loc.F("它的前置「{0}」也没加载", s.Detail),
+        SmapiLoadReport.SkipKind.MissingDeps => Loc.T("它自己缺前置"),
+        SmapiLoadReport.SkipKind.DllMissing => Loc.F("缺 {0} 文件，装坏了", s.Detail),
+        _ => string.IsNullOrWhiteSpace(s.Detail) ? Loc.T("没能加载") : s.Detail,
+    };
+
+    /// <summary>这一行上次启动是不是被 SMAPI 挡在门外（不兼容 / 前置没加载）。null = 没这事。
+    /// 名字取 manifest 的 Name —— 备注改名时 SMAPI 打印的也是改名后的那个。</summary>
+    private SmapiLoadReport.Skip? LastRunSkip(ModEntry m)
+        => m.Disabled ? null : _loadReport.Match(m.Name, m.Version);
+
+    private async Task RefreshSmapiLoadReportAsync()
+    {
+        var rep = await Task.Run(() => SmapiLoadReport.Load(LauncherService.SmapiLogPath));
+        if (_disposed) return;
+        await InvokeAsync(() =>
+        {
+            _loadReport = rep;
+            // 日志「读过了」（哪怕没有日志、读失败）—— 横幅只在这之后才画。
+            // 否则首帧那张横幅会拿空报告算一遍：写着「1 个 mod 跑不起来」，
+            // 200ms 后跳成 12，看着像程序先误报再纠正（实机 2026-11-15）。
+            _loadReportChecked = true;
+            // 日志换了 ⇒ 「哪些依赖上次没起来」跟着换，否则行内红字会停在上一轮结论上。
+            RebuildNotLoadedIndex();
+            StateHasChanged();
+        });
+    }
+
+    /// <summary>「上次未加载」的说明文案。时间必须带上 —— 它是快照，不是现在的判定。</summary>
+    private string SkipTip(ModEntry m, SmapiLoadReport.Skip s)
+    {
+        var when = _loadReport.LogWriteTime == default
+            ? "" : Loc.F("（{0:MM-dd HH:mm} 那次启动）", _loadReport.LogWriteTime);
+        // 上游已经判死（停更 / 失效 / 过期）的行，不能再说「换一个适配这版游戏的版本」——
+        // 对 AeroCore 这种 2021 年就停更、作者弃养的 mod，这句话等于让人去找一个不存在的版本
+        // （实机 2026-11-15 用户盯着这句问「那我去哪换」，而兼容性库早就写着 abandoned）。
+        var upstreamDead = _smapiPrecheckStatus is not null
+            && _smapiPrecheckStatus.TryGetValue(m.Folder, out var st) && IsBadCompatStatus(st)
+            && st is "abandoned" or "broken" or "obsolete";
+        if (upstreamDead && s.Kind == SmapiLoadReport.SkipKind.Incompatible)
+            return Loc.F("SMAPI 上次启动没加载它{0}：不兼容当前游戏版本，上游也已停更 —— 没有可换的新版，只能停用或换替代",
+                when);
+        return s.Kind switch
+        {
+            SmapiLoadReport.SkipKind.Incompatible
+                => Loc.F("SMAPI 上次启动没加载它{0}：不兼容当前游戏版本，需要换一个适配这版游戏的版本", when),
+            SmapiLoadReport.SkipKind.BlockedByDep
+                => Loc.F("SMAPI 上次启动没加载它{0}：它要的前置「{1}」自己也没加载起来", when, s.Detail),
+            SmapiLoadReport.SkipKind.MissingDeps
+                => Loc.F("SMAPI 上次启动没加载它{0}：缺前置 {1}", when, s.Detail),
+            SmapiLoadReport.SkipKind.DllMissing
+                => Loc.F("SMAPI 上次启动没加载它{0}：安装不完整，manifest 写的「{1}」不在文件夹里（重装这一版）", when, s.Detail),
+            _ => Loc.F("SMAPI 上次启动没加载它{0}：{1}", when, s.Detail),
+        };
+    }
+
 
     /// <summary>uids 为 null = 全部缺失依赖；否则只装这一批（传给确认弹窗与安装管线）。</summary>
     private void AskInstallMissingDeps(List<string>? uids)
@@ -4532,6 +5152,32 @@
             StringComparison.OrdinalIgnoreCase));
         return e?.NexusModId ?? 0;
     }
+
+    /// <summary>缺失依赖的「同页分支」：它解析到的 N 网页面，本机已装着另一个 UID 的 mod，
+    /// 且那一页的当前主文件就是本机装上的那份（安装台账 fileId 与主文件 fileId 逐字相等）
+    /// ⇒ 再下载也是同一个包，满足不了要求的 UID（SMAPI 按 UID 整串精确匹配，无别名机制）。
+    /// 认不出（没解析到页 / 没有台账 / 主文件已换 / 同页并列）一律返回 null，不拦。
+    /// <para>实机 2026-11-16：aedenthorn.CustomWallsAndFloors 与本机已装的
+    /// Platonymous.CustomWallsAndFloors 都解析到 3010 页、名字封面全同 —— 缺的那行看起来
+    /// 就是已装的那行。判据不靠名字相似（那会撞 Spring/Fall 式反例），只靠声明的页号＋台账 fileId。</para></summary>
+    private ModEntry? SamePageFork(string uid)
+    {
+        if (!_depNames.TryGetValue(uid, out var di) || di.ModId is not int page || page <= 0) return null;
+        if (!_installedByPage.TryGetValue(page, out var fork) || fork is null) return null;
+        // 当前主文件 fileId：更新检查查到的优先；没查到就用「我们上次从这一页装的文件」。
+        // 两者都没有 ⇒ 没有证据说主文件还是装的那份，不拦（管线里还有逐字相等的前置闸兜底）。
+        var mainFid = GetState(fork.Folder).RemoteFileId;
+        if (mainFid is null
+            && Cfg.Current.ModInstalledFile.TryGetValue(page.ToString(), out var fidStr)
+            && long.TryParse(fidStr, out var ledgerFid)) mainFid = ledgerFid;
+        return mainFid is long fid && NexusUpdateTruth.IsCurrentMainInstalled(Cfg.Current, fork, page, fid)
+            ? fork : null;
+    }
+
+    /// <summary>同页分支那行的悬停解释：两个 UID 差在哪、为什么下载解不开。</summary>
+    private string ForkTip(string uid, ModEntry fork)
+        => Loc.F("SMAPI 按 UniqueID 精确匹配：需要 {0}，而这一页的主文件就是本机已装的 {1}。重新下载也是同一个包，一键安装已跳过这条依赖。",
+            uid, fork.UniqueID.Trim());
 
     private async Task ConfirmInstallDeps()
     {
@@ -4600,7 +5246,8 @@
                 && _groupsKeyFilter == _filter
                 && _groupsKeySearch == SearchText
                 && _groupsKeySort == _sortMode
-                && _groupsKeyCategoryRev == _categoryRev)
+                && _groupsKeyCategoryRev == _categoryRev
+                && _groupsKeyLanguage == Loc.Lang)
                 return _groupsCache;
 
             var installed = InstalledUids;
@@ -4693,6 +5340,7 @@
             _groupsKeySearch = SearchText;
             _groupsKeySort = _sortMode;
             _groupsKeyCategoryRev = _categoryRev;
+            _groupsKeyLanguage = Loc.Lang;
             // 列表内容变了 ⇒ 从头开始渐进渲染（否则换了筛选还按上一批的行数一次画光）
             // 唯独「启禁/切档刚放开快照」这一次例外：那时行本来就在屏幕上，打回 40 行
             // 会让它们先消失一批、再以补画的方式冒回来 —— 同一次操作闪两下（2026-11-10）。
@@ -4722,6 +5370,7 @@
     private string? _groupsKeySearch;
     private string? _groupsKeySort;
     private int _groupsKeyCategoryRev;
+    private string? _groupsKeyLanguage;
 
     // ── v1.3.29 渐进渲染 ──────────────────────────────────────────────
     // 实测（2026-11-04）：切到 Mods 页 UI 线程被占 344ms，而把列表用搜索框滤成 0 行后
@@ -4832,6 +5481,22 @@
                     Label = meta.Label,
                     Index = meta.Index,
                     Collapsed = _collapsedCats.Contains(c),
+                    HasHeader = true,
+                });
+            }
+            // 2026-11-17：未分类也补一个空段头 —— 抽屉里始终列着「未分类」（CategoryListFor
+            // 无条件补 ""），列表里却没有这一段时，点它像点了个空，也没法把 mod 拖出分类。
+            // 只在 BuildCategorySections 确实登记过空 "" 段（有 mod、但都归了类）时补，
+            // 空列表 / 平铺视图不会凭空多一根 0 个的段头。
+            if (!sections.Any(s => s.Key.Length == 0) && _categorySections.Any(s => s.Key.Length == 0))
+            {
+                var meta = CategorySectionOf("");
+                sections.Add(new CatSection
+                {
+                    Key = "",
+                    Label = meta.Label,
+                    Index = meta.Index,
+                    Collapsed = _collapsedCats.Contains(""),
                     HasHeader = true,
                 });
             }
@@ -5419,6 +6084,8 @@
                 _smapiVersion = Game.ProbeSmapiVersion(Cfg.Current.GamePath, freshRead: true);
                 _svSmapiPath = Cfg.Current.GamePath;
                 _svSmapiVersionCache = _smapiVersion;
+                // 刷新 = 上一轮游戏可能刚跑过，日志对账要跟着重读（进度条那一屏也才有话说）
+                _ = GuardedFireAndForget(RefreshSmapiLoadReportAsync(), "SMAPI 日志对账");
                 _smapiIcon = Game.GetSmapiIconDataUri(Cfg.Current.GamePath, Cfg.Current.SmapiLauncherExe);
                 // v1.1.8：旧版游戏必须查对应 tag，不能刷成 latest 4.x
                 _smapiUpdate = SmapNeedsOld
@@ -5566,6 +6233,8 @@
 
     protected override async Task OnInitializedAsync()
     {
+        // 上一次启动 SMAPI 的跳过清单：后台读日志，别占首帧（它要读 ErrorLogs 里那份 50KB+ 的文本）
+        _ = GuardedFireAndForget(RefreshSmapiLoadReportAsync(), "SMAPI 日志对账");
         // vNext：进页两条路 —— ①有跨页快照（从其它页回来）：直接用快照秒显列表，
         // 磁盘重扫丢到后台，扫完无感替换；②冷启动无快照：shimmer 骨架 + 后台线程扫描。
         if (_svMods is { Count: > 0 } snap)
@@ -5793,12 +6462,22 @@
         _installedUids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         _disabledUids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         _installedVersions = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        _nameByUid = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var m in _mods)
             if (!string.IsNullOrWhiteSpace(m.UniqueID))
             {
                 _installedUids.Add(m.UniqueID.Trim());
                 _installedVersions[m.UniqueID.Trim()] = m.Version ?? "";
+                if (!string.IsNullOrWhiteSpace(m.Name)) _nameByUid[m.UniqueID.Trim()] = m.Name.Trim();
                 if (m.Disabled) _disabledUids.Add(m.UniqueID.Trim());
+            }
+        // 同页分支判定用的页号索引：同一页有多个已装条目时记 null（并列不指认）。
+        _installedByPage = new Dictionary<int, ModEntry?>();
+        foreach (var m in _mods)
+            if (m.NexusModId is int pg && pg > 0 && !string.IsNullOrWhiteSpace(m.UniqueID))
+            {
+                if (_installedByPage.ContainsKey(pg)) _installedByPage[pg] = null;
+                else _installedByPage[pg] = m;
             }
         // 捆绑包里不单独成行的子包：SMAPI 照样加载，所以依赖它不算缺（Enabled 那份进已装集合）；
         // 顶层被禁用时子包一起算禁用 —— 它们是「依赖被禁用」，不是「缺依赖」。
@@ -5811,9 +6490,22 @@
         // v1.2.5：缺失依赖缓存随重扫一并失效（依赖列表与 UID 集合都只在重扫时变化）
         _missingDepsCache.Clear();
         _staleDepsCache.Clear();
+        _disabledDepsCache.Clear();
+        _depSummaryCache = null;
+        // 依赖链第四档（「装着、启用着、上次却没起来」）按新列表重算 —— 启禁用一改，
+        // 谁是「已启用但被日志跳过」也跟着变。
+        RebuildNotLoadedIndex();
         var __rB = __rsw.ElapsedMilliseconds;
+        // 分类 / 安装账 / 备注这些「描述这一版 Mods 里有什么」的账按游戏版本分账
+        // （见 ModsIndexStore）。重扫是最稳的检查点：切完版本还没重启、Steam 在外头
+        // 把本体更新了，都在这里接住 —— 换过账就落一次盘。
+        if (ModsIndexStore.SyncIfVersionChanged(Cfg.Current)) Cfg.Save(Cfg.Current);
         // 覆盖型包（汉化补丁）的健康度随重扫刷新。绝大多数人一条都没有 → 先短路，
         // 别为了空表去哈希文件。
+        // 先给旧账归版（字段上线前记的账没有版本号，切过版本之后它们会被当成"宿主没了"）。
+        // 只对空版本的那几条动手，归完就没有空的了 —— 之后每轮重扫是空转。
+        if (Cfg.Current.Overlays.Count > 0 && ModService.StampOverlayVersions(Cfg.Current.GamePath, Cfg.Current) > 0)
+            Cfg.Save(Cfg.Current);
         _overlayHealth = Cfg.Current.Overlays.Count > 0
             ? ModService.OverlayHealth(Cfg.Current.GamePath, Cfg.Current)
             : new ModService.OverlayReport(new(), new());
@@ -5858,10 +6550,17 @@
     /// 「装了」与「能加载」是两件事：SMAPI 对禁用依赖照样把依赖方 Skipped，
     /// 而缺依赖判定看不出来 —— 这一集专门用来给那种行打「依赖被禁用」标签。</summary>
     private HashSet<string> _disabledUids = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, List<string>> _disabledDepsCache = new(StringComparer.OrdinalIgnoreCase);
     /// <summary>已装 UniqueID → manifest 里的 Version（ReindexMods 时重建）。
     /// 「装了」与「装得够新」是第三件事：SMAPI 对版本不足的依赖照样 Skipped 依赖方，
     /// 只看 UID 在不在的判据对这条完全静音（实测 完美手册 因 StardewUI 版本过旧被跳过）。</summary>
     private Dictionary<string, string> _installedVersions = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>已装条目按自述的 N 网页面号索引（manifest UpdateKeys），供「同页分支」判定。
+    /// 值 null = 该页有多个已装条目（并列不指认）。随 ReindexMods 重建。</summary>
+    private Dictionary<int, ModEntry?> _installedByPage = new();
+    /// <summary>已装 UniqueID → manifest Name（行内「依赖被禁用」要显示名字而不是裸 UID）。</summary>
+    private Dictionary<string, string> _nameByUid = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, List<StaleDepRow>> _staleDepsCache = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>一条「装了但版本低于要求」的依赖，带上门禁和实际到场的版本号。</summary>
@@ -5937,6 +6636,158 @@
     /// <summary>被折叠的分类（键 = 分类名，"" = 未分类）。只活在本次会话，不落盘。</summary>
     private readonly HashSet<string> _collapsedCats = new(StringComparer.OrdinalIgnoreCase);
     private int _categoryRev;
+    private string CategoryLabel(string category)
+        => ModCategoryUtil.CategoryLabel(Cfg.Current, category, Loc.Lang);
+    private bool _autoCategoryBusy;
+    private bool _categoryListOpen;
+    /// <summary>抽屉内容要不要渲染。关闭时先让抽屉滑出去，300ms 后再把内容摘掉；
+    /// 空壳节点一直留着（见标记处的注释），所以动画不依赖挂载时机。</summary>
+    private bool _categoryListMounted;
+    /// <summary>连点开关：每次开/关自增，作废上一次还没收尾的延迟卸载。</summary>
+    private int _catListRev;
+    private bool _categoryListFocusPending;
+
+    internal static List<(string Key, string Label, int Count)> CategoryListFor(JuniGridConfig cfg,
+        IEnumerable<ModEntry> mods, string language)
+    {
+        var keys = cfg.ModUserCategoryOrder.AsEnumerable().Reverse().Select(c => c ?? "")
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        if (!keys.Contains("")) keys.Add("");
+        var extras = cfg.ModUserCategory.Values.SelectMany(ModCategoryUtil.Split)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Where(c => !keys.Contains(c, StringComparer.OrdinalIgnoreCase))
+            .OrderBy(c => c, StringComparer.OrdinalIgnoreCase).ToList();
+        keys.InsertRange(keys.IndexOf(""), extras);
+        var counts = mods.GroupBy(CategoryKeyOf, StringComparer.OrdinalIgnoreCase)
+            .Select(g => (Category: CategoryIn(cfg.ModUserCategory, g.First()), Count: g.Count()))
+            .GroupBy(g => g.Category, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.Sum(x => x.Count), StringComparer.OrdinalIgnoreCase);
+        return keys.Select(key => (Key: key,
+            Label: key.Length == 0 ? (language == "en" ? "Uncategorized" : "未分类")
+                : ModCategoryUtil.CategoryLabel(cfg, key, language),
+            Count: counts.TryGetValue(key, out var count) ? count : 0)).ToList();
+    }
+
+    private void ToggleCategoryList()
+    {
+        if (_categoryListOpen)
+        {
+            CloseCategoryList();
+            return;
+        }
+        _catListRev++;                  // 上一次关闭还在等 300ms？把它那趟卸载作废
+        _categoryListOpen = true;
+        _categoryListMounted = true;
+        _categoryListFocusPending = true;
+    }
+
+    /// <summary>收起分类抽屉 —— 把手箭头转回 "&lt;"、抽屉向右滑出，300ms 后再摘节点。</summary>
+    private void CloseCategoryList()
+    {
+        _categoryListFocusPending = false;
+        _categoryListOpen = false;      // 把手和面板同时往回收（同一个 300ms transition）
+        if (!_categoryListMounted) return;
+        var rev = ++_catListRev;
+        StateHasChanged();
+        _ = FinishCategoryListCloseAsync(rev);
+    }
+
+    private async Task FinishCategoryListCloseAsync(int rev)
+    {
+        try { await Task.Delay(320); } catch { return; }
+        if (_disposed || rev != _catListRev) return;
+        _categoryListMounted = false;
+        try
+        {
+            await InvokeAsync(StateHasChanged);
+            await JS.InvokeVoidAsync("junigridJs.focusElement", ".jg-catnav-open");
+        }
+        catch { }
+    }
+
+    private void OnCategoryListKey(Microsoft.AspNetCore.Components.Web.KeyboardEventArgs e)
+    {
+        if (e.Key == "Escape") CloseCategoryList();
+    }
+
+    private async Task SelectCategoryFromList(string key)
+    {
+        // 不 await：抽屉慢慢滑出去，页面同时开始滚 —— 等它收完再滚会白白顿 300ms
+        CloseCategoryList();
+        if (_categorySections.Count > 0) await ScrollToCategory(key);
+        else
+        {
+            try { await JS.InvokeVoidAsync("junigridJs.scrollToCategory", "jg-cat-body-flat"); } catch { }
+        }
+    }
+
+    private async Task AutoCategorize()
+    {
+        if (_autoCategoryBusy || _showTrash || _initialLoading) return;
+        var cfg = Cfg.Current;
+        var gamePath = cfg.GamePath;
+        var mods = _mods.ToList();
+        var unclassified = mods.GroupBy(CategoryKeyOf, StringComparer.OrdinalIgnoreCase)
+            .Where(g => g.All(m => CategoryIn(cfg.ModUserCategory, m).Length == 0))
+            .SelectMany(g => g).ToList();
+        if (unclassified.Count == 0)
+        {
+            ShowNotice("ok", Loc.T("没有需要整理的未分类 MOD"));
+            return;
+        }
+        _autoCategoryBusy = true;
+        try
+        {
+            var labels = unclassified.ToDictionary(m => m.Folder, m => GetNexusCategory(m) ?? "", StringComparer.OrdinalIgnoreCase);
+            var names = labels.Values.Where(n => n.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            await Task.Yield();
+            if (Leave.IsCancellationRequested || !string.Equals(Cfg.Current.GamePath, gamePath, StringComparison.OrdinalIgnoreCase)) return;
+            var known = ExistingCategories();
+            var recommendations = names.ToDictionary(name => name,
+                name => ModCategoryUtil.Recommend(name, ModCategoryUtil.NexusCategoryName(name, Loc.Lang), known,
+                    Cfg.Current.ModOfficialCategoryNames), StringComparer.OrdinalIgnoreCase);
+            var categories = labels.Where(kv => recommendations.ContainsKey(kv.Value))
+                .ToDictionary(kv => kv.Key, kv => recommendations[kv.Value], StringComparer.OrdinalIgnoreCase);
+            var count = ApplyAutomaticCategories(Cfg.Current, mods, categories, labels);
+            if (count > 0)
+            {
+                Cfg.Save(Cfg.Current);
+                _categoryRev++;
+            }
+            ShowNotice("ok", count > 0
+                ? Loc.F("已整理 {0} 个未分类 MOD，已有分类保持不变", count)
+                : Loc.T("未分类 MOD 暂无可用标签，没有更改分类"));
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warn("Mods", "一键分类失败：" + ex.Message);
+            ShowNotice("err", Loc.T("一键分类失败，请重试"));
+        }
+        finally
+        {
+            _autoCategoryBusy = false;
+        }
+    }
+
+    internal static int ApplyAutomaticCategories(JuniGridConfig cfg, IEnumerable<ModEntry> mods,
+        IReadOnlyDictionary<string, string> labels, IReadOnlyDictionary<string, string>? sources = null)
+    {
+        var count = 0;
+        foreach (var group in mods.GroupBy(CategoryKeyOf, StringComparer.OrdinalIgnoreCase))
+        {
+            if (group.Any(m => CategoryIn(cfg.ModUserCategory, m).Length > 0)) continue;
+            var label = group.Select(m => labels.TryGetValue(m.Folder, out var value) ? value : "")
+                .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
+            if (label is null) continue;
+            var known = cfg.ModUserCategoryOrder.Concat(cfg.ModUserCategory.Values.SelectMany(ModCategoryUtil.Split));
+            var category = ModCategoryUtil.Recommend(label, label, known);
+            var source = sources is null ? null : group.Select(m => sources.TryGetValue(m.Folder, out var value) ? value : "")
+                .FirstOrDefault(value => ModCategoryUtil.NexusCategoryName(value) != value);
+            ModCategoryUtil.AssignInstalled(cfg, group, category, source);
+            count++;
+        }
+        return count;
+    }
     private bool _categoryDialogOpen;
     /// <summary>这一次「加入分类」作用于哪些行：批量条 = 勾选的那批；行内「…」= 这一行。
     /// 两者共用同一个对话框，但作用范围不能混。</summary>
@@ -5952,7 +6803,6 @@
     /// <summary>＋ 刚按下、输入框还没渲染出来 ⇒ 下一帧再把焦点送进去（autofocus 属性实测不生效）。</summary>
     private bool _categoryInputFocusPending;
     private string? _categoryDialogError;
-    private string? _categoryHover;
     private string? _categoryMenu;
     private string? _categoryRenameFrom;
     private string _categoryRenameDraft = "";
@@ -6041,7 +6891,7 @@
     /// 第一段，退回去就等于「把这一段当成第一段」，折叠/滚动会打到别人身上。</summary>
     private CategorySection CategorySectionOf(string key)
         => _categorySections.FirstOrDefault(x => string.Equals(x.Key, key, StringComparison.OrdinalIgnoreCase))
-           ?? new CategorySection { Key = key, Label = key.Length > 0 ? key : Loc.T("未分类"), Index = -1 };
+           ?? new CategorySection { Key = key, Label = key.Length > 0 ? CategoryLabel(key) : Loc.T("未分类"), Index = -1 };
 
     // ── 分类段的 DOM id ────────────────────────────────────────────────
     // v1.3.84：段头/段体的 id 不再用 _categorySections 里的序号。
@@ -6267,7 +7117,7 @@
     private string IconCategoryLabel(string key)
         => key == NewCatIconKey ? Loc.T("新分类")
            : key == LocalNewCatIconKey ? Loc.T("新分类")
-           : key.Length > 0 ? key : Loc.T("未分类");
+           : key.Length > 0 ? CategoryLabel(key) : Loc.T("未分类");
 
     private void OpenIconPicker(string key)
     {
@@ -6587,7 +7437,7 @@
         if (from.Length == 0) return;      // 「未分类」不是一个能改名的分类（双击别把它变成真分类）
         _categoryMenu = null;
         _categoryRenameFrom = from;
-        _categoryRenameDraft = from;
+        _categoryRenameDraft = CategoryLabel(from);
         _categoryDialogError = null;
     }
 
@@ -6606,7 +7456,9 @@
         var to = _categoryRenameDraft.Trim();
         if (to.Length == 0) { _categoryDialogError = Loc.T("先输入一个分类名"); return; }
         if (to.Length > 20) to = to[..20];
-        if (string.Equals(from, to, StringComparison.OrdinalIgnoreCase)) { _categoryRenameFrom = null; _categoryDialogError = null; return; }
+        if (string.Equals(from, to, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(CategoryLabel(from), to, StringComparison.OrdinalIgnoreCase))
+        { _categoryRenameFrom = null; _categoryDialogError = null; return; }
         var cfg = Cfg.Current;
         foreach (var k in cfg.ModUserCategory
                      .Where(kv => string.Equals(kv.Value, from, StringComparison.OrdinalIgnoreCase))
@@ -6628,6 +7480,7 @@
             cfg.ModCategoryIcon.Remove(iconKey);
             cfg.ModCategoryIcon[to] = spec;
         }
+        cfg.ModOfficialCategoryNames.Remove(from);
         Cfg.Save(cfg);
         if (_collapsedCats.Remove(from)) _collapsedCats.Add(to);
         _categoryRev++;
@@ -6652,28 +7505,18 @@
             else cfg.ModUserCategory[k] = ModCategoryUtil.Join(rest);
         }
         cfg.ModUserCategoryOrder.RemoveAll(x => string.Equals(x, name, StringComparison.OrdinalIgnoreCase));
+        cfg.ModOfficialCategoryNames.Remove(name);
         // 分类没了，它的图标也没意义 —— 留着只会在下次建同名分类时"诈尸"
         var deadIcon = cfg.ModCategoryIcon.Keys.FirstOrDefault(k => string.Equals(k, name, StringComparison.OrdinalIgnoreCase));
         if (deadIcon is not null) cfg.ModCategoryIcon.Remove(deadIcon);
         Cfg.Save(cfg);
         _collapsedCats.Remove(name);
         _categoryRev++;
-        if (_categoryHover == name) _categoryHover = null;
         ShowNotice("ok", LocService.Tf("已删除分类「{0}」，里面的 mod 已移到未分类", name));
         StateHasChanged();
     }
 
-    /// <summary>悬停导航杠：点亮这根杠，并把卡片挪到它旁边。卡片只能待在滚动区外面（否则被
-    /// overflow 裁掉），所以它的高度得由 JS 量出那根杠的位置再写进 CSS 变量 —— 以前卡片钉在
-    /// 整列的中部，悬停最上面那根杠时卡片却出现在屏幕中间。</summary>
-    private void HoverCategory(string key)
-    {
-        _categoryHover = key;
-        var i = _categorySections.FindIndex(x => string.Equals(x.Key, key, StringComparison.OrdinalIgnoreCase));
-        if (i >= 0) _ = JS.InvokeVoidAsync("junigridJs.setCatCardY", i);
-    }
-
-    /// <summary>点右侧导航：目标段可能还在渐进渲染之外（首帧只画 40 行）——先全画，
+    /// <summary>点抽屉里的分类：目标段可能还在渐进渲染之外（首帧只画 40 行）——先全画，
     /// 渲染完再滚（见 OnAfterRenderAsync 里的 _pendingCategoryAnchor）。</summary>
     private async Task ScrollToCategory(string key)
     {
@@ -6710,7 +7553,7 @@
             var sec = _categorySections.FirstOrDefault(x => string.Equals(x.Key, key, StringComparison.OrdinalIgnoreCase));
             if (sec is null)
             {
-                sec = new CategorySection { Key = key, Label = key.Length > 0 ? key : Loc.T("未分类"), Index = _categorySections.Count };
+                sec = new CategorySection { Key = key, Label = key.Length > 0 ? CategoryLabel(key) : Loc.T("未分类"), Index = _categorySections.Count };
                 _categorySections.Add(sec);
             }
             sec.Count += g.Items.Count;
@@ -6738,7 +7581,15 @@
         {
             foreach (var c in ExistingCategories())
                 if (!_categorySections.Any(x => string.Equals(x.Key, c, StringComparison.OrdinalIgnoreCase)))
-                    _categorySections.Add(new CategorySection { Key = c, Label = c, Index = _categorySections.Count });
+                    _categorySections.Add(new CategorySection { Key = c, Label = CategoryLabel(c), Index = _categorySections.Count });
+
+            // 2026-11-17：一个未分类的 mod 都没有时，列表里也要留一个「未分类」空段。
+            // 抽屉里的分类表始终列着「未分类 0 个」（CategoryListFor 无条件补 ""），
+            // 列表里却没有对应段 —— 点它像点了个空，也没法把 mod 拖出分类（用户截图：
+            // 抽屉有未分类、左边列表只有「代码 Mod」）。只在真有几行 mod 时补，避免
+            // 空列表上空立一根 0 个的段头。
+            if (groups.Count > 0 && !_categorySections.Any(x => x.Key.Length == 0))
+                _categorySections.Add(new CategorySection { Key = "", Label = Loc.T("未分类"), Index = _categorySections.Count });
         }
 
         // 重排：**和拖动/列表排序用同一个口径**（CategoryDisplayOrder，屏上从上到下）。

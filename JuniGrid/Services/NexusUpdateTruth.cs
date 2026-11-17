@@ -19,6 +19,20 @@ public static class NexusUpdateTruth
         return null;
     }
 
+    /// <summary>页面 <paramref name="pageId"/> 的当前主文件（fileId <paramref name="mainFileId"/>）
+    /// 就是这一条已装条目装上的那份：条目自述来自该页（manifest UpdateKeys），且安装台账
+    /// 记着「从该页、装了该 fileId」。三个数逐字相等才算 —— 这是「再下载这一页也是同一个包」
+    /// 的唯一不靠猜的证法。供「同页分支」判定用：缺失依赖解析到这一页、而要求的 UID 与这条
+    /// 已装条目不同时，下载主文件满足不了依赖（SMAPI 按 UID 整串精确匹配，无别名机制）。
+    /// <para>台账缺失 / 页号对不上 / fileId 对不上都返回 false：宁可放过让下载后的 UID 校验
+    /// 兜底，也不误拦「页面主文件其实已换回要求 UID」的情形。</para></summary>
+    public static bool IsCurrentMainInstalled(JuniGridConfig cfg, ModEntry m, int pageId, long mainFileId)
+    {
+        if (pageId <= 0 || mainFileId <= 0 || m.NexusModId != pageId) return false;
+        var rec = GetInstallRecord(cfg, m);
+        return rec is not null && rec.NexusModId == pageId && rec.FileId == mainFileId;
+    }
+
     /// <summary>安装成功后：把 N 网 fileId/文件版本记进<b>我们自己的账</b>（<see cref="JuniGridConfig.ModNexusInstalls"/>）。
     /// <para>绝不回写作者的 <c>manifest.json</c>：那个字段的读者是 SMAPI，它只认「至少两段数字」，
     /// 而 N 网文件版本栏是作者手填的自由文本（实测 Simple Hoard Chest 填 <c>1</c>、包内 manifest 是

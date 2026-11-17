@@ -560,17 +560,17 @@
         // 摘掉它就等于让它新建一条，任务管理里同一次下载又会多出一行。
         if (t.NexusId is int modId)
         {
-            _ = RedispatchAsync(modId, t.DownloadFileId);
+            _ = RedispatchAsync(modId, t.DownloadFileId, t.InstallCategory, t.InstallCategorySource);
             return;
         }
 
         _ = JS.InvokeVoidAsync("junigridJs.toast", LocService.Tr("该任务需要重新发起（已保留已下载部分）"), "err");
     }
 
-    private async Task RedispatchAsync(int modId, long? fileId = null)
+    private async Task RedispatchAsync(int modId, long? fileId, string? category, string? categorySource)
     {
         // 带上当初那个 fileId：命中同一个 zip 才能接上 .seg 断点（null = 按最新 MAIN 重新解析）
-        var err = await Installer.InstallModDirectAsync(modId, fileId);
+        var err = await Installer.InstallModDirectAsync(modId, fileId, category: category, categorySource: categorySource);
         // v1.3.44：AlreadyRunning = 这个 mod 已经有一行在跑，不是错误，也没必要 toast ——
         // 用户眼睛就在任务管理页上，那一行的进度比一句话有用。
         if (err is not null && err != InstallService.AlreadyRunning)
@@ -599,7 +599,7 @@
             // .seg/.state 名字一对不上只能从 0 重下（2026-11-07 05:07 实机：21.3 MB 白费）。
             if (t.NexusId is int modId)
             {
-                _ = RedispatchAsync(modId, t.DownloadFileId);
+                _ = RedispatchAsync(modId, t.DownloadFileId, t.InstallCategory, t.InstallCategorySource);
                 return;
             }
             _ = JS.InvokeVoidAsync("junigridJs.toast", LocService.Tr("该任务暂停后需重新发起（已保留已下载部分）"), "err");

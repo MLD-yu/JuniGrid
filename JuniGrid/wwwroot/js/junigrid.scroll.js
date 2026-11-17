@@ -286,28 +286,8 @@ window.junigridJs.hasElement = function (id) {
 window.junigridJs.hasElement = function (id) {
     return !!document.getElementById(id);
 };
-// ── v1.3.48：右侧导航那一列短杠自己的两件事 ────────────────────────────────
-// ① 卡片跟杠走：卡片必须待在滚动区外面（放进去会被 overflow 一起裁掉），所以它的纵向位置
-//    由这里量出第 idx 根杠的中心，写进 --jg-cat-card-y 交给 CSS 定位。以前卡片钉在整列中部，
-//    悬停最上面那根杠时卡片却出现在屏幕中间。
-// ② 杠多到一屏放不下：滚轮落在杠列上只滚这一列，不带动整页；放得下时完全不拦事件，
-//    页面照常滚（否则悬停区会莫名其妙吃掉滚轮）。用 scrollTop 手动滚，不用 scrollIntoView
-//    —— 那会连祖先容器（整页）一起滚走。
-window.junigridJs.setCatCardY = function (idx) {
-    var nav = document.querySelector('.jg-catnav');
-    var list = nav ? nav.querySelector('.jg-catnav-list') : null;
-    var dash = list && list.children[idx];
-    if (!nav || !dash) return;
-    var r = dash.getBoundingClientRect(), b = nav.getBoundingClientRect();
-    nav.style.setProperty('--jg-cat-card-y', Math.round(r.top - b.top + r.height / 2) + 'px');
-};
-document.addEventListener('wheel', function (e) {
-    var list = document.querySelector('.jg-catnav-list');
-    if (!list || !list.contains(e.target)) return;
-    if (list.scrollHeight <= list.clientHeight) return;
-    e.preventDefault();
-    list.scrollTop += e.deltaY;
-}, { passive: false });
+// ── 2026-11-17：右侧短杠 + 悬停卡片已整套删除，分类跳转只剩抽屉里的列表 ──────────
+// （原 setCatCardY / 杠列滚轮接管随之移除。）
 // v1.3.49：改成「时间基缓动」的连续滑动。
 // 旧写法是每帧把 diff 补掉 28%（指数逼近）：远距离首帧瞬移一大截、看着像跳；近距离尾段
 // 亚像素爬行，还得在落点上「保持 500ms 不抖」才收工 —— 当落点就在屏幕里时（点第一个标签、
@@ -315,12 +295,12 @@ document.addEventListener('wheel', function (e) {
 // 现在按「当前 scrollTop 与目标之间的距离」定一个 240~650ms 的时长，用 easeInOut 时间基
 // 插值推进；目标每帧重算（上方懒加载把落点推走时跟着校正，不重启）。到点精确落位即收工，
 // 没有那 500ms 的原地等待。
-// 用户一动（滚轮/触摸/点在列表里）立刻让位；点导航杠自己不算「用户动了」。
+// 用户一动（滚轮/触摸/点在列表里）立刻让位；点右侧那颗抽屉把手不算「用户动了」。
 window.junigridJs.scrollToCategory = function (id) {
     var el = document.getElementById(id);
     if (!el) return false;
     var main = document.querySelector('.jg-main');
-    if (!main) { el.scrollIntoView({ behavior: 'smooth', block: 'start' }); return true; }
+    if (!main) { el.scrollIntoView({ behavior: 'smooth', block: 'start' }); setTimeout(flash, 350); return true; }
 
     if (main.__jgCat) main.__jgCat.stop = true;          // 连点两根杠：上一次收工
     var job = { stop: false };
@@ -344,6 +324,20 @@ window.junigridJs.scrollToCategory = function (id) {
         main.removeEventListener('pointerdown', onUser);
         if (main.__jgCat === job) main.__jgCat = null;
     };
+    // 2026-11-17：落到段头后闪一下 —— 平滑滚动 + 吸顶工具条，落点经常"看着没动"，
+    // 一次浅底 + 描边的脉冲能把眼睛钉到正确的段上。只闪真正的段头（.jg-cat-head），
+    // 平铺视图的 jg-cat-body-flat 不闪。
+    var flash = function () {
+        if (!el.classList || !el.classList.contains('jg-cat-head')) return;
+        el.classList.remove('jg-cat-flash');
+        void el.offsetWidth;                 // 连点同一段也要能重新触发
+        el.classList.add('jg-cat-flash');
+        if (el.__jgFlashTimer) clearTimeout(el.__jgFlashTimer);
+        el.__jgFlashTimer = setTimeout(function () {
+            el.classList.remove('jg-cat-flash');
+            el.__jgFlashTimer = null;
+        }, 780);
+    };
     main.addEventListener('wheel', onUser, { passive: true });
     main.addEventListener('touchstart', onUser, { passive: true });
     main.addEventListener('pointerdown', onUser, { passive: true });
@@ -358,7 +352,7 @@ window.junigridJs.scrollToCategory = function (id) {
         var dist = Math.abs(want - startY);
         var dur = Math.max(240, Math.min(650, dist * 0.6));   // 240ms（近）~ 650ms（远）
         var p = (performance.now() - t0) / dur;
-        if (p >= 1) { main.scrollTop = want; cleanup(); return; }
+        if (p >= 1) { main.scrollTop = want; cleanup(); flash(); return; }
         main.scrollTop = startY + (want - startY) * ease(p);
         requestAnimationFrame(frame);
     };

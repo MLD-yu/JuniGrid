@@ -149,6 +149,61 @@
 .jg-qr-hint {
     font-size: 12px; opacity: .65; text-align: center; margin-top: 8px;
 }
+/* v1.11：Steam 授权改左账密 / 右扫码并排（仿官方登录页）。
+   对齐口径（用户点名要的）：两列等宽 grid 1fr/1fr；列顶标题同一基线；输入框上沿与二维码卡片
+   上沿齐平；左列主按钮贴列底 —— 与右列「扫这张码」那行说明同一底线。
+   用 .jg-modal.jg-steam-login 双类压过 misc.css 里 .jg-modal 的 420px 基础宽。 */
+.jg-modal.jg-steam-login { width: min(660px, 94vw); max-width: none; padding: 22px 26px 16px; border-radius: 16px; }
+.jg-steam-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; align-items: stretch; }
+.jg-steam-col { min-width: 0; display: flex; flex-direction: column; }
+.jg-steam-col-title { font-size: 15px; font-weight: 700; line-height: 1.4; margin-bottom: 16px; }
+/* 标签在上（小字弱化），输入框满列宽；label 贴自己的输入框，字段之间留 26px（对齐官方页的疏密） */
+.jg-steam-label { font-size: 11.5px; font-weight: 600; letter-spacing: .2px; opacity: .62; margin-bottom: 8px; }
+.jg-steam-col .jg-ver-input { width: 100%; box-sizing: border-box; margin: 0 0 26px; padding: 13px 12px; border-radius: 8px; font-size: 13px; }
+/* 二维码台子从「居中 260 方块」改成「铺满右列的白卡片」：卡片与左列输入框同宽同起点，
+   码在卡片里四周各留 14px 静区（别把卡片拉成横的，aspect-ratio 仍是 1）。
+   display:block 是必须的 —— 台子默认 display:grid + place-items:center，会把 svg 当居中项按
+   内在宽度收缩，码只占卡片七成、四周空一大圈（预览实测 216/296）。 */
+.jg-steam-col .jg-qr-stage { width: 100%; max-width: none; margin: 0; border-radius: 12px; }
+/* 矢量码 SVG 自带 width=420：不约束就会把正方形台子撑高（弹窗跳变的根因）。
+   宽度收进台子内容盒、高度按 viewBox 比例自适应，grid 居中保持四周静区均匀。 */
+.jg-steam-col .jg-qr-stage.vector { display: grid; place-items: center; padding: 14px; }
+.jg-steam-col .jg-qr-stage.vector svg { width: 100%; height: auto; display: block; }
+.jg-steam-col .jg-qr-stage img.qr { padding: 14px; }
+/* 右列卡片往下让出 24px，与左列标题行错开（原本是用来对齐输入框上沿的，
+   输入框改成垂直居中后这条不再承担对齐职责，只保留卡片自身的下移量）。 */
+.jg-steam-col > .jg-qr-stage { margin-top: 24px; }
+/* 提示行各状态文案长短不一（加载/扫码/登录中）：预留两行高，状态切换不跳弹窗高度 */
+.jg-steam-col .jg-qr-hint { min-height: 34px; }
+.jg-steam-err { text-align: left; margin: 0 0 10px; }
+/* 两个字段的上下各留一个 auto 外边距（这里 + .jg-steam-actions 的 margin-top:auto）：
+   剩余空白对半分，字段落在标题与按钮的正中，不再贴着标题、下面空一大条。 */
+.jg-steam-col > .jg-steam-label:first-of-type { margin-top: auto; }
+/* margin-top:auto = 主按钮被推到列底，两列底线对齐。
+   ⚠ 必须带 .jg-steam-col 前缀：misc.css 里同名类（另一张「改用 Steam 下载」弹窗）有 margin-top:8px，
+   而 misc.css 在 effects.css 之后加载，同等权重会被它盖掉。 */
+.jg-steam-col .jg-steam-actions { margin-top: auto; padding-top: 12px; display: flex; }
+.jg-steam-submit {
+    flex: 1; height: 46px; border: none; border-radius: 8px; cursor: pointer;
+    background: var(--jg-ink-grad); color: var(--jg-on-ink);
+    font: inherit; font-size: 14px; font-weight: 700;
+    transition: filter .15s ease;
+}
+.jg-steam-submit:hover:not(:disabled) { filter: brightness(1.35); }
+.jg-steam-submit:disabled { opacity: .45; cursor: not-allowed; }
+.jg-steam-submit-busy { display: inline-flex; align-items: center; justify-content: center; gap: 9px; width: 100%; }
+.jg-steam-footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+/* 窄窗口下两列改上下：并排时每一列只剩一百多像素，标签和二维码都挤成一团 */
+@media (max-width: 620px) { .jg-steam-cols { grid-template-columns: 1fr; gap: 20px; } }
+/* 失败/待启动时原位刷新按钮：模糊码底 + 居中深色圆角块 + 白色刷新符（仿 Steam 过期码）。 */
+.jg-qr-refresh {
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%);
+    width: 56px; height: 56px; border-radius: 12px; border: none; cursor: pointer;
+    background: #1c1c1e; color: #fff; font-size: 26px; line-height: 1;
+    display: grid; place-items: center;
+    box-shadow: 0 6px 18px rgba(0,0,0,.28);
+}
+.jg-qr-refresh:hover { background: #2a2a2e; }
 /* 成功卡片：像素揭示画布 + 内容 */
 .jg-pixel-reveal {
     position: absolute; inset: 0; z-index: 5; pointer-events: none;

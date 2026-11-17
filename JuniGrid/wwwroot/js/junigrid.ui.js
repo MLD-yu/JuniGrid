@@ -573,6 +573,10 @@ window.junigridJs.tiltPerspective = function (selector, opts) {
         if (!e.target || !e.target.closest) return;
         var overlay = e.target.closest(".jg-modal-overlay");
         if (!overlay || overlay.__modalClosing || overlay.__modalAllow) return;
+        // 登录/令牌弹窗声明「遮罩不关窗」：点外面不该丢掉敲一半的密码或刚复制的验证码。
+        // 不跳过的话这里会演退场把遮罩 opacity 演到 0，而它们没有 @onclick 接重派发的那一击，
+        // 状态不清、节点留着 —— 看着像关了，其实登录路还在后台跑（2026-11-17 实机报障）。
+        if (overlay.hasAttribute("data-backdrop-keep")) return;
         if (overlay.querySelector(".jg-ver-modal")) return;   // 版本弹窗自己走 FLIP，别抢它
         var btn = e.target.closest("button");
         var isBackdrop = e.target === overlay;

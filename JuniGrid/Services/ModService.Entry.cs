@@ -67,6 +67,15 @@ public sealed partial class ModService
             {
                 foreach (var item in depsArr)
                 {
+                    // 字符串简写：{"Dependencies": ["Foo.Bar"]}。SMAPI 自带
+                    // ManifestDependencyConverter 认这种写法，我们原先 `is not JObject` 直接 continue，
+                    // 整条依赖凭空消失 —— 作者这么写的 mod 在面板上永远是「不缺依赖」。
+                    if (item.Type == Newtonsoft.Json.Linq.JTokenType.String)
+                    {
+                        var plain = ((string?)item)?.Trim();
+                        if (!string.IsNullOrEmpty(plain)) deps.Add(plain!);
+                        continue;
+                    }
                     if (item is not Newtonsoft.Json.Linq.JObject io) continue;
                     var s = DepString(io, "UniqueID");
                     if (string.IsNullOrWhiteSpace(s)) continue;
@@ -81,11 +90,23 @@ public sealed partial class ModService
 
             // ContentPackFor：这是"该 pack 需要宿主框架"。宿主不是用户硬装的缺失，
             // 很多包缺框架也只是动态功能缺失，不当"缺失依赖"误报 → 存单独字段，不进 deps。
+            // 但它自带 MinimumVersion（SMAPI 3.9+）：宿主装得比它旧，SMAPI 同样把这一包跳过，
+            // 所以那条版本要求要并进同一本版本账，否则「装了够新的宿主」和「装了个太旧的宿主」
+            // 在界面上长得一模一样。
             string? contentPackHost = null;
             if (root["ContentPackFor"] is Newtonsoft.Json.Linq.JObject cpfObj)
             {
                 contentPackHost = cpfObj["UniqueID"]?.Type == Newtonsoft.Json.Linq.JTokenType.String
-                    ? (string)cpfObj["UniqueID"]! : null;
+                    ? (string?)cpfObj["UniqueID"] : null;
+                contentPackHost = string.IsNullOrWhiteSpace(contentPackHost) ? null : contentPackHost!.Trim();
+                var hostMin = cpfObj["MinimumVersion"]?.Type == Newtonsoft.Json.Linq.JTokenType.String
+                    ? ((string)cpfObj["MinimumVersion"]!).Trim() : null;
+                if (contentPackHost is not null && !string.IsNullOrEmpty(hostMin))
+                {
+                    // 同一宿主既可能写在 Dependencies 又写在这里：取两者里更高的那个要求
+                    if (!depMin.TryGetValue(contentPackHost, out var had) || VersionUtil.IsOlderThan(had, hostMin))
+                        depMin[contentPackHost] = hostMin!;
+                }
             }
 
             // v0.45.0：分类标签 —— manifest 里有 EntryDll 的是代码 Mod（含 C# 逻辑），

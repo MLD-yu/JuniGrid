@@ -806,27 +806,16 @@ public sealed class LauncherService
         return PreFlightResult.Ok();
     }
 
-    public PreFlightResult CheckSteam()
+    public PreFlightResult CheckVanilla()
     {
-        if (!IsSteamRunning)
-            return PreFlightResult.Warn(
-                "Steam 客户端似乎没在运行，将通过 steam:// 协议拉起（可能稍慢）。");
-
-        // v1.6.8：Steam 认为文件待修复/待更新时（上次更新失败、版本切换后内容对不上），
-        // steam:// 启动会先排队修复再开游戏 —— 表现为「点启动后干等、游戏窗口永远不出来」。
-        // 此时提示改走 SMAPI 方式（直接拉起 StardewModdingAPI.exe，不经过 Steam 的更新排队）。
-        var manifest = SteamService.FindAppManifest(_cfg.Current.GamePath, _cfg.Current.SteamAppId);
-        if (SteamService.SteamNeedsRepair(manifest))
-            return PreFlightResult.Warn(
-                "Steam 认为游戏文件待修复/待更新（上次更新失败或切换过版本）。" +
-                "「Steam 官方」方式启动会一直排队修复，游戏窗口迟迟不出现。" +
-                "建议改用 SMAPI 方式启动，或在 Steam 库里点一下游戏让修复跑完。");
-
-        return PreFlightResult.Ok();
+        var gamePath = _cfg.Current.GamePath;
+        if (string.IsNullOrWhiteSpace(gamePath))
+            return PreFlightResult.Fail(LocService.Tr("尚未设置游戏路径，请先到设置页选择。"));
+        var exe = Path.Combine(gamePath, "Stardew Valley.exe");
+        return File.Exists(exe)
+            ? PreFlightResult.Ok()
+            : PreFlightResult.Fail(LocService.Tf("找不到游戏本体：{0}", exe));
     }
-
-    /// <summary>Steam 客户端是否在运行（含 webhelper）。供启动等待期检测「Steam 被关闭」用。</summary>
-    public static bool IsSteamRunning => AnyProcess("steam", "steamwebhelper");
 
     /// <summary>是否需要给 appmanifest 上只读锁：仅当用户开了版本锁，且部署的历史版本
     /// 【不是】目录里最新的官方正式版 —— 真降级才需要防 Steam 覆盖；部署的若是最新版
@@ -973,7 +962,7 @@ public sealed class LauncherService
         }
     }
 
-    private async Task TrackSteamExitAsync()
+    private async Task TrackVanillaExitAsync()
     {
         // 等游戏进程起来，再等它退出
         for (int i = 0; i < 60 && _sessionStart is not null; i++)
@@ -1050,140 +1039,39 @@ public sealed class LauncherService
         }
     }
 
-    /// <summary>
-    /// 这次启动该不该走直启本体、不叫 Steam 帮忙开。抽成独立判定是为了能在沙箱里验（--saves-guard S34）。
-    ///
-    /// 判据必须用「抽屉里现在压着几份」这个**持久量**，不能用「这一次我搬了没有」：
-    /// 搬运动作本身会把"列表里还有读不了的档"这个前提消耗掉 —— 第二次点启动时列表已经干净、
-    /// 这次一份都没搬，按"这次搬没搬"就会回落到叫 Steam 开，而 Steam 开场那次同步会把抽屉里
-    /// 压着的档全数下载回来。实测 2026-09-22：08:44:18 第一次点（搬了 15 份）直启成功；
-    /// 08:45:45 第二次点（没得搬）回落 steam:// → 08:45:45 `AC Launch,down` 把 15 份拉回 →
-    /// 08:46:31 又是同一个 NPC..ctor 闪退。
-    ///
-    /// 云确认是关的话没有"开场下载"这回事，照旧叫 Steam 开（Steam 在线状态、游戏时长都还是正常的）。
-    /// </summary>
-    private static bool ShouldBypassSteam(int stashedInDrawer, SteamService.CloudSync cloud)
-        => stashedInDrawer > 0 && cloud != SteamService.CloudSync.Disabled;
-
-    /// <summary>
-    /// 直启游戏本体（不经 steam://）。只在「抽屉里还压着别的档」时用：
-    /// steam:// 会在游戏进程起来之前先跑一次 Auto-Cloud 的 `AC Launch,down`，把刚收走的档全数拉回
-    /// Saves（06:36:29 实测：Saves 从 5 个目录回到 21 个），等游戏读存档列表时又是闪退现场。
-    /// 直启不触发那次下载（22 次会话实测：20/20 经 Steam 的都有 `AC Launch`，2/2 直启的都没有），
-    /// 退出时仍触发 `AC Exit` → 这一局的进度照样上传到云。
-    ///
-    /// 刻意**不**给 _smapiProcess 赋值：这条路上我们并没有真的持有那个子进程（Steam 才是它的
-    /// 父进程），赋值会让「游戏是否在跑」之类的状态误判。运行态交给 TrackSteamExitAsync +
-    /// AnyProcess，GameProcessNames 里本来就有 "Stardew Valley"。
-    /// </summary>
-    private LaunchResult LaunchVanillaDirectly(string gamePath, string? warning)
+    internal static ProcessStartInfo VanillaStartInfo(string gamePath) => new()
     {
-        var exe = Path.Combine(gamePath, "Stardew Valley.exe");
-        if (!File.Exists(exe))
-            return LaunchResult.Fail(
-                LocService.Tf("找不到游戏本体：{0}\n\n", exe) +
-                LocService.Tr("这次本来要直启本体（避免 Steam 云把刚收起来的存档拉回来），但目录里没有 Stardew Valley.exe。"));
+        FileName = Path.Combine(gamePath, "Stardew Valley.exe"),
+        WorkingDirectory = gamePath,
+        UseShellExecute = false,
+        CreateNoWindow = false
+    };
+
+    public LaunchResult LaunchVanilla()
+    {
+        var check = CheckVanilla();
+        if (!check.Success) return LaunchResult.Fail(check.Message ?? "");
+        var half = HalfSyncedBlock();
+        if (half is not null) return half.Value;
+        var gamePath = _cfg.Current.GamePath;
+        PrepareSavesForLaunch(gamePath);
+        SteamService.EnsureGameVersionLock(gamePath, _cfg.Current.SteamAppId, IsDowngradeLockNeeded());
         try
         {
-            _sessionStart = DateTime.Now;
-            _ = TrackSteamExitAsync();
             var prelaunch = SnapshotLogBeforeLaunch();
-            var proc = new Process
-            {
-                StartInfo = new ProcessStartInfo
-                {
-                    FileName = exe,
-                    WorkingDirectory = gamePath,
-                    UseShellExecute = false,
-                    CreateNoWindow = false
-                }
-            };
+            using var proc = new Process { StartInfo = VanillaStartInfo(gamePath) };
             proc.Start();
-            // 这条路压根没起 SMAPI，而这一页叫「SMAPI 日志」——把说明性播报写进去，
-            // 看着就像本次的 SMAPI 输出。原因记进 juni-grid.log 备查即可。
+            _sessionStart = DateTime.Now;
+            _ = TrackVanillaExitAsync();
             ClearLog();
-            RaiseLog(LocService.Tr("（这一局直启游戏本体，未经 Steam、也没经过 SMAPI —— 本次不会产生 SMAPI 日志）"));
-            StartLogTail(prelaunch: prelaunch);   // 直启本体不写 SMAPI 日志，但万一 SMAPI 仍被拉起（Steam 启动选项），照样要能接上
-            AppLog.Info("Launcher", $"已直启游戏本体 (PID {proc.Id}) —— 未经 Steam，" +
-                                    "避免云同步把抽屉里暂存的其它存档拉回来；退出时 Steam 仍会上传这一局的进度");
-            return LaunchResult.Ok(proc.Id, warning);
+            RaiseLog(LocService.Tr("（这一局直启游戏本体，不经过 SMAPI，也不使用 Steam 自定义启动选项）"));
+            StartLogTail(prelaunch: prelaunch);
+            AppLog.Info("Launcher", $"官方模式已直启游戏本体 (PID {proc.Id})：{proc.StartInfo.FileName}；不使用 Steam 自定义启动选项");
+            return LaunchResult.Ok(proc.Id);
         }
         catch (Exception ex)
         {
             return LaunchResult.Fail(LocService.Tr("无法直启游戏本体：") + ex.Message);
-        }
-    }
-
-    public LaunchResult LaunchSteam(string steamAppId)
-    {
-        var half = HalfSyncedBlock();
-        if (half is not null) return half.Value;
-        // 后台收起读不了的档即可；**不再弹「版本不匹配」说明**（用户明确不要这个框）。
-        // 收不动的残档也会被塞进聚焦抽屉，游戏列表尽量干净。
-        var stashed = PrepareSavesForLaunch(_cfg.Current.GamePath);
-        return LaunchGameCore(steamAppId, stashed);
-    }
-
-    private LaunchResult LaunchGameCore(string steamAppId, int stashed)
-    {
-        // 前置：路径都没有 → 极大概率 Steam 账号未拥有此游戏或未安装
-        if (string.IsNullOrWhiteSpace(_cfg.Current.GamePath) || !Directory.Exists(_cfg.Current.GamePath))
-            return LaunchResult.Fail(
-                LocService.Tr("未检测到 Stardew Valley 游戏目录。\n\n") +
-                LocService.Tr("可能原因：\n") +
-                LocService.Tr("  · 当前 Steam 账号未拥有本游戏（需先在 Steam 购买）\n") +
-                LocService.Tr("  · 游戏未安装或路径异常 → 请在「设置」里手动指定目录\n\n") +
-                LocService.Tr("启动器会尝试用 steam:// 协议拉起，若 Steam 弹\"此账号不拥有该游戏\"即为此因。"));
-
-        // v1.2.4：版本锁定开启 → 启动前同步锁状态（appmanifest 只读）。
-        // v1.6.8：只在历史版本降级生效时上锁；已回官方最新则自动解除 ——
-        // 否则用户在 Steam 界面换 beta 分支时客户端写不了清单，报「磁盘写入错误」
-        // 卡死在更新失败状态。失败只记日志，不阻塞启动。
-        SteamService.EnsureGameVersionLock(_cfg.Current.GamePath, _cfg.Current.SteamAppId, IsDowngradeLockNeeded());
-
-        // Steam 启动选项若指向 SMAPI，同样会被崩溃恢复提示卡死（stdin 是 Steam 的管道），
-        // 启动前一并清理
-        ClearSmapiCrashState(_cfg.Current.GamePath);
-
-        var check = CheckSteam();
-        var warning = check.Success ? null : check.Message;
-
-        // 抽屉里压着档、且云可能把它们下回来 → 自己直接开游戏本体，不叫 Steam 帮忙开。
-        // 判据和理由见 ShouldBypassSteam。
-        var cloud = SteamService.ReadCloudSyncState(_cfg.Current.GamePath, _cfg.Current.SteamAppId);
-        if (ShouldBypassSteam(stashed, cloud))
-        {
-            AppLog.Warn("Launcher", $"这次自己开游戏本体、不经 Steam：暂存区压着 {stashed} 份" +
-                                    $"（云 = {cloud}），叫 Steam 开会先把它们下载回存档目录");
-            return LaunchVanillaDirectly(_cfg.Current.GamePath, warning);
-        }
-
-        // Steam 模式也开秒表（Steam 官方模式下我们看不到子进程退出，靠 Stardew Valley.exe 探测）
-        _sessionStart = DateTime.Now;
-        _ = TrackSteamExitAsync();
-        AppLog.Warn("Launcher", $"这次叫 Steam 帮忙开：暂存区没压档（云 = {cloud}）");
-
-        // 同样抢在拉起之前拍：Steam 这次启动的是 SMAPI，日志开头不能丢
-        var prelaunch = SnapshotLogBeforeLaunch();
-
-        try
-        {
-            Process.Start(new ProcessStartInfo
-            {
-                FileName = $"steam://rungameid/{steamAppId}",
-                UseShellExecute = true
-            });
-            // Steam 模式原来根本不尾随日志：只有本程序启动（LaunchSmapi）才会 StartLogTail，
-            // 于是走「Steam 官方」时日志页整局一动不动 —— 玩家以为日志坏了。
-            // 游戏是通过 Steam 启动选项拉 SMAPI 的话，SMAPI 照样写同一份 SMAPI-latest.txt。
-            ClearLog();
-            RaiseLog(LocService.Tr("（已交给 Steam 启动：装了 SMAPI 的话，日志会实时显示在这里；纯原版不会有 SMAPI 日志）"));
-            StartLogTail(prelaunch: prelaunch);
-            return LaunchResult.Ok(null, warning);
-        }
-        catch (Exception ex)
-        {
-            return LaunchResult.Fail(LocService.Tr("无法通过 Steam 启动：") + ex.Message);
         }
     }
 }

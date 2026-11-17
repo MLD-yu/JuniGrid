@@ -10,6 +10,7 @@
 @inject LauncherService Launcher
 @inject TaskCenterService Center
 @inject PageRefreshService PageRefresh
+@inject NavigationManager Nav
 @inject IJSRuntime JS
 
 @if (Open)
@@ -49,11 +50,18 @@
 
             <div class="jg-ver-sec" style="display:flex;align-items:center;justify-content:space-between;gap:10px">
                 <span>@Loc.T("版本列表")</span>
-                @* 国内连不上 Steam CM 时，历史版本可能怎么试都下不来 —— 只要包在本地（别的机器 /
-                   U盘 / 网盘拷来的）就该有路：认领进缓存后点它离线切换，全程不连 Steam。 *@
-                <button type="button" class="jg-ver-mini" disabled="@SwitchBlocked"
-                        title='@Loc.T("认领从别的机器 / U盘拷来的版本包，之后离线切换不连 Steam")'
-                        @onclick="ImportLocal">@Loc.T("导入本地包")</button>
+                <div style="display:flex;align-items:center;gap:6px">
+                    @* 扫码在国内经常连 CM 都连不上（码根本出不来）。Steam 客户端本身是登录着的，
+                       download_depot 用它自己的会话下，是一条完全不依赖第三方登录的路。 *@
+                    <button type="button" class="jg-ver-mini" disabled="@SwitchBlocked"
+                            title='@Loc.T("让 Steam 客户端自己下这个版本：不用扫码，走 Steam 的下载通道")'
+                            @onclick="() => OpenSteamPanel(null)">@Loc.T("用 Steam 下载")</button>
+                    @* 国内连不上 Steam CM 时，历史版本可能怎么试都下不来 —— 只要包在本地（别的机器 /
+                       U盘 / 网盘拷来的）就该有路：认领进缓存后点它离线切换，全程不连 Steam。 *@
+                    <button type="button" class="jg-ver-mini" disabled="@SwitchBlocked"
+                            title='@Loc.T("认领从别的机器 / U盘拷来的版本包，之后离线切换不连 Steam")'
+                            @onclick="ImportLocal">@Loc.T("导入本地包")</button>
+                </div>
             </div>
             <div class="jg-ver-vlist">
             @* @key：行元素会被 GSAP 写上 inline transform，列表重排（下载完置顶）时
@@ -85,7 +93,7 @@
                                     disabled="@(SwitchBlocked || IsDownloading(k) || IsInstalled(k))"
                                     @onclick="() => OnVersionClicked(k)">
                                 <span class="jg-ver-vname">@k.DisplayName</span>
-                                <span class="jg-ver-item-meta">@StatusTag(k)</span>
+                                <span class="jg-ver-item-meta">@StatusTag(k)@BetaBranchTag(k)</span>
                             </button>
                             @if (k.HasManifest && !IsInstalled(k) && (staged is null || !staged.Complete))
                             {
@@ -99,6 +107,20 @@
                 </div>
             }
             </div>
+
+            @* 授权在这台机器上没了（换过安装目录 / 重装到别处后，DD 的凭据桶是空的）：
+               点「下载」只会立刻失败，所以把出路直接摆在列表下面，别让人去猜是哪一项设置。
+               两条出路并列：扫码（要能连上 Steam 登录中继）和「用 Steam 客户端下载」（不依赖它）。 *@
+            @if (!VerDl.IsAuthorized)
+            {
+                <div class="jg-ver-note danger" style="margin-top:8px;display:flex;align-items:center;gap:10px;justify-content:space-between">
+                    <span>@Loc.T("历史版本下载需要 Steam 授权 —— 本机没有可用凭据。扫码走不通时，可以直接让 Steam 客户端下（不用登录本程序）")</span>
+                    <span style="display:flex;gap:6px;flex-shrink:0">
+                        <button type="button" class="jg-ver-mini" @onclick="GoAuthorize">@Loc.T("去设置授权")</button>
+                        <button type="button" class="jg-ver-mini primary" @onclick="() => OpenSteamPanel(null)">@Loc.T("用 Steam 下载")</button>
+                    </span>
+                </div>
+            }
 
             @if (_busy)
             {
@@ -141,6 +163,63 @@
             </div>
         </div>
     }
+
+    @* ── 用 Steam 客户端下载（不扫码）────────────────────────────────────────────
+       Steam 客户端的 download_depot 用它自己的登录态，绕开 DepotDownloader 必须连上的
+       CM 中继。代价只有一步手工：把命令粘进 Steam 控制台。下到哪、下完没，我们盯目录。 *@
+    @if (_steamOpen)
+    {
+        <div class="jg-modal-overlay" @onclick="CloseSteamPanel">
+            <div class="jg-modal jg-steam-dl" @onclick:stopPropagation>
+                <div class="jg-modal-title">@Loc.T("用 Steam 客户端下载")</div>
+                <div class="jg-modal-body">
+                    <div class="jg-steam-why">@_steamWhy</div>
+                    <div class="jg-steam-step" style="margin-top:0">
+                        @Loc.T("要求：Steam 已登录、且这个账号拥有《星露谷物语》。下载走 Steam 自己的通道，不需要本程序登录。")
+                    </div>
+
+                    <div class="jg-steam-cap">@Loc.T("选要下载的版本")</div>
+                    <div class="jg-steam-pick">
+                        @foreach (var k in SteamPickList)
+                        {
+                            var cachedComplete = _staged.Any(s => s.ManifestId == k.ManifestId && s.Complete);
+                            <button type="button"
+                                    class="jg-steam-pickitem @(_steamManifest == k.ManifestId ? "on" : "")"
+                                    disabled="@(IsInstalled(k) || cachedComplete || _steamWatching || _steamImporting)"
+                                    title="@(cachedComplete ? Loc.T("本地缓存已有这个版本的完整包 —— 回版本列表点它即可切换，不用重下") : IsInstalled(k) ? Loc.T("当前正在玩这个版本") : null)"
+                                    @onclick="() => SelectSteamVersion(k)">@k.DisplayName</button>
+                        }
+                    </div>
+
+                    @if (_steamManifest is not null)
+                    {
+                        <div class="jg-steam-step">@Loc.T("① 复制这条命令（按钮会顺手打开 Steam 控制台）")</div>
+                        <div class="jg-steam-cmd">@_steamCommand</div>
+                        <div class="jg-steam-actions">
+                            <button type="button" class="jg-ver-mini primary" disabled="@_steamImporting"
+                                    @onclick="CopyAndOpenConsole">@Loc.T("复制并打开控制台")</button>
+                        </div>
+                        <div class="jg-steam-step">@Loc.T("② 在控制台输入框按 Ctrl+V 粘贴，回车（找不到控制台：Steam 左上角「视图 → 控制台」）")</div>
+                        <div class="jg-steam-step">@Loc.T("③ 下载完成后这里会自动导入缓存；也可以自己点右下角「我已下完」")</div>
+                        <div class="jg-steam-status @(_steamError is not null ? "danger" : "")">@_steamStatus</div>
+                    }
+                </div>
+                <div class="jg-modal-actions">
+                    @if (_steamWatching)
+                    {
+                        <button type="button" class="jg-pill-ghost" @onclick="StopWatching">@Loc.T("停止等待")</button>
+                    }
+                    else
+                    {
+                        <button type="button" class="jg-pill-ghost" @onclick="CloseSteamPanel">@Loc.T("关闭")</button>
+                    }
+                    <button type="button" class="jg-pill-dark"
+                            disabled="@(_steamManifest is null || _steamImporting)"
+                            @onclick="ImportSteamContentManually">@Loc.T("我已下完，导入")</button>
+                </div>
+            </div>
+        </div>
+    }
 }
 
 @code {
@@ -166,6 +245,22 @@
     private CancellationTokenSource? _switchCts;
     private bool _canCancelSwitch;
     private bool _wasOpen;
+
+    // ── 「用 Steam 客户端下载」面板的状态 ─────────────────────────────────
+    // 这条路不碰 DepotDownloader：命令交给 Steam 控制台，文件由 Steam 客户端自己下，
+    // 我们只盯 <steam>\steamapps\content\app_413150\depot_413151 什么时候写完。
+    private bool _steamOpen;
+    private string? _steamManifest;
+    private string _steamCommand = "";
+    private string _steamStatus = "";
+    private string _steamWhy = "";
+    private string? _steamError;
+    private bool _steamWatching;
+    private bool _steamImporting;
+    private CancellationTokenSource? _steamCts;
+    private long _steamBaseline;
+    private string? _steamContentDir;
+    private int _steamProbeGen;
 
     private string CurrentSourceLabel
     {
@@ -252,7 +347,11 @@
         });
     }
 
-    public void Dispose() => Center.OnChanged -= OnCenterChanged;
+    public void Dispose()
+    {
+        Center.OnChanged -= OnCenterChanged;
+        StopSteamWatch();
+    }
 
     /// <summary>P0-1：本地切换中 / Depot 正在写游戏目录 → 禁止再点版本行。
     /// 后台下载不在此列（它只写自己的缓存抽屉），所以下载别的版本不用等它。</summary>
@@ -295,6 +394,15 @@
         return Loc.T(k.HasManifest ? "未下载" : "缺 Manifest");
     }
 
+    /// <summary>
+    /// 官方给这两个版本开了常设测试版分支（Steam 属性 → 测试版 → legacy_1.5.6 / legacy_1.6.8）。
+    /// 不想在本工具里登录 Steam 的人，走那条路零成本、也不用我们托管任何二进制 —— 标在行上比写进文档有用。
+    /// <para>为什么只标这两个：Steam 只为 mod 生态的这两个断点开了分支，其他版本没有等价出口，
+    /// 给所有行都挂提示会把真正有用的两条淹掉。</para>
+    /// </summary>
+    private string BetaBranchTag(DepotDownloaderService.KnownVersion k)
+        => k.Version is "1.5.6" or "1.6.8" ? " · " + Loc.T("Steam 测试版可选") : "";
+
     /// <summary>这一版的下载任务（running/paused，按标题里的 manifest 认）。</summary>
     private TaskItem? VerTask(DepotDownloaderService.KnownVersion k) =>
         Center.Snapshot().FirstOrDefault(t => t.Kind == "gameversion"
@@ -324,7 +432,9 @@
         }
         if (!VerDl.IsAuthorized)
         {
-            _ = JS.InvokeVoidAsync("junigridJs.toast", LocService.Tr("请先在设置里完成 Steam 扫码授权"), "err");
+            // 没授权 → 不甩一句「去设置扫码」就完事：直接开「用 Steam 下载」这条路，
+            // 它不依赖那个凭据，而且下面会先自检、说清楚扫码到底为什么不通。
+            OpenSteamPanel(k);
             return;
         }
         try
@@ -498,7 +608,20 @@
 
     private async Task ApplyStagedAsync()
     {
-        if (_selectedStaged is not { } st || _manifestPath is null) return;
+        if (_selectedStaged is not { } st) return;
+        // v1.6.1：原先这里 `|| _manifestPath is null` 直接 return —— **页面上一行都不变**，
+        // 用户点版本号以后什么都没发生，只能得出「版本切换不了」这个结论（2026-11-15 反馈）。
+        // appmanifest 找不到 = 这个目录不是 Steam 库的一部分（拷来的游戏、被 Steam 移出库），
+        // 切版本要改这份清单，所以在这里确实切不了 —— 那就把原因说出来。
+        if (_manifestPath is null)
+        {
+            _error = LocService.Tr("找不到 Steam 的 appmanifest_413150.acf —— 这个游戏目录不在 Steam 库里"
+                + "（比如是从别的机器拷来的），切版本要改这份清单，所以在这里切不了。"
+                + "请先用 Steam 把游戏装/校验到这个目录，或用「导入本地包」后手动覆盖。");
+            AppLog.Warn("GameVersion", $"切换中止：找不到 appmanifest（gamePath={Cfg.Current.GamePath}）");
+            await InvokeAsync(StateHasChanged);
+            return;
+        }
         if (_gameRunning)
         {
             _error = LocService.Tr("游戏正在运行 — 请先退出后再切换版本");
@@ -542,9 +665,21 @@
             cfg.LastHistoricalLabel = st.Label;
             _gameVersion = Updater.GetGameVersion(cfg.GamePath);
             cfg.LastHistoricalInternalVersion = _gameVersion ?? "";
+            // 账本也跟着换到新版本：分类 / 安装账 / 备注 / 封面缓存记的都是「这一版 Mods 里有什么」，
+            // 换树不换账的话，切过去整页「未分类」（旧账还占着这些文件夹名）。
+            ModsIndexStore.SyncIfVersionChanged(cfg, _gameVersion, null);
             Cfg.Save(cfg);
             RefreshLibrary();
-            _ = JS.InvokeVoidAsync("junigridJs.toast", LocService.Tf("已切换到 {0}", st.Label), "ok");
+            // 本体切成了但 Mods 没完整回来时不许报绿灯：③ 失败不抛异常（本体已经换完，
+            // 抛了只会让收尾不跑），只留 LastApplyWarning，这里必须读它。
+            var applyWarn = DepotDownloaderService.LastApplyWarning;
+            if (applyWarn is not null)
+            {
+                _error = applyWarn;
+                _ = JS.InvokeVoidAsync("junigridJs.toast", applyWarn, "err");
+            }
+            else
+                _ = JS.InvokeVoidAsync("junigridJs.toast", LocService.Tf("已切换到 {0}", st.Label), "ok");
             // P0-1/P0-3：Mods 整包替换 → 广播已打开的页面重扫
             PageRefresh.Request("mods");
             // 首页与侧栏的版本号/ SMAPI 状态都是按磁盘本体算的，不重读会停在切换中途那次空值
@@ -557,13 +692,25 @@
         }
         catch (Exception ex)
         {
+            // v1.6.1：以前只把消息塞进 _error —— 弹窗一关（或用户没注意那一行小字）就
+            // 再也没有第二份证据，日志里一片空白，只能靠猜。切换失败必须留痕。
+            AppLog.Warn("GameVersion", $"切换 {st.Label}（manifest={st.ManifestId}）失败：{ex}");
             _error = ex.Message;
+            _ = JS.InvokeVoidAsync("junigridJs.toast", LocService.Tf("切换 {0} 失败：{1}", st.Label, ex.Message), "err");
         }
         finally
         {
             _busy = false;
             await InvokeAsync(StateHasChanged);
         }
+    }
+
+    /// <summary>没授权时唯一出路是去设置页扫一次码 —— 一键跳过去。跳页会卸载本弹窗
+    /// （Open 状态挂在 Home 上，Home 一离开就没了），所以不用手动关闭动画。</summary>
+    private void GoAuthorize()
+    {
+        _ = JS.InvokeVoidAsync("junigridJs.toast", LocService.Tr("扫完码回到这里点「下载」即可"));
+        Nav.NavigateTo("/settings");
     }
 
     private void CancelSwitch() => _switchCts?.Cancel();
@@ -629,6 +776,276 @@
         }
     }
 
+    // ------------------------------------------------------------------
+    // 「用 Steam 客户端下载」
+    //
+    // 为什么存在：DepotDownloader 出二维码前必须先连上 Steam 的 CM 中继，国内这一段经常整段断
+    // （实测日志：21 次 Connection to Steam failed、0 次出码）。Steam 客户端自己为玩星露谷本来就
+    // 登录着、也连得上，控制台的 download_depot 用的就是它自己的会话 —— 不需要扫码、不需要密码。
+    // ------------------------------------------------------------------
+
+    /// <summary>面板里可选的版本。优先用整理过顺序的 _ordered（已下载的置顶）；
+    /// 刚打开弹窗、后台还没读完盘时 _ordered 是空的，退回原始表 —— 否则面板里一个版本都没有。</summary>
+    private IEnumerable<DepotDownloaderService.KnownVersion> SteamPickList
+        => (_ordered.Count > 0 ? _ordered : _known).Where(x => x.HasManifest).Take(60);
+
+    /// <summary>打开面板。<paramref name="preset"/> 是用户点的那个版本（从行内「下载」进来时带）。</summary>
+    private void OpenSteamPanel(DepotDownloaderService.KnownVersion? preset)
+    {
+        if (_gameRunning)
+        {
+            _ = JS.InvokeVoidAsync("junigridJs.toast", LocService.Tr("游戏正在运行 — 请先退出后再下载"), "err");
+            return;
+        }
+        StopSteamWatch();
+        _steamOpen = true;
+        _steamError = null;
+        _steamStatus = "";
+        _steamWhy = LocService.Tr("正在自检 Steam 登录链路…");
+        // 默认挑第一个「还没有缓存、也不是当前版本」的，省得每次都手点
+        var pick = preset
+                   ?? SteamPickList.FirstOrDefault(x => !IsInstalled(x) && StagedOf(x) is null)
+                   ?? SteamPickList.FirstOrDefault();
+        if (pick is not null) SelectSteamVersion(pick);
+        StateHasChanged();
+        _ = ProbeSteamAsync();
+    }
+
+    /// <summary>自检只为把话说准：是「登录接口都不通」还是「中继全灭」，对策不一样，都不该再让人干等扫码。</summary>
+    private async Task ProbeSteamAsync()
+    {
+        var gen = ++_steamProbeGen;
+        try
+        {
+            var r = await SteamConsoleDepot.ProbeLoginPathAsync(CancellationToken.None);
+            if (gen != _steamProbeGen) return;
+            await InvokeAsync(() =>
+            {
+                _steamWhy = SteamConsoleDepot.DescribeProbe(r);
+                StateHasChanged();
+            });
+        }
+        catch (Exception ex)
+        {
+            if (gen != _steamProbeGen) return;
+            await InvokeAsync(() =>
+            {
+                _steamWhy = LocService.Tr("自检失败（不影响下面这条路）：") + ex.Message;
+                StateHasChanged();
+            });
+        }
+    }
+
+    private void SelectSteamVersion(DepotDownloaderService.KnownVersion k)
+    {
+        StopSteamWatch();
+        var appId = Cfg.Current.SteamAppId;
+        _steamManifest = k.ManifestId;
+        _steamCommand = SteamConsoleDepot.BuildCommand(appId, "413151", k.ManifestId);
+        _steamContentDir = SteamConsoleDepot.ContentDir(SteamService.FindSteamPath(), appId, "413151");
+        // 基线 = 命令执行前的体积：只认「和它不一样」的样本，否则上一次下过同版本、
+        // 或目录里本来就躺着半截包时，一开拍就会被判成下完
+        var snap = SteamConsoleDepot.Measure(_steamContentDir);
+        _steamBaseline = snap.Bytes;
+        _steamError = null;
+        _steamStatus = _steamContentDir is null
+            ? LocService.Tr("找不到 Steam 安装目录 —— 请先安装/启动 Steam，或用「导入本地包」")
+            : snap.Bytes > 0
+                ? LocService.Tf("这个目录里已经有 {0}（上一次下的）。执行命令后 Steam 会自己覆盖或补全", snap.Human)
+                : LocService.Tr("还没开始：点下面的按钮复制命令并打开控制台");
+        StateHasChanged();
+    }
+
+    private void CopyAndOpenConsole()
+    {
+        if (!CopyTextToClipboard(_steamCommand))
+        {
+            _steamError = LocService.Tr("复制到剪贴板失败");
+            _steamStatus = LocService.Tr("请手动选中上面那条命令复制（左键拖选即可）");
+            StateHasChanged();
+            return;
+        }
+        var running = SteamConsoleDepot.IsSteamRunning();
+        _steamError = null;
+        _steamStatus = running
+            ? LocService.Tr("已复制。在 Steam 的「控制台」输入框里 Ctrl+V 粘贴，回车")
+            : LocService.Tr("已复制。Steam 没在运行 —— 等它启动并登录完，再打开「控制台」粘贴");
+        StateHasChanged();
+        SteamConsoleDepot.OpenConsole();
+        if (_steamContentDir is not null) StartSteamWatch(_steamContentDir);
+    }
+
+    private void StartSteamWatch(string dir)
+    {
+        StopSteamWatch();
+        _steamWatching = true;
+        _steamCts = new CancellationTokenSource();
+        var ct = _steamCts.Token;
+        var baseline = _steamBaseline;
+        // 同时盯 Steam 控制台日志：Steam 报「No connection to content servers」这类失败时
+        // content 目录永远不涨，只盯目录的面板会傻等 90 分钟（2026-11-16 实机）
+        var logPath = SteamConsoleDepot.ConsoleLogPath(SteamService.FindSteamPath());
+        long logBase = 0;
+        try { if (logPath is not null && File.Exists(logPath)) logBase = new FileInfo(logPath).Length; } catch { }
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                while (!ct.IsCancellationRequested)
+                {
+                    await Task.Delay(2000, ct);
+                    var fail = SteamConsoleDepot.ScanConsoleFailure(logPath, logBase);
+                    if (fail is null) continue;
+                    await InvokeAsync(() =>
+                    {
+                        StopSteamWatch();
+                        _steamError = fail;
+                        _steamStatus = fail.Contains("content servers", StringComparison.OrdinalIgnoreCase)
+                            ? LocService.Tr("连不上 Steam 内容服务器（CDN），是网络问题：① Steam 设置→下载 换个下载地区，重启 Steam 再试；② 或开加速器/系统代理、或换手机热点后重启 Steam 再试。原样重试没用。")
+                            : LocService.Tr("Steam 控制台报了下载失败（原文见上）。检查磁盘空间与写入权限、确认 manifest 属于这个 depot 后重试；也可改用本程序下载或导入本地包。");
+                        StateHasChanged();
+                    });
+                    return;
+                }
+            }
+            catch (OperationCanceledException) { }
+        }, CancellationToken.None);
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var done = await SteamConsoleDepot.WaitForDownloadAsync(dir, baseline, async snap =>
+                {
+                    await InvokeAsync(() =>
+                    {
+                        _steamStatus = LocService.Tf("Steam 正在下载… 已写入 {0}（{1} 个文件）", snap.Human, snap.Files);
+                        StateHasChanged();
+                    });
+                }, ct);
+
+                if (ct.IsCancellationRequested) return;
+                await InvokeAsync(async () =>
+                {
+                    StopSteamWatch();   // 下完了：把控制台日志监听也停掉
+                    _steamWatching = false;
+                    if (done)
+                    {
+                        _steamStatus = LocService.Tr("看起来写完了，正在收进版本缓存…");
+                        StateHasChanged();
+                        await ImportSteamContentAsync();
+                    }
+                    else
+                    {
+                        _steamStatus = LocService.Tr(
+                            "等了很久也没等到「写完」。如果 Steam 控制台已经显示 Depot download complete，点右下角「我已下完，导入」");
+                        StateHasChanged();
+                    }
+                });
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception ex)
+            {
+                await InvokeAsync(() =>
+                {
+                    _steamWatching = false;
+                    _steamError = ex.Message;
+                    _steamStatus = ex.Message;
+                    StateHasChanged();
+                });
+            }
+        }, CancellationToken.None);
+    }
+
+    private void StopSteamWatch()
+    {
+        _steamWatching = false;
+        try { _steamCts?.Cancel(); } catch { }
+        try { _steamCts?.Dispose(); } catch { }
+        _steamCts = null;
+    }
+
+    private void StopWatching()
+    {
+        StopSteamWatch();
+        _steamStatus = LocService.Tr("已停止等待。Steam 那边的下载不受影响，下完后点「我已下完，导入」");
+        StateHasChanged();
+    }
+
+    private void ImportSteamContentManually() => _ = ImportSteamContentAsync();
+
+    private async Task ImportSteamContentAsync()
+    {
+        if (_steamImporting || _steamManifest is null || _steamContentDir is null) return;
+        StopSteamWatch();
+        _steamImporting = true;
+        _steamError = null;
+        _steamStatus = LocService.Tr("正在收进版本缓存…");
+        await InvokeAsync(StateHasChanged);
+        try
+        {
+            // 手动导入时 Steam 可能还在写：间隔 2.5 秒量两次，还在涨就退回去接着等。
+            // 半截包一旦被标成「已下完」，切过去进档会在 NPC 构造那里空引用闪退
+            //（09-22 00:04 WER 实录），所以这道闸不能省。
+            var a = SteamConsoleDepot.Measure(_steamContentDir);
+            await Task.Delay(2500);
+            var b = SteamConsoleDepot.Measure(_steamContentDir);
+            if (b.Bytes != a.Bytes)
+            {
+                _steamStatus = LocService.Tr("Steam 还在写文件（体积还在涨），等它下完再导入");
+                StartSteamWatch(_steamContentDir);
+                return;
+            }
+            if (!SteamConsoleDepot.HasGameBinary(_steamContentDir))
+                throw new DepotDownloaderService.DepotException(
+                    LocService.Tr("这个目录里还没有游戏本体 —— 命令可能没执行成功（或还早着）"));
+
+            var dir = _steamContentDir;
+            var manifest = _steamManifest;
+            var appId = Cfg.Current.SteamAppId;
+            var label = await Task.Run(() => Depot.ImportLocalPackage(dir, appId, "413151", manifest));
+
+            RefreshLibrary();
+            _steamOpen = false;
+            await InvokeAsync(StateHasChanged);
+            _ = JS.InvokeVoidAsync("junigridJs.toast",
+                LocService.Tf("已把 {0} 收进版本缓存，点版本号即可切换", label), "ok");
+        }
+        catch (Exception ex)
+        {
+            _steamError = ex.Message;
+            _steamStatus = ex is DepotDownloaderService.DepotException
+                ? ex.Message : LocService.Tr("导入失败：") + ex.Message;
+        }
+        finally
+        {
+            _steamImporting = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private void CloseSteamPanel()
+    {
+        StopSteamWatch();
+        _steamOpen = false;
+        _steamError = null;
+        StateHasChanged();
+    }
+
+    /// <summary>剪贴板会被别的程序短暂占用（Clipboard.SetText 抛 COMException），重试几次。</summary>
+    private static bool CopyTextToClipboard(string text)
+    {
+        for (var i = 0; i < 3; i++)
+        {
+            try
+            {
+                System.Windows.Clipboard.SetText(text);
+                return true;
+            }
+            catch { Thread.Sleep(60); }
+        }
+        return false;
+    }
+
     private void DoDeleteStaged()
     {
         var manifestId = _pendingDeleteId!;
@@ -646,6 +1063,9 @@
 
     private async Task Close()
     {
+        // 关窗要停掉目录监听：那是个 2 秒一轮的递归枚举，弹窗都没了还留着它只是白耗 IO
+        StopSteamWatch();
+        _steamOpen = false;
         // v1.1.7：本地应用进行中允许关闭 —— 取消本次切换，后台历史版本下载不受影响
         if (_busy)
         {

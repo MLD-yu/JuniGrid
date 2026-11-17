@@ -63,10 +63,15 @@ public sealed partial class ModService
     /// <summary>宿主目录：支持「顶层」和「捆绑包/子包」两种深度。禁用只把顶层改名（X → .X），
     /// 但每一段都试一次带点写法，别名捆绑包（.Bundle/Child）里的子包也能命中。</summary>
     private static string? ResolveHostDir(string gamePath, string host)
+        => HostDirUnder(Path.Combine(gamePath, "Mods"), host);
+
+    /// <summary>在<b>任意一个 Mods 根</b>（当前游戏、某个版本缓存、孤儿快照）里找宿主目录。
+    /// 归版要对着历史快照问同一句"这个宿主在不在这里"，所以判据必须只有一份。</summary>
+    internal static string? HostDirUnder(string modsRoot, string host)
     {
         var rel = NormalizeOverlayHost(host);
         if (rel.Length == 0) return null;
-        var cur = Path.Combine(gamePath, "Mods");
+        var cur = modsRoot;
         foreach (var seg in rel.Split('/', StringSplitOptions.RemoveEmptyEntries))
         {
             var hit = Directory.Exists(Path.Combine(cur, seg)) ? seg

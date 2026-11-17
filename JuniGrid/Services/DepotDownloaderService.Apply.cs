@@ -4,11 +4,64 @@ namespace JuniGrid.Services;
 
 public sealed partial class DepotDownloaderService
 {
+    /// <summary>切换收尾时把「内容包覆盖层」与台账对齐的钩子：入参游戏目录，返回要报给用户的话
+    /// （null = 全对齐）。由 App 启动时挂上，与 <c>NexusService.EnsureFreshToken</c> 同一写法。
+    /// <para>为什么是钩子而不是直接调 <c>ContentOverrideService</c>：对账要读写配置，而 apply 这条链
+    /// 是静态的、拿不到 <c>ConfigService</c>（<c>DepotDownloaderService</c> 是无参构造）。
+    /// 没挂（测试舱）就跳过，不影响切换本身。</para></summary>
+    public static Func<string, string?>? ReconcileContentPacks { get; set; }
+
+    /// <summary>切版本<b>之前</b>把内容包临时退回原版的钩子：入参游戏目录，返回要报给用户的话
+    /// （null = 干净退回了）。由 App 启动时挂上。
+    /// <para>为什么需要：⓪ 收存是「把当前游戏目录整目录收进版本包」，改过的 <c>Content</c>
+    /// 会被当成那个版本的原版永久存下去 —— 以后从那一版切回来，得到的原版是 mod 的图。
+    /// 这一步只动字节，<b>不动「哪一版应用过」的记忆</b>：切过去之后还要按记忆恢复
+    /// （见 <c>ContentOverrideService.RevertAllForSwitch</c> / <c>ReconcileAfterVersionSwitch</c>）。</para></summary>
+    public static Func<string, string?>? RevertContentPacksBeforeSwitch { get; set; }
+
+    /// <summary>启动时收尾上一次被打断的切换：游戏目录里的 <c>.junigrid-old-body</c> 是 ② 挪进去的
+    /// 旧本体，本该由后台任务删掉，进程被杀 / 断电就永远留在那儿（几百 MB 死空间，界面上看不见）。
+    /// <para>它一定是冗余的：⓪ 收存失败现在会中止切换，所以走到 ② 时旧本体要么已进版本包、
+    /// 要么该版本本来就有完整包。这里只补完那个<b>已经决定好</b>的删除，不做新决定。</para></summary>
+    public static void ReclaimInterruptedSwitch(string? gamePath)
+    {
+        if (string.IsNullOrWhiteSpace(gamePath)) return;
+        var oldBody = Path.Combine(gamePath, ".junigrid-old-body");
+        if (!Directory.Exists(oldBody)) return;
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                DeleteTreeParallel(oldBody);
+                AppLog.Warn("DepotDownloader", $"已清完上次切换中断留下的旧本体残留：{oldBody}");
+            }
+            catch (Exception ex)
+            {
+                AppLog.Warn("DepotDownloader", $"旧本体残留没清掉 {oldBody}：{ex.Message}");
+            }
+        });
+    }
+
+    /// <summary>最近一次切换里「本体已经换成目标版本、但 Mods 没能完整恢复」这类非致命问题的原话。
+    /// <para>为什么要有它：③ 失败时本体已经换完了，抛异常只会让「记部署版本」等收尾不跑，
+    /// 更糟；所以这里不抛。但调用方原先无条件报「已就绪 / 已切换到」，而失败提示只走
+    /// <c>progress?.Report</c> —— 后台那条路传的 progress 是 null，于是用户看到绿灯、mod 其实没回来
+    /// （2026-11-16 审查实测）。调用方成功后<b>必须</b>读它，非空就按失败报。</para>
+    /// 切换由 ApplyGate 串行化，所以静态字段不会被两次切换同时写。</summary>
+    public static string? LastApplyWarning { get; private set; }
+
     private static void ApplyStagingExclusive(string staging, string gamePath,
         IProgress<Progress>? progress, string? currentGameVersion)
     {
+        LastApplyWarning = null;
         var t = new PhaseTimer();
-        ApplyGate.Wait();
+        // v1.6.1：原来是无参 Wait() —— 只要有一次切换卡在拷贝/改名上没收尾（关窗口、磁盘满、
+        // 文件被占用），后面每一次切换都会**无限期**排在这把闸后面：界面上一行都不动，
+        // 用户看到的就是「版本切换不了」，而且没有任何提示。给个上限，超时就说人话。
+        if (!ApplyGate.Wait(TimeSpan.FromMinutes(10)))
+            throw new DepotException(LocService.Tr(
+                "上一次版本切换还没结束（已等 10 分钟）—— 可能是拷贝还没完成或有个文件被占用。"
+                + "请先退出游戏、关掉资源管理器里打开的 Mods 文件夹，再重启本程序后重试。"));
         t.Lap(LocService.Tr("等闸门"));
         Interlocked.Increment(ref _applyActive);
         SetModWatchersEnabled(false);         // Mods 页的 FileSystemWatcher 是常驻句柄，不关它改名必败
@@ -30,6 +83,20 @@ public sealed partial class DepotDownloaderService
             // 趁游戏目录还没被碰，先把上次收起来的档放回、再给「切过去就回不去」的档留底。
             PrepareSavesFor(staging, progress);
             t.Lap(LocService.Tr("存档准备"));
+            // v1.6.14：⓪ 收存之前先把内容包退回原版 —— 否则被我们盖过的图会被当成
+            // 「那个版本的原版」烤进版本包，以后从那一版切回来还原出的就是 mod 的图。
+            // 只动字节，不动"哪一版应用过"的记忆，切完还要按记忆恢复。
+            try
+            {
+                var revertWarn = RevertContentPacksBeforeSwitch?.Invoke(gamePath);
+                if (revertWarn is not null)
+                {
+                    LastApplyWarning = LastApplyWarning is null ? revertWarn : LastApplyWarning + " " + revertWarn;
+                    progress?.Report(new Progress(revertWarn, null));
+                }
+            }
+            catch (Exception ex) { AppLog.Warn("DepotDownloader", "切换前还原内容包失败（本体照常切换）：" + ex.Message); }
+            t.Lap(LocService.Tr("还原内容包"));
             ApplyStaging(staging, gamePath, progress, currentGameVersion);
             t.Lap(LocService.Tr("应用本体与 Mods"));
             // 应用完整性：缺关键 Content 时进档会在 NPC 构造里 NRE 闪退（1.0 实测）
@@ -45,6 +112,20 @@ public sealed partial class DepotDownloaderService
             // 用 Task.Run 包一层：这里可能是 UI 线程，直接 .Result 会因 SynchronizationContext 死锁。
             Task.Run(() => EnsureXnaForAppliedGameAsync(gamePath, progress)).GetAwaiter().GetResult();
             t.Lap(LocService.Tr("XNA 补装"));
+            // 内容包对账：让盘上的覆盖状态与台账一致。放在所有 apply 路径共用的这一处，
+            // 弹窗 / 下载 / 后台 / 测试台统一覆盖（与 XNA 补装下沉同一个理由）。
+            // 失败不拦切换 —— 本体已经换完了，只把话说清楚。
+            try
+            {
+                var reconcile = ReconcileContentPacks?.Invoke(gamePath);
+                if (reconcile is not null)
+                {
+                    LastApplyWarning = LastApplyWarning is null ? reconcile : LastApplyWarning + " " + reconcile;
+                    progress?.Report(new Progress(reconcile, null));
+                }
+            }
+            catch (Exception ex) { AppLog.Warn("DepotDownloader", "内容包对账失败: " + ex.Message); }
+            t.Lap(LocService.Tr("内容包对账"));
         }
         finally
         {
@@ -263,15 +344,16 @@ public sealed partial class DepotDownloaderService
         => Path.Combine(Path.GetDirectoryName(Path.GetFullPath(
                gamePath.TrimEnd(Path.DirectorySeparatorChar, '/')))!, ".junigrid-shared-store");
 
-    /// <summary>把当前游戏目录整个收成「当前版本」的缓存包：补 manifest 元数据 → 让包自含 SMAPI。
-    /// 同盘＝改名（瞬时、零拷贝）；跨盘＝复制＋逐文件校验，<b>校验过了才删源</b>。
-    /// 返回包路径＝已收好；返回 null＝这次不收（该版本已有包，或改名被占用/权限挡住，
-    /// 那种情况下 ② 自己也会因占用报错，不会假装成功）。
-    /// <b>跨盘复制做不到时抛 <see cref="DepotException"/> 拦住本次切换。</b>老代码在这里是
-    /// "失败就 return null"，于是 ② 把旧本体删了 —— 切换显示成功，用户下次切回来才发现
-    /// 要重下 ~660 MB，而且中间没有任何地方告诉过他"这个版本没被保留"（2026-10-03 实测连丢两次）。
+    /// <summary>把当前游戏目录收成「当前版本」的缓存包：补 manifest 元数据 → 让包自含 SMAPI。
+    /// 同盘＝整目录改名（瞬时、零拷贝），改名被占用挡住时回落「逐文件硬链接＋核对」；
+    /// 跨盘＝复制＋逐文件校验，<b>校验过了才删源</b>。
+    /// 返回包路径＝已收好；返回 null＝该版本已有完整包，不必再收。
+    /// <b>收不下来一律抛 <see cref="DepotException"/> 拦住本次切换，绝不返回 null 让 ② 去删旧本体。</b>
+    /// 老代码在"同盘改名失败"与"跨盘存不下"两处都是 return null，于是 ② 把旧本体删了 ——
+    /// 切换显示成功，用户下次切回来才发现要重下 ~660 MB，中间没有任何地方告诉过他
+    /// "这个版本没被保留"（2026-10-03 跨盘连丢两次；2026-11-15 同盘改名被挡又丢一次 1.6.15）。
     /// 静默删是不可接受的：存不下就该停下来问，而不是替用户决定丢什么。</summary>
-    private static string? TryAdoptCurrentBody(string gamePath, string targetStaging,
+    internal static string? TryAdoptCurrentBody(string gamePath, string targetStaging,
         string currentGameVersion, IProgress<Progress>? progress)
     {
         // 包名前缀抄目标包（413150-413151-…）：ApplyStaging 手上没有 appId/depotId，
@@ -281,7 +363,15 @@ public sealed partial class DepotDownloaderService
         var prefix = seg.Length >= 3 ? seg[0] + "-" + seg[1] : "413150-413151";
         var parts = prefix.Split('-');
         var pkg = Path.Combine(StagingRoot, prefix + "-" + SanitizeFolderName(currentGameVersion));
-        if (Directory.Exists(pkg)) return null;
+        // 已有【完整】包 = 这个版本已经收好了，不必再收。已有但不完整的包绝不能当"已收存"：
+        // 返回 null 会让 ② 照常删掉现役本体，而包里那份是半截的 —— 与整目录改名失败是同一个丢法。
+        if (Directory.Exists(pkg))
+        {
+            if (IsStagedPackageComplete(pkg)) return null;
+            throw new DepotException(LocService.Tf(
+                "版本 {0} 的本地缓存不完整，收不下现役本体。本次切换已停止，你的游戏一个文件都没动。"
+                + "请到版本管理里删掉这个版本的缓存后重试。", currentGameVersion));
+        }
         // StagingRoot 的 getter 只算路径不建目录 —— 全新缓存（刚装完机、刚换过缓存目录）时
         // 父目录不存在，Directory.Move 会抛 DirectoryNotFoundException 被下面当成"不收"，
         // 于是 ② 把旧本体删掉：这跟跨盘无关，是"第一次切版本必然丢一次"。先把父目录建出来。
@@ -309,9 +399,37 @@ public sealed partial class DepotDownloaderService
             }
             catch (Exception ex)
             {
+                // 整目录改名被占用挡住。实测 2026-11-15 18:07：外部进程扣着游戏目录句柄，
+                // 那一分钟里所有目录改名全失败（27 份存档 + 游戏目录 + Mods），而读/写/建名字都通。
+                // 老代码在这里 return null，② 照常把旧本体删掉铺新版本 —— 切换报成功，
+                // 用户下次切回来才发现要重下 668 MB，中间没有任何地方告诉过他这一版没保住。
+                // 改成给本体在包里逐个建硬链接：不需要动源目录，字节由包持有，② 删掉的只是名字。
+                // 这与 ② 写入目标版本用的是同一套写法（本体只读，硬链接安全；Mods 不走这条）。
                 AppLog.Warn("DepotDownloader",
-                    $"当前本体未能收进版本包（{ex.Message}）—— 游戏目录未动，本次切换按旧行为覆盖");
-                return null;
+                    $"当前本体整目录改名被挡（{ex.Message}），改用硬链接收存到 {pkg}");
+                try
+                {
+                    Directory.CreateDirectory(pkg);
+                    // 不传 progress：CopyGameBodyParallel 的播报文案是"正在写入目标版本文件"，
+                    // 收存阶段挂上去会说反。上面那句"正在把当前本体收进版本 X 的缓存"留着就够。
+                    CopyGameBodyParallel(gamePath, pkg, null);
+                    var missing = VerifyBodyTree(gamePath, pkg);
+                    if (missing is not null)
+                    {
+                        DeleteHalfPackage(pkg);
+                        throw new DepotException(LocService.Tf(
+                            "收存当前版本 {0} 后核对没过（{1}）。本次切换已停止，你的游戏一个文件都没动。",
+                            currentGameVersion, missing));
+                    }
+                }
+                catch (DepotException) { throw; }
+                catch (Exception ex2)
+                {
+                    DeleteHalfPackage(pkg);
+                    throw new DepotException(LocService.Tf(
+                        "收存当前版本 {0} 失败：{1}。本次切换已停止，你的游戏一个文件都没动。",
+                        currentGameVersion, ex2.Message));
+                }
             }
         }
         else
@@ -371,15 +489,26 @@ public sealed partial class DepotDownloaderService
     /// <summary>源里每一个文件都必须在目标里且大小一致。null＝通过；否则一句人话说明缺什么。
     /// 这条是"删源之前唯一的凭据"，所以宁可严：空目录也算不过。</summary>
     internal static string? VerifyTree(string src, string dest)
+        => VerifyFiles(src, dest, Directory.EnumerateFiles(src, "*", SearchOption.AllDirectories));
+
+    /// <summary>只比本体。收存时 Mods / smapi / 共享存储是故意不收的（各有自己的去处），
+    /// 拿全树判据去比会把它们报成"缺文件"，把正常切换拦死。</summary>
+    internal static string? VerifyBodyTree(string src, string dest)
+        => VerifyFiles(src, dest, EnumerateBodyFiles(src));
+
+    private static string? VerifyFiles(string src, string dest, IEnumerable<string> files)
     {
         int n = 0;
-        foreach (var f in Directory.EnumerateFiles(src, "*", SearchOption.AllDirectories))
+        foreach (var f in files)
         {
             n++;
             var rel = Path.GetRelativePath(src, f);
             var to = Path.Combine(dest, rel);
             long len;
-            try { len = new FileInfo(f).Length; } catch { continue; }
+            // 读不到大小就判失败，绝不 continue 跳过 —— 跳过等于这个文件没被核对，
+            // 而跨盘那条路核对通过后就删源，两边都没了（2026-11-16 审查）。
+            try { len = new FileInfo(f).Length; }
+            catch (Exception ex) { return LocService.Tf("{0} 读不到大小：{1}", rel, ex.Message); }
             if (!File.Exists(to)) return LocService.Tf("目标里找不到 {0}", rel);
             long got;
             try { got = new FileInfo(to).Length; }
@@ -424,6 +553,34 @@ public sealed partial class DepotDownloaderService
         string? adoptedPkg = null;
 
         var curStaging = FindStagingByVersionLabel(currentGameVersion);
+        // v1.6.1：**半截包不能冒充「当前版本已归档」**。
+        // 下载/上次切换中断会在 depot-staging 里留一个只剩 Mods、没有 .junigrid-complete
+        // 的目录（实机 2026-11-14：413150-413151-1.6.15 里只有 405 MB Mods，本体一个字节没进去）。
+        // 之后的切换看到 curStaging 非 null 就跳过 ⓪ 的整目录收存，于是：
+        //   ① 当前 Mods 往那个**已有内容的** Mods 抽屉里搬 → 目标非空，核对不过 → modsMoveError
+        //      → 整次切换中止，游戏目录没动，用户看到的就是「点了版本号，切不了」；
+        //   ② 就算 ① 侥幸过了，切走之后当前本体也没被保存，想切回来只能重下 668 MB。
+        // 这里先把它挪进 _incomplete/（不删，Mods 还在里面），再按「没有包」走 ⓪。
+        if (curStaging is not null && !IsStagedPackageComplete(curStaging))
+        {
+            var quarantine = Path.Combine(StagingRoot, "_incomplete",
+                Path.GetFileName(curStaging.TrimEnd(Path.DirectorySeparatorChar, '/'))
+                + "-" + DateTime.Now.ToString("yyyyMMdd_HHmmss"));
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(quarantine)!);
+                Directory.Move(curStaging, quarantine);
+                AppLog.Warn("DepotDownloader",
+                    $"当前版本包不完整（缺 {CompleteMarkName}）：已挪到 {quarantine}，本次重新收存当前本体");
+                curStaging = null;
+            }
+            catch (Exception ex)
+            {
+                // 挪不动（目录被占用 / 权限）就保留旧行为，至少别把切换拦死在这里
+                AppLog.Warn("DepotDownloader",
+                    $"残缺版本包挪不动（{ex.Message}），本次沿用旧行为：不重新收存当前本体");
+            }
+        }
         var gameModsHasEntries = Directory.Exists(gameMods)
             && Directory.EnumerateFileSystemEntries(gameMods).Any();
         // 兜底：目标版本 == 当前版本时，「游戏里的 Mods」本身就是「这个版本的 Mods」——
@@ -572,13 +729,25 @@ public sealed partial class DepotDownloaderService
                 ParallelCopyDirectory(gameMods, safety, skipTrash: true, progress, "保底备份 Mods");
                 if (!Directory.Exists(safety) || !Directory.EnumerateFileSystemEntries(safety).Any())
                     safetyErr = LocService.Tr("备份目录为空");
+                else
+                {
+                    // 只查「非空」不够：硬链接拷贝会静默吞掉单文件失败，链成一个就报成功。
+                    // 这份快照是清游戏目录前最后的凭据，必须逐文件核对（与 ① 同一判据）。
+                    var bad = CountCopyMismatches(gameMods, safety);
+                    if (bad > 0) safetyErr = LocService.Tf("备份里有 {0} 个文件缺失或大小不符", bad);
+                }
             }
             catch (Exception ex) { safetyErr = ex.Message; }
 
             if (safetyErr is not null)
+            {
+                // 半截快照必须清掉：留着它，下次孤儿归位会把这份残缺的当成一份完整 mod 搬走。
+                // 源（游戏里的 Mods）一个字节没动，删副本不丢东西。
+                try { DeleteTreeParallel(Path.GetDirectoryName(safety)!); } catch { }
                 throw new DepotException(
                     $"当前 Mods 无法备份到 {safety}（{safetyErr}），已中止切换 —— 游戏目录未被改动。" +
                     "请检查缓存所在磁盘的剩余空间与写入权限后重试。");
+            }
             modsMovedTo = safety;
             AppLog.Warn("DepotDownloader", $"Mods 保底快照已写入 {safety}");
         }
@@ -681,6 +850,25 @@ public sealed partial class DepotDownloaderService
             var targetHasMods = targetCanUseMods
                 && Directory.Exists(targetMods)
                 && Directory.EnumerateFileSystemEntries(targetMods).Any();
+            // 半截抽屉没有"应有清单"可比，判不出完整性。但旁边躺着 Mods-incomplete-<时间戳>
+            // 就是「这个抽屉曾被一次中断的拷贝写过」的硬证据 —— 只认证据、不猜：
+            // 有残副本就提醒一句，没有就不出声（否则所有老包都会被误报成不完整）。
+            if (targetHasMods)
+            {
+                try
+                {
+                    var half = Directory.EnumerateDirectories(staging, "Mods-incomplete-*").FirstOrDefault();
+                    if (half is not null)
+                    {
+                        var warn = LocService.Tf(
+                            "该版本的 Mods 抽屉可能不完整（旁边有中断留下的残副本 {0}），已按现有内容恢复。",
+                            Path.GetFileName(half));
+                        LastApplyWarning = LastApplyWarning is null ? warn : LastApplyWarning + " " + warn;
+                        progress?.Report(new Progress(warn, null));
+                    }
+                }
+                catch { }
+            }
             if (sameVersionApply && gameModsHasEntries)
             {
                 // 原地保留：游戏里的就是这版本的，现有条目全都算「合法」
@@ -694,19 +882,20 @@ public sealed partial class DepotDownloaderService
             {
                 foreach (var n in Directory.EnumerateFileSystemEntries(targetMods))
                     allowedLiveMods.Add(Path.GetFileName(n));
+                // 只清内容、不删目录本身：ClearDirectoryParallel 跳过回收站，而
+                // Directory.Delete(gameMods, true) 会连它一起删 —— 那是用户取回已删 mod 的地方。
+                // 留在原地的回收站由 MoveDirectoryVerified 并进 targetMods，再随改名一起回来。
                 if (Directory.Exists(gameMods)) ClearDirectoryParallel(gameMods);
-                if (Directory.Exists(gameMods))
-                {
-                    try { Directory.Delete(gameMods, true); } catch { }
-                }
                 if (MoveDirectoryVerified(targetMods, gameMods, null, progress, "恢复 Mods") == DirMove.Failed)
                 {
                     // 到这里本体和 SMAPI 已经换成目标版本了，中止只会更糟 —— 说清楚就好：
                     // 残缺的落点被挪开，源（该版本抽屉）完整保留，mod 一个没丢
                     AppLog.Warn("DepotDownloader", $"恢复 Mods 核对不通过，源完整保留在 {targetMods}");
-                    progress?.Report(new Progress(
+                    var warn =
                         LocService.Tf("该版本的 Mods 没能完整恢复到游戏目录（源仍完整保留在 {0}）—— ", targetMods) +
-                        LocService.Tr("请清理磁盘空间或关闭占用 Mods 的程序后，重新切换一次这个版本。"), null));
+                        LocService.Tr("请清理磁盘空间或关闭占用 Mods 的程序后，重新切换一次这个版本。");
+                    LastApplyWarning = warn;
+                    progress?.Report(new Progress(warn, null));
                 }
                 else WriteSizeCache(staging);
             }
@@ -715,11 +904,8 @@ public sealed partial class DepotDownloaderService
                 // 目标版本没有可用 Mods → 游戏目录必须先清空。
                 // 同盘「改名迁移」失败时会走拷贝（源目录还在），若这里只 CreateDirectory
                 // 不清盘，上一版本的 Mods 会原样留在 1.0 这类空版本上（实测 143 个）。
-                if (Directory.Exists(gameMods))
-                {
-                    ClearDirectoryParallel(gameMods);
-                    try { Directory.Delete(gameMods, true); } catch { }
-                }
+                // 只清内容、不删目录本身 —— 回收站要留在原地（ClearDirectoryParallel 跳过它）。
+                if (Directory.Exists(gameMods)) ClearDirectoryParallel(gameMods);
                 Directory.CreateDirectory(gameMods);
 
                 if (!targetCanUseMods)
@@ -741,8 +927,9 @@ public sealed partial class DepotDownloaderService
                         if (MoveDirectoryVerified(orphanMods, gameMods, null, progress, "恢复 Mods") == DirMove.Failed)
                         {
                             AppLog.Warn("DepotDownloader", $"从孤儿备份恢复 Mods 核对不通过，源保留在 {orphanMods}");
-                            progress?.Report(new Progress(
-                                LocService.Tf("孤儿区的 Mods 没能完整恢复（源仍保留在 {0}）—— 请清理磁盘后重新切换一次。", orphanMods), null));
+                            var warn = LocService.Tf("孤儿区的 Mods 没能完整恢复（源仍保留在 {0}）—— 请清理磁盘后重新切换一次。", orphanMods);
+                            LastApplyWarning = warn;
+                            progress?.Report(new Progress(warn, null));
                         }
                         else AppLog.Warn("DepotDownloader", $"Mods 已从孤儿备份恢复 {orphanMods}");
                     }
@@ -775,7 +962,14 @@ public sealed partial class DepotDownloaderService
                 }
             }
         }
-        catch (Exception ex) { AppLog.Warn("DepotDownloader", "恢复 Mods 失败: " + ex.Message); }
+        catch (Exception ex)
+        {
+            AppLog.Warn("DepotDownloader", "恢复 Mods 失败: " + ex.Message);
+            var warn = LocService.Tf("恢复 Mods 失败：{0}。", ex.Message)
+                       + LocService.Tr("请清理磁盘空间或关闭占用 Mods 的程序后，重新切换一次这个版本。");
+            LastApplyWarning = warn;
+            progress?.Report(new Progress(warn, null));
+        }
 
         // ③z 在途复制的收尾回收：闸门只保证「按下切换的那一刻起 1.2 秒没动静」，
         // 复制暂停后又恢复就会把文件落进「新版本」的 Mods。必须放在 ④ 之前 ——

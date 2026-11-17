@@ -118,14 +118,21 @@ check("U8 普通卸载不动缓存目录/设置",
       os.path.isdir(plan["CustomCacheDirs"][0]) and os.path.isdir(plan["AppDataDir"]))
 
 # ── 行为检查 B：彻底删除 ────────────────────────────────────────────
+# 契约（2026-11-15 定）：彻底删除 = 「按清单删程序文件」+「额外删设置/缓存/登录态」，
+# 它<b>不再</b>拥有整棵递归安装目录的权力。理由见 UninstallWindow.xaml.cs 里那段注释：
+# 安装目录可以是 C:\Users\<名>，一盘递归就是灾难，而盘根闸只认 'C:\' 一种写法。
 root2, app2, plan2, plan2_path = fixture("purge", purge=True)
 r2 = run_cleanup(plan2_path)
-check("U9 彻底删除：安装目录整棵删掉（含用户文件）", not os.path.exists(app2))
+check("U9 彻底删除：程序文件与清单删净，安装目录里的用户文件不被递归端掉",
+      os.path.isfile(os.path.join(app2, "UserFile.txt"))
+      and not os.path.exists(os.path.join(app2, "JuniGrid.exe"))
+      and not os.path.exists(os.path.join(app2, "data"))
+      and not os.path.exists(os.path.join(app2, "junigrid-files.txt")))
 check("U10 彻底删除：设置目录与缓存目录一起删",
       not os.path.exists(plan2["AppDataDir"]) and not os.path.exists(plan2["CustomCacheDirs"][0]))
-check("U11 彻底删除：报告写明已清空",
+check("U11 彻底删除：报告如实写出留下来的用户文件",
       os.path.exists(plan2["ReportPath"])
-      and "清空" in io.open(plan2["ReportPath"], encoding="utf-8-sig").read())
+      and "UserFile.txt" in io.open(plan2["ReportPath"], encoding="utf-8-sig").read())
 
 # ── 行为检查 C：父进程还活着、文件真被锁住 ⇒ 必须等它退出再删 ────────
 # A/B 两段用的是 ParentPid=999999（不存在的进程），所以"等父进程退出"这条<b>根因</b>路径
@@ -242,6 +249,36 @@ run_cleanup(plan5_path)
 check("U16 清单条目是目录 ⇒ 跳过、不递归删（同名目录里用户文件必须活着）",
       os.path.isfile(os.path.join(app5, "portrait-covers", "用户自己的图.png"))
       and not os.path.exists(os.path.join(app5, "JuniGrid.exe")))
+
+# ── 行为检查 F：彻底删除也不许递归安装目录 ──────────────────────────
+# 用户把 JuniGrid 装在了一个「装满了别的东西」的目录里（家目录 / 裸盘上的项目文件夹 /
+# 素材盘），然后勾了彻底删除。这条钉子钉的是：那个目录里非清单的内容一个字节都不能少。
+root6 = os.path.join(TMP, "purge-foreign")
+app6 = os.path.join(root6, "app")
+os.makedirs(os.path.join(app6, "整个游戏本体", "Content"))
+io.open(os.path.join(app6, "JuniGrid.exe"), "w", encoding="utf-8").write("exe")
+io.open(os.path.join(app6, "junigrid-files.txt"), "w", encoding="utf-8").write("JGMF1\nJuniGrid.exe\n")
+io.open(os.path.join(app6, "整个游戏本体", "Content", "big.xnb"), "w", encoding="utf-8").write("20GB")
+for d in ("appdata", "localappdata", "legacytemp"):
+    os.makedirs(os.path.join(root6, d), exist_ok=True)
+plan6 = {
+    "ParentPid": 999999,
+    "InstallDir": app6,
+    "ManifestFiles": ["JuniGrid.exe"],
+    "HadManifest": True,
+    "PurgeUserData": True,
+    "AppDataDir": os.path.join(root6, "appdata"),
+    "LocalAppDataDir": os.path.join(root6, "localappdata"),
+    "LegacyTempDir": os.path.join(root6, "legacytemp"),
+    "CustomCacheDirs": [],
+    "ReportPath": os.path.join(root6, "report.txt"),
+}
+plan6_path = os.path.join(root6, "plan.json")
+io.open(plan6_path, "w", encoding="utf-8").write(json.dumps(plan6, ensure_ascii=False))
+run_cleanup(plan6_path)
+check("U17 彻底删除：安装目录里非清单的大目录一个字节都不动（不许整棵递归）",
+      os.path.isfile(os.path.join(app6, "整个游戏本体", "Content", "big.xnb"))
+      and not os.path.exists(os.path.join(app6, "JuniGrid.exe")))
 
 print("\n".join(f'{"PASS " if ok else "FAIL "}{n}' + (f"  -- {d}" if d and not ok else "")
                 for n, ok, d in out))

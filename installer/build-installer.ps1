@@ -29,19 +29,22 @@ $deps = Join-Path $repo 'installer\deps'
 $tools = Join-Path $sc 'tools\DepotDownloader'
 if (-not (Test-Path (Join-Path $tools 'DepotDownloader.exe'))) {
     New-Item -ItemType Directory -Force $tools | Out-Null
-    # Prefer trimmed self-contained (~12MB); then framework (~2.5MB, needs .NET 9+); then full (~32MB zip)
+    # 打包优先级：framework（官方 ~2.5MB，需 .NET 9+）→ full（官方自包含 ~32MB）→ trimmed 兜底。
+    # ⚠ trimmed 放最后且已知有缺陷（2026-11-13 实测）：trim 裁掉 protobuf-net 反射后 QR 认证必抛
+    #   "Property Get method was not found"，装出去就是个扫不了码的安装器。只在没有官方包时应急用。
+    #   framework 包在没 .NET 9+ 的机器上由 EnsureDepotDownloaderAsync 自动换装自包含版。
     $ddTrimmed = Join-Path $deps 'DepotDownloader-win-x64-trimmed.zip'
     $ddFramework = Join-Path $deps 'DepotDownloader-framework.zip'
     $ddFull = Join-Path $deps 'DepotDownloader-windows-x64.zip'
-    if (Test-Path $ddTrimmed) {
-        Expand-Archive -Path $ddTrimmed -DestinationPath $tools -Force
-        Write-Host "Bundled DepotDownloader trimmed (~12MB, offline)"
-    } elseif (Test-Path $ddFramework) {
+    if (Test-Path $ddFramework) {
         Expand-Archive -Path $ddFramework -DestinationPath $tools -Force
         Write-Host "Bundled DepotDownloader framework (~8MB, needs .NET 9+)"
     } elseif (Test-Path $ddFull) {
         Expand-Archive -Path $ddFull -DestinationPath $tools -Force
         Write-Host "Bundled DepotDownloader full self-contained (~78MB)"
+    } elseif (Test-Path $ddTrimmed) {
+        Expand-Archive -Path $ddTrimmed -DestinationPath $tools -Force
+        Write-Warning "Bundled KNOWN-BROKEN trimmed DepotDownloader (QR login broken) - drop official DepotDownloader-framework.zip into installer\deps!"
     } else {
         Write-Host "NOTE: no DepotDownloader package in installer\deps; will download at runtime"
     }

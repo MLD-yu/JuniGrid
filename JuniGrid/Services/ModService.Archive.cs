@@ -538,23 +538,40 @@ public sealed partial class ModService
         catch { return null; }
     }
 
-    /// <summary>v1.2.0：一组 manifest 里是否存在 UniqueID 与期望值（忽略大小写）一致的子包。</summary>
-    private static bool ManifestsContainUid(string[] manifestPaths, string expectedUid)
+    /// <summary>一组 manifest 里登记的 UniqueID（去重、保持出现顺序）。
+    /// <para>取键时忽略大小写：SMAPI 的字段叫 <c>UniqueID</c>，但社区里确实有作者写成
+    /// <c>UniqueId</c>/<c>uniqueid</c>，而 <c>TryGetProperty</c> 是严格区分大小写的 ——
+    /// 严格匹配会把这类包的 UID 读成空，于是"依赖装不上"看起来像"这个包不含该依赖"。
+    /// 实测 2026-11-15：<c>aedenthorn.CustomWallsAndFloors</c> 的接管页 #3010
+    /// 明明下载了、也解压了，却报"候选不含"，用户一轮点掉四次下载配额。</para></summary>
+    private static List<string> ReadManifestUids(string[] manifestPaths)
     {
+        var list = new List<string>();
         foreach (var mf in manifestPaths)
         {
             try
             {
                 using var doc = JsonDocument.Parse(ReadManifestText(mf), ManifestJson);
-                if (doc.RootElement.ValueKind == JsonValueKind.Object
-                    && doc.RootElement.TryGetProperty("UniqueID", out var u)
-                    && string.Equals(u.GetString(), expectedUid, StringComparison.OrdinalIgnoreCase))
-                    return true;
+                if (doc.RootElement.ValueKind != JsonValueKind.Object) continue;
+                foreach (var prop in doc.RootElement.EnumerateObject())
+                {
+                    if (!prop.Name.Equals("UniqueID", StringComparison.OrdinalIgnoreCase)) continue;
+                    var uid = prop.Value.ValueKind == JsonValueKind.String ? prop.Value.GetString() : null;
+                    if (!string.IsNullOrWhiteSpace(uid)
+                        && !list.Contains(uid!.Trim(), StringComparer.OrdinalIgnoreCase))
+                        list.Add(uid.Trim());
+                    break;
+                }
             }
             catch { }
         }
-        return false;
+        return list;
     }
+
+    /// <summary>v1.2.0：一组 manifest 里是否存在 UniqueID 与期望值（忽略大小写）一致的子包。</summary>
+    private static bool ManifestsContainUid(string[] manifestPaths, string expectedUid)
+        => ReadManifestUids(manifestPaths)
+            .Any(u => string.Equals(u, expectedUid, StringComparison.OrdinalIgnoreCase));
 
     /// <summary>剥掉子包名开头的标记前缀，如 "[BL] Downtown Zuzu" → "Downtown Zuzu"。
     /// SMAPI 社区惯用 "[XX] " 标注内容包类型（[CP]/[CC]/[DLL]…）。</summary>

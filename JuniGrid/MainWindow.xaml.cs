@@ -338,6 +338,56 @@ public partial class MainWindow : Window
             NexusWebDownloadService.NxmLinkDetected += App.DispatchNxm;
             Log("DI configured");
 
+            // 星露谷历史版本表：先同步读本机缓存（5KB，可以忽略耗时），再后台拉在线签名副本。
+            // 顺序不能反 —— 后台那份是异步的，界面随时可能读表，先让"上次看到的新版本"在。
+            // 「加一个游戏版本不用发版」靠的就是这一步，见 docs/游戏版本表托管.md。
+            using (Services.PerfScope.Enter("启动/版本表"))
+            {
+                GameVersionCatalog.LoadDiskCache();
+                GameVersionCatalog.RefreshInBackground();
+            }
+
+            // 上次切换被打断时，② 挪进 .junigrid-old-body 的旧本体没人收尾 —— 补完那个已决定的删除
+            using (Services.PerfScope.Enter("启动/切换残留收尾"))
+                Services.DepotDownloaderService.ReclaimInterruptedSwitch(
+                    provider.GetRequiredService<ConfigService>().Current.GamePath);
+
+            // 孤儿/残包里的 mod 归位回版本抽屉。存储页不再单独列那几个桶，
+            // 靠这一步保证用户的 mod 不会躺在看不见的地方。
+            using (Services.PerfScope.Enter("启动/孤儿 Mods 归位"))
+                provider.GetRequiredService<DepotDownloaderService>().RehomeOrphanMods(
+                    provider.GetRequiredService<ConfigService>().Current.GamePath);
+
+            // 切版本后把内容包覆盖层与台账对齐（覆盖字节写在 Content 里，会被当旧本体换掉）
+            Services.DepotDownloaderService.ReconcileContentPacks = gp =>
+                Services.ContentOverrideService.ReconcileAfterVersionSwitch(
+                    provider.GetRequiredService<ConfigService>(), gp);
+            // v1.6.14：内容包的应用状态按版本分账，老账先按「开着 + 记录版本」回填一次，
+            // 否则它们会被判成"哪一版都没应用"，切一次版本就从盘上消失了。
+            try
+            {
+                Services.ContentOverrideService.BackfillAppliedVersions(
+                    provider.GetRequiredService<ConfigService>(),
+                    provider.GetRequiredService<ConfigService>().Current.GamePath);
+            }
+            catch (Exception ex) { Services.AppLog.Warn("ContentOverride", "内容包版本记忆回填失败：" + ex.Message); }
+            // 切版本【前】把内容包退回原版：⓪ 收存会把当前 Content 整目录烤进版本包，
+            // 带着我们的覆盖存下去以后就永远还原成 mod 的图了。只退字节，不动"哪一版应用过"。
+            // 2026-11-17：还原数量只进日志，不再当 warning 返回 —— 每次切换都会例行还原，
+            // 弹一条红色「切换前还原了 21 张内容包图像」纯属噪音（用户要求删掉）。
+            Services.DepotDownloaderService.RevertContentPacksBeforeSwitch = gp =>
+            {
+                var (n, held) = Services.ContentOverrideService.RevertAllForSwitch(
+                    provider.GetRequiredService<ConfigService>(), gp);
+                if (n == 0 && held == 0) return null;
+                var loc = provider.GetRequiredService<LocService>();
+                var msg = held > 0
+                    ? loc.F("切换前还原了 {0} 张内容包图像（{1} 张被别的程序改过，未动）", n, held)
+                    : loc.F("切换前还原了 {0} 张内容包图像", n);
+                AppLog.Info("ContentOverride", msg);
+                return null;
+            };
+
             // 启动恢复 OAuth2 持久会话（有 token 则挂上 Bearer，过期则后台刷新）
             using (Services.PerfScope.Enter("启动/OAuth 会话恢复"))
                 provider.GetRequiredService<NexusOAuthService>().RestoreSession();

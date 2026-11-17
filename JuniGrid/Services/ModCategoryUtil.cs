@@ -12,6 +12,85 @@ public static class ModCategoryUtil
 {
     private static readonly char[] Sep = [','];
 
+    public static string NexusCategoryName(string? category, string language = "zh")
+    {
+        var name = category?.Trim() ?? "";
+        if (string.Equals(language, "en", StringComparison.OrdinalIgnoreCase)) return name;
+        return name.ToLowerInvariant() switch
+        {
+            "stardew valley" => "星露谷物语",
+            "miscellaneous" => "杂项",
+            "gameplay mechanics" => "游戏机制",
+            "player" => "角色",
+            "characters" => "角色",
+            "portraits" => "肖像",
+            "livestock and animals" => "牲畜与动物",
+            "pets / horses" => "宠物与马匹",
+            "modding tools" => "模组开发工具",
+            "user interface" => "用户界面",
+            "cheats" => "作弊",
+            "audio" => "音效",
+            "clothing" => "服装",
+            "crops" => "作物",
+            "items" => "物品",
+            "locations" => "地点",
+            "buildings" => "建筑",
+            "events" => "事件",
+            "interiors" => "室内装饰",
+            "dialogue" => "对话",
+            "maps" => "地图",
+            "crafting" => "制作",
+            "furniture" => "家具",
+            "new characters" => "新增角色",
+            "visuals and graphics" => "画面与图像",
+            "fishing" => "钓鱼",
+            "expansions" => "扩展内容",
+            _ => name
+        };
+    }
+
+    public static string CategoryLabel(JuniGridConfig cfg, string category, string language)
+        => cfg.ModOfficialCategoryNames.TryGetValue(category, out var source)
+            ? NexusCategoryName(source, language) : category;
+
+    public static string Recommend(string? source, string? display, IEnumerable<string> choices,
+        IReadOnlyDictionary<string, string>? officialCategories = null)
+    {
+        var original = source?.Trim() ?? "";
+        var label = string.IsNullOrWhiteSpace(display) ? original : display.Trim();
+        if (label.Length == 0) return "";
+        var known = choices.ToList();
+        return known.FirstOrDefault(c => officialCategories is not null && officialCategories.TryGetValue(c, out var official)
+                && string.Equals(official, original, StringComparison.OrdinalIgnoreCase))
+            ?? known.FirstOrDefault(c => string.Equals(c, label, StringComparison.OrdinalIgnoreCase))
+            ?? known.FirstOrDefault(c => string.Equals(c, original, StringComparison.OrdinalIgnoreCase))
+            ?? known.FirstOrDefault(c => string.Equals(c, NexusCategoryName(original), StringComparison.OrdinalIgnoreCase))
+            ?? label;
+    }
+
+    public static void AssignInstalled(JuniGridConfig cfg, IEnumerable<ModEntry> mods, string? category, string? officialSource = null)
+    {
+        if (category is null) return;
+        var items = mods.ToList();
+        if (items.Count == 0) return;
+        var existed = cfg.ModUserCategoryOrder.Concat(cfg.ModUserCategory.Values.SelectMany(Split))
+            .Contains(category, StringComparer.OrdinalIgnoreCase);
+        foreach (var m in items)
+        {
+            var i = m.Folder.IndexOf('/');
+            var key = i > 0 ? m.Folder[..i] : m.Folder;
+            if (!string.Equals(key, m.Folder, StringComparison.OrdinalIgnoreCase))
+                cfg.ModUserCategory.Remove(m.Folder);
+            if (category.Length == 0) cfg.ModUserCategory.Remove(key);
+            else cfg.ModUserCategory[key] = category;
+        }
+        foreach (var one in Split(category))
+            if (!cfg.ModUserCategoryOrder.Contains(one, StringComparer.OrdinalIgnoreCase))
+                cfg.ModUserCategoryOrder.Add(one);
+        if (!existed && category.Length > 0 && !string.IsNullOrWhiteSpace(officialSource))
+            cfg.ModOfficialCategoryNames[category] = officialSource;
+    }
+
     /// <summary>拆出全部非空分类（去首尾空白、去重、保持书写顺序）。空/纯空白返回空数组。</summary>
     public static string[] Split(string? raw)
     {

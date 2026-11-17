@@ -187,6 +187,8 @@ public static partial class ContentOverrideService
             rec.PackTitle = any.PackTitle;
             rec.PackDir = packDir;
             rec.Version = version;
+            // v1.6.14：重编就是"在这一版下应用了"，记忆跟上。
+            rec.MarkApplied(version);
             rec.AppliedAtUtc = DateTime.UtcNow;
             rec.SkippedCount = plan.Rejects.Count;
             rec.SkippedNote = string.Join("\n", plan.Rejects.Take(8));

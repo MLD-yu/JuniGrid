@@ -43,6 +43,8 @@ public static partial class ContentOverrideService
                              && o.Asset.Equals(r.Asset, StringComparison.OrdinalIgnoreCase)).ToList())
                     other.Enabled = false;
                 r.Enabled = true;
+                // v1.6.14：顺手记下"这一版应用过" —— 切走再切回来要照这个恢复。
+                r.MarkApplied(CurrentVersion(gamePath));
             }
             else
             {
@@ -50,8 +52,14 @@ public static partial class ContentOverrideService
                 // 实际抹掉的是第三方那张，而且账上没有任何地方说过它存在过。
                 if (ForeignOnDisk(gamePath, r))
                     return LocService.Tr("该图像当前既非本程序写入也非原版（可能被其他 mod 或手动修改），已停止还原");
-                if (!RevertAsset(gamePath, r)) return LocService.Tr("还原失败，游戏本体未作改动，可重试");
+                // v1.6.14：盘上已经是我们那份才谈得上"还原"。切过版本之后盘上是那一版的原版，
+                // 这时照 r.Version 那一层往回盖＝把上一个版本的原版图写进这一版的本体。
+                if (DiskState(gamePath, r) == OverrideState.InPlace)
+                {
+                    if (!RevertAsset(gamePath, r)) return LocService.Tr("还原失败，游戏本体未作改动，可重试");
+                }
                 r.Enabled = false;
+                r.MarkReverted(CurrentVersion(gamePath));
             }
             cfg.Save(cfg.Current);
             return null;
@@ -178,22 +186,130 @@ public static partial class ContentOverrideService
         catch (Exception ex) { AppLog.Warn("ContentOverride", "原包备份删除失败（账已清，目录留着）：" + ex.Message); }
     }
 
-    /// <summary>全部退回原版并清账。切游戏版本之前必须先跑它 —— 否则改过的 Content 会被
-    /// 当成"那个版本的原版"整目录收进版本缓存（TryAdoptCurrentBody 是 Directory.Move）。
+    /// <summary>全部退回原版并清账。<b>用户主动按「全部还原」时才调它</b> —— 它会把
+    /// 「这一版应用过」的记忆一并划掉（下次切回来保持原版）。
+    /// <para>切版本流程<b>不能</b>用它，要用 <see cref="RevertAllForSwitch"/>：那里只是把字节
+    /// 退回原版好让旧本体被干净地收进版本包，用户的决定要留着。</para>
     /// <para><paramref name="HeldBack"/> = 因为盘上那张是别人放的而【没敢动】的张数。
     /// 这些行留着 Enabled，界面上继续标红，等人去看是什么盖的 —— 静默跳过比少还原一张更糟。</para></summary>
-    public static (int Reverted, int HeldBack) RevertAll(ConfigService cfg, string gamePath)
+    public static (int Reverted, int HeldBack) RevertAll(ConfigService cfg, string gamePath, bool forget = true)
     {
         var n = 0;
         var held = 0;
+        var ver = CurrentVersion(gamePath);
         foreach (var r in cfg.Current.ContentOverrides.Values.Where(r => r.Enabled).ToList())
         {
             if (ForeignOnDisk(gamePath, r)) { held++; continue; }
-            if (RevertAsset(gamePath, r)) { r.Enabled = false; n++; }
+            // 盘上已经不是我们那份（切过版本、或本来就被 Steam 换回原版）⇒ 没有字节可退。
+            // 不加这道判断的话，拿 r.Version 那一层的原版去盖当前本体 = 把上一个版本的
+            // 原版图写进这一版（跨版本切换时真会发生）。这里只把账收干净。
+            if (DiskState(gamePath, r) != OverrideState.InPlace)
+            {
+                r.Enabled = false;
+                if (forget) r.MarkReverted(ver);
+                continue;
+            }
+            if (RevertAsset(gamePath, r))
+            {
+                r.Enabled = false;
+                if (forget) r.MarkReverted(ver);
+                n++;
+            }
         }
         cfg.Save(cfg.Current);
         if (held > 0) AppLog.Warn("ContentOverride", $"[全部还原] {held} 张盘上已是别人放的图，未覆盖");
         return (n, held);
+    }
+
+    /// <summary>切版本之前那一次还原：只把 <c>Content</c> 里的字节退回这个版本的原版，
+    /// 让 ⓪ 收存旧本体时收到的是干净的原版，<b>「这一版应用过」的记忆一条都不动</b>。
+    /// <para>为什么必须有它：切换是「旧本体整目录收进版本包 + 铺新本体」，改过的图会被当成
+    /// 那个版本的原版永久存下去 —— 之后从那一版还原回来，得到的是 mod 的图。</para></summary>
+    public static (int Reverted, int HeldBack) RevertAllForSwitch(ConfigService cfg, string gamePath)
+        => RevertAll(cfg, gamePath, forget: false);
+
+    /// <summary>当前本体是哪一版（认不出时 <see cref="UnknownVersion"/>）。
+    /// 分账判断全走它 —— 别在调用点各自读一次，中途版本变了会得到两套答案。</summary>
+    public static string CurrentVersion(string gamePath) => OriginalVersionSegment(gamePath);
+
+    /// <summary>老账回填「在哪几版应用过」。判据只有一条：账上开着 + 记着自己是按哪版编的
+    /// （<see cref="ContentOverrideRecord.Version"/>）—— 那正是"用户在那版下应用过"留下的痕迹。
+    /// 两样缺一就留空：空表 = 哪版都不自动应用，宁可让用户再点一次，也不替他凭空恢复。
+    /// <para>返回改了几条。调用方负责落盘。</para></summary>
+    public static int BackfillAppliedVersions(ConfigService cfg, string gamePath)
+    {
+        var cur = CurrentVersion(gamePath);
+        var changed = 0;
+        foreach (var r in cfg.Current.ContentOverrides.Values)
+        {
+            if (r.AppliedVersions.Count > 0) continue;
+            if (!r.Enabled) continue;                       // 关着的本来就是"哪版都没应用"
+            var ver = r.Version.Length > 0 ? r.Version : cur;
+            if (ver == UnknownVersion || string.IsNullOrWhiteSpace(ver)) continue;
+            r.MarkApplied(ver);
+            changed++;
+        }
+        if (changed > 0)
+        {
+            cfg.Save(cfg.Current);
+            AppLog.Info("ContentOverride", $"[版本分账] {changed} 条老账按「开着 + 记录版本」回填了应用版本");
+        }
+        return changed;
+    }
+
+    /// <summary>版本切换后按【这个版本自己的记忆】把覆盖层与台账对齐。返回要报给用户的话，null = 全对齐。
+    /// <para><b>为什么是"这个版本自己的记忆"</b>（v1.6.14，2026-11-16 用户要求）：覆盖字节写在
+    /// <c>&lt;游戏&gt;\Content</c> 里，⓪ 收存把它烤进旧版本包、② 把它当旧本体删掉 —— 光靠一个全局
+    /// <see cref="ContentOverrideRecord.Enabled"/>，1.6.15 上应用过的包切到 1.5.0 会被自动盖回来
+    /// （用户从没在 1.5.0 上做过这个决定），而切回 1.6.15 又要靠那次自动重盖才记得住。
+    /// 现在每一版各记各的（<see cref="ContentOverrideRecord.AppliedVersions"/>）：
+    /// 记忆里有这一版 → 重编重盖；没有 → 保持原版，等用户自己点。</para>
+    /// <para>两个方向都要对：① 记忆里没有的，账上置关；盘上若还盖着我们的字节（目标版本包里
+    /// 烤进来的）就退回原版 —— 只做单向的话，关掉的包会在切回某个版本时自己诈尸。
+    /// 盘上是别人放的图（Foreign）一律不动，与 <see cref="RevertAll"/> 同一道闸。</para></summary>
+    public static string? ReconcileAfterVersionSwitch(ConfigService cfg, string gamePath)
+    {
+        if (string.IsNullOrWhiteSpace(gamePath) || !Directory.Exists(ContentRoot(gamePath))) return null;
+        var rows = cfg.Current.ContentOverrides.Values.ToList();
+        if (rows.Count == 0) return null;
+
+        BackfillAppliedVersions(cfg, gamePath);      // 老账先补记忆，否则它们会被判成"哪版都没应用"
+        var cur = CurrentVersion(gamePath);
+        if (cur == UnknownVersion) return null;      // 认不出版本 ⇒ 不替它做任何应用/还原决定
+
+        var errs = new List<string>();
+        int packs = 0, reverted = 0, dropped = 0;
+
+        // ① 这一版没应用过的 → 账上关掉；盘上若还是我们那份字节，退回原版
+        foreach (var r in rows.Where(r => !r.AppliedOn(cur)).ToList())
+        {
+            try
+            {
+                if (r.Enabled && DiskState(gamePath, r) == OverrideState.InPlace && RevertAsset(gamePath, r))
+                    reverted++;
+                if (r.Enabled) { r.Enabled = false; dropped++; }
+            }
+            catch (Exception ex) { errs.Add(ex.Message); }
+        }
+
+        // ② 这一版应用过的 → 逐槽走现成的整包开关，它自己认版本戳、该重编就重编
+        foreach (var g in rows.Where(r => r.AppliedOn(cur))
+                     .GroupBy(r => r.Slot, StringComparer.OrdinalIgnoreCase))
+        {
+            try
+            {
+                var err = SetPackEnabled(cfg, gamePath, g.Key, true);
+                if (err is not null) errs.Add(err);
+                else packs++;
+            }
+            catch (Exception ex) { errs.Add(ex.Message); }
+        }
+
+        cfg.Save(cfg.Current);
+        AppLog.Warn("ContentOverride",
+            $"[切换后对账] {cur}：重盖 {packs} 个包，退回原版 {reverted} 张，置关 {dropped} 张，报错 {errs.Count} 条");
+        if (errs.Count == 0) return null;
+        return LocService.Tf("内容包没能全部对齐：{0}", string.Join("；", errs.Distinct().Take(3)));
     }
 
     // ───────────────────── 盘账一致性 ─────────────────────

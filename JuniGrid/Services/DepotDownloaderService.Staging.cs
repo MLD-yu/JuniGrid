@@ -46,70 +46,22 @@ public sealed partial class DepotDownloaderService
         public string DisplayName => !string.IsNullOrEmpty(Version) ? Version : Label;
     }
 
-    // 星露谷 Windows depot 413151 —— 从新到旧。Manifest 按 SteamDB depot 历史 + Wiki 发布日对齐：
-    // https://stardewvalleywiki.com/Version_History （2026-09 对照补全 1.01–1.3.32 等 14 个缺失版本，
-    // 并修正 1.1 / 1.2.26 / 1.3.27 / 1.3.28 / 1.3.33 / 1.5.1 六处日期错位的映射）。
-    // 不收录：compatibility / monogame64bit / beta 分支构建，以及 Wiki 无版本号的同日中间构建
-    // （如 1.6.4 的 4-19 热修、2016-02-29 一天 9 个构建）。1.07a 只新增了 Mac/Linux 支持，
-    // Windows 内容与 1.07 完全相同、无独立 manifest，故不单列。
-    private static readonly KnownVersion[] KnownStardewWindows =
-    [
-        new("正式版", "4278718763097142923", "1.6.15"),
-        new("上一正式版", "1364246008775303529", "1.6.14"),
-        new("历史版", "1289391404978285152", "1.6.13"),
-        new("历史版", "7276192310056789702", "1.6.12"),
-        new("历史版", "6985985228734128541", "1.6.11"),
-        new("历史版", "3240670252057385108", "1.6.10"),
-        new("历史版", "2836558896332251757", "1.6.9"),
-        new("经典版", "1777024427851858279", "1.6.8"),
-        new("历史版", "8241037280344201140", "1.6.7"),
-        new("历史版", "1065152683462704684", "1.6.6"),
-        new("历史版", "8895407084082948264", "1.6.5"),
-        new("历史版", "3118431248827251876", "1.6.4"),
-        new("历史版", "3423907493306588851", "1.6.3"),
-        new("历史版", "7202829112632541182", "1.6.2"),
-        new("历史版", "6093927695464368045", "1.6.1"),
-        new("1.6 首发", "5012590689708703589", "1.6"),
-        new("经典版", "5609262347030774375", "1.5.6"),
-        new("历史版", "4397694255132373486", "1.5.5"),
-        new("稳定旧版", "7802000804251603756", "1.5.4"),
-        new("历史版", "4121989135652425382", "1.5.3"),
-        new("历史版", "5396049550535566677", "1.5.2"),
-        new("历史版", "4812928243273622870", "1.5.1"),
-        new("历史版", "4487511898025325586", "1.5"),
-        new("1.4 末版", "6307986820908740561", "1.4.5"),
-        new("历史版", "7978993718867933207", "1.4.4"),
-        new("历史版", "7258148177702857381", "1.4.3"),
-        new("历史版", "8519233901628247204", "1.4.2"),
-        new("历史版", "7149289726988606001", "1.4.1"),
-        // 注意：这条就是星露谷 1.4 正式版（发布日 2019-11-26，与 Wiki 一致）。
-        // 它的文件内部版本号(FIleVersion)是 1.3.7269 —— 1.4 全系列都没改内部版本号，
-        // 不要因为内部版本号像 1.3 就把它当成 1.3 晚期（实测踩坑）。
-        new("1.4 正式版", "2373680906867811602", "1.4"),
-        new("1.3 末版", "7951557878765234474", "1.3.36"),
-        new("历史版", "3086333938055749962", "1.3.33"),
-        new("历史版", "684527103824506785", "1.3.32"),
-        new("历史版", "6256862244170871577", "1.3.28"),
-        new("1.3 首发（联机）", "3920107848374752907", "1.3.27"),
-        new("1.2 末版", "5793210319202900873", "1.2.33"),
-        new("历史版", "1612680387557367797", "1.2.32"),
-        new("历史版", "1627658297112725452", "1.2.31"),
-        new("历史版", "7102179406389569056", "1.2.30"),
-        new("历史版", "3293327472846622645", "1.2.29"),
-        new("新增六语言", "3227482562029885606", "1.2.26"),
-        new("1.1 修补", "7487215307508292747", "1.11"),
-        new("1.1", "2981425245818393618", "1.1"),
-        new("历史版", "3230210310573566485", "1.07"),
-        new("历史版", "3150973666024140120", "1.06"),
-        new("历史版", "7430847287787667997", "1.051b"),
-        new("历史版", "4973097789996737182", "1.051"),
-        new("历史版", "285564730673029890", "1.05"),
-        new("历史版", "7765407486833584479", "1.04"),
-        new("历史版", "4594775194614467491", "1.03"),
-        new("历史版", "8462477710223862747", "1.02"),
-        new("历史版", "6198424258489893658", "1.01"),
-        new("首发版", "8507975696251774427", "1.0"),
-    ];
+    /// <summary>
+    /// 星露谷历史版本表（从新到旧，下标即版本序号，0 = 最新）。
+    ///
+    /// <para><b>表本体不在这里</b>：它在 <c>Assets/game-versions.json</c> —— 一份编进程序集的
+    /// 离线兜底副本，外加一份走签名清单发布的在线副本，由 <see cref="GameVersionCatalog"/>
+    /// 统一管理。挪出去的理由很实在：表以前写死在这个文件里，星露谷每更新一次就得改代码、
+    /// 重编、发一个 120MB 的安装包，玩家更新完才看得到新版本。现在加一行 json 就够了。</para>
+    ///
+    /// <para>这里只留一个转发属性：本文件里有几处按 ManifestId 反查版本号的逻辑（版本包标签、
+    /// 锚点校验），它们只关心"当前生效的表长什么样"，不该关心表从哪来。</para>
+    ///
+    /// <para>收录口径（不收录 compatibility / monogame64bit / beta 分支构建、同日无版本号的中间构建，
+    /// 以及 1.4 全系内部 FileVersion 仍是 1.3.7269 这类坑）跟着数据一起写在 json 的
+    /// <c>notes</c> 与单条 <c>note</c> 里 —— 挪数据时特意没丢。</para>
+    /// </summary>
+    private static IReadOnlyList<KnownVersion> KnownStardewWindows => GameVersionCatalog.Entries;
 
     public IReadOnlyList<KnownVersion> GetKnownVersions(string appId)
         => appId == "413150" ? KnownStardewWindows : Array.Empty<KnownVersion>();
@@ -120,7 +72,12 @@ public sealed partial class DepotDownloaderService
     public static bool IsLatestOfficialManifest(string appId, string? manifestId)
     {
         if (appId != "413150" || string.IsNullOrWhiteSpace(manifestId)) return false;
-        return string.Equals(KnownStardewWindows[0].ManifestId, manifestId, StringComparison.Ordinal);
+        // 表来自可变来源（内嵌 / 缓存 / 在线），空表是可能的（内嵌资源缺失）。
+        // 空表时返回 false = "不确定"，绝不能返回 true —— 那个返回值的意思是
+        // "这就是官方最新版，不用锁 appmanifest"，猜错的代价是把用户卡在旧版本上。
+        var entries = GameVersionCatalog.Entries;
+        if (entries.Count == 0) return false;
+        return string.Equals(entries[0].ManifestId, manifestId, StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -165,11 +122,14 @@ public sealed partial class DepotDownloaderService
     {
         rank = -1;
         if (string.IsNullOrWhiteSpace(label)) return false;
+        // 一次取快照：表可能被后台刷新原子换掉，循环里反复读会拿到"半新半旧"的两个列表
+        // （下标语义就乱了 —— 这函数的结果直接决定存档能不能读）。
+        var entries = GameVersionCatalog.Entries;
         foreach (var c in TableCandidates(label!))
         {
-            for (var i = 0; i < KnownStardewWindows.Length; i++)
+            for (var i = 0; i < entries.Count; i++)
             {
-                if (string.Equals(KnownStardewWindows[i].Version, c, StringComparison.OrdinalIgnoreCase))
+                if (string.Equals(entries[i].Version, c, StringComparison.OrdinalIgnoreCase))
                 {
                     rank = i;
                     return true;
@@ -276,6 +236,10 @@ public sealed partial class DepotDownloaderService
                     || nm.Equals(".junigrid_trash", StringComparison.OrdinalIgnoreCase)) continue;
                 n++;
             }
+            // 中断留下的残副本（Mods-incomplete-<时间戳>）也躺在这个包里，删包会一起删。
+            // 不计进来的话确认文案会少报，用户以为只删了抽屉里那些。
+            foreach (var d in Directory.EnumerateDirectories(stagingDir, "Mods-incomplete-*"))
+                n += Directory.EnumerateFileSystemEntries(d).Count();
             return n;
         }
         catch { return -1; }
@@ -287,7 +251,8 @@ public sealed partial class DepotDownloaderService
     /// 大不了重下，实际是把这一版的 mod 一起删掉（2026-09-19 实测抽屉里躺着 113 项）。</summary>
     public static string DeletePackConfirmText(StagedPackage pkg)
     {
-        var size = pkg.SizeBytes > 0 ? $"约 {ResumableDownload.FormatBytes(pkg.SizeBytes)}，" : "";
+        var size = pkg.SizeBytes > 0 ? $"约 {ResumableDownload.FormatBytes(pkg.SizeBytes)}，"
+                 : pkg.SizeBytes < 0 ? "体积读不出来（没有体积缓存），" : "";
         var mods = CountPackMods(pkg.Path);
         if (mods > 0)
             return $"{pkg.Label} 的本地缓存{size}里面还存着这个版本的 {mods} 个 mod 文件夹" +
@@ -297,7 +262,7 @@ public sealed partial class DepotDownloaderService
             return $"{pkg.Label} 的本地缓存{size}删除后不进回收站、无法撤销。" +
                    "这个版本的 Mods 抽屉现在读不出数量，里面可能正存着该版本的 mod，请先自行确认。";
         return $"{pkg.Label} 的本地缓存{size}删除后不进回收站、无法撤销；" +
-               "下次切回该版本要重新下载这么多。";
+               "下次切回该版本要重新下载整个本体。";
     }
 
     private const string ManifestMetaName = ".junigrid-manifest";
@@ -423,9 +388,9 @@ public sealed partial class DepotDownloaderService
                     label = parts.Length >= 3 ? string.Join('-', parts.Skip(2)) : manifest;
                 }
 
-                // 大小只读缓存；没有就当 0，**绝不**为列表页全量扫盘
+                // 大小只读缓存；读不到就是 -1（不知道），**绝不**为列表页全量扫盘，
+                // 也绝不把"不知道"当成 0 显示 —— 那会让删除按钮旁边写着 0 B。
                 long size = ReadSizeCache(dir);
-                if (size <= 0) size = 0;
                 result.Add(new StagedPackage(label, manifest!, dir, size, Directory.GetLastWriteTime(dir),
                     IsStagedPackageComplete(dir)));
             }
@@ -489,8 +454,14 @@ public sealed partial class DepotDownloaderService
 
     /// <summary>认领一个「从别的机器 / U盘 / 网盘拷来的版本包」：校验本体 → 认出版本 → 补写 manifest
     /// 元数据 → 必要时搬进统一缓存目录。之后在版本管理里点它就能<b>离线</b>切换，完全不连 Steam。
-    /// 治的是「CM 在国内连不上 → 历史版本永远下不来」这条死路：包只要在本地，就有路可走。</summary>
-    public string ImportLocalPackage(string dir, string appId = "413150", string depotId = "413151")
+    /// 治的是「CM 在国内连不上 → 历史版本永远下不来」这条死路：包只要在本地，就有路可走。
+    ///
+    /// <para><paramref name="manifestIdHint"/> 给「目录名里没有 manifest」的来源用 ——
+    /// Steam 控制台下载的目录叫 <c>depot_413151</c>，只能靠包内 exe 的 FileVersion 反查表；
+    /// 而 1.4 全系自报 1.3.7269、XNA 时代的几百个版本根本对不上，反查会静默认成别的版本
+    /// （之后锁定 appmanifest / 判存档能否读全跟着错）。有明确来源时一律用 hint。</para></summary>
+    public string ImportLocalPackage(string dir, string appId = "413150", string depotId = "413151",
+        string? manifestIdHint = null)
     {
         if (string.IsNullOrWhiteSpace(dir)) throw new DepotException("没选目录。");
         var src = Path.TrimEndingDirectorySeparator(Path.GetFullPath(dir));
@@ -502,8 +473,13 @@ public sealed partial class DepotDownloaderService
             throw new DepotException("这个目录里没有找到《Stardew Valley.dll》或《Stardew Valley.exe》，不像是游戏版本包。");
 
         var parts = Path.GetFileName(src).Split('-');
-        var manifestId = parts.Length >= 3 && parts[^1].Length > 0 && parts[^1].All(char.IsDigit)
-            ? parts[^1] : null;
+        string? manifestId = null;
+        // ① 调用方明确给了（Steam 控制台通道）—— 无条件优先，别让版本号反查去猜
+        if (!string.IsNullOrWhiteSpace(manifestIdHint) && manifestIdHint.Trim().All(char.IsDigit))
+            manifestId = manifestIdHint.Trim();
+        // ② 目录名形如 413150-413151-<manifest>
+        if (manifestId is null && parts.Length >= 3 && parts[^1].Length > 0 && parts[^1].All(char.IsDigit))
+            manifestId = parts[^1];
         var ver = TryReadGameVersion(src);
         if (manifestId is null)
         {
@@ -522,11 +498,18 @@ public sealed partial class DepotDownloaderService
         {
             if (Directory.Exists(target))
                 throw new DepotException("缓存里已经有同名版本包，先在版本管理里删掉它再导入：\n" + target);
-            try { Directory.Move(src, target); }
-            catch (IOException)
+            // 跨盘要搬几百 MB：Directory.Move 在换卷时必抛，交给 TryMoveTree（内部 copy+delete）。
+            // Steam 刚下完那一刻文件句柄可能还没放干净，重试两次再认输 —— 失败时说清楚是"谁"在占用。
+            var moved = false;
+            for (var attempt = 1; attempt <= 3 && !moved; attempt++)
             {
-                throw new DepotException("跨盘移动做不到。请把这个文件夹整个复制到：\n" + target + "\n复制完再点一次导入。");
+                moved = StorageService.TryMoveTree(src, target);
+                if (!moved) Thread.Sleep(600 * attempt);
             }
+            if (!moved)
+                throw new DepotException(
+                    "搬不进版本缓存（文件可能正被 Steam 占用）。请稍等几秒重试一次；" +
+                    "仍然不行就把这个文件夹手动复制到：\n" + target);
         }
         WriteManifestMeta(target, manifestId);
         try { File.Delete(Path.Combine(target, ".junigrid-size")); } catch { }   // 大小让它重算，别报旧的

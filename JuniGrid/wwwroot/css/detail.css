@@ -120,7 +120,11 @@
   border: 1px solid rgba(217,123,0,.45); border-radius: 999px; padding: 1px 7px; }/* v1.7.x：装了但版本低于 manifest 要求 —— 用「可更新」那支品红，
    红标说的是"去装"，这支说的是"去换成更新的版本"，两种出路不能同一个颜色 */
 .jg-req-old { flex: none; font-size: 10.5px; font-weight: 600; color: #b4009e;
-  border: 1px solid rgba(180,0,158,.45); border-radius: 999px; padding: 1px 7px; }.jg-req-table { margin-top: 4px; }.jg-detail-section { margin-top: 18px; }.jg-detail-section-title { font-size: 14.5px; font-weight: 700; color: var(--jg-text); margin-bottom: 8px; }/* ═══ v0.69.9：手风琴头部悬浮时不压内容 + 头部实心背景 + Body 顶部空出 ═══ */
+  border: 1px solid rgba(180,0,158,.45); border-radius: 999px; padding: 1px 7px; }/* v1.10.x：两份前置清单不一致时的中性标 —— 说的是"来源差异"，不是"缺东西"，
+   所以既不用红（会被读成必须去装），也不用品红（会被读成去更新） */
+.jg-req-only { flex: none; font-size: 10.5px; font-weight: 600; color: var(--jg-text-3);
+  border: 1px solid var(--jg-line); border-radius: 999px; padding: 1px 7px; }
+.jg-req-src-note { font-size: 12px; color: var(--jg-text-3); line-height: 1.5; margin: 2px 0 6px; }.jg-req-table { margin-top: 4px; }.jg-detail-section { margin-top: 18px; }.jg-detail-section-title { font-size: 14.5px; font-weight: 700; color: var(--jg-text); margin-bottom: 8px; }/* ═══ v0.69.9：手风琴头部悬浮时不压内容 + 头部实心背景 + Body 顶部空出 ═══ */
 .jg-acc-head { background: var(--jg-card); }.jg-acc.open .jg-acc-body { padding-top: 8px; }.jg-acc-inner { position: relative; }/* ═══ v0.70.0：hover 实色背景（旧 rgba 半透明 + sticky 导致下层文字透过来叠字）═══
    v1.3.7 再修：--jg-well 本身是 rgba 4-5% 的半透明色，hover 用它等于没盖住 ——
    章节头是 sticky，滚动内容从底下穿过、文字全部叠影（用户实测 Requirements/Changelogs）。
@@ -385,6 +389,18 @@ html[data-theme="dark"] .jg-user-tip-bubble {
     padding: 9px 12px; border-radius: 10px; font-size: 12.5px;
 }
 .jg-pick-vdd-t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.jg-category-recommend {
+    display: inline-block;
+    margin-left: 5px;
+    padding: 1px 5px;
+    border-radius: 999px;
+    background: var(--jg-well);
+    color: var(--jg-text-3);
+    font-size: 10px;
+    font-weight: 400;
+    line-height: 1.4;
+    white-space: nowrap;
+}
 /* 还没选历史版本时的占位态：字色退一档，跟「未选择」的语义一致 */
 .jg-pick-vdd-t.jg-pick-vdd-ph { color: var(--jg-text-3); }
 /* 2026-11-11：**视觉从外层挪到内层**。

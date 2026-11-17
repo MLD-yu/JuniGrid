@@ -288,7 +288,7 @@ public sealed partial class InstallService
     /// 永远不显示给人看。</para></summary>
     public const string AlreadyRunning = "already-running";
 
-    public async Task<string?> InstallModDirectAsync(int modId, long? fileId = null, string? fileLabel = null)
+    public async Task<string?> InstallModDirectAsync(int modId, long? fileId = null, string? fileLabel = null, string? category = null, string? categorySource = null)
     {
         var cfg = _cfg.Current;
         if (!NexusService.IsAuthenticated)
@@ -332,6 +332,8 @@ public sealed partial class InstallService
             return AlreadyRunning;
         }
 
+        task.InstallCategory = category;
+        task.InstallCategorySource = categorySource;
         // v1.1.7：整段工作可重入 —— 暂停后继续会重新挂 worker；半截包由 ResumableDownload 续传
         async Task<string?> RunAsync(CancellationToken ct)
         {
@@ -584,6 +586,16 @@ public sealed partial class InstallService
                             }
                         }
                     }
+                }
+                if (category is not null && !file.Name.Contains("xnb", StringComparison.OrdinalIgnoreCase))
+                {
+                    try
+                    {
+                        var categoryMods = await Task.Run(() => _mods.Scan(cfg.GamePath)
+                            .Where(m => m.NexusModId == modId).ToList());
+                        ModCategoryUtil.AssignInstalled(cfg, categoryMods, category, categorySource);
+                    }
+                    catch (Exception ex) { AppLog.Warn("Install", "安装后归类失败：" + ex.Message); }
                 }
                 _cfg.Save(cfg);
                 // 覆盖包搬过文件时 notes 里有一条去向（汉化文件放根目录不会生效）——
@@ -1243,11 +1255,16 @@ public sealed partial class InstallService
         // 「这一版在不在某一页」只能靠它判 —— 官网要求表可能整页不存在（见 FindVersionProviderAsync）。
         var needsByDep = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
         var premiumBlocked = false;
+        // 第一条走不通应用内直下的依赖到底为什么走不通（免费账号 403 / 人机验证 / 超时 / 关了内置网页）。
+        // 只用来把话说准：整轮后续依赖都会沿用「转手动」这条路，文案里得写清真正的原因。
+        string? premiumReason = null;
         string? zipPath = null;
         try
         {
                 // onlyUids 只约束首轮（用户指定的那批）；装上的依赖自己又缺的传递依赖照样跟进
-                var allowedFirstRound = onlyUids is null ? null : new HashSet<string>(onlyUids, StringComparer.OrdinalIgnoreCase);
+                // （两侧都过一遍清洗：清单里的依赖串可能是"UID＋中文译名"的脏串，比较得同口径）
+                var allowedFirstRound = onlyUids is null ? null
+                    : new HashSet<string>(onlyUids.Select(NormalizeDependencyUid), StringComparer.OrdinalIgnoreCase);
                 var firstRound = true;
 
                 while (true)
@@ -1276,7 +1293,10 @@ public sealed partial class InstallService
                         // 任务跑了个空 —— 点了「开始安装」什么也没发生。
                         foreach (var dep0 in DependencyRules.DepsToProcess(m, installedVersions))
                         {
-                            var dep = dep0.Trim();
+                            // v1.6.0：清单里的依赖串不一定只有 UID —— 实测有
+                            // 「aedenthorn。自定义墙壁和地板…」这种把中文译名接在 UID 后面的写法。
+                            // 原样拿去搜索必然 0 命中，还会让「已装」比对永远对不上（每轮都当缺的）。
+                            var dep = NormalizeDependencyUid(dep0);
                             if (string.IsNullOrWhiteSpace(dep) || processed.Contains(dep)) continue;
                             if (firstRound && allowedFirstRound is not null && !allowedFirstRound.Contains(dep)) continue;
                             // 记下父包要求的那一版（逐字留着，不折成 ≥ 门槛）—— 后面靠它认
@@ -1317,6 +1337,22 @@ public sealed partial class InstallService
                     {
                         outcomes.Add(new DependencyRunItem(dep, "framework", "SMAPI", null,
                             "SMAPI 是 mod 加载器本体，无法作为普通 mod 安装 —— 请用 SMAPI 安装器（启动器首页可检查/更新 SMAPI）"));
+                        continue;
+                    }
+
+                    // ①a 这条依赖串压根不是 UID（汉化包改清单时把中文译名接到了 UID 后面）。
+                    // 搜索不可能命中，跟已装列表也永远对不上 —— 与其印「搜索不到匹配的 mod」
+                    // 让人以为是自己眼神不好，不如直说这条串本身是坏的，并给一个能搜的入口。
+                    if (!LooksLikeUniqueId(dep))
+                    {
+                        AppLog.Warn("Install", $"依赖串不像 UID，跳过自动解析：{dep}");
+                        var ascii = new string(dep.TakeWhile(IsUidChar).ToArray()).Trim('.', '_', '-');
+                        toOpen.Add("https://www.nexusmods.com/stardewvalley/search/?gsearch="
+                            + Uri.EscapeDataString(ascii.Length >= 3 ? ascii : dep) + "&gsearchtype=mods");
+                        outcomes.Add(new DependencyRunItem(dep, "unresolved", null, null,
+                            "父包 manifest 里这条依赖写的不是 UID（夹了中文/说明文字），任何搜索都不会命中 —— "
+                            + "已打开 N 网搜索页，请人工确认后点 Mod Manager Download"));
+                        Step(LocService.Tf("✗ {0}：清单里这条依赖不是 UID，无法自动匹配", dep));
                         continue;
                     }
 
@@ -1377,18 +1413,28 @@ public sealed partial class InstallService
                             continue;
                         }
                         var face = await FirstCandidateAsync(cfg, dep, preResolved, parents);
-                        if (face is null)
+                        if (face.Face is not { } hit)
                         {
-                            Step(LocService.Tf("✗ {0}：Nexus 搜索不到匹配的 mod，已打开搜索页转人工", dep));
-                            AddUnresolvedOutcome(dep, toOpen, outcomes);
+                            // 搜索"没答上"（断网/限流）不等于"没有" —— 这两种结局对人的意义完全不同：
+                            // 前者再点一次就可能装上，后者得自己去找页面。
+                            if (face.Answered)
+                            {
+                                Step(LocService.Tf("✗ {0}：Nexus 搜索不到匹配的 mod，已打开搜索页转人工", dep));
+                                AddUnresolvedOutcome(dep, toOpen, outcomes);
+                            }
+                            else
+                            {
+                                Step(LocService.Tf("✗ {0}：N 网搜索这次没答上来（网络/限流），已打开搜索页转人工", dep));
+                                AddUnresolvedOutcome(dep, toOpen, outcomes, searchUnanswered: true);
+                            }
                             continue;
                         }
                         Step(LocService.Tf("⏭ {0}：应用内没能自动下载，已打开网页转手动", dep));
-                        outcomes.Add(new DependencyRunItem(dep, "manual", face.Name, face.Id,
+                        outcomes.Add(new DependencyRunItem(dep, "manual", hit.Name, hit.Id,
                             dep.Equals(ModService.PortraitureFrameworkUid, StringComparison.OrdinalIgnoreCase)
                                 ? "Portraiture 框架需手动下载 —— 点「Mod Manager Download」后启动器自动接管；装完请到立绘页确认素材包"
                                 : "已在浏览器打开此页面 —— 点「Mod Manager Download」，启动器会自动接管下载安装（应用内通道未取到链接）"));
-                        toOpen.Add($"https://www.nexusmods.com/stardewvalley/mods/{face.Id}");
+                        toOpen.Add($"https://www.nexusmods.com/stardewvalley/mods/{hit.Id}");
                         continue;
                     }
 
@@ -1403,6 +1449,11 @@ public sealed partial class InstallService
                     // 这一轮搜索有没有真的问出结果：没答上（断网/限流）不能说成"搜不到"
                     var searchAnswered = false;
                     string? lastErr = null;
+                    // 名字对得上、包里的 UID 却对不上的那一页（被接手 / 作者改过 UID）。
+                    // 它比"下载/安装失败"有用得多：用户看到的红字要能解释"N 网有同名页面为什么装不上"。
+                    string? uidConflict = null;
+                    string? uidConflictName = null;
+                    var uidConflictId = 0;
                     var ok = false;
                     while (true)
                     {
@@ -1413,6 +1464,26 @@ public sealed partial class InstallService
                             Step(LocService.Tf("({0}/{1}) 正在获取 {2} 的文件信息…", idx, total, c.Name));
                             var file = await _nexus.GetLatestMainFileAsync(c.Id, patient: true, ct: ct);
                             if (file is null) { lastErr = LocService.Tr("找不到可下载的文件"); continue; }
+
+                            // ── 同页分支闸（实机 2026-11-16）──
+                            // 这一页的当前主文件本机已装过、UID 与要求不同：再下也是同一个包
+                            // （下完的 UID 校验照样会拒），在下载之前就跳过，别白耗下载额度。
+                            // 3010 页现在是 Platonymous 的 Redux，Durin's Rest 要的仍是
+                            // aedenthorn 的 UID —— 名字封面全同，用户看着「缺的」就是「装着的」。
+                            var fork = SamePageForkEntry(mods, cfg, c.Id, file.FileId, dep);
+                            if (fork is not null)
+                            {
+                                var forkUid = fork.UniqueID.Trim();
+                                lastErr = LocService.Tf("页面「{0}」的当前主文件本机已装，UID 是 {1}，不是 {2}",
+                                    c.Name, forkUid, dep);
+                                uidConflict = LocService.Tf(
+                                    "N 网「{0}」的当前主文件本机已装过，它的 UID 是 {1}，不是需要的 {2} —— 重新下载也是同一个包，已跳过下载",
+                                    c.Name, forkUid, dep);
+                                uidConflictName = c.Name;
+                                uidConflictId = c.Id;
+                                AppLog.Info("Install", $"[同页分支] {dep} → 页面 {c.Id} 主文件 {file.FileId} 本机已装（{forkUid}），跳过下载");
+                                continue;
+                            }
 
                             var cached = CachedPack(c.Id, file.FileId);
                             if (cached is not null
@@ -1432,6 +1503,11 @@ public sealed partial class InstallService
                                 if (dl.NeedsPremium)
                                 {
                                     premiumBlocked = true;
+                                    // 记下这一路的真实原因：NeedsPremium 只是个"没法在应用内下"的
+                                    // 统称 —— 可能是免费账号 403，也可能是这台机器过不去人机验证、
+                                    // 取链超时、或者用户在设置里关了内置网页。以前一律印成
+                                    // 「Nexus 直下需要 Premium」，把后面几种情况都说错了。
+                                    premiumReason ??= string.IsNullOrWhiteSpace(dl.Error) ? null : dl.Error;
                                     lastErr = "premium";
                                     break;
                                 }
@@ -1483,8 +1559,26 @@ public sealed partial class InstallService
                                     ExitInstallGate();
                                     task.Installing = false;
                                 }
-                                if (err == ModService.UidMismatchError)
-                                { lastErr = LocService.Tf("候选「{0}」不含 {1}，换下一个", c.Name, dep); continue; }
+                                if (err is not null && err.StartsWith(ModService.UidMismatchError, StringComparison.Ordinal))
+                                {
+                                    // 哨兵值后面可能挂着包里真实的 UID（"uniqueid-mismatch|X.Y,Z.W"）
+                                    var found = err.Length > ModService.UidMismatchError.Length
+                                        ? err[(ModService.UidMismatchError.Length + 1)..] : "";
+                                    lastErr = found.Length > 0
+                                        ? LocService.Tf("页面「{0}」里装的其实是 {1}，不是 {2}", c.Name, found, dep)
+                                        : LocService.Tf("候选「{0}」不含 {1}，换下一个", c.Name, dep);
+                                    // 页面名与依赖名字段对得上 ⇒ 大概率是"正主被接手/改了 UID"，
+                                    // 这条要留到最后说，不能让它被后面几个明显不相关的候选覆盖掉。
+                                    if (found.Length > 0 && NameMatchScore(dep, c.Name) > 0)
+                                    {
+                                        uidConflict = LocService.Tf(
+                                            "N 网「{0}」名字对得上，但包里已经是 {1} —— 这个页面被接手或改过 UID，装上也满足不了 {2}",
+                                            c.Name, found, dep);
+                                        uidConflictName = c.Name;
+                                        uidConflictId = c.Id;
+                                    }
+                                    continue;
+                                }
                                 if (err is not null) { lastErr = err; continue; }
 
                                 // 成功：记住解析结果 + 与直装同款的收尾（更新队列/最后下载日期/刷新列表）
@@ -1534,13 +1628,34 @@ public sealed partial class InstallService
                     var face = cands.Count > 0 ? cands[0] : null;
                     outcomes.Add(new DependencyRunItem(dep, "manual", face?.Name, face?.Id,
                         "已在浏览器打开此页面 —— 点「Mod Manager Download」，启动器会自动接管下载安装（应用内通道未取到链接）"));
-                    Step(LocService.Tf("⏭ {0}：Nexus 直下需要 Premium，已打开网页转手动", dep));
+                    // 把真实原因带上：这句原本恒为「Nexus 直下需要 Premium」，而免费账号能走
+                    // 内置网页时根本不缺这一档权限 —— 用户看到的是个错原因，也就没法自救。
+                    Step(string.IsNullOrWhiteSpace(premiumReason)
+                        ? LocService.Tf("⏭ {0}：应用内没能自动下载，已打开网页转手动", dep)
+                        : LocService.Tf("⏭ {0}：应用内没能自动下载（{1}），已打开网页转手动", dep, premiumReason));
                     if (face is not null) toOpen.Add($"https://www.nexusmods.com/stardewvalley/mods/{face.Id}");
                 }
+                    // UID 变了的那一页：这不是"下载失败"，是"N 网上的正主换了身份"。
+                    // 归到「需手动」并带上页面号，用户点进去能看到作者说明；说成"失败"只会让人一直重试。
+                    else if (uidConflict is not null)
+                    {
+                        outcomes.Add(new DependencyRunItem(dep, "manual", uidConflictName, uidConflictId,
+                            uidConflict));
+                        Step(LocService.Tf("⏭ {0}：{1}", dep, uidConflict));
+                        if (uidConflictId > 0)
+                            toOpen.Add($"https://www.nexusmods.com/stardewvalley/mods/{uidConflictId}");
+                    }
                     else if (searched && cands.Count == 0 && searchAnswered)
                     {
                         Step(LocService.Tf("✗ {0}：Nexus 搜索不到匹配的 mod，已打开搜索页转人工", dep));
                         AddUnresolvedOutcome(dep, toOpen, outcomes);
+                    }
+                    else if (searched && cands.Count == 0)
+                    {
+                        // 搜索一发都没答上：这是网络/限流，不是"没有这个 mod"，说法必须分开，
+                        // 否则用户会照着"找不到"的结论自己去找一个其实存在的页面。
+                        Step(LocService.Tf("✗ {0}：N 网搜索这次没答上来（网络/限流），已打开搜索页转人工", dep));
+                        AddUnresolvedOutcome(dep, toOpen, outcomes, searchUnanswered: true);
                     }
                     else
                     {
@@ -1616,14 +1731,19 @@ public sealed partial class InstallService
     /// —— 实际安装仍以下载后的 UniqueID 校验为准，但展示错了会把人直接带去别人的 mod 页。</summary>
     public sealed record DependencyDisplayInfo(string Uid, string? Name, int? ModId, string? CoverUrl);
 
-    /// <summary>unresolved 收尾：结果项 + Nexus 站内搜索页链接（转人工确认，结束时统一开浏览器）。</summary>
-    private void AddUnresolvedOutcome(string dep, List<string> toOpen, List<DependencyRunItem> outcomes)
+    /// <summary>unresolved 收尾：结果项 + Nexus 站内搜索页链接（转人工确认，结束时统一开浏览器）。
+    /// <para><paramref name="searchUnanswered"/> = 搜索一次都没答上（断网/限流）—— 这时给的是
+    /// "再点一次可能就行"，不是"这个 mod 不存在"，文案与详情都得分开写。</para></summary>
+    private void AddUnresolvedOutcome(string dep, List<string> toOpen, List<DependencyRunItem> outcomes,
+        bool searchUnanswered = false)
     {
         toOpen.Add("https://www.nexusmods.com/stardewvalley/search/?gsearch="
             + Uri.EscapeDataString(UidSearchTerms(dep).FirstOrDefault() ?? dep)
             + "&gsearchtype=mods");
         outcomes.Add(new DependencyRunItem(dep, "unresolved", null, null,
-            "自动搜索不到这个依赖 —— 已打开 Nexus 搜索页，请人工确认后点 Mod Manager Download（启动器会自动接管）"));
+            searchUnanswered
+                ? "N 网搜索这次没答上来（网络或限流），已打开搜索页 —— 稍后重试一次，或在页上人工确认后点 Mod Manager Download"
+                : "自动搜索不到这个依赖 —— 已打开 Nexus 搜索页，请人工确认后点 Mod Manager Download（启动器会自动接管）"));
     }
 
 

@@ -38,7 +38,6 @@ publish/
 
 # runtime logs
 JuniGrid/run.log
-
 # test docs (local only)
 TestDocs/
 
@@ -71,3 +70,12 @@ junigrid-manifest-*.pem
 # 只留本地：CI 的 build.yml 不跑测试，发版也不依赖它们；
 # 里面全是「起真实进程、操真实窗口」的用例，换台机器就跑不动，进库只会误导。
 /test/
+
+# 游戏版本表的签名（installer/publish-catalog.ps1 现签现发）。
+# 它是发布产物、每次签名都变，进库只会制造无意义的 diff —— 表本体进库，签名不进。
+JuniGrid/Assets/*.sig
+
+# 本地排查产物（不进库）：异常现场 dump、探针留档、个人启动脚本
+/版本下载授权登录异常_*.md
+/tools/steam_cn_probe-log.jsonl
+/start-junigrid.bat

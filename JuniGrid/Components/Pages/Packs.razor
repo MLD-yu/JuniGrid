@@ -25,16 +25,7 @@
                 }
                 else if (_groups.Count == 0)
                 {
-                    @if (_all.Count > 0)
-                    {
-                        @* 账一条都没少，只是都不在这一桶里 —— 这时候说"暂无此类包"
-                           等于让人以为包没了，还原入口也就找不到了 *@
-                        <text>@Loc.F("当前版本（{0}）没有记录 · 另有 {1} 个包属于其他版本", _curVer, OtherCount())</text>
-                    }
-                    else
-                    {
-                        <span>@Loc.T("暂无此类包")</span>
-                    }
+                    <span>@Loc.T("暂无此类包")</span>
                 }
                 else
                 {
@@ -75,9 +66,8 @@
         </div>
     }
 
-    @* 过滤后一屏空了但别的桶里有账：这一整块（含版本 chips）必须还在，
-       否则人看到的是"一个包都没有"，而切回去的开关正好被藏起来了 *@
-    @if (!_initialLoading && (_groups.Count > 0 || ShowVerChips))
+    @* 有账才摆这一块工具栏；一条记录都没有时下面走空状态那一屏 *@
+    @if (!_initialLoading && _groups.Count > 0)
     {
         @* ── 工具行：视图切换 + 分类 chips + 搜索 ── *@
         <div class="jg-mods-toolbar" style="margin-top:10px">
@@ -123,26 +113,6 @@
                     }
                 }
             </div>
-            @* 两个视图共用同一批账，所以版本 chips 在"按对象"里也得在 ——
-               不然空桶的提示写着"切到上面「其它版本」"，而那个开关刚好不在 *@
-            @if (ShowVerChips)
-            {
-                @* 替图是按当时那副本体编的：换版本之后旧戳的包不能再直接回放，
-                   所以账分两桶摆 —— 本版本一桶，其它版本一桶（点开就知道有几个要重编）。 *@
-                <div class="jg-chips" role="group" aria-label='@Loc.T("游戏版本")'>
-                    <button class="jg-chip @(_ver == "cur" ? "active" : "")" @onclick='() => SetVer("cur")'
-                            title='@Loc.F("当前游戏版本为 {0}：这些包要么按该版本编码，要么属于未记录版本的旧账", _curVer)'>
-                        @Loc.F("本版本 {0}", _curVer) · @CurCount()
-                    </button>
-                    <button class="jg-chip @(_ver == "other" ? "active" : "")" @onclick='() => SetVer("other")'
-                            title='@Loc.T("这些包的记录属于其他游戏版本，启用前会先按当前版本重新编码")'>
-                        @Loc.T("其它版本") · @OtherCount()
-                    </button>
-                    <button class="jg-chip @(_ver == "all" ? "active" : "")" @onclick='() => SetVer("all")'>
-                        @Loc.T("全部") · @_all.Count
-                    </button>
-                </div>
-            }
             @if (_view == "targets")
             {
                 <div class="jg-search-x @(_searchOpen ? "open" : "")">
@@ -250,12 +220,6 @@
         else if (!_initialLoading)
         {
             @* ══════════════ 按包：整包总开关（原有视图） ══════════════ *@
-            @if (_groups.Count == 0)
-            {
-                <div class="jg-card" style="margin-top:12px">
-                    @Loc.F("当前版本（{0}）没有记录。切换至上方「其它版本」可查看那 {1} 个包 —— 启用前会先按当前版本重新编码。", _curVer, OtherCount())
-                </div>
-            }
             @foreach (var bucket in CategoryList())
             {
                 if (_cat.Length != 0 && _cat != bucket) continue;
@@ -289,17 +253,19 @@
            必须等账算完才许出现：骨架屏期间 _groups 本来就是空的，
            不加这道闸门就会在加载途中先甩一句"暂无内容包"（其实十几个包正在路上）。 *@
         <div class="jg-pk-empty">
-            <svg class="jg-pk-empty-art" viewBox="0 0 220 120" fill="none" aria-hidden="true">
-                <rect x="14" y="26" width="52" height="52" rx="9" stroke="currentColor" stroke-width="2.5" opacity=".55"/>
-                <path d="M22 66 34 52l10 10 8-8 8 12" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" opacity=".55"/>
-                <circle cx="30" cy="40" r="4" fill="currentColor" opacity=".55"/>
-                <rect x="84" y="14" width="52" height="52" rx="9" stroke="currentColor" stroke-width="2.5" opacity=".9"/>
-                <path d="M92 54 104 40l10 10 8-8 8 12" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" opacity=".9"/>
-                <circle cx="100" cy="28" r="4" fill="currentColor" opacity=".9"/>
-                <rect x="154" y="42" width="52" height="52" rx="9" stroke="currentColor" stroke-width="2.5" opacity=".7"/>
-                <path d="M162 82 174 68l10 10 8-8 8 12" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" opacity=".7"/>
-                <circle cx="170" cy="56" r="4" fill="currentColor" opacity=".7"/>
-                <path d="M118 84l3.2 7.2L128 94l-6.8 2.8L118 104l-3.2-7.2L108 94l6.8-2.8L118 84Z" fill="currentColor" opacity=".85"/>
+            @* v1.6.14：画布 220×120 → 220×180（与 .jg-pk-empty-art 的盒子同比例），
+               三张卡从 52 见方拉到 64 见方，交错排开才看得出是「一叠图」。 *@
+            <svg class="jg-pk-empty-art" viewBox="0 0 220 180" fill="none" aria-hidden="true">
+                <rect x="18" y="72" width="64" height="64" rx="10" stroke="currentColor" stroke-width="2.5" opacity=".55"/>
+                <path d="M26 124 39 108l11 11 9-9 9 14" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" opacity=".55"/>
+                <circle cx="33" cy="88" r="4.5" fill="currentColor" opacity=".55"/>
+                <rect x="78" y="40" width="64" height="64" rx="10" stroke="currentColor" stroke-width="2.5" opacity=".9"/>
+                <path d="M86 92 99 76l11 11 9-9 9 14" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" opacity=".9"/>
+                <circle cx="93" cy="56" r="4.5" fill="currentColor" opacity=".9"/>
+                <rect x="138" y="78" width="64" height="64" rx="10" stroke="currentColor" stroke-width="2.5" opacity=".7"/>
+                <path d="M146 130 159 114l11 11 9-9 9 14" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" opacity=".7"/>
+                <circle cx="153" cy="94" r="4.5" fill="currentColor" opacity=".7"/>
+                <path d="M186 16l2.8 6.4 6.4 2.8-6.4 2.8-2.8 6.4-2.8-6.4-6.4-2.8 6.4-2.8Z" fill="currentColor" opacity=".85"/>
             </svg>
             <div class="jg-pk-empty-title">@Loc.T("暂无内容包")</div>
             <button type="button" class="jg-pill-dark" @onclick="GoNexus">
@@ -772,7 +738,7 @@
                     </div>
 
                     <div style="margin-top:8px;font-size:12px;opacity:.6">
-                        @Loc.T("切换游戏版本前请先执行「全部还原」—— 否则被修改过的图像会被当作该版本的原版存入版本缓存。")
+                        @Loc.T("应用状态按游戏版本分开记：切到没应用过的版本会保持原版，切回来自动恢复 —— 切换前不必手动还原。")
                     </div>
                 </div>
                 <div class="jg-modal-actions">
@@ -820,13 +786,13 @@
 
 @code {
     private string GamePath => Cfg.Current.GamePath ?? "";
-    /// <summary>按当前游戏版本过滤后的一屏（列表、分类、搜索用的都是它）。</summary>
+    /// <summary>全部内容包（列表、分类、搜索、「全部还原」用的都是它）。
+    /// <para>这里【不按游戏版本分桶】：内容包替代的是本体的资源，它本身与游戏版本无关 ——
+    /// 换过版本之后包还在原地，只有包内某些文件可能不适用当前本体。那件事由每一行、
+    /// 每一包自己说（行下小字/卡片摘要里的版本与不适配数），启用时按当前本体重编，
+    /// 都不该让整包从列表里消失。</para></summary>
     private List<ContentOverrideService.PackGroup> _groups = new();
-    /// <summary>过滤前的全部包 —— 版本 chips 上的数与「全部还原」的是不是该按下去都看它，
-    /// 因为还原从来不分版本。</summary>
-    private List<ContentOverrideService.PackGroup> _all = new();
     private string _curVer = "";
-    private string _ver = "cur";              // cur = 本版本 | other = 其它版本 | all = 全部
     private List<ContentOverrideTargets.TargetGroup> _targets = new();
     private ContentOverrideService.PackGroup? _open;
     private ContentOverrideTargets.TargetGroup? _openTarget;
@@ -884,7 +850,8 @@
         // 老位置（C 盘配置目录）的覆盖库存搬进游戏目录旁的 JuniGrid 文件夹 ——
         // 幂等，只有第一次真搬；搬不动只记日志，界面照常。
         try { ContentOverrideService.MigrateLegacyStore(gp); } catch { }
-        // 老账没有版本戳 → 先按"原版实际躺在哪一层"补上，界面才分得出哪个包属于哪一版；
+        // 老账没有版本戳 → 先按"原版实际躺在哪一层"补上：界面不再按版本分包，
+        // 但「这一行是不是按当前本体编的、启用时要不要重编」还得靠这个戳（见 RowSub）；
         // 顺手丢掉没有记录引用的副本目录（每次写盘都换新随机 id，历史上攒下过 39 个无主的）。
         try { ContentOverrideService.BackfillVersions(Cfg, gp); } catch { }
         try { ContentOverrideService.PruneUnreferencedStores(Cfg, gp); } catch { }
@@ -935,13 +902,12 @@
         msRebuild = swStep.ElapsedMilliseconds;
 
         swStep.Restart();
-        _all = string.IsNullOrWhiteSpace(gp)
+        _groups = string.IsNullOrWhiteSpace(gp)
             ? new List<ContentOverrideService.PackGroup>()
             : ContentOverrideService.Groups(gp, Cfg);
         _curVer = string.IsNullOrWhiteSpace(gp)
             ? ""
             : ContentOverrideService.OriginalVersionSegment(gp);
-        _groups = _all.Where(VerMatch).ToList();
         msGroups = swStep.ElapsedMilliseconds;
 
         swStep.Restart();
@@ -949,23 +915,16 @@
             _targets = new List<ContentOverrideTargets.TargetGroup>();
         else
         {
-            // 按对象与按包必须是同一批账，所以走同一个版本桶；再 AND 上"这一条在界面上算一行"：
-            // 对话表/事件脚本/日程那些不是图的账，和同一张图的语言副本，都不该各占一张卡。
+            // 按对象与按包必须是同一批账（版本不参与筛选，理由见 _groups 的注释）；
+            // 再 AND 上"这一条在界面上算一行"：对话表/事件脚本/日程那些不是图的账，
+            // 和同一张图的语言副本，都不该各占一张卡。
             var shown = ContentOverrideService.ShownRowPredicate(gp, Cfg);
-            Func<ContentOverrideRecord, bool> ver = _ver switch
-            {
-                "all" => _ => true,
-                "cur" => RecCur,
-                _ => r => !RecCur(r),
-            };
-            _targets = ContentOverrideTargets.Build(Cfg, r => ver(r) && shown(r));
+            _targets = ContentOverrideTargets.Build(Cfg, shown);
         }
         msTargets = swStep.ElapsedMilliseconds;
 
         swStep.Restart();
-        // 「全部还原」从来不分版本，所以它该不该按得看过滤前的数 ——
-        // 只看这一屏的话，别的版本桶里在位的图会让按钮一直灰着。
-        _inPlace = _all.Sum(g => g.Items.Count(r => r.Enabled));
+        _inPlace = _groups.Sum(g => g.Items.Count(r => r.Enabled));
         _orphans = string.IsNullOrWhiteSpace(gp)
             ? new List<ContentOverrideService.OrphanOverrideGroup>()
             : ContentOverrideService.AuditOrphans(gp, Cfg);
@@ -987,7 +946,7 @@
         if (total >= 200)
             AppLog.Warn("PacksPerf",
                 $"Reload {total}ms | 账本重建={msRebuild}ms 建组={msGroups}ms 对象卡={msTargets}ms "
-                + $"审计={msAudit}ms 封面源={msThumbs}ms | 包={_all.Count} 卡={_targets.Count}");
+                + $"审计={msAudit}ms 封面源={msThumbs}ms | 包={_groups.Count} 卡={_targets.Count}");
     }
 
     /// <summary>进页就把全部对象卡的封面排进后台生成 —— 点开就是热的，不一张张后蹦。</summary>
@@ -1159,39 +1118,6 @@
 
     private void SetView(string v) { _view = v; _menuSlot = null; }    private void GoNexus() => Nav.NavigateTo("nexus");
     private void SetCat(string c) { _cat = c; }
-
-    /// <summary>切版本桶。分类 chips 是渲染期过滤，版本桶是 <c>Reload</c> 里过滤的
-    /// （对象视图也要跟着换桶，就得重算一次），所以这里必须重跑 Reload，
-    /// 否则点了 chips 列表一动不动。</summary>
-    private async Task SetVer(string v)
-    {
-        _ver = v;
-        _menuSlot = null;
-        await ReloadAsync();
-    }
-
-    /// <summary>一条账属不属于"当前这一版"。版本空白 = 老账且原版在哪一层都查不出来，
-    /// 按当前版本处理（它当初就是照着当时那副本体编的，而那副本体如今就是现役本体）；
-    /// 只有明确记着别的版本戳的才算旧账。</summary>
-    private bool RecCur(ContentOverrideRecord r)
-        => r.Version.Length == 0 || r.Version.Equals(_curVer, StringComparison.OrdinalIgnoreCase);
-
-    /// <summary>一个包进哪一桶看它【每一行】的戳：重编是按行发生的，
-    /// 同一个包里出现两种戳时两桶都该看得见它，而不是替它挑一个。</summary>
-    private bool VerMatch(ContentOverrideService.PackGroup g)
-        => _ver switch
-        {
-            "all" => true,
-            "cur" => g.Items.Any(RecCur),
-            _ => g.Items.Any(r => !RecCur(r)),
-        };
-
-    private int CurCount() => _all.Count(g => g.Items.Any(RecCur));
-    private int OtherCount() => _all.Count(g => g.Items.Any(r => !RecCur(r)));
-
-    /// <summary>只有一个版本时这排 chips 纯属噪音（切了也没东西变），所以只在账上真出现
-    /// 第二个版本戳时才出来 —— 版本分层是为了"切过版本之后看得清"，不是为了多一排按钮。</summary>
-    private bool ShowVerChips => OtherCount() > 0;
 
     /// <summary>字体卡第一行：这张卡盖的到底是哪张资产（SmallFont 与它的 zh-CN 变体不是一张图）。</summary>
     private static string FontAssetPath(ContentOverrideTargets.TargetGroup t)
@@ -1539,10 +1465,11 @@
         else if (on != g.ImageItems.Count) bits.Add(Loc.F("已运用 {0}", on));
         if (g.DriftedCount > 0) bits.Add(Loc.F("{0} 个文件已失效", g.DriftedCount));
         if (g.VanillaCount > 0) bits.Add(Loc.F("{0} 个文件已还原为原版", g.VanillaCount));
-        // 版本戳与当前本体不同时必须在卡面上就说出来：这包的字节是别的版本编的，
-        // 打开时走的是"照当前本体重编"那条路，不是回放。
+        // 包的账是按某个版本编的，但包本身与版本无关（它替代的是本体的资源）——
+        // 所以这只是【卡面上的一句事实】，不再是"它属于哪一桶"的分桶依据。
+        // 启用时仍会按当前本体重编一遍（见 SetPackEnabled 的 StaleRows 那条路），不必单开一页说明。
         if (g.StampedVersion.Length > 0 && !g.StampedVersion.Equals(_curVer, StringComparison.OrdinalIgnoreCase))
-            bits.Add(Loc.F("记录于 {0}", g.StampedVersion));
+            bits.Add(Loc.F("按 {0} 编码", g.StampedVersion));
         if (g.Skipped > 0) bits.Add(Loc.F("{0} 个文件不适配", g.Skipped));
         return new NexusModListEntry(Math.Max(0, _groups.IndexOf(g)), PackName(g),
             string.Join(" · ", bits), "", 0, g.PackCover,

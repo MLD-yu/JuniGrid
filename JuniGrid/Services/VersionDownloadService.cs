@@ -46,7 +46,7 @@ public sealed class VersionDownloadService
     {
         var cfg = _cfg.Current;
         if (!IsAuthorized)
-            throw new DepotDownloaderService.DepotException("请先在「设置」里完成 Steam 扫码授权");
+            throw new DepotDownloaderService.DepotException("请先在「设置」里完成 Steam 登录授权");
 
         // 同一 manifest 已有运行/暂停任务 → 不重复开。按标题认（进度行早就不带 manifest 了）
         var existing = _center.Snapshot().FirstOrDefault(t =>
@@ -69,7 +69,10 @@ public sealed class VersionDownloadService
                     _center.Finish(task, true, LocService.Tf("已下载 {0}，点版本号即可切换", label));
                     return;
                 }
-                if (applyToGame && _depot.TryApplyStaged(cfg.GamePath, cfg.SteamAppId, "413151", manifestId, null, currentGameVersion: curVer))
+                // progress 不能传 null：③ 恢复 Mods 失败时不抛异常（本体已经换完了），
+                // 只经 progress 报一句 —— 传 null 就等于把那句话扔了，任务行照样写「已就绪」。
+                var cacheProg = new Progress<DepotDownloaderService.Progress>(p => _center.Report(task, p.State, p.Percent));
+                if (applyToGame && _depot.TryApplyStaged(cfg.GamePath, cfg.SteamAppId, "413151", manifestId, cacheProg, currentGameVersion: curVer))
                 {
                     LockIfNeeded(cfg, manifestId);
                     cfg.LastHistoricalManifest = manifestId;
@@ -79,7 +82,8 @@ public sealed class VersionDownloadService
                     _center.Report(task, LocService.Tr("本地已有完整缓存"), 100);
                     await EnsureSmapiAfterSwitchAsync(task);
                     await EnsureXnaAfterSwitchAsync(task);
-                    _center.Finish(task, true, LocService.Tf("已就绪 {0}（本地缓存）", label));
+                    var warn = DepotDownloaderService.LastApplyWarning;
+                    _center.Finish(task, warn is null, warn ?? LocService.Tf("已就绪 {0}（本地缓存）", label));
                     BroadcastPagesAfterSwitch();
                     return;
                 }
@@ -124,7 +128,9 @@ public sealed class VersionDownloadService
                 await EnsureSmapiAfterSwitchAsync(task);
                 await EnsureXnaAfterSwitchAsync(task);
 
-                _center.Finish(task, true, LocService.Tf("已下载 {0}，可在「已下载」里切换", label));
+                var applyWarn = DepotDownloaderService.LastApplyWarning;
+                _center.Finish(task, applyWarn is null,
+                    applyWarn ?? LocService.Tf("已下载 {0}，可在「已下载」里切换", label));
                 BroadcastPagesAfterSwitch();
             }
             catch (OperationCanceledException ex)
@@ -147,6 +153,23 @@ public sealed class VersionDownloadService
                     _center.Finish(task, false,
                         LocService.Tr("下载请求超时或被中断，已中止：") + ex.Message);
                 }
+            }
+            catch (DepotDownloaderService.AuthRequiredException ex)
+            {
+                // 本机这个安装目录下没有 DD 的登录凭据（凭据在 IsolatedStorage 里按 exe 路径分桶，
+                // 重装到别处 / 换安装目录就是空桶 —— 见 Login.cs 的 CredentialMissingMarker）：
+                // 把「已授权」标记撤回，列表和「下载」按钮立刻回到「请先扫码授权」，
+                // 不然用户再点一次又白等一遍。
+                try
+                {
+                    var c = _cfg.Current;
+                    c.DepotQrLoggedIn = false;
+                    _cfg.Save(c);
+                    AppLog.Warn("VersionDownload", "本机 Steam 凭据缺失，已撤销 DepotQrLoggedIn，需重新扫码授权");
+                }
+                catch (Exception saveEx) { AppLog.Warn("VersionDownload", "撤销授权标记失败: " + saveEx.Message); }
+                // 半截包留着：扫完码再点「下载」能接着传（DeleteStagedPackage 会把几 GB 清掉）
+                _center.Finish(task, false, ex.Message);
             }
             catch (Exception ex)
             {
@@ -291,7 +314,7 @@ public sealed class VersionDownloadService
         }
         if (!IsAuthorized)
         {
-            _center.Finish(t, false, LocService.Tr("请先在「设置」里完成 Steam 扫码授权，再点「下载」"));
+            _center.Finish(t, false, LocService.Tr("请先在「设置」里完成 Steam 登录授权，再点「下载」"));
             return;
         }
         _center.Remove(t);

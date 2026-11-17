@@ -147,6 +147,11 @@ public sealed class ConfigService
             if (!File.Exists(ConfigPath) || restoredFromBak || ConfigLooksIntact())
                 Save(Current);
         }
+        // v1.6.2：分类 / 安装账 / 备注 / 封面缓存按游戏版本分账（见 ModsIndexStore）。
+        // 这些表的键是 Mods 里的文件夹名，而 Mods 是按版本整包隔离的 —— 混在一本账上，
+        // 切版本之后整页「未分类」，切回来又把这版新做的分类顶掉。
+        // 认不出版本时它整个不动作，行为与以前一致。
+        ModsIndexStore.Attach(Current);
     }
 
     /// <summary>把两段式老覆盖键补成三段（多一段来源槽位）。返回是否动了 —— 动了才值得落盘。
@@ -344,7 +349,11 @@ public sealed class ConfigService
 
                 LogSponsorStateBeforeWrite(cfg);
                 if (await WriteAtomicAsync(json).ConfigureAwait(false))
+                {
                     System.Threading.Volatile.Write(ref _savedVersion, v);
+                    // 按版本分账的 mod 索引跟着主配置一起落盘（内容没变它会自己跳过）
+                    ModsIndexStore.Flush(cfg);
+                }
                 else
                 { await System.Threading.Tasks.Task.Delay(800).ConfigureAwait(false); continue; }  // 失败保 dirty，稍后重试
                 // 回到循环顶部重查 dirtyVersion —— 写盘期间的新修改会触发下一轮
@@ -418,6 +427,9 @@ public sealed class ConfigService
     {
         try
         {
+            // 退出这条口也要存按版本分账的索引：主配置可能早就写完了（dirty 已清零），
+            // 而索引是在内存里改完等着跟下一轮一起写的。
+            ModsIndexStore.Flush(Current);
             lock (_schedGate) { _debounceCts?.Cancel(); }
             var v = System.Threading.Volatile.Read(ref _dirtyVersion);
             if (v <= _savedVersion) return;
@@ -613,6 +625,15 @@ public sealed class JuniGridConfig
     public bool DepotQrLoggedIn { get; set; } = false;
 
     /// <summary>
+    /// 本机 DepotDownloader 存过登录令牌的账号名单（扫码/账密成功时追加）。
+    /// 账密登录据此决定趟数：名单外 = 本机无令牌可复用 → 单趟带 -remember-password
+    /// （真验密码且只问一次验证码）；名单内 = 有令牌 → 两趟（第一趟不带参数真验，
+    /// 第二趟静默复用令牌），避免「有令牌时随便什么密码都成功」。
+    /// DD 的令牌文件是加密的、按 exe 路径分桶，没法直接查名单，只能由应用自己记。
+    /// </summary>
+    public List<string> SteamTokenAccounts { get; set; } = new();
+
+    /// <summary>
     /// v1.4.2：用户自定义历史版本条目 —— 从 SteamDB 复制的任意 Manifest ID。
     /// 与内置清单合并展示；可删除。按需下载，不预拉全量。
     /// </summary>
@@ -705,13 +726,20 @@ public sealed class JuniGridConfig
     /// 文件夹 → 分类名。一个 mod 只属于一个分类；没登记 = 未分类。
     /// 「按分类」视图用它分段，右侧导航栏按分段跳转。</summary>
     public Dictionary<string, string> ModUserCategory { get; set; } = new(StringComparer.OrdinalIgnoreCase);
-    /// <summary>自定义分类的展示顺序（创建顺序）。分类删空后这里可能残留一项 ——
-    /// 渲染前按「字典里还有成员」过滤，不靠清理。</summary>
+    /// <summary>自定义分类的展示顺序（创建顺序）—— <b>只是「当前游戏版本」那一份的镜像</b>。
+    /// v1.6.13：真正的账在 <see cref="ModsIndexStore"/> 的按版本账本里（<c>categoryOrder</c>），
+    /// 切版本时跟着换。<b>理由</b>：这份名单是「用户给某一版那几个 mod 起的名字」，跟归属一样
+    /// 跟着 <c>Mods\</c> 走；留在全局就会出现「切到 1.5.6，屏幕上一排 0 个的空分类，全是 1.6.15
+    /// 建的测试标签」（2026-11-16 用户反馈）。旧版 app 读到的仍是当前版本这份，语义不变。
+    /// 分类删空后这里可能残留一项 —— 渲染前按「字典里还有成员」过滤，不靠清理。</summary>
     public List<string> ModUserCategoryOrder { get; set; } = new();
+    public Dictionary<string, string> ModOfficialCategoryNames { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>分类 → 段头图标（2026-11-09）。值形如 <c>logo</c> / <c>portrait:Abigail</c> / <c>item:72</c>，
     /// 解析见 <see cref="CategoryIconService"/>。没登记的分类一律显示游戏 Logo；
-    /// 键 = 分类名，"" = 未分类（它也能换图标）。</summary>
+    /// 键 = 分类名，"" = 未分类（它也能换图标）。
+    /// <para>v1.6.13：与 <see cref="ModUserCategoryOrder"/> 同一本账、同样只是当前版本的镜像
+    /// （按版本那份在 <see cref="ModsIndexStore"/> 里叫 <c>categoryIcons</c>）。</para></summary>
     public Dictionary<string, string> ModCategoryIcon { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>vNext：更新检查指纹缓存 —— Nexus modId → (updatedAt 指纹, 上次精查到的最新 MAIN 文件版本, 精查时间)。
@@ -841,6 +869,15 @@ public sealed class OverlayRecord
 
     /// <summary>包里这份文件的副本目录名。有了它，"关掉再打开"才不需要重新下载汉化包。</summary>
     public string StoreId { get; set; } = "";
+
+    /// <summary>这份覆盖盖上去时的游戏版本（如 1.6.15）。
+    /// <para><b>为什么要记：</b>Mods/ 是按版本隔离的（切版本整包换掉），覆盖文件住在宿主
+    /// 目录里，所以它天然跟着版本走 —— 但账本原本是全局一份，切到另一个版本后宿主不在，
+    /// 这些账就被当成"失效"，红点点亮、整页报警。实机 2026-11-15：切到 1.6.14 后 12 个
+    /// 汉化包全红，用户的原话是"其它 mod 都说随版本切换的，为什么覆盖包不是"。</para>
+    /// <para>空 = 这个字段上线前的旧账，启动时会按"宿主目录在哪个版本的 Mods 快照里"
+    /// 归一次版（见 <c>ModService.StampOverlayVersions</c>）；归不了的保持空，仍按旧口径判。</para></summary>
+    public string GameVersion { get; set; } = "";
     /// <summary>开关状态：true = 我们的文件在位；false = 已还原，但账和副本都留着。</summary>
     public bool Enabled { get; set; } = true;
     /// <summary>从 N 网解析来的 mod 名与封面，只为展示；没解析到就退回 PackName。</summary>

@@ -20,6 +20,19 @@ internal static class AtomicFile
     private static readonly TimeSpan StaleAfter = TimeSpan.FromMinutes(10);
 
     public static void WriteAllText(string path, string content)
+        => WriteCore(path, tmp => File.WriteAllText(tmp, content));
+
+    /// <summary>
+    /// 二进制版的原子写。和 <see cref="WriteAllText"/> 共用同一套 tmp + Move 逻辑。
+    ///
+    /// <para>为什么不能拿 WriteAllText 存字节：签名版本表这类内容的<b>签名覆盖的是原始字节</b>，
+    /// 经过 string 中转会碰编码/换行转换，签的那份和读回来的那份就不再是同一串字节了，
+    /// 下次启动验签必然失败。这类文件只能原样落盘。</para>
+    /// </summary>
+    public static void WriteAllBytes(string path, byte[] content)
+        => WriteCore(path, tmp => File.WriteAllBytes(tmp, content));
+
+    private static void WriteCore(string path, Action<string> writeTmp)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         for (var attempt = 1; ; attempt++)
@@ -29,7 +42,7 @@ internal static class AtomicFile
             var tmp = $"{path}.{Guid.NewGuid().ToString("N")[..8]}.tmp";
             try
             {
-                File.WriteAllText(tmp, content);
+                writeTmp(tmp);
                 File.Move(tmp, path, overwrite: true);
                 return;
             }

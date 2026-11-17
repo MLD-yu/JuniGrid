@@ -1,0 +1,82 @@
+/* ─── Steam Guard 验证码：独立弹窗 + CodeSlots 式槽位输入 ───────────────────
+   形状移植自 React Bits CodeSlots：圆角方槽、落位过冲、caret 滑行、错误倒序 drain。
+   颜色全部走主题变量 —— 明暗两套自动适配；强调色跟 --jg-accent（system 模式即 Windows 系统色）。 */
+
+.jg-guard-overlay { z-index: 99999; }   /* 盖在 Steam 登录弹窗（99998）之上 */
+.jg-guard-modal { width: min(430px, 92vw); text-align: center; }
+.jg-guard-sub { font-size: 12.5px; color: var(--jg-text-2); margin: 2px 0 18px; min-height: 19px; line-height: 1.5; }
+.jg-guard-err { color: #e5484d; font-weight: 600; }
+.jg-guard-ok { color: #2f9e6e; font-weight: 600; }
+.jg-guard-busy { display: inline-flex; align-items: center; gap: 8px; }
+.jg-guard-cancel {
+    margin-top: 18px; padding: 8px 22px; border: 0; border-radius: 10px;
+    background: var(--jg-well); color: var(--jg-text-2); font-size: 13px; cursor: pointer;
+    transition: background-color .15s ease;
+}
+.jg-guard-cancel:hover { background: var(--jg-hover); }
+.jg-guard-cancel:disabled { opacity: .45; cursor: not-allowed; }
+.jg-mobile-wait { display: flex; justify-content: center; margin: 4px 0 14px; }
+
+.gs {
+    --gs-size: 46px;
+    --gs-height: 54px;
+    --gs-gap: 8px;
+    --gs-radius: 12px;
+    --gs-accent: var(--jg-accent);
+    --gs-slot: var(--jg-well);
+    --gs-digit: var(--jg-card);
+    --gs-danger: #e5484d;
+    position: relative; display: inline-block;
+}
+.gs-row { position: relative; display: inline-flex; gap: var(--gs-gap); cursor: text; touch-action: manipulation; }
+.gs-row[data-busy] { opacity: .65; pointer-events: none; }
+.gs-input {
+    position: absolute; inset: 0; z-index: 4; margin: 0; padding: 0; border: 0; outline: 0;
+    background: transparent; color: transparent; caret-color: transparent;
+    font-size: 16px; opacity: 0; cursor: inherit; appearance: none;
+}
+.gs-slot {
+    position: relative; width: var(--gs-size); height: var(--gs-height);
+    border-radius: var(--gs-radius); overflow: hidden; background: var(--gs-slot);
+    transition: background-color .2s ease; user-select: none; -webkit-user-select: none;
+}
+.gs-slot[data-active] { background: color-mix(in srgb, var(--gs-accent) 12%, var(--gs-slot)); }
+.gs-row[data-status="error"] .gs-slot { background: color-mix(in srgb, var(--gs-danger) 18%, var(--gs-slot)); }
+.gs-fill {
+    position: absolute; inset: 0; border-radius: inherit; background: var(--gs-accent);
+    transform: scale(0); transform-origin: center;
+    /* 过冲曲线模拟 CodeSlots 的 spring bounce */
+    transition: transform .32s cubic-bezier(.34, 1.56, .64, 1), background-color .2s ease;
+}
+.gs-row[data-status="error"] .gs-fill { background: var(--gs-danger); }
+.gs-digit {
+    position: absolute; inset: 0; z-index: 2; display: grid; place-items: center;
+    color: var(--gs-digit); font-size: 22px; font-weight: 600; line-height: 1;
+    font-variant-numeric: tabular-nums; opacity: 0; transform: translateY(8px);
+    transition: transform .32s cubic-bezier(.34, 1.56, .64, 1), opacity .2s ease;
+}
+.gs-caret {
+    position: absolute; z-index: 3; top: 25%; left: 0; width: 1.5px; height: 50%;
+    opacity: 0; pointer-events: none; transition: transform .18s cubic-bezier(.23, 1, .32, 1);
+}
+.gs-caret[data-show] { opacity: 1; }
+.gs-caret-line { display: block; width: 100%; height: 100%; background: var(--jg-text); animation: gs-blink 1s linear infinite; }
+@keyframes gs-blink { 0%, 49.9% { opacity: 1; } 50%, 100% { opacity: 0; } }
+/* success：整行洗白从中间向两边铺开，对勾随后升起（CodeSlots 的 wash + check） */
+.gs-wash {
+    position: absolute; inset: 0; z-index: 5; display: grid; place-items: center;
+    border-radius: var(--gs-radius); background: var(--gs-accent); color: var(--gs-digit);
+    clip-path: inset(0 50% round var(--gs-radius)); opacity: 0; pointer-events: none;
+    transition: clip-path .3s cubic-bezier(.23, 1, .32, 1), opacity .2s ease;
+}
+.gs-row[data-status="success"] .gs-wash { clip-path: inset(0 0 round var(--gs-radius)); opacity: 1; }
+.gs-wash svg {
+    transform: translateY(8px) scale(.85); opacity: 0;
+    transition: transform .35s cubic-bezier(.34, 1.56, .64, 1) .28s, opacity .2s ease .28s;
+}
+.gs-row[data-status="success"] .gs-wash svg { transform: none; opacity: 1; }
+
+@media (prefers-reduced-motion: reduce) {
+    .gs-fill, .gs-digit, .gs-caret, .gs-wash, .gs-wash svg { transition-duration: 1ms; transition-delay: 0ms; }
+    .gs-caret-line { animation: none; }
+}

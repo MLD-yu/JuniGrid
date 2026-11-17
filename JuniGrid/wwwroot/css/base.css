@@ -338,6 +338,24 @@ body.jg-booting #app > * { opacity: 0 !important; visibility: hidden !important;
 .jg-winbtn-close { border-top-right-radius: 10px; }
 .jg-winbtn-close:hover { background: #e81123; color: #fff; }
 
+/* ── v1.3.5：标题栏打赏按钮（翻译开关左边）──
+   30×30 透明按钮，图标用 mask 吃 currentColor；hover 出浅底并把图标染成强调色，
+   与旁边两颗胶囊开关同一套取色，不额外引入颜色。 */
+.jg-donate-btn {
+    width: 30px; height: 30px; margin: 0 8px 0 4px;
+    display: flex; align-items: center; justify-content: center;
+    padding: 0; border: 0; border-radius: 8px;
+    background: transparent; color: inherit; cursor: pointer;
+    transition: background 160ms ease, color 160ms ease;
+}
+.jg-donate-btn:hover { background: var(--jg-hover); color: var(--jg-accent); }
+.jg-donate-ico {
+    width: 18px; height: 18px; display: block;
+    background: currentColor;
+    -webkit-mask: url("../assets/donate.svg") center / contain no-repeat;
+    mask: url("../assets/donate.svg") center / contain no-repeat;
+}
+
 /* ── v1.1.1：标题栏深浅主题开关（Element Plus 导航栏同款胶囊）──
    形态完全照搬官网：40x20 圆角胶囊轨道 + 圆形旋钮，浅色=旋钮居左太阳图标，
    深色=旋钮滑到右侧月亮图标；点击触发的圆形揭示动画在宿主侧（MainWindow.RevealThemeSwitchAsync）。 */

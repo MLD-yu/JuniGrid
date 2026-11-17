@@ -117,7 +117,6 @@
             {
                 <button class="jg-login-btn" @onclick="OpenLoginDialog">
                     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg> @Loc.T("登录") </button>
-                @if (!string.IsNullOrEmpty(_loginMsg)) { <div class="jg-note" style="margin-top:6px;">@Loc.T(_loginMsg)</div> }
             }
         </div>
     </div>
@@ -581,7 +580,7 @@
                 <div class="jg-login-title">@Loc.T("等待授权")</div>
                 <div class="jg-login-waiting">
                     <span class="jg-login-spinner large"></span>
-                    <span>@Loc.T("正在等待浏览器授权…")</span>
+                    <span>@Loc.T("请在弹出的窗口中完成授权…")</span>
                 </div>
                 <button class="jg-login-cancel" @onclick="CancelOAuthFlow">@Loc.T("取消授权")</button>
             }

@@ -213,8 +213,10 @@ public static class ContentOverrideTargets
 
     /// <summary>把全部覆盖账重组为对象列表（界面每次 Reload 重算 —— 账是唯一真相，不另存副本）。</summary>
     /// <summary>把账上的覆盖按【对象】并组。
-    /// <paramref name="take"/> 是给界面的版本桶用的：按包与按对象必须是同一批账，
-    /// 否则切到「其它版本」时一边换了列表、另一边还摆着上一版的卡。</summary>
+    /// <paramref name="take"/> 是给界面的筛选用的：按包与按对象必须是同一批账，
+    /// 否则一边换了列表、另一边还摆着上一批的卡。
+    /// <para>注意它【不是】游戏版本筛子 —— 内容包替代的是本体资源，本身与版本无关，
+    /// 换过版本之后包还在原地；只有包内某些文件可能不适用当前本体，那件事按行说。</para></summary>
     public static List<TargetGroup> Build(ConfigService cfg, Func<ContentOverrideRecord, bool>? take = null)
     {
         var byKey = new Dictionary<string, List<ContentOverrideRecord>>(StringComparer.OrdinalIgnoreCase);

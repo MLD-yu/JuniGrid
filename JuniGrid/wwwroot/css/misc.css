@@ -811,6 +811,24 @@ html[data-theme="dark"] .jg-ver-note.danger { color: #ff7b96; }
 .jg-ver-note.ok { background: rgba(26,196,120,.10); color: #12965c; }
 html[data-theme="dark"] .jg-ver-note.ok { color: #2fdd8d; }
 
+/* ─── 「用 Steam 客户端下载」面板 ───────────────────────────────────────────
+   扫码在国内常连不上 Steam 登录中继，这条路改用 Steam 客户端自己的会话：
+   命令交给控制台、文件由 Steam 下，我们只盯目录。样式沿用弹窗那套 token。 */
+.jg-steam-dl { width: min(520px, 94vw); }
+.jg-steam-why { font-size: 12px; line-height: 1.6; color: var(--jg-text-2); background: var(--jg-well); border-left: 3px solid var(--jg-line-heavy); border-radius: 8px; padding: 8px 11px; margin-bottom: 12px; }
+.jg-steam-cap { font-size: 12px; font-weight: 600; color: var(--jg-text-2); margin-bottom: 6px; }
+.jg-steam-pick { display: grid; grid-template-columns: repeat(auto-fill, minmax(72px, 1fr)); gap: 6px; max-height: 132px; overflow-y: auto; padding: 2px; margin-bottom: 12px; }
+.jg-steam-pickitem { border: 1px solid transparent; background: var(--jg-well); color: var(--jg-text-2); border-radius: 8px; padding: 5px 6px; font-size: 11.5px; font-weight: 600; font-family: inherit; cursor: pointer; font-variant-numeric: tabular-nums; }
+.jg-steam-pickitem:hover:not(:disabled) { background: var(--jg-hover); color: var(--jg-text); }
+.jg-steam-pickitem.on { background: var(--jg-ink); color: var(--jg-on-ink); border-color: var(--jg-ink); }
+.jg-steam-pickitem:disabled { opacity: .38; cursor: not-allowed; }
+.jg-steam-step { font-size: 12px; line-height: 1.6; color: var(--jg-text-2); margin-top: 8px; }
+.jg-steam-cmd { margin-top: 6px; padding: 9px 11px; border-radius: 8px; background: var(--jg-well); border: 1px solid var(--jg-track); font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; user-select: all; word-break: break-all; }
+.jg-steam-actions { margin-top: 8px; }
+.jg-steam-status { margin-top: 10px; font-size: 12px; line-height: 1.55; color: var(--jg-text-2); }
+.jg-steam-status.danger { color: #b22347; }
+html[data-theme="dark"] .jg-steam-status.danger { color: #ff7b96; }
+
 
 
 

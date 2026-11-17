@@ -406,9 +406,12 @@
             color-mix(in srgb, var(--jg-accent) 7%, transparent), transparent 70%);
 }
 .jg-pk-empty-art {
+    /* v1.6.14：盒子尺寸与插画自己的 viewBox 必须同一个比例。
+       以前盒子是 220×180、viewBox 却还是 220×120 —— 多出来的 60px 被默认的
+       xMidYMid 均分成上下各 30 的空白，图形既没长大、又被框在一个方盒子里，
+       看上去就是「一条扁片浮在空白中间」。现在所有空态插画统一画在 220×180
+       的画布上，盒子与画布 1:1，不再有隐形留白。 */
     width: 220px;
-    /* v1.5.5：从 120 拉到 180 —— 2:1 的矩形把回收站桶挤得又扁又宽；
-       接近 5:4 之后桶才能画出立体感（回收站空态实测 2026-10-20）。 */
     height: 180px;
     color: var(--jg-accent);
     margin-bottom: 6px;

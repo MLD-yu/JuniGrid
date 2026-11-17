@@ -140,7 +140,7 @@ public sealed partial class StorageService
         var verCache = StoragePaths.DepotStagingDir;
         list.Add(new("vercache", "游戏版本缓存", "历史版本本地包", verCache,
             new[] { verCache }, new[] { verCache }, Cleanable: true, Movable: true,
-            Tip: "切换游戏版本时下载的完整游戏包 切回该版本时无需重新下载 清理会删掉全部已缓存版本 而且每个版本包里还躺着那一版的 Mods 抽屉（那是你的 mod 本体，删了要重装）"));
+            Tip: "切换游戏版本时下载的完整游戏包 切回该版本时无需重新下载 清理会删掉全部已缓存版本 每个版本包里还躺着那一版的 Mods 抽屉与回收站 没归到版本的 Mod 和没搬完的残包也在这个目录里 都会一起删掉 不进回收站 无法撤销"));
 
         // v1.2.7：默认缓存落点从 %TEMP%\JuniGrid 改成安装目录后，旧位置可能还剩搬不走的副本。
         // 必须让它在界面上看得见并可以清 —— 「看不见就删不掉」是 G3 审计钉过的那类无主条目。
@@ -223,7 +223,7 @@ public sealed partial class StorageService
         };
         list.Add(new("data", "设置与任务数据", "配置与任务记录（固定·不可清理）", StoragePaths.AppDataDir,
             dataFiles, Array.Empty<string>(), Cleanable: false, Movable: false,
-            Tip: "你的设置 Nexus API Key mod 存档列表和下载任务记录 属于个人数据 程序永远不会自动清理它 删了应用回到刚装好的状态，Nexus 授权也要重新扫",
+            Tip: "你的设置 Nexus 登录 mod 存档列表和下载任务记录 属于个人数据 程序永远不会自动清理它 删了应用回到刚装好的状态，Nexus 也要重新登录",
             Destructive: true));
 
         // 切旧版本前备份的 Steam userdata（成就/云存档本地记录）。只统计不清理 —— 删了出问题没法比对。
@@ -237,10 +237,15 @@ public sealed partial class StorageService
         // 绝不可清理 —— 那是玩家的真存档，只是当前版本读不了才收起来的。
         // 占用还要算上人工隔离区里的存档批次：09-22 那次去重把 16 份 / 438 MB 挪进 _quarantine，
         // 这一行看不见它，玩家视角就是"存档凭空少了 438 MB"。
-        var savesHidden = StoragePaths.SavesHiddenDir;
+        // 2026-11-17：抽屉根不再固定 LocalAppData —— 存档目录被符号链接搬到别的盘时，
+        // 抽屉会落在存档父目录下（见 SaveVersionService.DrawerRoot）。旧位置也统计进去，
+        // 迁移跳过/失败时那批档还在，不能从账面上消失。
+        var savesHidden = SaveVersionService.DrawerRoot;
+        var savesHiddenRoots = new[] { savesHidden, StoragePaths.SavesHiddenDir }
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
         var qzBatches = SaveVersionService.QuarantineSaveBatches();
         list.Add(new("saveshidden", "版本收起的存档", "当前游戏版本读不了、暂时从存档列表收起的档（含人工隔离批次）", savesHidden,
-            new[] { savesHidden }.Concat(qzBatches).ToArray(), Array.Empty<string>(), Cleanable: false, Movable: false,
+            savesHiddenRoots.Concat(qzBatches).ToArray(), Array.Empty<string>(), Cleanable: false, Movable: false,
             Tip: "切到读不了它们的版本时 自动把那些档从存档列表收进这里 防止点错闪退 切回能读的版本会自动放回 千万不要手动删 这是你的存档本体 开着 Steam 云时收档会让云端在退出同步时跟着删掉这些文件 所以这里可能就是唯一一份",
             Destructive: true));
 
@@ -499,6 +504,11 @@ public sealed partial class StorageService
             "这一行是没进抽屉的那部分 —— 源版本装不了 SMAPI（1.0 这类）被挪出来的、认不出属于哪个版本的、抽屉里上一批没被认领的。" +
             "带版本号的那几批，切回对应版本会自动放回；其余的不会，只能自己挪。" +
             "这里面可能是你的 mod 本体，所以「删除」其实是移到游戏卸载回收站，还能拿回来。",
+            Danger: true),
+        new("incomplete", new[] { "_incomplete" }, "没下完 / 没搬完的残包",
+            "下载或切换被打断时留下的半截版本包。本体不完整、不能拿来切版本，" +
+            "但那一版的 Mods 抽屉可能整个躺在里面 —— 那是你的 mod 本体。" +
+            "所以「删除」其实是移到游戏卸载回收站，还能拿回来；要取回 mod 先进这个文件夹看。",
             Danger: true),
     };
 
