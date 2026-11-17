@@ -80,9 +80,8 @@ jobs:
           if ((Get-Item $dd).Length -lt 1MB) { throw "DepotDownloader zip 体积异常，可能下到了错误页" }
           Write-Host "DepotDownloader-framework.zip : 体积合理"
 
-      # 单元测试（不需要桌面会话，能在 runner 上跑）
-      - name: Unit tests
-        run: dotnet run --project test/JuniGridTestHarness/JuniGridTestHarness.csproj -c Release
+      # 单元测试不在这里跑：/test 按 .gitignore 只留本地（用例要起真实进程、操真实窗口，
+      # runner 上没有桌面会话），CI 只负责产出可签名的安装包。发版前在本地跑全量测试。
 
       # 打安装包。build-installer.ps1 自己会做：主程序 publish → payload.lz →
       # 安装器单文件 publish → 拷进 dist-tmp。
