@@ -436,7 +436,16 @@ public sealed partial class InstallService
                             }
                             // v1.3.45：交接不算「失败」—— 网页那条路随后还能把包接上，
                             // 先弹一条红 toast 会让人以为整件事没成（announce:false）。
-                            _center.Finish(task, false, LocService.Tr("应用内没取到直链，已改为打开网页"), announce: false);
+                            // v1.3.6（2026-11-20 用户截图）：任务行必须写清「为什么没取到」。
+                            // 以前这一行只有一句「应用内没取到直链，已改为打开网页」，用户截图
+                            // 发过来谁也分不清是「内置网页没登录」「页面改版」还是「人机验证没过」，
+                            // 只能让他再跑一遍。更新那条路（Mods.razor）早就把 dl.Error 拼进去了，
+                            // 两条路对同一件事的话术要一致。
+                            var handoff = string.IsNullOrWhiteSpace(auto.Error)
+                                ? LocService.Tr("应用内没取到直链，已改为打开网页")
+                                : LocService.Tr("应用内没取到直链：") + auto.Error
+                                  + LocService.Tr("（已改为打开网页）");
+                            _center.Finish(task, false, handoff, announce: false);
                             return PremiumNeedsWebFallback(modId, file.FileId, UpdateService.OpenUrl, auto.Error);
                         }
                         usedWebChannel = true;

@@ -963,6 +963,14 @@ window.junigridJs.focusElement = function (sel) {
     if (el) { try { el.focus(); } catch (e) { } }
 };
 
+// 2026-11-21：分类抽屉就地改名 —— 焦点送进去，并把原名整段选中。
+// 改名多数是重打一遍，光标落在末尾还得先自己按 Ctrl+A，多这一步很别扭。
+window.junigridJs.focusAndSelect = function (sel) {
+    var el = typeof sel === "string" ? document.querySelector(sel) : sel;
+    if (!el) return;
+    try { el.focus(); el.select(); } catch (e) { }
+};
+
 // v1.04.0：详情页 by 作者名 —— blur 高光（深色 #3d3d3d / 浅色 #ffffff 扫入）+ hover 头像预览气泡。
 // easeReverse demo 同款：elastic 弹入 + 反向快速退场（exit timeScale 2.5x）。
 window.junigridJs.authorTipInit = function (wrapId, bubbleId) {

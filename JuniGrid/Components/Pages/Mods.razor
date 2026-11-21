@@ -731,8 +731,6 @@
                 // 行尾要用的三个值在这里算好：Razor 只允许在循环体顶层写语句，
                 // 写进 <div> 里会被当普通文本输出（编译报「不存在名称 swOn」就是这个）
                 var swOn = !gone && g.AnyOn;
-                // 别的版本装的包：这一版没有它的宿主，开关/重盖都无从下手 —— 只能看和删
-                var foreign = g.Foreign;
                 var ovMenu = OverlayMenuId(g);
                 @* 整行点击 = 选中（与 mod 行同一套 .selected 高亮）。行尾那几个控件各自
                    stopPropagation，点开关/删除不会顺手把行选上。 *@
@@ -761,14 +759,7 @@
                             {
                                 @OverlayHostTag(hostMod, host, hostJumpId)
                             }
-                            @if (foreign)
-                            {
-                                @* 别的版本装的：不报失效、不亮红点，只把"它在哪一版"说出来。
-                                   否则切一次版本就整页红色，用户会以为包坏了（实机 2026-11-15）。 *@
-                                <span class="jg-tag"
-                                      data-tip='@Loc.F("这个覆盖包装在 {0} 上 —— 当前版本没有它的宿主，切回 {0} 就会恢复", g.ForeignVersion)'>@Loc.F("属于 {0}", g.ForeignVersion)</span>
-                            }
-                            else if (gone)
+                            @if (gone)
                             {
                                 @* tooltip 只留一句：以前那段把「原因 + 该怎么做」全写进去了，
                                    悬停出来是一条横贯整行的长条（截图 2026-11-10），读都不想读。
@@ -787,14 +778,7 @@
                             }
                         </div>
                         <div class="jg-modrow-desc">
-                            @if (foreign)
-                            {
-                                @Loc.F("{0} 上已启用", g.ForeignVersion)
-                            }
-                            else
-                            {
-                                @Loc.T(g.AnyOn ? "已启用" : "已停用")
-                            }
+                            @Loc.T(g.AnyOn ? "已启用" : "已停用")
                             @if (rec.AppliedAtUtc > DateTime.MinValue)
                             {
                                 <text> · </text>
@@ -809,10 +793,8 @@
                            重新盖一次 —— 以前这里干脆不给开关，用户只能选中这行再去下面
                            批量条点「启用」，两步且要猜。 *@
                         <button type="button" class="jg-modrow-switch jg-squish-host @(swOn ? "on" : "")" role="switch"
-                                aria-checked="@swOn" disabled="@foreign"
-                                data-tip="@(foreign
-                                    ? Loc.F("这个包装在 {0} 上 —— 当前版本没有它的宿主，切回 {0} 才能开关它", g.ForeignVersion)
-                                    : gone
+                                aria-checked="@swOn"
+                                data-tip="@(gone
                                     ? Loc.T("这个覆盖包已失效（宿主里没有它要盖的文件了）—— 开关是关的，点一下按留下的副本重新盖")
                                     : (g.AnyOn ? Loc.T("关闭即停用此覆盖包") : Loc.T("打开即启用此覆盖包")))"
                                 @onclick="() => OnOverlaySwitch(g)">
@@ -1442,34 +1424,176 @@
             var categories = CategoryListFor(Cfg.Current, _mods, Loc.Lang);
             <div class="jg-category-list-head">
                 <h2 id="jgCategoryListTitle">@Loc.T("分类列表")<span>@categories.Count</span></h2>
-                <button type="button" class="jg-category-list-close" aria-label='@Loc.T("关闭")' @onclick="CloseCategoryList">
-                    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
-                        <path d="m6 6 12 12M18 6 6 18" />
-                    </svg>
-                </button>
+                <div class="jg-category-list-tools">
+                    @* 2026-11-21：抽屉里直接管分类 —— 点铅笔进编辑态：换图标 / 就地改名 / 删除，
+                       还能勾着多选批量换图标、批量删。以前这些只能回段头的「…」菜单里做，
+                       抽屉一开就得先关掉再去找段头。 *@
+                    <button type="button" class="jg-category-list-edit @(_catEditMode ? "active" : "")"
+                            data-tip='@Loc.T(_catEditMode ? "完成编辑" : "编辑分类")'
+                            aria-label='@Loc.T(_catEditMode ? "完成编辑" : "编辑分类")'
+                            aria-pressed="@(_catEditMode ? "true" : "false")"
+                            @onclick="ToggleCategoryEdit">
+                        @if (_catEditMode)
+                        {
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                <path d="m5 12.5 4.5 4.5L19 7.5" />
+                            </svg>
+                        }
+                        else
+                        {
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                <path d="M4 20h4L18.5 9.5a2.12 2.12 0 0 0-3-3L5 17v3Z" />
+                                <path d="m13.5 6.5 4 4" />
+                            </svg>
+                        }
+                    </button>
+                    <button type="button" class="jg-category-list-close" aria-label='@Loc.T("关闭")' @onclick="CloseCategoryList">
+                        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+                            <path d="m6 6 12 12M18 6 6 18" />
+                        </svg>
+                    </button>
+                </div>
             </div>
-            <div class="jg-category-list-body">
+            <div class="jg-category-list-body @(_catEditMode ? "editing" : "")">
                 @foreach (var category in categories)
                 {
                     var key = category.Key;
-                    <button type="button" class="jg-category-list-item" @key="key" data-category-key="@key"
-                            data-tip='@Loc.T("点击定位此分类")'
-                            @onclick="() => SelectCategoryFromList(key)">
-                        <span class="jg-category-list-icon">
-                            @if (CategoryIconUrl(key) is { } icon)
+                    if (!_catEditMode)
+                    {
+                        <button type="button" class="jg-category-list-item" @key="key" data-category-key="@key"
+                                data-tip='@Loc.T("点击定位此分类")'
+                                @onclick="() => SelectCategoryFromList(key)">
+                            <span class="jg-category-list-icon">
+                                @if (CategoryIconUrl(key) is { } icon)
+                                {
+                                    <img src="@icon" alt="" draggable="false" loading="lazy" />
+                                }
+                                else
+                                {
+                                    <span class="jg-cat-icon-ph"></span>
+                                }
+                            </span>
+                            <span class="jg-category-list-name">@category.Label</span>
+                            <span class="jg-category-list-count">@Loc.F("{0} 个 MOD", category.Count)</span>
+                        </button>
+                    }
+                    else
+                    {
+                        @* 编辑态：整行是「选中」热区（行内不能再套 button，所以外层用 div），
+                           图标 / 名字 / 垃圾桶各自 stopPropagation 走自己的动作。
+                           「未分类」不是真分类：没有勾选框、不能改名也不能删，图标照样能换。 *@
+                        var canEdit = key.Length > 0;
+                        var picked = _catEditSelected.Contains(key);
+                        <div class="jg-category-list-item editing @(picked ? "picked" : "") @(canEdit ? "" : "locked")"
+                             @key="key" data-category-key="@key"
+                             @onclick="() => ToggleCatEditSelect(key)">
+                            @if (canEdit)
                             {
-                                <img src="@icon" alt="" draggable="false" loading="lazy" />
+                                <button type="button" class="jg-cl-mark @(picked ? "on" : "")"
+                                        role="checkbox" aria-checked="@(picked ? "true" : "false")"
+                                        aria-label='@Loc.F("选中「{0}」", category.Label)'
+                                        @onclick="() => ToggleCatEditSelect(key)" @onclick:stopPropagation="true">
+                                    <svg viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                                        <path d="M2.6 6.3 4.8 8.4 9.4 3.6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+                                    </svg>
+                                </button>
                             }
                             else
                             {
-                                <span class="jg-cat-icon-ph"></span>
+                                <span class="jg-cl-mark-space" aria-hidden="true"></span>
                             }
-                        </span>
-                        <span class="jg-category-list-name">@category.Label</span>
-                        <span class="jg-category-list-count">@Loc.F("{0} 个 MOD", category.Count)</span>
-                    </button>
+                            <button type="button" class="jg-category-list-icon" data-tip='@Loc.T("点图标换一个")'
+                                    aria-label='@Loc.T("点图标换一个")'
+                                    @onclick="() => OpenIconPicker(key)" @onclick:stopPropagation="true">
+                                @if (CategoryIconUrl(key) is { } editIcon)
+                                {
+                                    <img src="@editIcon" alt="" draggable="false" loading="lazy" />
+                                }
+                                else
+                                {
+                                    <span class="jg-cat-icon-ph"></span>
+                                }
+                            </button>
+                            @if (_catRenameKey == key)
+                            {
+                                @* 剩余字数嵌在输入框里右侧 —— 跟段头弹窗的备注/分类名输入框同一个做法。
+                                   回车才提交（先弹确认），失焦当放弃：点垃圾桶/图标时不该被一个弹窗挡住。 *@
+                                <span class="jg-cl-rename-field">
+                                    <input class="jg-cl-rename" maxlength="@CatNameMax" value="@_catRenameDraft"
+                                           aria-label='@Loc.T("新分类名")'
+                                           @oninput="OnCatRenameInput" @onkeydown="OnCatRenameKeydown"
+                                           @onkeydown:stopPropagation="true"
+                                           @onblur="CancelCatRename" @onclick:stopPropagation="true" />
+                                    <span class="jg-cl-rename-count @(RemainingCatNameChars <= 0 ? "full" : RemainingCatNameChars <= 4 ? "warn" : "")"
+                                          aria-hidden="true">@RemainingCatNameChars</span>
+                                </span>
+                            }
+                            else if (canEdit)
+                            {
+                                <button type="button" class="jg-category-list-name jg-cl-rename-btn"
+                                        data-tip='@Loc.T("点名字重命名")'
+                                        @onclick="() => BeginCatRename(key)" @onclick:stopPropagation="true">@category.Label</button>
+                            }
+                            else
+                            {
+                                <span class="jg-category-list-name">@category.Label</span>
+                            }
+                            @if (canEdit)
+                            {
+                                <button type="button" class="jg-cl-del" data-tip='@Loc.T("删除这个分类（不删 mod）")'
+                                        aria-label='@Loc.F("删除分类「{0}」", category.Label)'
+                                        @onclick="() => AskDeleteCategories(new List<string> { key })"
+                                        @onclick:stopPropagation="true">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                        <path d="M4 7h16" />
+                                        <path d="M9.5 7V5.3c0-.7.6-1.3 1.3-1.3h2.4c.7 0 1.3.6 1.3 1.3V7" />
+                                        <path d="m6.5 7 .8 12.1c.05.7.6 1.2 1.3 1.2h6.8c.7 0 1.25-.5 1.3-1.2L17.5 7" />
+                                    </svg>
+                                </button>
+                            }
+                            else
+                            {
+                                @* 「未分类」没有垃圾桶，空间够，照旧显示整句计数 *@
+                                <span class="jg-category-list-count">@Loc.F("{0} 个 MOD", category.Count)</span>
+                            }
+                        </div>
+                    }
                 }
             </div>
+            @if (_catEditMode)
+            {
+                @* 编辑态底栏：左边是选中数量，右边三个动作（全选 / 批量换图标 / 批量删除）。
+                   跟分类行一起常驻 —— 选中才出现的话，用户不知道这里还能批量干活。 *@
+                <div class="jg-category-list-foot">
+                    <span class="jg-cl-foot-hint">
+                        @(_catEditSelected.Count > 0
+                            ? Loc.F("已选 {0} 个", _catEditSelected.Count)
+                            : Loc.T("点分类可多选"))
+                    </span>
+                    <button type="button" class="jg-cl-foot-btn text" @onclick="ToggleCatEditSelectAll">
+                        @(AllEditableSelected() ? Loc.T("取消全选") : Loc.T("全选"))
+                    </button>
+                    <button type="button" class="jg-cl-foot-btn" data-tip='@Loc.T("给选中的分类换同一个图标")'
+                            aria-label='@Loc.T("给选中的分类换同一个图标")'
+                            disabled="@(_catEditSelected.Count == 0)" @onclick="OpenIconPickerForSelection">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <rect x="3.5" y="4.5" width="17" height="15" rx="2.6" />
+                            <circle cx="9" cy="10" r="1.6" />
+                            <path d="m5 17.2 4.2-4.2a1.7 1.7 0 0 1 2.4 0l5 5" />
+                        </svg>
+                    </button>
+                    <button type="button" class="jg-cl-foot-btn danger" data-tip='@Loc.T("删除选中的分类（不删 mod）")'
+                            aria-label='@Loc.T("删除选中的分类（不删 mod）")'
+                            disabled="@(_catEditSelected.Count == 0)"
+                            @onclick="() => AskDeleteCategories(_catEditSelected.ToList())">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <path d="M4 7h16" />
+                            <path d="M9.5 7V5.3c0-.7.6-1.3 1.3-1.3h2.4c.7 0 1.3.6 1.3 1.3V7" />
+                            <path d="m6.5 7 .8 12.1c.05.7.6 1.2 1.3 1.2h6.8c.7 0 1.25-.5 1.3-1.2L17.5 7" />
+                        </svg>
+                    </button>
+                </div>
+            }
         }
     </aside>
 }
@@ -1527,14 +1651,11 @@
 @if (!_showTrash && _filter == "overlay" && _overlaySelected.Count > 0)
 {
     var ovSel = SelectedOverlayGroups();
-    @* 属于别的版本的包不参与启停/更新：这一版没有它的宿主，点了只会报错。
-       删除照旧可用 —— 切走再也不回去的人需要能把旧账清掉。 *@
-    var ovAct = ovSel.Where(g => !g.Foreign).ToList();
-    var ovAnyOn = ovAct.Any(g => g.AnyOn);
+    var ovAnyOn = ovSel.Any(g => g.AnyOn);
     @* 失效的也算"可以启用"：对它们点启用就是按留的副本重新盖一次（见 BatchSetOverlayEnabled），
        否则选中一批全开着但已经失效的包时，这颗按钮是灰的，用户没有别的重试入口。 *@
-    var ovAnyOff = ovAct.Any(g => !g.AnyOn || g.Stale > 0);
-    var ovAnyUpd = ovAct.Any(g => g.HasUpdate && g.Rec.NexusModId is int && g.UpdateFileId != 0);
+    var ovAnyOff = ovSel.Any(g => !g.AnyOn || g.Stale > 0);
+    var ovAnyUpd = ovSel.Any(g => g.HasUpdate && g.Rec.NexusModId is int && g.UpdateFileId != 0);
     <div class="jg-batchbar-anchor">
     <div class="jg-batchbar">
         <span class="jg-batchbar-count">@Loc.F("已选择 {0} 个", ovSel.Count)</span>
@@ -1819,6 +1940,62 @@
     }
 
 
+
+    @* ── 分类改名确认：抽屉里回车提交后先问一句，点确定才写配置；取消 / 点遮罩 = 还是原名 ── *@
+    @if (_pendingCatRename is { } rename)
+    {
+        <div class="jg-modal-overlay" @onclick="CancelCatRenameConfirm">
+            <div class="jg-modal" @onclick:stopPropagation>
+                <div class="jg-modal-title">@Loc.T("重命名分类")</div>
+                <div class="jg-modal-body">
+                    <div class="jg-cat-rename-pair">
+                        <span class="jg-cat-rename-old">@CategoryLabel(rename.From)</span>
+                        <svg class="jg-cat-rename-arrow" viewBox="0 0 24 24" width="16" height="16" fill="none"
+                             stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <path d="M4 12h15" />
+                            <path d="m13 6 6 6-6 6" />
+                        </svg>
+                        <span class="jg-cat-rename-new">@rename.To</span>
+                    </div>
+                    <div class="jg-cat-rename-hint">@Loc.T("点确定才会保存；取消就还是原来的名字。")</div>
+                </div>
+                <div class="jg-modal-actions">
+                    <button type="button" class="jg-pill-ghost" data-modal-close @onclick="CancelCatRenameConfirm">@Loc.T("取消")</button>
+                    <button type="button" class="jg-pill-dark" @onclick="ConfirmCatRename">@Loc.T("确定重命名")</button>
+                </div>
+            </div>
+        </div>
+    }
+
+    @* ── 分类删除确认（抽屉编辑态里那一颗垃圾桶 / 批量删除）──
+       分类一删，里面的 mod 就全掉回「未分类」，重建回来还得一个个重新归位 —— 值得问一句。
+       段头「…」菜单里那项是旧路径（直接删），这里只走抽屉进来的那次。 *@
+    @if (_pendingCatDelete is { Count: > 0 })
+    {
+        <div class="jg-modal-overlay" @onclick="CancelCatDelete">
+            <div class="jg-modal" @onclick:stopPropagation>
+                <div class="jg-modal-title">@Loc.T("删除分类")</div>
+                <div class="jg-modal-body">
+                    @if (_pendingCatDelete.Count == 1)
+                    {
+                        @Loc.F("确定删除分类「{0}」吗？", CategoryLabel(_pendingCatDelete[0]))
+                    }
+                    else
+                    {
+                        @Loc.F("确定删除这 {0} 个分类吗？", _pendingCatDelete.Count)
+                        <br />
+                        <span class="jg-modal-list">@string.Join("、", _pendingCatDelete.Select(CategoryLabel))</span>
+                    }
+                    <br /><br />
+                    @Loc.T("里面的 mod 会移到「未分类」，mod 本身不会被删除。")
+                </div>
+                <div class="jg-modal-actions">
+                    <button type="button" class="jg-pill-ghost" data-modal-close @onclick="CancelCatDelete">@Loc.T("取消")</button>
+                    <button type="button" class="jg-pill-danger" @onclick="ConfirmCatDelete">@Loc.T("确定删除")</button>
+                </div>
+            </div>
+        </div>
+    }
 
     @* ── 覆盖包批量删除确认：会把盖上去的文件还原成原版，并删掉留下的副本 ── *@
     @if (_pendingOverlayDelete is not null)
@@ -2114,6 +2291,11 @@
             _categoryListMounted = false;
             _categoryListFocusPending = false;
             _catListRev++;
+            // 编辑态一并收起：切去回收站再回来，别还挂着一个半开的改名框
+            CancelCatRename();
+            _pendingCatRename = null;
+            _catEditSelected.Clear();
+            _catEditMode = false;
         }
         if (_showTrash)
         {
@@ -3380,12 +3562,6 @@
         public string? NewVersion { get; init; }
         /// <summary>N 网那条新 MAIN 的 fileId —— 「更新」按钮直接按它装，不走"最新 MAIN"再猜一次。</summary>
         public long UpdateFileId { get; init; }
-        /// <summary>非 null = 这个包是 <b>别的游戏版本</b>装的（值就是那个版本号）。
-        /// <para>Mods\ 整包按版本换，覆盖文件住在宿主目录里，所以它跟着版本走 —— 切走之后
-        /// 宿主不在了，账还在。这类包不是"失效"，只是不在这场版本里：不能报警、不能重盖，
-        /// 也不该出现在红点里（实机 2026-11-15：切到 1.6.14 后 12 个汉化包全红）。</para></summary>
-        public string? ForeignVersion { get; init; }
-        public bool Foreign => ForeignVersion is not null;
     }
 
     /// <summary>覆盖包全局分组（跨宿主）。<see cref="OverlayGroups"/> 是它在「某个宿主」上的切片。
@@ -3395,28 +3571,24 @@
     private IReadOnlyList<OverlayGroup> AllOverlayGroups()
     {
         if (_overlayCache is not null && _overlayCacheRev == _overlayRev) return _overlayCache;
-        // 版本口径只取一次：覆盖包判「属于哪一版」用它，跟 Mods 行那条隔离规则同一把尺子。
+        // 版本口径只取一次：整组账都属于别的版本 ⇒ 这一版里不露面 —— 文件跟着那版的
+        // Mods 树走了，切回去自然回来（2026-11-22 定的口径：切走后不该再看见它们）。
         var curVer = ModService.NormalizeGameVersion(UpdateService.ReadLocalGameVersion(Cfg.Current.GamePath));
         var list = Cfg.Current.Overlays
             .GroupBy(kv => (Host: ModService.NormalizeOverlayHost(kv.Value.Host),
                             Slot: ModService.OverlaySlotOf(kv.Key)))
+            .Where(g => !g.All(kv => ModService.OverlayFromOtherVersion(kv.Value, curVer)))
             .Select(g =>
             {
                 var first = g.First().Value;
-                // 整组都属于别的版本才算外来 —— 同一个文件上可能挂着两版的账。
-                var foreign = g.All(kv => ModService.OverlayFromOtherVersion(kv.Value, curVer));
                 var baseRec = new OverlayGroup(
                     first.Host,
                     g.Key.Slot,
                     g.Select(kv => kv.Key).OrderBy(k => k, StringComparer.OrdinalIgnoreCase).ToList(),
                     first,
                     g.Any(kv => kv.Value.Enabled),
-                    foreign ? 0 : g.Count(kv => _overlayHealth.StaleKeys.Contains(kv.Key)))
-                {
-                    ForeignVersion = foreign ? ModService.NormalizeGameVersion(first.GameVersion) : null,
-                };
-                // 宿主不在这一版的 Mods 里，就没有"装新版"这回事 —— 别给一个点下去必然失败的按钮
-                return !foreign && _overlayUpdates.TryGetValue(g.Key.Slot, out var up) && up.Has
+                    g.Count(kv => _overlayHealth.StaleKeys.Contains(kv.Key)));
+                return _overlayUpdates.TryGetValue(g.Key.Slot, out var up) && up.Has
                     ? baseRec with { HasUpdate = true, NewVersion = up.Ver, UpdateFileId = up.FileId }
                     : baseRec;
             })
@@ -3460,26 +3632,11 @@
         var sections = new List<OverlaySection>();
         var portraits = new List<OverlayGroup>();
         var orphans = new List<OverlayGroup>();
-        // 别的版本装的包单独成段（按版本分）：它们既不是"失效"，也不是"宿主被你删了"，
-        // 塞进「未安装宿主 mod」只会让整页看着像出了事。
-        var foreigns = new Dictionary<string, List<OverlayGroup>>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var grp in AllOverlayGroups()
                      .GroupBy(g => ModService.NormalizeOverlayHost(g.Host), StringComparer.OrdinalIgnoreCase))
         {
             var items = grp.ToList();
-            var foreignItems = items.Where(g => g.Foreign).ToList();
-            if (foreignItems.Count > 0)
-            {
-                foreach (var fg in foreignItems)
-                {
-                    var ver = fg.ForeignVersion ?? "";
-                    if (!foreigns.TryGetValue(ver, out var bucket)) foreigns[ver] = bucket = new List<OverlayGroup>();
-                    bucket.Add(fg);
-                }
-                items = items.Where(g => !g.Foreign).ToList();
-                if (items.Count == 0) continue;
-            }
             if (grp.Key.Length > 0 && HostIndex().TryGetValue(grp.Key, out var m))
             {
                 // 段内顺序沿用 AllOverlayGroups 的「失效 → 新版 → 名字」，GroupBy 保序
@@ -3510,9 +3667,6 @@
         }
         Add("portrait", LocService.Tr("头像"), null, portraits, true);
         Add("nohost", LocService.Tr("未安装宿主 mod"), null, orphans, true);
-        // 外来的放在最后：要处理的东西在前面，这里只是"它们在，但不在这一版"
-        foreach (var (ver, items) in foreigns.OrderByDescending(kv => kv.Key, StringComparer.OrdinalIgnoreCase))
-            Add("v:" + ver, LocService.Tf("属于 {0} 的覆盖包", ver), null, items, true);
         return sections;
     }
 
@@ -3567,9 +3721,8 @@
     private void InvalidateOverlayCache() => _overlayRev++;
 
     /// <summary>筛选按钮上那颗红点的依据：有失效的，或者有新版本的。
-    /// <para>只算「包」不算文件：一个汉化重打包上百年逐文件记录，按条数报会把 1 个包说成 146。</para>
-    /// <para>属于其它版本的包不算：它们在这一版本来就没宿主，红点点亮只会让人以为包坏了（实机 2026-11-15）。</para></summary>
-    private int OverlayAttentionCount => AllOverlayGroups().Count(g => !g.Foreign && (g.Stale > 0 || g.HasUpdate));
+    /// <para>只算「包」不算文件：一个汉化重打包上百年逐文件记录，按条数报会把 1 个包说成 146。</para></summary>
+    private int OverlayAttentionCount => AllOverlayGroups().Count(g => g.Stale > 0 || g.HasUpdate);
 
     /// <summary>覆盖包的「有没有新版」。
     /// <para>与 Mods 行不同：覆盖包不在 <c>Mods\</c> 里，没有 <see cref="ModEntry"/>，
@@ -3842,13 +3995,8 @@
 
     private async Task BatchSetOverlayEnabled(bool disabled)
     {
-        var groups = SelectedOverlayGroups().Where(g => !g.Foreign).ToList();
-        if (groups.Count == 0)
-        {
-            _ = JS.InvokeVoidAsync("junigridJs.toast",
-                LocService.Tr("选中的覆盖包都属于其它游戏版本 —— 当前版本没有它们的宿主，切回那一版才能启停"), "err");
-            return;
-        }
+        var groups = SelectedOverlayGroups().ToList();
+        if (groups.Count == 0) return;
 
         var ok = 0;
         var reapplied = 0;
@@ -4322,6 +4470,11 @@
         _categoryListMounted = false;
         _catListRev++;
         _categoryListFocusPending = false;
+        // 抽屉的编辑态也跟着散场：视图都换了，还留着勾选和改名框只会串到新视图里
+        CancelCatRename();
+        _pendingCatRename = null;
+        _catEditSelected.Clear();
+        _catEditMode = false;
         // 覆盖包的勾选只在覆盖包视图里有效：切走就清掉，免得底部批量条跟着跑到别的视图里。
         if (key != "overlay") _overlaySelected.Clear();
         // v1.1.4：切换过滤后由 OnAfterRender 的 animatedListInit 重绑新行观察器。
@@ -4338,6 +4491,13 @@
         {
             _categoryListFocusPending = false;
             try { await JS.InvokeVoidAsync("junigridJs.focusElement", "#jgCategoryList"); } catch { }
+        }
+        // 抽屉里的就地改名：输入框刚被渲染出来，此刻才把焦点送进去并把原名整段选中
+        // （改名多数是重打一遍，不是往后补几个字）。与备注弹窗同一个时机。
+        if (_catRenameFocusPending)
+        {
+            _catRenameFocusPending = false;
+            try { await JS.InvokeVoidAsync("junigridJs.focusAndSelect", ".jg-cl-rename"); } catch { }
         }
         // v1.3.51：把长按拖拽的回调交给 JS（只需一次；JS 那边自己挂 pointer 监听）。
         // 放在最前 —— 下面渐进渲染那段每帧都会提前 return，排在它后面要等全部行画完才轮到。
@@ -6685,6 +6845,14 @@
     private void CloseCategoryList()
     {
         _categoryListFocusPending = false;
+        // 关抽屉 = 退出编辑态：下次再拉开是干净的浏览列表，不会剩一半选区
+        if (_catEditMode)
+        {
+            CancelCatRename();
+            _pendingCatRename = null;
+            _catEditSelected.Clear();
+            _catEditMode = false;
+        }
         _categoryListOpen = false;      // 把手和面板同时往回收（同一个 300ms transition）
         if (!_categoryListMounted) return;
         var rev = ++_catListRev;
@@ -6705,9 +6873,13 @@
         catch { }
     }
 
+    /// <summary>Esc 逐层退：先收改名框，再退编辑态，最后才关抽屉 —— 一口气关掉会连刚改的字一起丢。</summary>
     private void OnCategoryListKey(Microsoft.AspNetCore.Components.Web.KeyboardEventArgs e)
     {
-        if (e.Key == "Escape") CloseCategoryList();
+        if (e.Key != "Escape") return;
+        if (_catRenameKey is not null) { CancelCatRename(); return; }
+        if (_catEditMode) { ToggleCategoryEdit(); return; }
+        CloseCategoryList();
     }
 
     private async Task SelectCategoryFromList(string key)
@@ -6719,6 +6891,235 @@
         {
             try { await JS.InvokeVoidAsync("junigridJs.scrollToCategory", "jg-cat-body-flat"); } catch { }
         }
+    }
+
+    // ── 抽屉里的编辑态（2026-11-21）──────────────────────────────
+    // 抽屉本来只负责「跳转」，想改分类就得关掉再回段头的「…」菜单 —— 两套入口做同一件事。
+    // 现在抽屉头顶一颗铅笔：就地换图标、就地改名（输入框直接落在那一行）、就地删，
+    // 还能勾着多选批量换图标 / 批量删。退出编辑态（再点一次铅笔 / 关抽屉 / 切视图）即清空选区。
+    private bool _catEditMode;
+    /// <summary>编辑态里被勾上的分类键（"未分类"不会进来 —— 它不能改名也不能删）。</summary>
+    private readonly HashSet<string> _catEditSelected = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>正在就地改名的分类键（null = 没人在改）。</summary>
+    private string? _catRenameKey;
+    private string _catRenameDraft = "";
+    /// <summary>分类名上限。输入框 maxlength、改名落点、段头弹窗都从这里取，别各写一个 20。</summary>
+    private const int CatNameMax = 20;
+    /// <summary>还能输入几个字 —— 输入框右边那个计数器。</summary>
+    private int RemainingCatNameChars => Math.Max(0, CatNameMax - _catRenameDraft.Length);
+    /// <summary>输入框这一帧刚渲染出来，等 OnAfterRenderAsync 再塞焦点（与备注弹窗同一个时机）。</summary>
+    private bool _catRenameFocusPending;
+    /// <summary>待确认删除的分类键。分类一删，里面的 mod 全掉回「未分类」，值得问一句。</summary>
+    private List<string>? _pendingCatDelete;
+    /// <summary>待确认的重命名（原名, 新名）。抽屉里回车的落点，点确定才写配置。</summary>
+    private (string From, string To)? _pendingCatRename;
+
+    private void ToggleCategoryEdit()
+    {
+        if (_catEditMode)
+        {
+            CancelCatRename();
+            _pendingCatRename = null;
+            _catEditSelected.Clear();
+            _catEditMode = false;
+            return;
+        }
+        _catEditMode = true;
+        // 编辑态里第一件事往往就是换图标：物品图鉴在后台先热上，别等点了页签才解析 xnb
+        ItemCatalogService.Prewarm(Cfg.Current.GamePath);
+    }
+
+    /// <summary>整行（或行首那个勾）点一下 = 选中 / 取消选中。「未分类」不参与选择。</summary>
+    private void ToggleCatEditSelect(string key)
+    {
+        if (key.Length == 0) return;
+        if (!_catEditSelected.Remove(key)) _catEditSelected.Add(key);
+        CancelCatRename();          // 换选区时把还开着的改名框收掉，免得挂在一个没勾上的行里
+    }
+
+    private List<string> EditableCategoryKeys()
+        => CategoryListFor(Cfg.Current, _mods, Loc.Lang).Select(c => c.Key)
+            .Where(k => k.Length > 0).ToList();
+
+    private bool AllEditableSelected()
+    {
+        var keys = EditableCategoryKeys();
+        return keys.Count > 0 && keys.All(_catEditSelected.Contains);
+    }
+
+    private void ToggleCatEditSelectAll()
+    {
+        var keys = EditableCategoryKeys();
+        var all = keys.Count > 0 && keys.All(_catEditSelected.Contains);
+        _catEditSelected.Clear();
+        if (!all) foreach (var k in keys) _catEditSelected.Add(k);
+        _catRenameKey = null;
+    }
+
+    private void BeginCatRename(string key)
+    {
+        if (key.Length == 0) return;      // 「未分类」不是一个能改名的分类
+        _catRenameKey = key;
+        _catRenameDraft = CategoryLabel(key);
+        _catRenameFocusPending = true;
+    }
+
+    private void CancelCatRename()
+    {
+        _catRenameKey = null;
+        _catRenameDraft = "";
+        _catRenameFocusPending = false;
+    }
+
+    private void OnCatRenameInput(ChangeEventArgs e)
+    {
+        _catRenameDraft = e.Value?.ToString() ?? "";
+        // 数字跟着跳：平时轻轻弹一下，打满（剩 0）弹得更狠 —— 和段头弹窗的备注计数共用同一个 JS
+        _ = JS.InvokeVoidAsync("junigridJs.remarkCountBump", RemainingCatNameChars <= 0, ".jg-cl-rename-count");
+    }
+
+    private void OnCatRenameKeydown(Microsoft.AspNetCore.Components.Web.KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter") AskCatRename();
+        else if (e.Key == "Escape") CancelCatRename();
+    }
+
+    /// <summary>就地改名的提交口：先弹一句「把 A 重命名为 B？」，确定才落盘。
+    /// 失焦不走这里 —— 点垃圾桶 / 图标时先冒出来的弹窗会把那一下点击吃掉，所以失焦一律当放弃。</summary>
+    private void AskCatRename()
+    {
+        var from = _catRenameKey;
+        if (from is null) return;
+        var to = _catRenameDraft.Trim();
+        var hadText = to.Length > 0;
+        CancelCatRename();
+        if (!hadText)
+        {
+            ShowNotice("err", Loc.T("先输入一个分类名"));
+            return;
+        }
+        if (to.Length > CatNameMax) to = to[..CatNameMax];
+        // 名字没变（或只差大小写 / 本地化显示名）—— 不弹窗，也不落盘
+        if (string.Equals(from, to, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(CategoryLabel(from), to, StringComparison.OrdinalIgnoreCase))
+            return;
+        _pendingCatRename = (from, to);
+    }
+
+    private void CancelCatRenameConfirm() => _pendingCatRename = null;
+
+    private void ConfirmCatRename()
+    {
+        var pending = _pendingCatRename;
+        _pendingCatRename = null;
+        if (pending is null) return;
+        if (RenameCategory(pending.Value.From, pending.Value.To) is { } err)
+        {
+            ShowNotice("err", err);
+            return;
+        }
+        StateHasChanged();
+    }
+
+    /// <summary>分类改名 —— 分类值、排序表、图标、官方建议名、折叠状态一起跟着走。
+    /// 返回错误文案（null = 成功）。段头「…」的编辑弹窗和抽屉的就地改名共用这一份。</summary>
+    private string? RenameCategory(string from, string to)
+    {
+        if (from.Length == 0) return Loc.T("「未分类」不能改名");
+        to = to.Trim();
+        if (to.Length == 0) return Loc.T("先输入一个分类名");
+        if (to.Length > CatNameMax) to = to[..CatNameMax];
+        if (string.Equals(from, to, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(CategoryLabel(from), to, StringComparison.OrdinalIgnoreCase))
+            return null;
+        var cfg = Cfg.Current;
+        foreach (var k in cfg.ModUserCategory
+                     .Where(kv => string.Equals(kv.Value, from, StringComparison.OrdinalIgnoreCase))
+                     .Select(kv => kv.Key).ToList())
+            cfg.ModUserCategory[k] = to;
+        var idx = cfg.ModUserCategoryOrder.FindIndex(x => string.Equals(x, from, StringComparison.OrdinalIgnoreCase));
+        if (idx >= 0)
+        {
+            if (!cfg.ModUserCategoryOrder.Contains(to, StringComparer.OrdinalIgnoreCase)) cfg.ModUserCategoryOrder[idx] = to;
+            else cfg.ModUserCategoryOrder.RemoveAt(idx);
+        }
+        else if (!cfg.ModUserCategoryOrder.Contains(to, StringComparer.OrdinalIgnoreCase))
+            cfg.ModUserCategoryOrder.Add(to);
+        // 图标跟着分类走：不改这一项的话，用户挑好的图会在改名后掉回默认小鸡
+        var iconKey = cfg.ModCategoryIcon.Keys.FirstOrDefault(k => string.Equals(k, from, StringComparison.OrdinalIgnoreCase));
+        if (iconKey is not null)
+        {
+            var spec = cfg.ModCategoryIcon[iconKey];
+            cfg.ModCategoryIcon.Remove(iconKey);
+            cfg.ModCategoryIcon[to] = spec;
+        }
+        cfg.ModOfficialCategoryNames.Remove(from);
+        Cfg.Save(cfg);
+        if (_collapsedCats.Remove(from)) _collapsedCats.Add(to);
+        // 抽屉里刚勾上的那个分类，改完名字得跟着换键，否则选区当场失效
+        if (_catEditSelected.Remove(from)) _catEditSelected.Add(to);
+        _categoryRev++;
+        ShowNotice("ok", LocService.Tf("已重命名为「{0}」", to));
+        StateHasChanged();
+        return null;
+    }
+
+    private void AskDeleteCategories(List<string> keys)
+    {
+        var list = keys.Where(k => k.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        if (list.Count == 0) return;
+        _pendingCatDelete = list;
+    }
+
+    private void CancelCatDelete() => _pendingCatDelete = null;
+
+    private void ConfirmCatDelete()
+    {
+        var list = _pendingCatDelete;
+        _pendingCatDelete = null;
+        if (list is null || list.Count == 0) return;
+        DeleteCategories(list);
+    }
+
+    /// <summary>删分类（单个 / 批量共用）：只摘名字、不动 mod —— 那些条目掉回「未分类」。
+    /// 批量删时一次落盘、只弹一条提示，别刷十条 toast。</summary>
+    private void DeleteCategories(IEnumerable<string> names)
+    {
+        var cfg = Cfg.Current;
+        var removed = new List<string>();
+        foreach (var name in names.Where(n => n.Length > 0)
+                                  .Distinct(StringComparer.OrdinalIgnoreCase).ToList())
+        {
+            // 值可能是多选拼起来的 "a,b" —— 逐条拆开判断，只摘掉要删的那个名字，
+            // 其余分类原样留着（旧写法比整串，多选条目根本匹配不上，会留下悬空的分类名）。
+            foreach (var (k, v) in cfg.ModUserCategory.ToList())
+            {
+                var parts = ModCategoryUtil.Split(v);
+                if (!parts.Any(x => string.Equals(x, name, StringComparison.OrdinalIgnoreCase))) continue;
+                var rest = parts.Where(x => !string.Equals(x, name, StringComparison.OrdinalIgnoreCase)).ToArray();
+                if (rest.Length == 0) cfg.ModUserCategory.Remove(k);
+                else cfg.ModUserCategory[k] = ModCategoryUtil.Join(rest);
+            }
+            cfg.ModUserCategoryOrder.RemoveAll(x => string.Equals(x, name, StringComparison.OrdinalIgnoreCase));
+            cfg.ModOfficialCategoryNames.Remove(name);
+            // 分类没了，它的图标也没意义 —— 留着只会在下次建同名分类时"诈尸"
+            var deadIcon = cfg.ModCategoryIcon.Keys.FirstOrDefault(k => string.Equals(k, name, StringComparison.OrdinalIgnoreCase));
+            if (deadIcon is not null) cfg.ModCategoryIcon.Remove(deadIcon);
+            removed.Add(name);
+        }
+        if (removed.Count == 0) return;
+        Cfg.Save(cfg);
+        foreach (var n in removed)
+        {
+            _collapsedCats.Remove(n);
+            _catEditSelected.Remove(n);
+        }
+        _categoryRev++;
+        ShowNotice("ok", removed.Count == 1
+            ? LocService.Tf("已删除分类「{0}」，里面的 mod 已移到未分类", removed[0])
+            : LocService.Tf("已删除 {0} 个分类，里面的 mod 已移到未分类", removed.Count));
+        StateHasChanged();
     }
 
     private async Task AutoCategorize()
@@ -7099,6 +7500,8 @@
     private bool _iconPickOpen;
     /// <summary>正在改图标的分类（"" = 未分类，它是合法值，所以用单独的 open 标记而不是 null 判空）。</summary>
     private string _iconPickKey = "";
+    /// <summary>这一次换图标要落到哪些分类上（抽屉里批量换图标时是多笔；新建草稿那次只有一笔）。</summary>
+    private List<string> _iconPickKeys = new();
     private bool _thumbRefreshQueued;
 
     private string IconSpecOf(string key)
@@ -7117,11 +7520,24 @@
     private string IconCategoryLabel(string key)
         => key == NewCatIconKey ? Loc.T("新分类")
            : key == LocalNewCatIconKey ? Loc.T("新分类")
+           : _iconPickKeys.Count > 1 ? Loc.F("选中的 {0} 个分类", _iconPickKeys.Count)
            : key.Length > 0 ? CategoryLabel(key) : Loc.T("未分类");
 
     private void OpenIconPicker(string key)
     {
         _iconPickKey = key;
+        _iconPickKeys = new List<string> { key };
+        _iconPickOpen = true;
+        _categoryMenu = null;
+    }
+
+    /// <summary>抽屉编辑态底栏的「换图标」：一批分类共用同一张图。</summary>
+    private void OpenIconPickerForSelection()
+    {
+        var keys = _catEditSelected.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        if (keys.Count == 0) return;
+        _iconPickKeys = keys;
+        _iconPickKey = keys[0];       // 选择器拿第一笔当「当前图标」展示，标题改成「N 个分类」
         _iconPickOpen = true;
         _categoryMenu = null;
     }
@@ -7168,10 +7584,13 @@
         else
         {
             var cfg = Cfg.Current;
-            if (string.Equals(normalized, CategoryIconService.DefaultSpec, StringComparison.OrdinalIgnoreCase))
-                cfg.ModCategoryIcon.Remove(_iconPickKey);
-            else
-                cfg.ModCategoryIcon[_iconPickKey] = normalized;
+            var keys = _iconPickKeys.Count > 0 ? _iconPickKeys : new List<string> { _iconPickKey };
+            var isDefault = string.Equals(normalized, CategoryIconService.DefaultSpec, StringComparison.OrdinalIgnoreCase);
+            foreach (var key in keys)
+            {
+                if (isDefault) cfg.ModCategoryIcon.Remove(key);
+                else cfg.ModCategoryIcon[key] = normalized;
+            }
             Cfg.Save(cfg);
         }
         if (close) _iconPickOpen = false;
@@ -7453,67 +7872,16 @@
     {
         var from = _categoryRenameFrom;
         if (from is null) return;
-        var to = _categoryRenameDraft.Trim();
-        if (to.Length == 0) { _categoryDialogError = Loc.T("先输入一个分类名"); return; }
-        if (to.Length > 20) to = to[..20];
-        if (string.Equals(from, to, StringComparison.OrdinalIgnoreCase)
-            || string.Equals(CategoryLabel(from), to, StringComparison.OrdinalIgnoreCase))
-        { _categoryRenameFrom = null; _categoryDialogError = null; return; }
-        var cfg = Cfg.Current;
-        foreach (var k in cfg.ModUserCategory
-                     .Where(kv => string.Equals(kv.Value, from, StringComparison.OrdinalIgnoreCase))
-                     .Select(kv => kv.Key).ToList())
-            cfg.ModUserCategory[k] = to;
-        var idx = cfg.ModUserCategoryOrder.FindIndex(x => string.Equals(x, from, StringComparison.OrdinalIgnoreCase));
-        if (idx >= 0)
-        {
-            if (!cfg.ModUserCategoryOrder.Contains(to, StringComparer.OrdinalIgnoreCase)) cfg.ModUserCategoryOrder[idx] = to;
-            else cfg.ModUserCategoryOrder.RemoveAt(idx);
-        }
-        else if (!cfg.ModUserCategoryOrder.Contains(to, StringComparer.OrdinalIgnoreCase))
-            cfg.ModUserCategoryOrder.Add(to);
-        // 图标跟着分类走：不改这一项的话，用户挑好的图会在改名后掉回默认小鸡
-        var iconKey = cfg.ModCategoryIcon.Keys.FirstOrDefault(k => string.Equals(k, from, StringComparison.OrdinalIgnoreCase));
-        if (iconKey is not null)
-        {
-            var spec = cfg.ModCategoryIcon[iconKey];
-            cfg.ModCategoryIcon.Remove(iconKey);
-            cfg.ModCategoryIcon[to] = spec;
-        }
-        cfg.ModOfficialCategoryNames.Remove(from);
-        Cfg.Save(cfg);
-        if (_collapsedCats.Remove(from)) _collapsedCats.Add(to);
-        _categoryRev++;
+        var err = RenameCategory(from, _categoryRenameDraft);
+        if (err is not null) { _categoryDialogError = err; return; }
         _categoryRenameFrom = null;
         _categoryDialogError = null;
-        ShowNotice("ok", LocService.Tf("已重命名为「{0}」", to));
-        StateHasChanged();
     }
 
     private void DeleteCategory(string name)
     {
         _categoryMenu = null;
-        var cfg = Cfg.Current;
-        // 值可能是多选拼起来的 "a,b" —— 逐条拆开判断，只摘掉要删的那个名字，
-        // 其余分类原样留着（旧写法比整串，多选条目根本匹配不上，会留下悬空的分类名）。
-        foreach (var (k, v) in cfg.ModUserCategory.ToList())
-        {
-            var parts = ModCategoryUtil.Split(v);
-            if (!parts.Any(x => string.Equals(x, name, StringComparison.OrdinalIgnoreCase))) continue;
-            var rest = parts.Where(x => !string.Equals(x, name, StringComparison.OrdinalIgnoreCase)).ToArray();
-            if (rest.Length == 0) cfg.ModUserCategory.Remove(k);
-            else cfg.ModUserCategory[k] = ModCategoryUtil.Join(rest);
-        }
-        cfg.ModUserCategoryOrder.RemoveAll(x => string.Equals(x, name, StringComparison.OrdinalIgnoreCase));
-        cfg.ModOfficialCategoryNames.Remove(name);
-        // 分类没了，它的图标也没意义 —— 留着只会在下次建同名分类时"诈尸"
-        var deadIcon = cfg.ModCategoryIcon.Keys.FirstOrDefault(k => string.Equals(k, name, StringComparison.OrdinalIgnoreCase));
-        if (deadIcon is not null) cfg.ModCategoryIcon.Remove(deadIcon);
-        Cfg.Save(cfg);
-        _collapsedCats.Remove(name);
-        _categoryRev++;
-        ShowNotice("ok", LocService.Tf("已删除分类「{0}」，里面的 mod 已移到未分类", name));
-        StateHasChanged();
+        DeleteCategories(new[] { name });
     }
 
     /// <summary>点抽屉里的分类：目标段可能还在渐进渲染之外（首帧只画 40 行）——先全画，

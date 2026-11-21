@@ -156,6 +156,48 @@ public sealed partial class NexusService
     private static string NormalizeForNameMatch(string s) =>
         new string(s.Where(char.IsLetterOrDigit).Select(char.ToLowerInvariant).ToArray());
 
+    /// <summary>译本候选是不是【别的 mod】的翻译。名字通配搜只保证"含有主名"，而分支版的名字
+    /// 恰好以主名开头 —— 实机 2026-11-19：原版 UI Info Suite 2 (#7098) 详情页的 18 条译本里
+    /// 12 条是 Alternative / Redux 分支版的（「UI Info Suite 2 Alternative-Chinese…」），
+    /// 用户照着装，又被覆盖链正确地拒了（298 键只有 95 键属于原版）。
+    /// <para>判据只看【第一个翻译关键词之前】那段：剥掉前导标签/页号与尾部版本号后，
+    /// 若它是"主名 + 多出来的英文单词"（Alternative / Redux…），那就是另一个产品的名字。
+    /// 关键词在名字最前（"[汉化] X"）、或前缀不是主名开头的，都不据此排除 —— 只拦量得准的那一类。
+    /// internal 只为测试舱能拿真实搜索结果喂它。</para></summary>
+    internal static bool TranslatesAnotherMod(string name, string low, string[] keywords, string hostKey)
+    {
+        if (hostKey.Length == 0) return false;
+        var idx = -1;
+        foreach (var k in keywords)
+        {
+            var i = low.IndexOf(k, StringComparison.Ordinal);
+            if (i >= 0 && (idx < 0 || i < idx)) idx = i;
+        }
+        if (idx <= 0) return false;
+        var prefix = name[..idx];
+        prefix = System.Text.RegularExpressions.Regex.Replace(prefix, @"^(\s*(\[[^\]]*\]|\([^\)]*\)|【[^】]*】))+\s*", "");
+        prefix = System.Text.RegularExpressions.Regex.Replace(prefix, @"^\d+[\s\-_.]+", "");
+        prefix = System.Text.RegularExpressions.Regex.Replace(prefix, @"[\s\-_.]*[vV]?\d+(\.\d+)*[\s\-_.]*$", "");
+        var key = NormalizeForNameMatch(prefix);
+        if (key.Length == 0 || !key.StartsWith(hostKey, StringComparison.Ordinal)) return false;
+        return key[hostKey.Length..].Any(c => c is >= 'a' and <= 'z');
+    }
+
+    /// <summary>译本名字里的语言/翻译语义词。官网那张译本表是作者手工登记的、接口不开放
+    /// （Mod 类型没有 translations 字段，HTML 抓取又违反 ToS），只能靠名字认 ——
+    /// 语言词漏一个就整条译本隐身：实机 2026-11-19 原版 UI Info Suite 2 官网 12 条译本，
+    /// 旧表只认出 6 条，漏的全是本地拼写（Bahasa / Vietnamese / PTBR / Turkce）。
+    /// 不收录 "spolszczenie" 这类【常摆在名字最前】的词：关键词在句首时归属闸没有前缀可量，
+    /// 「Spolszczenie X Alternative」这种分支版翻译会漏进来。internal 供测试舱共用同一份表。</summary>
+    internal static readonly string[] TranslationKeywords =
+    {
+        "translation", "chinese", "japanese", "korean", "francais", "french",
+        "german", "deutsch", "spanish", "espanol", "portuguese", "russian", "italian", "polish",
+        "czech", "turkish", "mandarin", "kor", "中文", "翻译", "汉化", "简体", "繁体",
+        "bahasa", "indonesia", "vietnamese", "ptbr", "pt-br", "turkce", "türkçe",
+        "ukrain", "thai", "magyar", "hungarian", "bulgarian",
+    };
+
     /// <summary>v0.69.7：译本 —— 用 mods 搜索按主 mod 名匹配翻译版本（官网 HTML 抓取被 403 反爬挡死）。</summary>
     public async Task<List<NexusTranslationItem>?> GetModTranslationsAsync(int modId, string modName, string gameDomain = "stardewvalley")
     {
@@ -169,8 +211,9 @@ public sealed partial class NexusService
             // v1.2.6：这条名字通配搜以前不带成人条件 —— 详情页的「译本」卡片因此能把成人 mod
             // 列给关着开关的用户看（Nexus 一审正是点名这条）。与 FindModByNameAsync 同款处理。
             var adultCond = IncludeAdultContent ? "" : ", adultContent:{value:false, op:EQUALS}";
+            // count:50 = GraphQL 单批上限。30 时实机漏过整页尾部 4 条真译本（2026-11-19，totalCount 34）。
             var q = "{ mods(filter:{gameId:{value:\"" + gameId + "\"}, name:{value:\"" + safeName
-                + "\", op:WILDCARD}" + adultCond + "}, count:30) { nodes { modId name } } }";
+                + "\", op:WILDCARD}" + adultCond + "}, count:50) { nodes { modId name } } }";
             var d = await GraphQlAsync(q);
             if (d is null) return null;
             // v0.81.0：捕获 totalCount（调试功能：前端展示"服务端总数 vs 已加载数"）
@@ -187,10 +230,9 @@ public sealed partial class NexusService
             if (!root.TryGetProperty("mods", out var mods) || mods.ValueKind != JsonValueKind.Object ||
                 !mods.TryGetProperty("nodes", out var nodes) || nodes.ValueKind != JsonValueKind.Array)
                 return null;
-            var keywords = new[] { "translation", "chinese", "japanese", "korean", "francais", "french",
-                "german", "deutsch", "spanish", "espanol", "portuguese", "russian", "italian", "polish",
-                "czech", "turkish", "mandarin", "kor", "中文", "翻译", "汉化", "简体", "繁体" };
+            var keywords = TranslationKeywords;
             var list = new List<NexusTranslationItem>();
+            var hostKey = NormalizeForNameMatch(modName ?? "");
             foreach (var n in nodes.EnumerateArray())
             {
                 var mid = n.TryGetProperty("modId", out var m1) && m1.ValueKind == JsonValueKind.Number ? m1.GetInt32()
@@ -198,7 +240,8 @@ public sealed partial class NexusService
                 var nm = GetStr(n, "name");
                 if (mid <= 0 || mid == modId || string.IsNullOrWhiteSpace(nm)) continue;
                 var low = nm.ToLowerInvariant();
-                if (keywords.Any(k => low.Contains(k.ToLowerInvariant())))
+                if (keywords.Any(k => low.Contains(k.ToLowerInvariant()))
+                    && !TranslatesAnotherMod(nm, low, keywords, hostKey))
                     list.Add(new NexusTranslationItem(nm, mid, null));
             }
 

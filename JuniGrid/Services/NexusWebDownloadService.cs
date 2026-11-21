@@ -237,98 +237,6 @@ internal static class BrowserIdentity
 }
 
 /// <summary>
-/// v1.3.4：「这台机器过不了 N 网人机验证」的短期记忆。
-/// <para>用户反馈里最扎心的一类：同一台机器，浏览器里秒过，应用内每次都卡在转圈。
-/// 这种机器的内嵌通道是<b>结构性</b>过不去（Cloudflare 认得出 WebView2 的身份 / 网络出口
-/// 本身被风控），再试一百次也只是让每个人白等 30 秒。所以失败一次就记下来，下一单直接
-/// 走浏览器 + nxm 回流那条稳的路。</para>
-/// <para>有效期设计成「3 天 或 换一个版本」二者先到 —— 两个都要，是因为过不去的成因会变
-/// （出口 IP 换了、Cloudflare 规则调了、我们自己的取链策略改了），不能一条记录把用户
-/// 永久钉死在浏览器通道上；而换版本重试一次的成本只有一次 30 秒，比「新版本明明修好了
-/// 他还在走老路」划算。</para>
-/// </summary>
-internal static class ChallengeMemory
-{
-    /// <summary>记多久。见类注释里的取舍。</summary>
-    internal static readonly TimeSpan Ttl = TimeSpan.FromDays(3);
-
-    private static string FilePath => Path.Combine(StoragePaths.NexusWebDir, "challenge-broken");
-
-    /// <summary>这台机器现在还要不要跳过内嵌通道。</summary>
-    internal static bool IsBlocked()
-    {
-        try
-        {
-            var path = FilePath;
-            if (!File.Exists(path)) return false;
-            return ShouldSkip(File.ReadAllText(path), DateTime.UtcNow, AppInfo.Version);
-        }
-        catch (Exception ex)
-        {
-            AppLog.Warn("NexusWeb", "读取人机验证记忆失败（按未记录处理）：" + ex.Message);
-            return false;
-        }
-    }
-
-    /// <summary>记下「这台机器过不去」。写失败不影响主流程。</summary>
-    internal static void MarkBroken(string? appVersion)
-    {
-        try
-        {
-            Directory.CreateDirectory(StoragePaths.NexusWebDir);
-            File.WriteAllText(FilePath,
-                DateTime.UtcNow.ToString("O") + " " + (appVersion ?? ""));
-            AppLog.Warn("NexusWeb",
-                $"已记录「这台机器过不了人机验证」（{Ttl.TotalDays:F0} 天或换版本后重试），后续直接走浏览器");
-        }
-        catch (Exception ex)
-        {
-            AppLog.Warn("NexusWeb", "记录人机验证失败态出错（不影响流程）：" + ex.Message);
-        }
-    }
-
-    /// <summary>通道恢复正常（挑战真的过了）就撤销记忆。</summary>
-    internal static void Clear()
-    {
-        try
-        {
-            if (File.Exists(FilePath)) File.Delete(FilePath);
-        }
-        catch (Exception ex)
-        {
-            AppLog.Warn("NexusWeb", "清除人机验证记忆失败：" + ex.Message);
-        }
-    }
-
-    /// <summary>纯判定，给白盒测试用。标记格式：<c>&lt;UTC 时间 O 格式&gt; &lt;应用版本&gt;</c>。
-    /// <para>解析不出来当没记录 —— 一条坏文件不该让用户永远走不到内嵌通道。</para></summary>
-    internal static bool ShouldSkip(string? marker, DateTime nowUtc, string? appVersion)
-    {
-        if (string.IsNullOrWhiteSpace(marker)) return false;
-        var text = marker.Trim();
-        var split = text.IndexOf(' ');
-        var stamp = split < 0 ? text : text[..split];
-        var version = split < 0 ? "" : text[(split + 1)..].Trim();
-
-        if (!DateTime.TryParse(stamp, null,
-                System.Globalization.DateTimeStyles.AdjustToUniversal
-                | System.Globalization.DateTimeStyles.AssumeUniversal,
-                out var at)) return false;
-
-        // 时钟回拨或文件来自未来：别信，也别让它把用户锁住。
-        if (at - nowUtc > TimeSpan.FromHours(1)) return false;
-        if (nowUtc - at > Ttl) return false;
-
-        // 换过版本就再给内嵌通道一次机会（标记里没写版本时按「同版本」算）。
-        if (!string.IsNullOrEmpty(version) && !string.IsNullOrEmpty(appVersion)
-            && !string.Equals(version, appVersion, StringComparison.OrdinalIgnoreCase))
-            return false;
-
-        return true;
-    }
-}
-
-/// <summary>
 /// v1.2.10：免费账号的「无感下载」通道（对齐 XDyno Mod Manager 的隐藏窗口方案）。
 /// <para>
 /// 问题：<c>download_link.json</c> 对免费账号必然 403，而 nxm:// 链接只有用户
@@ -1072,14 +980,6 @@ public sealed class NexusWebDownloadService
     {
         if (!Enabled) return NexusWebDownloadResult.Fail("应用内自动下载已关闭");
 
-        // v1.3.4：这台机器上一次就是卡在人机验证上退出来的 —— 别再让它白等一遍。
-        // 直接失败，调用方（InstallService）会按 NeedsPremium 打开系统浏览器 + nxm 回流。
-        if (ChallengeMemory.IsBlocked())
-        {
-            AppLog.Info("NexusWeb", "这台机器上次卡在人机验证，本次直接跳过内嵌通道（改走浏览器）");
-            return NexusWebDownloadResult.Fail(
-                "这台机器过不去 Nexus 的人机验证，已改为用浏览器打开下载页");
-        }
         if (modId <= 0 || fileId <= 0) return NexusWebDownloadResult.Fail("modId/fileId 无效");
         LastFailureWasLoginWall = false;
 
@@ -1212,6 +1112,8 @@ public sealed class NexusWebDownloadService
         private int _nxmRaised;
         /// <summary>点过按钮却没反应时重载页面的次数（见 <see cref="ReloadAfterClickSeconds"/>）。</summary>
         private int _reloads;
+        /// <summary>这一单是否已经清过一次网页缓存（只在「页面一直渲染不出下载区」时清，且只清一次）。</summary>
+        private bool _cacheCleared;
         /// <summary>连续多少次探不到挑战页 —— 用来给「验证已通过」的收窗去抖。</summary>
         private int _cfMisses;
         /// <summary>这次运行里见过人机验证页吗 —— 失败时用来把结论说得更准。</summary>
@@ -1266,6 +1168,26 @@ public sealed class NexusWebDownloadService
             AppLog.Info("NexusWeb", cleared > 0
                 ? $"已清除 CF 验证 Cookie（{cleared}/{CfCookieNames.Length} 个，含 cf_clearance/__cf_bm）"
                 : $"清除 CF Cookie 没有生效（CDP 调用全部失败：{firstError ?? "未知"}）");
+        }
+
+        /// <summary>清一次网页缓存（磁盘 + 内存），不动 cookie / 登录态。
+        /// <para>2026-11-21 实测：N 网新文件页的下载按钮（Slow download）全靠
+        /// <c>/assets/dist/web-components-*.js</c> 执行后渲染进 <c>&lt;mod-file-download&gt;</c>
+        /// 的 shadow DOM。页面 HTML 里引的是带内容哈希的文件名，站点一改版旧 hash 就 404；
+        /// 内置网页的 profile 是长期保留的，缓存里很容易留着「旧 HTML + 旧 hash」这一对，
+        /// 于是每次进来都是空白下载区 —— 这时候单纯重载没用，必须先清缓存。</para></summary>
+        private async Task ClearBrowserCacheAsync()
+        {
+            if (_core is null) return;
+            try
+            {
+                await _core.CallDevToolsProtocolMethodAsync("Network.clearBrowserCache", "{}");
+                AppLog.Info("NexusWeb", "已清空内置网页缓存（保留登录 Cookie），准备重载文件页");
+            }
+            catch (Exception ex)
+            {
+                AppLog.Warn("NexusWeb", "清空网页缓存失败：" + ex.Message);
+            }
         }
 
         /// <summary>「身份已修过一次」的落盘标记 —— 旧 cf_clearance 是按旧 UA 签发的，
@@ -1966,7 +1888,8 @@ public sealed class NexusWebDownloadService
                 }
 
                 // 只在状态跳变时记一行：这张页面每 0.6 秒探一次，全记就是刷屏
-                var sig = $"{probe.Button}/cf={probe.Challenge}/login={probe.Login}/act={probe.NeedsClick}";
+                var sig = $"{probe.Button}/cf={probe.Challenge}/login={probe.Login}/act={probe.NeedsClick}"
+                          + (probe.Panel > 0 ? $"/panel={probe.Panel}" : "");
                 if (sig != _lastProbeSig)
                 {
                     _lastProbeSig = sig;
@@ -2068,9 +1991,6 @@ public sealed class NexusWebDownloadService
                             _report?.Invoke("已用浏览器打开下载页 —— 点一下下载按钮，任务会自动继续…", null, null);
                             AppLog.Warn("NexusWeb",
                                 $"验证页 {age:F0}s 未放行（换质询 {_challengeRecoveries} 次后），改开系统浏览器等 nxm 回流");
-                            // v1.3.4：把这台机器记下来 —— 下一单不再先白跑一遍内嵌通道，
-                            // 直接开浏览器（见 ChallengeMemory）。过 3 天或升版本会自动失效重试。
-                            ChallengeMemory.MarkBroken(AppInfo.Version);
                             // 交接前把现场留下来：这一行以后就是「为什么过不去」的唯一证据。
                             // 挑战已经废了，此时注入不影响任何东西。
                             try
@@ -2136,9 +2056,6 @@ public sealed class NexusWebDownloadService
                     _revealedHint = null;
                     _cfMisses = 0;
                     _challengeRecoverAtUtc = null;   // 过了就别再排期换质询了
-                    // 这张质询过了 = 这条通道在这台机器上是能用的 —— 撤销「上次过不去」的记忆，
-                    // 免得用户为一两次偶发失败在 3 天里一直被改道去浏览器。
-                    ChallengeMemory.Clear();
                     AppLog.Info("NexusWeb", "人机验证已通过，窗口收回屏幕外");
                 }
 
@@ -2237,7 +2154,17 @@ public sealed class NexusWebDownloadService
                 {
                     _reloads++;
                     AppLog.Warn("NexusWeb",
-                        $"页面 {((DateTime.UtcNow - started).TotalSeconds):F0}s 还没出现下载按钮，重载重试（第 {_reloads} 次）");
+                        $"页面 {((DateTime.UtcNow - started).TotalSeconds):F0}s 还没出现下载按钮"
+                        + $"（panel={probe.Panel} labels={probe.Labels}），重载重试（第 {_reloads} 次）");
+                    // panel=1 说明下载组件的 JS 压根没跑起来 —— 最可能是内置网页缓存里留着
+                    // 上一版页面引用的旧 hash（新版上线后那个文件名 404）。单纯重载会继续吃
+                    // 同一份坏缓存，所以第一次重载前先清一次浏览器缓存（实测：清完重载，
+                    // 组件 11~20 秒内就能把 Slow download 渲染出来）。
+                    if (!_cacheCleared)
+                    {
+                        _cacheCleared = true;
+                        await ClearBrowserCacheAsync();
+                    }
                     _report?.Invoke("Nexus 页面没加载出来，正在重试…", null, null);
                     _core!.Navigate(PageUrl);
                     started = DateTime.UtcNow;   // 重载后重新计时，否则立刻撞上 60 秒上限
@@ -2256,7 +2183,13 @@ public sealed class NexusWebDownloadService
                     // 别把它含糊地归成「页面结构变化」。
                     _lastError = _sawChallenge
                         ? "Nexus 的 Cloudflare 人机验证一直没通过（网络不稳会让验证反复重来）"
-                        : "Nexus 页面迟迟没出现下载按钮（页面结构可能已变化，或这个文件需要先在网页上确认）";
+                        : probe.Panel == 1
+                            // 实测这一条最常见：页面的下载组件脚本没执行（缓存坏了/被挡），
+                            // 整块下载区是空白 —— 说「页面改版」会把人往错方向带。
+                            ? "Nexus 页面的下载组件没加载出来（内置网页缓存可能坏了，稍后重试或重开一次）"
+                            : probe.Panel == 2
+                                ? "Nexus 页面加载完了，但下载按钮没渲染出来（可能是付费/受限文件）"
+                                : "Nexus 页面没出现下载按钮（内置网页可能没登录 Nexus，或页面已改版）";
                     AppLog.Warn("NexusWeb", _lastError);
                     return null;
                 }
@@ -2329,7 +2262,14 @@ public sealed class NexusWebDownloadService
 
         /// <param name="NeedsClick">这张挑战页上有可见的 Turnstile 控件（必须由用户点一下）；
     /// false = 自动校验页（只有转圈），通常自己会过。</param>
-    private sealed record ProbeState(string Button, bool Challenge, bool Login, bool NeedsClick);
+    /// <param name="Panel">N 网新版下载组件的状态：0 = 这页没有新下载区；
+    /// 1 = 元素在、但自定义元素没注册（<c>/assets/dist/web-components-*.js</c> 没执行 ——
+    /// 内置网页缓存里的旧 hash 404 或被 CF 挡了，实测会呈现「Download: 后面一片空白」）；
+    /// 2 = 组件已注册、shadow 里却没有可点的下载按钮。</param>
+    /// <param name="Labels">没找到按钮时页面上可见控件的文案（含 shadowRoot，最多 10 个）——
+    /// 只用来写日志，让人一眼分清「按钮改名」还是「压根没渲染」。</param>
+    private sealed record ProbeState(string Button, bool Challenge, bool Login, bool NeedsClick,
+        int Panel = 0, string Labels = "");
 
         /// <summary>从当前页面里捞下载落点，<paramref name="logScene"/> 时顺带把
         /// URL / 标题 / 正文前 180 字写进日志（失败后用来看它到底停在哪个页面）。</summary>
@@ -2345,7 +2285,7 @@ public sealed class NexusWebDownloadService
                 {
                     string Get(string n) => root.TryGetProperty(n, out var v) && v.ValueKind == JsonValueKind.String
                         ? v.GetString() ?? "" : "";
-                    AppLog.Warn("NexusWeb", $"失败现场 url={Get("url")} title={Get("title")} text={Get("text")}");
+                    AppLog.Warn("NexusWeb", $"失败现场 url={Get("url")} title={Get("title")} text={Get("text")} labels={Get("labels")}");
                 }
                 return root.TryGetProperty("anchor", out var a) && a.ValueKind == JsonValueKind.String
                     ? (string.IsNullOrWhiteSpace(a.GetString()) ? null : a.GetString())
@@ -2381,7 +2321,11 @@ public sealed class NexusWebDownloadService
                 var cf = root.TryGetProperty("cf", out var cv) && cv.GetInt32() == 1;
                 var login = root.TryGetProperty("login", out var lv) && lv.GetInt32() == 1;
                 var act = root.TryGetProperty("act", out var av) && av.GetInt32() == 1;
-                return new ProbeState(state, cf, login, act);
+                var panel = root.TryGetProperty("panel", out var pv) && pv.ValueKind == JsonValueKind.Number
+                    ? pv.GetInt32() : 0;
+                var labels = root.TryGetProperty("labels", out var lv2) && lv2.ValueKind == JsonValueKind.String
+                    ? lv2.GetString() ?? "" : "";
+                return new ProbeState(state, cf, login, act, panel, labels);
             }
             catch { return null; }
         }
@@ -2584,7 +2528,14 @@ public sealed class NexusWebDownloadService
     /// </summary>
     private const string SlowFinderJs = """
         function () {
-          var hits = [];
+          var best = null, bestScore = 0, hits = 0;
+          // 命中就投票，最后取分最高的那颗 —— 不能「先撞上算谁的」：新版页面里
+          // <mod-download-modal> 的紧凑入口（只写「Manual」）在 DOM 里排在文件列表前面，
+          // 按顺序取第一个会点开弹窗而不是直接下载。
+          var note = function (el, score) {
+            hits++;
+            if (score > bestScore) { bestScore = score; best = el; }
+          };
           var scan = function (root, depth) {
             if (!root || depth > 6) return;
             var nodes;
@@ -2596,10 +2547,26 @@ public sealed class NexusWebDownloadService
               if (c && typeof c === 'object' && c.baseVal !== undefined) c = c.baseVal;
               c = (typeof c === 'string' ? c : '').toLowerCase();
               var t = (el.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
+              // 2026-11-21 实测：新版文件页的 shadow 里仍然叫「Slow download」（旁边多一颗
+              // 付费的「Fast download」），页头那个紧凑入口 <mod-download-modal> 里叫「Manual」。
+              // 三条落点相同，按「越像 Slow download 越优先」排序：
+              //   Slow download / class 带 slow+download  → 3
+              //   Manual download（class 带 manual+download）→ 2
+              //   只有紧凑入口里的「Manual」两个字       → 1
               if (id === 'slowdownloadbutton'
                   || (c.indexOf('slow') >= 0 && c.indexOf('download') >= 0)
                   || t === 'slow download' || t === 'slow downloads'
-                  || t.indexOf('slow download') === 0) hits.push(el);
+                  || t.indexOf('slow download') === 0) {
+                note(el, 3);
+              } else if ((c.indexOf('manual') >= 0 && c.indexOf('download') >= 0)
+                  || t === 'manual download' || t.indexOf('manual download') === 0) {
+                note(el, 2);
+              } else if (t === 'manual') {
+                // 光看文案会把页面上别的「Manual」认错，要求它确实长在 mod-download-modal 的 shadow 里。
+                var host = null;
+                try { var rn = el.getRootNode(); host = rn && rn.host; } catch (e2) { }
+                if (host && (host.tagName || '').toUpperCase() === 'MOD-DOWNLOAD-MODAL') note(el, 1);
+              }
             }
             var all;
             try { all = root.querySelectorAll('*'); } catch (e) { return; }
@@ -2608,8 +2575,8 @@ public sealed class NexusWebDownloadService
             }
           };
           scan(document, 0);
-          window.__jgHits = hits.length;
-          return hits.length > 0 ? hits[0] : null;
+          window.__jgHits = hits;
+          return best;
         }
         """;
 
@@ -2626,12 +2593,13 @@ public sealed class NexusWebDownloadService
     /// </list></summary>
     private static readonly string ProbeScript = $$"""
         (function () {
-          var out = { s: 'none', cf: 0, login: 0, act: 0 };
+          var out = { s: 'none', cf: 0, login: 0, act: 0, panel: 0, labels: '' };
           try {
             var host = (location.hostname || '').toLowerCase();
             var href = (location.href || '').toLowerCase();
 
-            if (host.indexOf('users.nexusmods.com') >= 0 || href.indexOf('/login') >= 0) {
+            if (host.indexOf('users.nexusmods.com') >= 0 || href.indexOf('/login') >= 0
+                || href.indexOf('/auth/sign_in') >= 0 || href.indexOf('/auth/login') >= 0) {
               out.login = 1;
               return JSON.stringify(out);
             }
@@ -2652,6 +2620,67 @@ public sealed class NexusWebDownloadService
                 if (pr.width > 0 && pr.height > 0) out.login = 1;
               }
               if (!out.login && document.querySelector('#login')) out.login = 1;
+              // 2026-11-21 实测更正：新版页头那颗「Log in」其实就是 <a id="login">（rj-login-nav 里），
+              // 所以老判据本来就认得未登录文件页 —— 之前「旧探针认不出登录墙」的推断是错的。
+              // 下面两条只是把判据扩到「可见的 auth 链接 / 可见的 Log in 控件」，防止下次 N 网
+              // 再把 id 摘掉；都只在「没找到下载按钮」这条分支里跑，不会把已登录页误判成登录墙。
+              if (!out.login) {
+                var authLinks = document.querySelectorAll(
+                  'a[href*="users.nexusmods.com/auth"], a[href*="/auth/sign_in"], a[href*="/auth/login"]');
+                for (var ai = 0; ai < authLinks.length; ai++) {
+                  var ar = authLinks[ai].getBoundingClientRect();
+                  if (ar.width >= 4 && ar.height >= 4) { out.login = 1; break; }
+                }
+              }
+              if (!out.login) {
+                var cands = document.querySelectorAll('a,button');
+                for (var ci = 0; ci < cands.length && ci < 500; ci++) {
+                  var tx = (cands[ci].textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
+                  if (tx !== 'log in' && tx !== 'login' && tx !== 'sign in' && tx !== 'sign in / register') continue;
+                  var cr = cands[ci].getBoundingClientRect();
+                  if (cr.width >= 4 && cr.height >= 4) { out.login = 1; break; }
+                }
+              }
+              // 2026-11-21 实测（真实 Chromium 抓 N 网文件页）：新版页面把下载区换成了自定义元素
+              //   <mod-file-download> / <mod-download-modal>，按钮（Slow download / Fast download /
+              //   Manual）全部渲染在它们的 open shadowRoot 里，**而且必须等
+              //   /assets/dist/web-components-*.js 执行完才存在**。那段脚本没跑起来时，
+              //   页面上 "Download:" 后面就是一片空白 —— 没有按钮、也没有 #login，
+              //   探针只能说「认不出」，60 秒后交接浏览器（用户看到的就是那句「没取到直链」）。
+              // 把这件事单独报出来，别再混进「页面结构变了」：
+              //   panel=1 元素在、但自定义元素没注册（组件脚本没执行：缓存里的旧 hash 404 / 被 CF 挡）
+              //   panel=2 组件注册了、shadow 里却没有可点的下载按钮
+              //   panel=0 这页压根没有新下载区（老版页面 / 中转页 / 验证页）
+              try {
+                var fdl = document.querySelector('mod-file-download, mod-download-modal');
+                if (fdl) {
+                  var reg = !!(window.customElements && customElements.get('mod-file-download'));
+                  out.panel = reg ? 2 : 1;
+                }
+                // 现场按钮文案（含 shadowRoot）：只在这条「没找到按钮」的分支里采集，
+                // 每 600ms 一次的探针不会因此变重。下次用户一发日志就能分清
+                // 「按钮改名了」和「压根没渲染」。
+                var seen = [];
+                var walk = function (root, d) {
+                  if (!root || d > 4) return;
+                  var nodes;
+                  try { nodes = root.querySelectorAll('a,button,[role="button"]'); } catch (e4) { return; }
+                  for (var k = 0; k < nodes.length && seen.length < 10; k++) {
+                    var tt = (nodes[k].textContent || '').replace(/\s+/g, ' ').trim();
+                    if (!tt || tt.length > 32) continue;
+                    var rr2 = nodes[k].getBoundingClientRect();
+                    if (rr2.width < 4 || rr2.height < 4) continue;
+                    if (seen.indexOf(tt) < 0) seen.push(tt);
+                  }
+                  var allS;
+                  try { allS = root.querySelectorAll('*'); } catch (e5) { return; }
+                  for (var m = 0; m < allS.length && m < 3000; m++) {
+                    if (allS[m].shadowRoot) walk(allS[m].shadowRoot, d + 1);
+                  }
+                };
+                walk(document, 0);
+                out.labels = seen.join('|');
+              } catch (e3) { }
             }
 
             if (!out.login && !el) {
@@ -2712,13 +2741,29 @@ public sealed class NexusWebDownloadService
     private const string HarvestScript = """
         (function () {
           try {
-            var out = { url: location.href || '', title: document.title || '', anchor: '', text: '' };
+            var out = { url: location.href || '', title: document.title || '', anchor: '', text: '', labels: '' };
             var as = document.querySelectorAll('a[href]');
             for (var i = 0; i < as.length; i++) {
               var h = as[i].href || '';
               if (/nexus-cdn\.com|\.zip(\?|#|$)|\.7z(\?|#|$)|\.rar(\?|#|$)/i.test(h)) { out.anchor = h; break; }
             }
             try { out.text = ((document.body && document.body.innerText) || '').replace(/\s+/g, ' ').slice(0, 180); } catch (e) { }
+            // 2026-11-20：失败现场要能回答「这页到底摆着哪些按钮」。以前只记 URL/标题/正文，
+            // 遇到「没找到下载按钮」只能说「页面结构可能变了」；把这页可见控件的文案抄下来，
+            // 下次用户一发日志就能直接看出是登录墙、还是 N 网把按钮改名了、还是压根没渲染。
+            try {
+              var cand = document.querySelectorAll('a,button,[role="button"]');
+              var seen = [];
+              for (var j = 0; j < cand.length && seen.length < 14; j++) {
+                var t = (cand[j].textContent || '').replace(/\s+/g, ' ').trim();
+                if (!t || t.length > 40) continue;
+                var r = cand[j].getBoundingClientRect();
+                if (r.width < 4 || r.height < 4) continue;
+                if (seen.indexOf(t) >= 0) continue;
+                seen.push(t);
+              }
+              out.labels = seen.join(' | ');
+            } catch (e2) { }
             return JSON.stringify(out);
           } catch (e) { return null; }
         })()

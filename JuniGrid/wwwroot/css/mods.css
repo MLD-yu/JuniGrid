@@ -838,8 +838,17 @@ html[data-theme="dark"] .jg-newver:hover:not(:disabled) {
 .jg-category-list-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex: none; padding: 22px 20px 10px; }
 .jg-category-list-head h2 { margin: 0; font-size: 17px; font-weight: 700; letter-spacing: -.01em; display: flex; align-items: baseline; gap: 8px; }
 .jg-category-list-head h2 span { color: var(--jg-text-3); font-size: 12px; font-weight: 400; }
-.jg-category-list-close { width: 30px; height: 30px; padding: 4px; border: 0; border-radius: 8px; background: transparent; color: var(--jg-text-3); cursor: pointer; display: grid; place-items: center; }
+/* 2026-11-21：标题右边两颗 —— 铅笔（进编辑态）+ ×（关抽屉），同一套 30px 方块 */
+.jg-category-list-tools { display: flex; align-items: center; gap: 2px; flex: none; }
+.jg-category-list-edit,
+.jg-category-list-close { width: 30px; height: 30px; padding: 5px; border: 0; border-radius: 8px; background: transparent; color: var(--jg-text-3); cursor: pointer; display: grid; place-items: center; transition: background .13s ease, color .13s ease; }
+.jg-category-list-edit svg,
+.jg-category-list-close svg { width: 17px; height: 17px; flex: none; }
+.jg-category-list-edit:hover,
 .jg-category-list-close:hover { background: var(--jg-well); color: var(--jg-text); }
+/* 编辑态里的铅笔变成「✓ 完成」：反白实心，一眼看出现在是编辑模式 */
+.jg-category-list-edit.active { background: var(--jg-accent); color: #fff; }
+.jg-category-list-edit.active:hover { background: var(--jg-accent); color: #fff; filter: brightness(.94); }
 /* 不写 scrollbar-width：一旦指定它，Chromium（WebView2）会整份忽略 ::-webkit-scrollbar，
    退回系统原生粗条 —— 交给 base.css 那套 6px 圆头。 */
 .jg-category-list-body { min-height: 0; flex: 1; overflow-y: auto; padding: 2px 12px 18px; overscroll-behavior: contain; }
@@ -856,6 +865,54 @@ html[data-theme="dark"] .jg-newver:hover:not(:disabled) {
 .jg-category-list-name { min-width: 0; flex: 1; font-size: 13.5px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .jg-category-list-count { flex: none; font-size: 11.5px; color: var(--jg-text-3); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .jg-catnav-open:focus-visible, .jg-category-list-close:focus-visible, .jg-category-list-item:focus-visible { outline: 2px solid var(--jg-text); outline-offset: -2px; }
+
+/* ── 抽屉编辑态（2026-11-21）────────────────────────────────
+   一行里的四件事各占一块：勾选框 / 图标 / 名字 / 垃圾桶。
+   勾选框和垃圾桶是既有按钮，图标和名字在编辑态也变成按钮（换图、就地改名），
+   行本身（空白处）点哪儿都算选中 —— 抽屉只有 240~300px，热区小了根本点不准。
+   原来那列「N 个 MOD」在编辑态让位给垃圾桶，名字才不至于被挤成「内容…」。 */
+.jg-category-list-item.editing { gap: 8px; padding: 8px; }
+.jg-category-list-item.editing:hover { background: var(--jg-well); }
+.jg-category-list-item.editing.picked { background: color-mix(in srgb, var(--jg-accent) 13%, transparent); }
+.jg-category-list-item.editing.picked:hover { background: color-mix(in srgb, var(--jg-accent) 19%, transparent); }
+.jg-cl-mark { flex: none; width: 18px; height: 18px; padding: 0; border: 1.5px solid var(--jg-line-strong); border-radius: 6px; background: transparent; color: transparent; cursor: pointer; display: grid; place-items: center; transition: background .12s ease, border-color .12s ease, color .12s ease; }
+.jg-cl-mark svg { width: 11px; height: 11px; flex: none; }
+.jg-cl-mark:hover { border-color: var(--jg-accent); }
+.jg-cl-mark.on { background: var(--jg-accent); border-color: var(--jg-accent); color: #fff; }
+/* 「未分类」前面留同宽的空位，行与行之间图标才对得齐 */
+.jg-cl-mark-space { flex: none; width: 18px; height: 18px; }
+.jg-category-list-item.editing .jg-category-list-icon { width: 34px; height: 34px; padding: 0; border: 0; cursor: pointer; transition: box-shadow .12s ease; }
+.jg-category-list-item.editing .jg-category-list-icon:hover { box-shadow: 0 0 0 2px var(--jg-accent); }
+.jg-cl-rename-btn { flex: 1; min-width: 0; padding: 3px 0; border: 0; border-radius: 6px; background: transparent; color: inherit; font: inherit; font-size: 13.5px; font-weight: 500; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: text; }
+.jg-cl-rename-btn:hover { color: var(--jg-accent); }
+.jg-cl-rename-field { position: relative; flex: 1; min-width: 0; display: flex; align-items: center; }
+.jg-cl-rename { flex: 1; min-width: 0; width: 100%; height: 30px; padding: 0 26px 0 8px; border: 1px solid var(--jg-accent); border-radius: 7px; background: var(--jg-card); color: inherit; font: inherit; font-size: 13px; outline: none; box-shadow: 0 0 0 3px color-mix(in srgb, var(--jg-accent) 22%, transparent); }
+/* 剩余字数：嵌在输入框内右侧，与段头弹窗的 .jg-remark-count 同一套配色 */
+/* 用 flex 居中而不是 translateY —— 数字跳动动画（gsap scale）会覆盖 transform，居中就会歪 */
+.jg-cl-rename-count { position: absolute; right: 8px; top: 0; height: 30px; display: flex; align-items: center; transform-origin: 100% 50%; font-size: 11px; line-height: 1; font-variant-numeric: tabular-nums; color: var(--jg-text-3); pointer-events: none; transition: color .18s ease; }
+.jg-cl-rename-count.warn { color: #f2b544; }
+.jg-cl-rename-count.full { color: #e11d48; }
+/* 重命名确认弹窗里的「原名 → 新名」对照 */
+.jg-cat-rename-pair { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; margin: 2px 0 10px; font-size: 14px; }
+.jg-cat-rename-old { color: var(--jg-text-3); text-decoration: line-through; text-decoration-thickness: 1px; }
+.jg-cat-rename-arrow { flex: none; color: var(--jg-text-4); }
+.jg-cat-rename-new { font-weight: 600; padding: 2px 8px; border-radius: 7px; background: color-mix(in srgb, var(--jg-accent) 16%, transparent); }
+.jg-cat-rename-hint { font-size: 12px; line-height: 1.55; color: var(--jg-text-3); }
+.jg-cl-del { flex: none; width: 26px; height: 26px; padding: 4px; border: 0; border-radius: 7px; background: transparent; color: var(--jg-text-3); cursor: pointer; display: grid; place-items: center; transition: background .12s ease, color .12s ease; }
+.jg-cl-del svg { width: 15px; height: 15px; flex: none; }
+.jg-cl-del:hover { background: color-mix(in srgb, var(--jg-danger) 14%, transparent); color: var(--jg-danger); }
+/* 编辑态底栏：左边选中数量，右边 全选 / 批量换图标 / 批量删除 */
+.jg-category-list-foot { flex: none; display: flex; align-items: center; gap: 6px; padding: 8px 14px 12px; border-top: 1px solid var(--jg-line); }
+.jg-cl-foot-hint { flex: 1; min-width: 0; font-size: 12px; color: var(--jg-text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.jg-cl-foot-btn { flex: none; height: 30px; min-width: 30px; padding: 0 8px; border: 1px solid var(--jg-line); border-radius: 8px; background: transparent; color: var(--jg-text-2); cursor: pointer; display: grid; place-items: center; font-family: inherit; font-size: 12px; transition: border-color .12s ease, color .12s ease, background .12s ease; }
+.jg-cl-foot-btn.text { padding: 0 10px; }
+.jg-cl-foot-btn svg { width: 16px; height: 16px; flex: none; }
+.jg-cl-foot-btn:hover:not(:disabled) { border-color: var(--jg-text); color: var(--jg-text); background: var(--jg-well); }
+.jg-cl-foot-btn:disabled { opacity: .38; cursor: default; }
+.jg-cl-foot-btn.danger:hover:not(:disabled) { border-color: var(--jg-danger); color: var(--jg-danger); background: color-mix(in srgb, var(--jg-danger) 10%, transparent); }
+.jg-cl-foot-btn:focus-visible, .jg-cl-mark:focus-visible, .jg-category-list-edit:focus-visible { outline: 2px solid var(--jg-text); outline-offset: 2px; }
+/* 批量删除确认弹窗里那一串分类名（多了换行，别把弹窗撑破） */
+.jg-modal-list { display: block; margin-top: 4px; font-size: 12.5px; line-height: 1.6; color: var(--jg-text-3); word-break: break-word; }
 html[data-theme="dark"] .jg-category-list-panel { box-shadow: -28px 0 64px rgba(0, 0, 0, .55); }
 html[data-theme="dark"] .jg-catnav-open { box-shadow: -10px 0 24px rgba(0, 0, 0, .45); }
 
