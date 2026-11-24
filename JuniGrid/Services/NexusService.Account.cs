@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
 
@@ -44,6 +45,52 @@ public sealed partial class NexusService
                 memberId);
         }
         catch { return null; }
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // 会员状态（premium）实时校验
+    //  - JWT 里的 premium_expiry 是【签发那一刻】的快照。用户在浏览器里刚开完会员，
+    //    手里这份 token 仍是免费时签的，于是界面一直显示「免费账户」、会员下载通道也一直锁着
+    //    （2026-11-22 实测：token 里 premium_expiry=0，而同一账号的 GraphQL
+    //    membershipRoles=["member","supporter","premium"]）。
+    //  - 所以「是不是会员」改问 GraphQL user(id).membershipRoles —— 公开字段，匿名可查，
+    //    token 过期时也不会退化成免费。supporter 仍只是社区标识，判据只看 "premium"。
+    //  - 2 分钟内存缓存只用来吸收同一次交互里的重复调用；用户点「重新核验」走 Invalidate 绕过。
+    // ══════════════════════════════════════════════════════════════════
+    private const long PremiumCacheTtlMs = 2 * 60 * 1000;
+    private static readonly ConcurrentDictionary<int, (long ExpiresAtMs, bool IsPremium)> PremiumCache = new();
+
+    /// <summary>作废会员状态缓存（手动刷新、登录/登出时调用）。</summary>
+    public static void InvalidatePremiumCache() => PremiumCache.Clear();
+
+    /// <summary>实时会员状态：GraphQL 用户角色里有没有 "premium"。
+    /// 返回 null = 没查到（网络/接口失败）—— 调用方应沿用 token 里的判断，不要当成免费。</summary>
+    public async Task<bool?> FetchPremiumLiveAsync(int memberId)
+    {
+        if (memberId <= 0) return null;
+        if (PremiumCache.TryGetValue(memberId, out var hit) && hit.ExpiresAtMs > Environment.TickCount64)
+            return hit.IsPremium;
+        try
+        {
+            var d = await GraphQlAsync("{ user(id:" + memberId + ") { membershipRoles } }");
+            if (d is null) return null;
+            if (!d.Value.TryGetProperty("user", out var u) || u.ValueKind != JsonValueKind.Object) return null;
+            if (!u.TryGetProperty("membershipRoles", out var roles) || roles.ValueKind != JsonValueKind.Array) return null;
+            var premium = false;
+            foreach (var r in roles.EnumerateArray())
+            {
+                if (r.ValueKind == JsonValueKind.String
+                    && string.Equals(r.GetString(), "premium", StringComparison.OrdinalIgnoreCase))
+                { premium = true; break; }
+            }
+            PremiumCache[memberId] = (Environment.TickCount64 + PremiumCacheTtlMs, premium);
+            return premium;
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warn("Nexus", "会员状态查询失败: " + ex.Message);
+            return null;
+        }
     }
 
     /// <summary>v0.70.1：GraphQL user(id) 拉用户扩展信息（tooltip 卡片用）。失败返回 null。

@@ -5410,6 +5410,12 @@
                 && _groupsKeyLanguage == Loc.Lang)
                 return _groupsCache;
 
+            // 视图键：决定「要不要重新分批画」的唯一依据（见 _renderedViewKey 的注释）。
+            // 只放「会改变列表里有多少行」的两项 —— 筛选 chip 与搜索词。
+            // 排序、分类修订、语言都不进这个键：它们只换顺序/换段，行还是那几行，
+            // 打回 40 行同样会截空后面的分类（2026-11-23 拖动分类也闪）。
+            var viewKey = (_filter ?? "") + "\u001f" + (SearchText ?? "");
+
             var installed = InstalledUids;
             var units = OrderRows(FilteredMods, _sortMode);
             foreach (var u in units)
@@ -5504,13 +5510,33 @@
             // 列表内容变了 ⇒ 从头开始渐进渲染（否则换了筛选还按上一批的行数一次画光）
             // 唯独「启禁/切档刚放开快照」这一次例外：那时行本来就在屏幕上，打回 40 行
             // 会让它们先消失一批、再以补画的方式冒回来 —— 同一次操作闪两下（2026-11-10）。
+            // 🔴 2026-11-23：分批额度**只跟视图键走**，不跟缓存失效走。
+            // 旧写法是「缓存一失效就打回 40 行」，而后台重扫（启禁、安装、拖文件进来都会排一轮，
+            // 有时连排两轮）每次都换 _mods / _installedUids 的实例 ⇒ 一次启禁重开两次分批：
+            // 第一次靠 _forceFullRenderOnce 顶住，第二次又打回 40 行；40 行以后的分类被截断，
+            // 又被下面「空分类也补段头」补成一批 "0 个" 的空段，下一帧再补画回来 ——
+            // 用户看到的就是「分类里的 mod 先清空、再恢复」（一闪一闪）。
+            // 现在：只有「筛选 / 搜索」真的变了才重开分批 —— 它们是唯一会让行数暴涨的情况
+            // （从「可更新」的 3 行切回全部 135 行）。其余失效一律保持当前额度
+            // （已经全画就是 0，还在补画就接着补），因为行本来就在屏幕上。
+            // ⚠ Qoder 那版用「一次性标记」只盖住一轮重扫：日志实测一次启禁可能出现两轮
+            // 「重扫 129 项」，第二轮照样打回 40 行 ⇒ 这里换成与重扫轮数无关的判据。
             if (_forceFullRenderOnce) { _forceFullRenderOnce = false; _renderLimit = 0; }
-            else _renderLimit = FirstRenderRows;
+            else if (!string.Equals(_renderedViewKey, viewKey, StringComparison.Ordinal))
+                _renderLimit = FirstRenderRows;
+            _renderedViewKey = viewKey;
             return units;
         }
     }
 
     private IReadOnlyList<ModGroup>? _groupsCache;
+
+    /// <summary>上一次重算列表时的「视图键」（筛选 chip + 搜索词）。
+    /// <para>分批渲染的额度只在这个键变化时重置回 40 行 —— 那是唯一会让行数暴涨的两种情况
+    /// （比如从「可更新」的 3 行切回全部 135 行）。后台重扫换来新的 _mods / _installedUids、
+    /// 启禁改名、拖动分类、换排序，都属于「屏幕上的行还在」，重开分批会让 40 行之后的
+    /// 分类先被截空、再补画回来（用户看到的闪烁）。见 Groups 里那段说明。</para></summary>
+    private string? _renderedViewKey;
 
     /// <summary>批量启禁/切档进行中为 true：列表先按住上一帧的快照，等磁盘重扫的结果套用完
     /// 再一次性重算。
@@ -5521,7 +5547,9 @@
     private bool _holdListSnapshot;
 
     /// <summary>下一次重算列表时不要打回「首帧 40 行」的分批额度 —— 由放开
-    /// <see cref="_holdListSnapshot"/> 的那一处置位，用一次就清。</summary>
+    /// <see cref="_holdListSnapshot"/> 的那一处置位，用一次就清。
+    /// <para>只用于「行本来就在屏幕上」的那一次切换（批量启禁/切档收尾）；后台重扫引起的
+    /// 失效由 <see cref="_renderedViewKey"/> 统一挡住，与重扫轮数无关。</para></summary>
     private bool _forceFullRenderOnce;
 
     private IReadOnlyList<ModEntry>? _groupsKeyMods;
@@ -6555,6 +6583,8 @@
                     continue;
                 }
                 Rescan(scanned);
+                // 套用结果会换掉 _mods / _installedUids 的实例 ⇒ 缓存失效，但视图键没变，
+                // 分批额度不会被打回 40 行（见 Groups 里的 _renderedViewKey 说明）
                 // v1.3.18：整页 diff 也记账。列表上千行时它自己就是一段可观的渲染线程
                 // 占用，[Perf] 只说"被占住 N ms"，不知道是谁占的 —— 这里补上主体。
                 var __t3 = System.Diagnostics.Stopwatch.GetTimestamp();
@@ -8452,6 +8482,10 @@
             // 就地改名后立刻重建索引：后台那轮重扫要到几百毫秒之后，这期间
             // _modsByFolder 若还握着旧名，选中/查找都会对不上（_selected 会被误清）。
             ReindexMods();
+            // 行本来就在屏幕上：这次失效（ReindexMods 换了 _installedUids）不该打回 40 行分批
+            // —— 否则截空的分类会闪出一根 0 个的段头。后续几轮后台重扫的失效由 _renderedViewKey
+            // 统一挡住（视图键没变 ⇒ 额度不重置），不依赖「只顶一次」的标记。
+            _forceFullRenderOnce = true;
             var __migrateMs = ElapsedMs(__t);
             ModsPerf($"单{(disabled ? "禁" : "启")} {oldFolder}",
                 ("改名", __renameMs), ("联动", __cascadeMs), ("缓存迁移+内存改名", __migrateMs));

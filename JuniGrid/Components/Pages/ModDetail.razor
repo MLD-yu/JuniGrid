@@ -1019,6 +1019,14 @@
 
     protected override async Task OnParametersSetAsync()
     {
+        // 会员状态会被后台核对改写（用户在浏览器里刚开通会员）。本页停着不动时也要跟上：
+        // 否则「在浏览器安装」那句提示会一直挂着，白让人以为软件内装不了。
+        _premiumSeen = Cfg.Current.NexusIsPremium;
+        if (!_cfgSubscribed)
+        {
+            ConfigService.Saved += OnCfgSaved;
+            _cfgSubscribed = true;
+        }
         _loading = true;
         _error = null;
         _mod = null;
@@ -2363,5 +2371,19 @@
     {
         _disposed = true;
         PackThumbService.Changed -= OnIconThumbReady;
+        if (_cfgSubscribed) ConfigService.Saved -= OnCfgSaved;
+    }
+
+    private bool _cfgSubscribed;
+    private bool _premiumSeen;
+
+    /// <summary>配置保存后只关心一件事：会员状态有没有变（变了才重渲染）。</summary>
+    private void OnCfgSaved()
+    {
+        if (_disposed) return;
+        var p = Cfg.Current.NexusIsPremium;
+        if (p == _premiumSeen) return;
+        _premiumSeen = p;
+        _ = InvokeAsync(StateHasChanged);
     }
 }

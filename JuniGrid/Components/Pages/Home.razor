@@ -74,6 +74,27 @@
             @* v1.1.2：总时长改用热力图口径（PlayTimeService 全部年份的秒数总和） *@
             <div class="jg-stat-sub">@Loc.F(" {0} 次启动 · 共 {1} ", _cfg.TotalLaunchCount, FormatHours(PlayTime.TotalSeconds))</div>
         </div>
+
+        @* v1.5：存档管理入口 → 弹窗。卡片只报「共几份 / 有几份当前版本打不开」，
+           小像、导入导出这些重活都在弹窗里做（打开时才跑，不拖首页首屏）。 *@
+        <div class="jg-card jg-card-click jg-save-card" @onclick="OpenSaveMgr"
+             data-tip='@Loc.T("每个存档的版本 / 上次启动 / 游玩时长，可导入导出")'>
+            <div class="jg-stat-label">@Loc.T("存档管理")</div>
+            <div class="jg-stat-num">
+                @if (!_saveReady)
+                {
+                    <span class="jg-shimmer jg-shimmer-line" style="width:1.2em;height:.95em;display:inline-block"></span>
+                }
+                else
+                {
+                    @_saveCount
+                }
+            </div>
+            <div class="jg-stat-sub jg-ver-card-sub">
+                <span class="jg-save-card-when @(_saveTooNew > 0 ? "warn" : "")">@SaveCardSub</span>
+                <span class="jg-ver-hint">@Loc.T("管理 ⇄")</span>
+            </div>
+        </div>
     </div>
 
     @* ── v1.1.5：游玩时长热力图（GitHub contributions 风格）──
@@ -159,6 +180,9 @@
 
     @* ─── v1.4：游戏版本管理弹窗（版本卡入口）─── *@
     <GameVersionDialog Open="_verOpen" OnClose="CloseVersionMgr" OnVersionChanged="RefreshVersions"/>
+
+    @* ─── v1.5：存档管理弹窗（第 5 张统计卡入口）─── *@
+    <SaveManagerDialog Open="_saveOpen" OnClose="CloseSaveMgr"/>
 </div>
 
 @code {
@@ -174,7 +198,11 @@
     // ─── v1.4：版本管理入口 ───
     private bool _verOpen;
 
-    private void OpenVersionMgr() => _verOpen = true;
+    private void OpenVersionMgr()
+    {
+        _saveOpen = false;   // 同上：两层遮罩叠着会互相抢焦点
+        _verOpen = true;
+    }
 
     /// <summary>三项探测互相独立：任一失败/变慢不拖死另外两项；每完成一项就刷一帧。</summary>
     private void RefreshVersions()
@@ -302,12 +330,17 @@
         // 首页/侧栏因此一直显示「未定位」。订阅版本信号，切完主动重读。
         PageRefresh.OnRefresh += OnPageRefresh;
         RebuildHeat();
+
+        // v1.5：存档管理卡。每次进首页都重扫 —— 刚玩完一局回来，存档的版本 / 时长 / 上次启动都变了
+        RefreshSaveSummary();
     }
 
     private void OnPageRefresh(string key)
     {
         if (key != "version") return;
         _ = InvokeAsync(RefreshVersions);
+        // 换版本后「有几份比当前版本新」的判定会变
+        _ = InvokeAsync(RefreshSaveSummary);
     }
 
     private void OnPlayChanged() => InvokeAsync(RebuildHeat);
@@ -429,4 +462,60 @@
     private static string FormatTime(string iso) =>
         DateTime.TryParse(iso, out var t) ? t.ToString("MM-dd HH:mm") : iso;
 
+    // ─── v1.5：存档管理入口卡 ───────────────────────────────────────────
+    // 卡片只负责「几份 / 有没有比当前版本新的」，点开才是弹窗（SaveManagerDialog）。
+    // 小像合成、导入导出这些几百毫秒的重活都留在弹窗里，打开时才跑。
+
+    private bool _saveOpen;
+    private bool _saveReady;
+    private int _saveCount;
+    private List<string?> _saveVersions = new();
+    private string _saveLatest = "—";
+
+    /// <summary>比当前游戏版本新的存档数。存的是版本串而不是计数，换版本后重算即自动修正。</summary>
+    private int _saveTooNew => string.IsNullOrWhiteSpace(CurrentDisplayVersion) ? 0
+        : _saveVersions.Count(v => !string.IsNullOrWhiteSpace(v)
+            && SaveVersionService.CompareVersions(v!, CurrentDisplayVersion) > 0);
+
+    private string CurrentDisplayVersion =>
+        UpdateService.DisplayGameVersion(_gameVersion, _cfg.LastHistoricalLabel, _cfg.LastHistoricalInternalVersion);
+
+    private string SaveCardSub =>
+        !_saveReady ? Loc.T("正在读取…")
+        : _saveCount == 0 ? Loc.T("还没有存档")
+        : _saveTooNew > 0 ? Loc.F("{0} 份比当前版本新", _saveTooNew)
+        : Loc.F("最近存盘 {0}", _saveLatest);
+
+    private void OpenSaveMgr()
+    {
+        _verOpen = false;   // 两个入口互斥，别让两层遮罩叠在一起
+        _saveOpen = true;
+    }
+
+    private void CloseSaveMgr()
+    {
+        _saveOpen = false;
+        RefreshSaveSummary();   // 弹窗里可能刚导入/导出过，关窗顺手对齐卡片上的数字
+    }
+
+    /// <summary>只扫元数据，不合成小像（那是弹窗的事）。读 40 多份 SaveGameInfo 仍在后台线程。</summary>
+    private void RefreshSaveSummary()
+    {
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                var list = SaveManagerService.Scan();
+                _saveCount = list.Count;
+                _saveVersions = list.Select(x => x.GameVersion).ToList();
+                _saveLatest = list.Count == 0 ? "—" : list[0].WrittenAt.ToString("MM-dd HH:mm");
+            }
+            catch (Exception ex)
+            {
+                AppLog.Warn("存档", "扫描存档失败：" + ex.Message);
+            }
+            _saveReady = true;
+            return InvokeAsync(StateHasChanged);
+        });
+    }
 }

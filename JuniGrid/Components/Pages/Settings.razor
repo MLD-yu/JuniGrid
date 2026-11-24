@@ -1376,18 +1376,25 @@
         try
         {
             var cfg = Cfg.Current;
-            var u = await NexusApi.ValidateAsync();
+            // 会员状态必须先走一次账号核对（内部有节流）：只解析 token 的话，
+            // 用户刚在浏览器里升的会员会被这份旧快照写回 false —— 设置页一进来又把
+            // 后台刚更新好的 Premium 打回免费。
+            var live = await OAuth.RefreshAccountAsync();
+            var u = live ?? await NexusApi.ValidateAsync();
             if (u is null || string.IsNullOrEmpty(u.Avatar)) return;
             var fresh = await NexusApi.FetchAvatarAsync(u.Avatar);
             if (string.IsNullOrEmpty(fresh)) return;
             _nexusName = string.IsNullOrEmpty(u.Name) ? _nexusName : u.Name;
-            _nexusPremium = u.IsPremium;
+            // 会员状态只认核对结果：RefreshAccountAsync 被节流时返回 null，
+            // 此时 u 是 token 里的旧快照，拿它写回会把后台刚更新好的 Premium 打回免费。
+            var premiumKnown = live is not null;
+            if (premiumKnown) _nexusPremium = live!.IsPremium;
             // 名字/Premium 也写回 config：老版本登录只落了 key + 头像缓存，
             // 不写回的话每次进设置页都要闪 1s「未登录」等这次 validate 自愈
-            if (cfg.NexusUserName != _nexusName || cfg.NexusIsPremium != _nexusPremium)
+            if (cfg.NexusUserName != _nexusName || (premiumKnown && cfg.NexusIsPremium != _nexusPremium))
             {
                 cfg.NexusUserName = _nexusName;
-                cfg.NexusIsPremium = _nexusPremium;
+                if (premiumKnown) cfg.NexusIsPremium = _nexusPremium;
                 Cfg.Save(cfg);
             }
             if (fresh != _nexusAvatar)
@@ -1817,6 +1824,14 @@
     private void OnCfgSaved() => InvokeAsync(() =>
     {
         _showTaskDock = Cfg.Current.ShowTaskDock;
+        // 会员状态会被后台核对改写（用户在浏览器里刚开完会员）—— 设置页停留时也要跟上，
+        // 否则「自动安装更新」这一栏一直按旧的免费态锁着，得重进设置页才解锁。
+        var p = Cfg.Current.NexusIsPremium;
+        if (p != _nexusPremium)
+        {
+            _nexusPremium = p;
+            _autoInstall = Cfg.Current.EnableAutoInstall && p;
+        }
         StateHasChanged();
     });
 

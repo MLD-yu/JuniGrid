@@ -31,6 +31,10 @@ public sealed class LauncherService
     private void OnGameExit()
     {
         if (_sessionStart is null) return;
+        // 先把这一局「哪份档被写过 + 用的哪个版本」记下来（首页存档管理的「上次启动」列），
+        // 再结算时长 —— 记账失败不能影响时长累计，所以各管各的。
+        try { SaveLaunchJournal.End(msg => AppLog.Info("存档", msg)); }
+        catch (Exception ex) { AppLog.Warn("存档", "会话记账失败：" + ex.Message); }
         var mins = (long)Math.Round((DateTime.Now - _sessionStart.Value).TotalMinutes);
         if (mins > 0)
         {
@@ -39,6 +43,24 @@ public sealed class LauncherService
             _cfg.Save(c);
         }
         _sessionStart = null;
+    }
+
+    /// <summary>
+    /// 开一局时把「当前铺的是哪个版本」告诉存档记账。取的是首页那张版本卡同一口径
+    /// （<see cref="UpdateService.DisplayGameVersion"/>），锁了历史版本时显示的是发行号
+    /// 而不是内部号，否则首页上两个地方会各说各的版本。
+    /// </summary>
+    private void BeginSaveJournal(DateTime startedAt)
+    {
+        string? label = null;
+        try
+        {
+            var c = _cfg.Current;
+            var raw = UpdateService.ResolveCurrentVersion(c.GamePath);
+            label = UpdateService.DisplayGameVersion(raw, c.LastHistoricalLabel, c.LastHistoricalInternalVersion);
+        }
+        catch (Exception ex) { AppLog.Warn("存档", "读启动版本失败：" + ex.Message); }
+        try { SaveLaunchJournal.Begin(label, startedAt); } catch { }
     }
 
     /// <summary>Raised for every stdout/stderr line SMAPI prints.</summary>
@@ -945,6 +967,7 @@ public sealed class LauncherService
 
             proc.Start();
             _sessionStart = startedAt;
+            BeginSaveJournal(startedAt);
             ClearLog();
             // 日志第一行就写清「拉的是哪个 exe」—— 用改名/自定义启动器时，这一行是
             // 「我到底有没有按我指的那个启动」唯一的直接证据。
@@ -986,6 +1009,12 @@ public sealed class LauncherService
 
     private static LaunchResult? HalfSyncedBlock()
     {
+        // 先把本家拷贝残壳（`*-incomplete-<时间戳>`）挪出 Saves：它们只有索引件、没有档体，
+        // 留在原地既会被读档菜单当成一份档，也会被下面的判定冤枉成「Steam 云同步断在半路」
+        // （2026-11-14 一批 6 份，每次启动都拦一次）。只挪不删，挪不动不影响启动。
+        var shells = SaveVersionService.SweepIncompleteShells(msg => AppLog.Warn("Launcher", msg));
+        if (shells > 0)
+            AppLog.Warn("Launcher", $"启动前把 {shells} 份本家拷贝残壳挪进留底区（_saves-backup\\_incomplete），不参与云同步判定");
         var bad = SaveVersionService.HalfSyncedSaves();
         if (bad.Count == 0) return null;
         var since = DateTime.Now - _halfSyncWarnedAt;
@@ -1061,7 +1090,9 @@ public sealed class LauncherService
             var prelaunch = SnapshotLogBeforeLaunch();
             using var proc = new Process { StartInfo = VanillaStartInfo(gamePath) };
             proc.Start();
-            _sessionStart = DateTime.Now;
+            var startedAt = DateTime.Now;
+            _sessionStart = startedAt;
+            BeginSaveJournal(startedAt);
             _ = TrackVanillaExitAsync();
             ClearLog();
             RaiseLog(LocService.Tr("（这一局直启游戏本体，不经过 SMAPI，也不使用 Steam 自定义启动选项）"));

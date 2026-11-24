@@ -96,6 +96,20 @@
                             <div class="jg-user-tip-plan">
                                 @if (_isPremium) { <span class="jg-premium-badge">Premium</span> }
                                 else { <span>@Loc.T("免费账户")</span> }
+                                @* v1.3.7：会员状态可手动重核 —— 在浏览器里刚开完会员的人，
+                                   自动同步最坏要等 30 分钟，这颗按钮是即时出口。 *@
+                                <button type="button"
+                                        class="jg-plan-refresh @(_premiumRefreshing ? "busy" : "")"
+                                        title='@Loc.T("重新核验会员状态")'
+                                        aria-label='@Loc.T("重新核验会员状态")'
+                                        disabled="@_premiumRefreshing"
+                                        @onclick="RefreshMembershipAsync" @onclick:stopPropagation>
+                                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                         stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+                                        <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+                                        <polyline points="21 3 21 9 15 9" />
+                                    </svg>
+                                </button>
                             </div>
                             <div class="jg-user-tip-joined">
                                 @(_userExtras is not null && !string.IsNullOrEmpty(_userExtras.Joined)
@@ -326,6 +340,10 @@
                         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
                     </button>
                     <span class="jg-home-sec-title" style="font-size:15px;font-weight:700">@Loc.F("搜索：{0}", _searchTitle)</span>
+                    @if (!string.IsNullOrEmpty(_searchFuzzyNote))
+                    {
+                        <span class="jg-search-fuzzy-note">@_searchFuzzyNote</span>
+                    }
                 </div>
                 @* ─── v1.1.6：搜索页排序（New/Downloads，复用查看更多页 tab 图标）+ 正序/倒序 ───
                    语义与官网一致：New 正序=最新在前 / Downloads 正序=下载最多在前；DESC=正序（默认） *@
@@ -388,6 +406,9 @@
                         <NexusModCard Mod="mod" Installed="_installedIds.Contains(mod.Id)" OnOpen="OpenDetail" />
                     }
                 </div>
+                @* 拉取失败时列表是残缺的，分页器给出的「共 N 个」会沿用上一次查询的 totalCount —— 宁可不出 *@
+                @if (!_browseFailed)
+                {
                 <div class="jg-pager">
                     <div class="jg-pager-side">
                         <span class="jg-pager-info">
@@ -412,6 +433,16 @@
                         <input class="jg-pager-jump" placeholder='@Loc.T("页码")' @bind="_jumpText" />
                         <button class="jg-pager-btn" @onclick="JumpToPage">Go</button>
                     </div>
+                </div>
+                }
+            }
+            else if (_browseFailed)
+            {
+                @* v1.3.8：请求失败 ≠ 没有结果。以前两者共用下面那句「没有找到」，
+                   断网时用户只会去换关键词，把真正的网络问题藏了个干净（2026-11-23 01:35 事故）。 *@
+                <div class="jg-note" style="margin-top:10px;display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+                    <span>@Loc.T("网络或代理异常，列表拉取失败 —— 检查网络连接（或代理）后重试。")</span>
+                    <button class="jg-linklike" @onclick="() => _ = ExecuteSearchAsync(withExact: true)">@Loc.T("重试")</button>
                 </div>
             }
             else if (string.IsNullOrWhiteSpace(_searchTitle))
@@ -508,6 +539,13 @@
                             </div>
                         </div>
                     }
+                </div>
+            }
+            else if (_browseFailed)
+            {
+                <div class="jg-note" style="margin-top:10px;display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+                    <span>@Loc.T("网络或代理异常，列表拉取失败 —— 检查网络连接（或代理）后重试。")</span>
+                    <button class="jg-linklike" @onclick="() => _ = LoadCurrentPageAsync()">@Loc.T("重试")</button>
                 </div>
             }
             else if (_browse.Count == 0)
@@ -738,6 +776,8 @@
     private string _userName = "";
     private string _userAvatar = "";
     private bool _isPremium;
+    /// <summary>正在手动核验会员状态（按钮转圈 + 防重复点击）。</summary>
+    private bool _premiumRefreshing;
     private string? _profileUrl;
     private NexusUserExtras? _userExtras;
     private string _browseKind = "new";
@@ -764,6 +804,15 @@
     private static List<NexusModListEntry>? _svHomeMods;
     private static string? _svHomeTab;
     private List<NexusModListEntry> _browse = new();
+    /// <summary>v1.3.8：列表「拉取失败」与「确实 0 条」必须分开显示。
+    /// <para>起因是 2026-11-23 01:35 那次事故：进程继承了失效的本机代理，N 网请求全部被拒，
+    /// <c>BrowseModsAsync</c> 失败返回 null，页面把 null 与空列表一起当成 <c>new()</c>，
+    /// 于是界面上写「没有找到与「SMAPI」相关的 mod」—— 用户于是去换关键词，越试越远，
+    /// 真正的原因（网络走不通）一个字都看不到。现在 null 单独记一个失败标志，
+    /// 只有服务端确实返回 0 条才说「没有找到」。</para></summary>
+    private bool _browseFailed;
+    /// <summary>模糊兜底命中时显示在搜索标题旁的说明（空 = 正常精确结果）。</summary>
+    private string _searchFuzzyNote = "";
     // v0.76.0：跨页去重 —— 服务端截断/随机排序下 offset 边界可能重复，无限滚动绝不追加重复卡
 
     /// <summary>v1.04.0：「查看全部」后缀箭头（用户提供的 arrow-right 图标路径，fill=currentColor 随字色、透明背景）。</summary>
@@ -1183,14 +1232,26 @@
         if (string.IsNullOrEmpty(q)) return;
         ResetCardLimit();   // 搜索结果 = 换整页卡片
         _browseLoading = true;
+        _browseFailed = false;
         StateHasChanged();
         var exactTask = withExact && q.All(char.IsDigit) ? NexusApi.GetModAsync(int.Parse(q)) : null;
+        // null = 拉取失败（网络/代理/接口），空列表 = 服务端确实没有结果。
+        // 两者都要保留语义 —— 合成一个 new() 正是「断网被说成搜不到」的根因。
+        List<NexusModListEntry>? got = null;
         try
         {
-            _browse = await NexusApi.BrowseModsAsync(_searchSort, 0, _pageSize, searchText: q,
-                timeRange: "all", direction: _searchDirection) ?? new();
+            got = await NexusApi.BrowseModsAsync(_searchSort, 0, _pageSize, searchText: q,
+                timeRange: "all", direction: _searchDirection);
         }
-        catch { _browse = new(); }
+        catch { got = null; }
+        _searchFuzzyNote = "";
+        // 模糊兜底：只在服务端明确返回 0 条时走（断网 null 不进、纯数字已有尾号直查）。
+        if (got is { Count: 0 } && !q.All(char.IsDigit))
+        {
+            var (fz, note) = await FuzzySearchRetryAsync(q);
+            if (fz is not null) { got = fz; _searchFuzzyNote = note; }
+        }
+        _browse = got ?? new();
         if (exactTask is not null) { try { _exactMod = await exactTask; } catch { } }
         // v1.3.7：搜索页不再单独摆「精确匹配」卡（用户要求只留网格）。
         // 但尾号直查仍然要做 —— 它比关键词搜索准，命中而列表里没有时并进第一格，
@@ -1201,8 +1262,43 @@
                 _exactMod.Id, _exactMod.Name, LocService.Tr("按 N 网尾号精确匹配"),
                 _exactMod.Version, 0, _exactMod.PictureUrl ?? ""));
         }
+        _browseFailed = got is null;
         _browseLoading = false;
         StateHasChanged();
+    }
+
+    /// <summary>搜索零结果时的模糊兜底：多词查询逐词重试并合并（治词序不对/多打了词），
+    /// 单词查询截掉尾两字符重试（治尾部拼错）。命中词数多的排前面，同命中数按最好名次排。</summary>
+    private async Task<(List<NexusModListEntry>? List, string Note)> FuzzySearchRetryAsync(string q)
+    {
+        var toks = q.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (toks.Length >= 2)
+        {
+            var lists = await Task.WhenAll(toks.Take(4).Select(async t =>
+            {
+                try { return await NexusApi.BrowseModsAsync(_searchSort, 0, _pageSize, searchText: t, timeRange: "all", direction: _searchDirection); }
+                catch { return null; }
+            }));
+            var merged = lists.Where(l => l is not null)
+                .SelectMany(l => l.Select((e, i) => (e, i)))
+                .GroupBy(x => x.e.Id)
+                .OrderByDescending(g => g.Count()).ThenBy(g => g.Min(x => x.i))
+                .Select(g => g.First().e).Take(_pageSize).ToList();
+            if (merged.Count > 0)
+                return (merged, Loc.F("没搜到「{0}」，已拆开每个词单独重试。", q));
+        }
+        else if (toks.Length == 1 && toks[0].Length >= 6)
+        {
+            var stem = toks[0][..^2];
+            try
+            {
+                var got2 = await NexusApi.BrowseModsAsync(_searchSort, 0, _pageSize, searchText: stem, timeRange: "all", direction: _searchDirection);
+                if (got2.Count > 0)
+                    return (got2, Loc.F("没搜到「{0}」，已按「{1}」重试。", q, stem));
+            }
+            catch { }
+        }
+        return (null, "");
     }
 
     /// <summary>v1.02.0：搜索页返回 —— 回首页并清掉搜索态。</summary>
@@ -1236,6 +1332,25 @@
     protected override void OnInitialized()
     {
         PageRefresh.OnRefresh += OnPageRefresh;
+        // 会员状态由后台核对写回配置（用户刚在浏览器里开通会员）→ 常驻的本页要跟上，
+        // 否则得等下一次进页才从「免费账户」翻成 Premium。
+        ConfigService.Saved += OnAccountCfgSaved;
+    }
+
+    /// <summary>配置被任意入口保存时，只回读「账号」这几个字段 —— 不碰本页其它状态。</summary>
+    private void OnAccountCfgSaved()
+    {
+        if (_nexusDisposed) return;
+        var p = Cfg.Current.NexusIsPremium;
+        var n = Cfg.Current.NexusUserName;
+        if (p == _isPremium && (string.IsNullOrEmpty(n) || n == _userName)) return;
+        _ = InvokeAsync(() =>
+        {
+            if (_nexusDisposed) return;
+            _isPremium = p;
+            if (!string.IsNullOrEmpty(n)) _userName = n;
+            StateHasChanged();
+        });
     }
 
     private void OnPageRefresh(string key)
@@ -1289,6 +1404,7 @@ protected override async Task OnInitializedAsync()
             _searchSort = _svSort ?? "new"; _searchDirection = _svSearchDir ?? "DESC";   // v1.1.6：搜索页排序恢复
             _exactMod = _svExact;   // v1.02.0：搜索页快照恢复
             _browse = _svBrowse ?? new(); _trendingHome = _svTrending ?? new();
+            _browseFailed = false;   // v1.3.8：快照里是已到手的数据，别把上一次的失败态带进来
             _homeMods = _svHomeMods ?? new(); _homeTab = _svHomeTab ?? "new";
             _authorMods = _svAuthorMods ?? new(); _authorTotal = _svAuthorTotal; _authorLoading = false; _authorFailed = false;
             _homeLoading = false;   // v1.03.0：快照恢复 = 数据已在手，直接显示不再加载
@@ -1384,8 +1500,16 @@ protected override async Task OnInitializedAsync()
         {
             var u = await NexusApi.ValidateAsync();
             if (u is null) return;
+            // 会员状态不能只信 token：JWT 里的 premium_expiry 是【签发那一刻】的快照，
+            // 用户在浏览器里刚开完会员时它还是 0（2026-11-22 实测）。这里走一次账号核对 ——
+            // 内部有 25 分钟节流，所以进页频繁也不会额外打网络；拿到实时值后覆盖。
+            var fresh = await OAuth.RefreshAccountAsync();
+            if (fresh is not null) u = fresh;
+            // 核对被节流时 fresh 为 null，u 仍是 token 里的旧快照 —— 会员状态此时
+            // 必须沿用配置里的值（那是上一次核对的结果），绝不能被旧快照写回免费。
+            var premium = fresh is not null ? fresh.IsPremium : Cfg.Current.NexusIsPremium;
             _userName = u.Name;
-            _isPremium = u.IsPremium;
+            _isPremium = premium;
             _profileUrl = u.ProfileUrl;
             if (u.MemberId > 0)
                 _ = Task.Run(async () =>
@@ -1410,11 +1534,14 @@ protected override async Task OnInitializedAsync()
                     }
                     catch { }
                 });
+            // 只在真变化时落盘：每次进页无条件 Save 会白触发一轮 ConfigService.Saved
+            // （AccountPanel 那边要跟着重探游戏版本号），而绝大多数进页账号信息根本没变。
             var cfg = Cfg.Current;
-            cfg.NexusUserName = u.Name;
-            cfg.NexusProfileUrl = u.ProfileUrl;
-            cfg.NexusIsPremium = u.IsPremium;
-            Cfg.Save(cfg);
+            var dirty = false;
+            if (!string.IsNullOrEmpty(u.Name) && cfg.NexusUserName != u.Name) { cfg.NexusUserName = u.Name; dirty = true; }
+            if (!string.IsNullOrEmpty(u.ProfileUrl) && cfg.NexusProfileUrl != u.ProfileUrl) { cfg.NexusProfileUrl = u.ProfileUrl; dirty = true; }
+            if (cfg.NexusIsPremium != premium) { cfg.NexusIsPremium = premium; dirty = true; }
+            if (dirty) Cfg.Save(cfg);
             // v1.08.0：validate 已按 user_id 构造出头像直链 → 试抓；
             // v1.08.3：与缓存不同才更新并写回 —— 下次进页直接秒显缓存，不再闪兜底
             if (!string.IsNullOrEmpty(u.Avatar))
@@ -1430,6 +1557,41 @@ protected override async Task OnInitializedAsync()
             }
         }
         catch { /* 静默失败，UI 用缓存或回退首字母 */ }
+    }
+
+    /// <summary>账号气泡上的「重新核验」：跳过 25 分钟节流与 2 分钟查询缓存，立刻问一次 N 网。
+    /// 在浏览器里刚开完会员的人用得到 —— 自动同步最坏要等一轮（免费号 30 分钟）。</summary>
+    private async Task RefreshMembershipAsync()
+    {
+        if (_premiumRefreshing) return;
+        _premiumRefreshing = true;
+        StateHasChanged();
+        try
+        {
+            var u = await OAuth.RefreshAccountAsync(force: true);
+            if (u is null)
+            {
+                await JS.InvokeVoidAsync("junigridJs.toast", Loc.T("没能取到最新账号状态，请检查网络后重试"), "err");
+                return;
+            }
+            _isPremium = u.IsPremium;
+            if (!string.IsNullOrEmpty(u.Name)) _userName = u.Name;
+            await JS.InvokeVoidAsync("junigridJs.toast",
+                u.IsPremium
+                    ? Loc.T("已确认：N 网 Premium 会员，会员通道已解锁")
+                    : Loc.T("N 网账号目前仍是免费账户 —— 刚开通的话，N 网那边可能还在生效中"),
+                u.IsPremium ? "ok" : "info");
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warn("Nexus", "手动核验会员状态失败: " + ex.Message);
+            await JS.InvokeVoidAsync("junigridJs.toast", Loc.T("核验失败，请稍后重试"), "err");
+        }
+        finally
+        {
+            _premiumRefreshing = false;
+            StateHasChanged();
+        }
     }
 
     private void OpenProfile()
@@ -1476,13 +1638,19 @@ protected override async Task OnInitializedAsync()
     {
         ResetCardLimit();   // 翻页/换筛选 = 换整页卡片
         _browseLoading = true;
+        _browseFailed = false;
         StateHasChanged();
+        List<NexusModListEntry>? got = null;
         try
         {
-            _browse = await NexusApi.BrowseModsAsync(_browseKind, (_page - 1) * _pageSize, _pageSize,
-                searchText: _searchText, timeRange: _timeRange, direction: _direction) ?? new();
+            // v1.3.8：同搜索页 —— null（失败）与空列表（这一页确实没内容）分开显示，
+            // 否则断网时浏览页只会说「暂时没有数据」，用户以为是自己筛选条件的问题。
+            got = await NexusApi.BrowseModsAsync(_browseKind, (_page - 1) * _pageSize, _pageSize,
+                searchText: _searchText, timeRange: _timeRange, direction: _direction);
         }
-        catch { _browse = new(); }
+        catch { got = null; }
+        _browse = got ?? new();
+        _browseFailed = got is null;
         _browseLoading = false;
         StateHasChanged();
     }
@@ -1563,6 +1731,7 @@ protected override async Task OnInitializedAsync()
         // v0.93.0：离开页面前快照当前浏览状态（返回时恢复）
         _nexusDisposed = true;
         PageRefresh.OnRefresh -= OnPageRefresh;
+        ConfigService.Saved -= OnAccountCfgSaved;
         _svMode = _viewMode; _svKind = _browseKind; _svPage = _page;
         _svRange = _timeRange; _svSearch = _searchText; _svExact = _exactMod;
         _svSort = _searchSort; _svSearchDir = _searchDirection;   // v1.1.6：搜索页排序快照

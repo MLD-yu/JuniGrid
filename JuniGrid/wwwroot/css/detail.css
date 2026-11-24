@@ -173,7 +173,27 @@
     opacity: 0; /* 幽灵头像落定后再显示 */
 }
 .jg-user-tip-username { font-size: 0.875rem; font-weight: 500; line-height: 1.15; }
-.jg-user-tip-plan { font-size: 0.75rem; opacity: 0.72; line-height: 1.15; }
+.jg-user-tip-plan {
+    font-size: 0.75rem; opacity: 0.72; line-height: 1.15;
+    display: inline-flex; align-items: center; gap: 5px;   /* v1.3.7：容纳行尾的「重新核验」按钮 */
+}
+/* v1.3.7：会员那一行末尾的「重新核验」小按钮 —— 刚在浏览器里开完会员的人用它即时翻牌。
+   默认半透明不抢眼，hover 才浮出底色；核验中转圈（用 animation 而不是 transform，
+   避免和 hover 的 rotate 抢同一属性）。 */
+.jg-plan-refresh {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 16px; height: 16px; padding: 0; flex: none;
+    border: none; border-radius: 50%;
+    background: transparent; color: inherit;
+    cursor: pointer; opacity: .8;
+    transition: background .15s ease, opacity .15s ease, transform .15s ease;
+}
+.jg-plan-refresh:hover { opacity: 1; background: rgb(0 0 0 / .08); transform: rotate(45deg); }
+html[data-theme="dark"] .jg-plan-refresh:hover { background: rgb(255 255 255 / .12); }
+.jg-plan-refresh:disabled { cursor: default; }
+.jg-plan-refresh.busy { transform: none; }
+.jg-plan-refresh.busy svg { animation: jg-plan-spin .9s linear infinite; }
+@keyframes jg-plan-spin { to { transform: rotate(360deg); } }
 .jg-user-tip-joined { font-size: 0.75rem; opacity: 0.55; line-height: 1.15; min-height: 0.9rem; }
 .jg-user-tip-menu {
     display: flex; flex-direction: column; gap: 0.125rem;

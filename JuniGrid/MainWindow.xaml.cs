@@ -392,6 +392,11 @@ public partial class MainWindow : Window
             using (Services.PerfScope.Enter("启动/OAuth 会话恢复"))
                 provider.GetRequiredService<NexusOAuthService>().RestoreSession();
 
+            // 会员状态自动同步：登录时签发的 JWT 里 premium_expiry 只是一份快照，
+            // 用户在浏览器里开通会员后不会自己变 —— 常驻一轮后台核对，界面与会员通道
+            // 才能在一轮之内（免费号 30 分钟）跟上，不必重启应用。
+            provider.GetRequiredService<NexusOAuthService>().StartAccountWatcher();
+
             // access token 会在会话中途过期：把刷新器挂到静态的 NexusService 上，
             // 让每个带 Bearer 的请求在发出前自己续期 —— 否则用到一半就"拉取失败、重登才好"。
             // 守卫必须留在这里：RefreshAsync 不看余量，只要手里有 refresh_token 就真发请求，

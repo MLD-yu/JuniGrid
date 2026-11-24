@@ -44,6 +44,20 @@ public partial class App : Application
             return;
         }
 
+        // 从带 HTTP(S)_PROXY 的终端（WorkBuddy / CI / 开发脚本）里被拉起来时，那些变量会被继承，
+        // 而 .NET 的 DefaultProxy 是「环境变量优先于系统代理」。父进程一关，端口就死了 ——
+        // 全进程每个 HttpClient 都报「目标计算机积极拒绝 (127.0.0.1:xxxxx)」，界面却是好的，
+        // 极容易被误判成「N 网挂了」。必须在这里清，因为 DefaultProxy 只解析一次并缓存，
+        // 晚于第一个 HttpClient 就没救了。
+        try
+        {
+            AppLog.Info("Proxy", ProxyEnvironmentGuard.Sanitize());
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warn("Proxy", "环境代理解析失败（忽略，按原样继续）: " + ex.Message);
+        }
+
         // 卸载模式（JuniGrid.exe --uninstall 或安装目录里的独立 Uninstall.exe）：
         // 跳过单实例/管道/splash，只显示卸载向导。
         // 必须在 mutex 之前分流——主实例在跑时控制面板也要能拉起卸载器。

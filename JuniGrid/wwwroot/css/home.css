@@ -97,7 +97,8 @@
     .jg-account-name { font-size: 14.5px; }
     .jg-launch-big { font-size: 14px; padding: 11px 12px; }
 }
-@media (max-width: 860px) {.jg-grid-4 { grid-template-columns: repeat(2, 1fr); }.jg-taskdock { right: 12px; bottom: 12px; padding: 8px 10px; }.jg-taskdock-title { font-size: 12px; }
+@media (max-width: 860px) {.jg-grid-4 { grid-template-columns: repeat(2, 1fr); }/* 5 张卡在 2 列布局里会剩一张落单，让「存档管理」独占一行 */
+    .jg-save-card { grid-column: 1 / -1; }.jg-taskdock { right: 12px; bottom: 12px; padding: 8px 10px; }.jg-taskdock-title { font-size: 12px; }
 }
 /* v1.2.11：窄窗阶梯 —— 侧栏随窗口逐级让宽给内容区 */
 @media (max-width: 760px) {
@@ -224,3 +225,128 @@
     text-underline-offset: 2px; }
 .jg-dep-link:hover { text-decoration-style: solid; }
 .jg-dep-link:disabled, .jg-dep-link[data-clickable="false"] { cursor: default; text-decoration: none; }
+
+/* ============================================================
+   v1.5：存档管理 —— 首页第 5 张统计卡（入口）+ 弹窗（列表/导入导出/小像）
+   ============================================================ */
+/* 入口卡副标题：窄下来先省略，不要换行把卡片撑高 */
+.jg-save-card-when { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.jg-save-card-when.warn { color: var(--jg-danger, #d32f2f); }
+/* 弹窗加宽：一行要塞下小像 + 名字 + 四列元信息 + 2 个按钮（按钮平时隐形但占位） */
+.jg-modal.jg-save-modal { width: min(840px, 94vw); max-width: none; padding: 16px 18px 12px; }
+.jg-saves-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.jg-saves-title { font-size: 15px; font-weight: 600; color: var(--jg-text); }
+.jg-saves-sub { font-size: 12px; color: var(--jg-text-3); margin-top: 3px; }
+.jg-saves-tools { display: flex; gap: 8px; }
+.jg-saves-btn {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 5px 10px; border-radius: 8px; cursor: pointer;
+    font-size: 12px; color: var(--jg-text-2);
+    background: var(--neutral-layer-1, #fff);
+    border: 1px solid var(--jg-line);
+    transition: background .15s, border-color .15s, color .15s;
+}
+.jg-saves-btn:hover:not(:disabled) { background: var(--jg-hover); color: var(--jg-text); border-color: var(--jg-line-strong); }
+.jg-saves-btn:disabled { opacity: .5; cursor: default; }
+.jg-saves-btn.sm { padding: 4px 9px; font-size: 11.5px; }
+.jg-saves-msg { margin-top: 10px; padding: 7px 10px; border-radius: 8px; font-size: 12px; line-height: 1.5; }
+.jg-saves-msg.ok { background: rgba(56, 142, 60, .10); color: #2e7d32; }
+.jg-saves-msg.err { background: rgba(211, 47, 47, .10); color: var(--jg-danger, #d32f2f); }
+.jg-saves-empty { padding: 18px 4px 10px; font-size: 12.5px; color: var(--jg-text-3); }
+.jg-saves-list { margin-top: 8px; display: flex; flex-direction: column; }
+.jg-save-row {
+    display: flex; align-items: center; gap: 12px;
+    padding: 8px 6px; border-radius: 10px;
+    border-top: 1px solid var(--jg-line);
+    transition: background .15s;
+}
+.jg-save-row:first-child { border-top: none; }
+.jg-save-row:hover { background: var(--jg-hover); }
+.jg-save-ava {
+    width: 42px; height: 70px; flex: 0 0 auto;
+    display: flex; align-items: flex-end; justify-content: center;
+    background: var(--jg-well, rgba(0,0,0,.04));
+    border-radius: 8px;
+}
+.jg-save-ava img { width: 40px; height: 68px; image-rendering: pixelated; }
+.jg-save-ava-ph { font-size: 14px; color: var(--jg-text-3); padding-bottom: 22px; }
+.jg-save-main { flex: 1 1 auto; min-width: 0; }
+.jg-save-name {
+    display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+    font-size: 13.5px; font-weight: 600; color: var(--jg-text);
+}
+.jg-save-farm { font-size: 11.5px; font-weight: 400; color: var(--jg-text-3); }
+.jg-save-warn {
+    font-size: 11px; font-weight: 500; padding: 1px 6px; border-radius: 5px;
+    color: var(--jg-danger, #d32f2f); background: rgba(211, 47, 47, .10);
+}
+/* 元信息排成 4 列小表：标签在上、值在下，四列起点固定。
+   以前是「chip + 纯文本」混排，chip 宽度随内容变，于是「游玩 / 金币」每行的起始
+   位置都不一样，整列看着是散的。现在列宽固定，值统一左对齐、数字用等宽数字（tabular-nums），
+   切行扫读时小数点/千分位能对上。 */
+.jg-save-meta {
+    display: grid;
+    grid-template-columns: 76px 224px 148px minmax(0, 1fr);
+    column-gap: 16px;
+    margin-top: 5px;
+    align-items: start;
+}
+.jg-meta { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.jg-meta-k { font-size: 10.5px; line-height: 1.25; color: var(--jg-text-3); }
+.jg-meta-v {
+    font-size: 12.5px; line-height: 1.3; color: var(--jg-text-2);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    font-variant-numeric: tabular-nums;
+}
+/* 窄窗放不下 4 列（上次启动那列要有 200px 才不折）时折成 2×2，别让值被截成省略号 */
+@media (max-width: 840px) {
+    .jg-save-meta { grid-template-columns: 1fr 1.25fr; row-gap: 8px; column-gap: 12px; }
+}
+/* 导出 / 定位：平时只占位不显形，鼠标落到这一行（或键盘 Tab 进来）才浮出来。
+   45 行的列表右侧不再常驻两列按钮抢视线；用 opacity 而不是 display:none，
+   行内文字宽度不会因为出现/消失按钮而抖动。 */
+.jg-save-ops {
+    display: flex; gap: 6px; flex: 0 0 auto;
+    opacity: 0; transition: opacity .12s ease;
+}
+.jg-save-row:hover .jg-save-ops,
+.jg-save-row:focus-within .jg-save-ops { opacity: 1; }
+@media (hover: none) {
+    .jg-save-ops { opacity: 1; }        /* 触屏没有 hover，直接常显 */
+}
+@media (prefers-reduced-motion: reduce) {
+    .jg-save-ops { transition: none; }
+}
+/* 弹窗里的列表：45 份档靠内部滚动，弹窗本身不撑出屏幕 */
+.jg-save-modal .jg-saves-list { max-height: 54vh; overflow-y: auto; overscroll-behavior: contain; }
+/* 首次读取：骨架行沿用全站 .jg-shimmer 微光原语，尺寸按真实行配（头像 40×68、行高约 87px），
+   6 行刚好够到 54vh 的封顶 —— 弹窗一开就是最终高度，读完只换内容不换尺寸。
+   多出的行用 mask 淡出、并关掉滚动，别出现「骨架还能滚」的怪手感。 */
+.jg-save-modal .jg-saves-list.jg-saves-skeleton {
+    overflow: hidden;
+    -webkit-mask-image: linear-gradient(to bottom, #000 86%, transparent 100%);
+    mask-image: linear-gradient(to bottom, #000 86%, transparent 100%);
+}
+.jg-save-row-sk { pointer-events: none; }
+.jg-save-row-sk:hover { background: none; }
+.jg-sk-ava { width: 40px; height: 68px; border-radius: 7px; margin-bottom: 1px; }
+.jg-sk-name { width: 30%; height: 14px; margin-bottom: 8px; }
+.jg-sk-k { width: 32px; height: 8px; border-radius: 4px; }
+.jg-sk-v { width: 72%; height: 12px; border-radius: 4px; }
+/* 骨架行右侧不留按钮占位（真按钮平时也是隐形的），但把宽度占住，骨架与真实行的
+   文字区对齐，读完不会横向挪一下 */
+.jg-save-ops-sk { min-width: 94px; }
+@media (prefers-reduced-motion: reduce) {
+    .jg-saves-skeleton .jg-shimmer { animation: none; }
+}
+.jg-save-x {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 28px; height: 28px; flex: 0 0 auto;
+    border: none; border-radius: 8px; cursor: pointer;
+    background: none; color: var(--jg-text-3);
+}
+.jg-save-x:hover { background: var(--jg-hover); color: var(--jg-text); }
+@media (max-width: 620px) {
+    .jg-save-row { flex-wrap: wrap; }
+    .jg-save-ops { width: 100%; justify-content: flex-end; }
+}

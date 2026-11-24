@@ -462,6 +462,10 @@ public sealed class NexusWebDownloadService
             await view.EnsureCoreWebView2Async(env);
             view.CoreWebView2.Settings.AreDefaultContextMenusEnabled = true;
             view.CoreWebView2.Settings.AreDevToolsEnabled = false;
+            // 账号窗口也必须打身份补丁：N 网登录页自带 Turnstile，不打的话它继续以
+            // 「Microsoft Edge WebView2」的身份示人，人机验证过不去 —— 用户卡在登录那一下，
+            // 观感就是「内置浏览器总过不了验证，外部浏览器没事」（2026-11-22）。
+            await ApplyBrowserIdentityAsync(view.CoreWebView2);
             view.CoreWebView2.NewWindowRequested += (_, e) =>
             {
                 if (!Uri.TryCreate(e.Uri, UriKind.Absolute, out var uri)) return;
@@ -912,6 +916,16 @@ public sealed class NexusWebDownloadService
     /// <summary>重载页面重试几次。两次足够：真遇到 Cloudflare/限流时再多也是白搭。</summary>
     private const int MaxReloads = 2;
 
+    /// <summary>「直接问站点接口要直链」最多试几次。
+    /// <para>2026-11-22 抓到新版文件页的实现：<c>Slow download</c> 本身<b>不携带链接</b>，
+    /// 它按下时才 POST <c>/Core/Libs/Common/Managers/Downloads?GenerateDownloadUrl</c>
+    /// 换一条一次性 CDN 直链（见 <see cref="ResolveUrlScript"/>）。也就是说接口才是取链入口，
+    /// 按钮 / 面板 / shadow DOM 只是它的外壳 —— 外壳一坏（组件脚本没跑、按钮改名、
+    /// 结构改版），老办法整条断掉，而接口只要会话还在就照常工作。</para>
+    /// <para>先给一次、再隔 10 秒和 25 秒各补一次：拿到就走，省掉「点按钮 + 等 nxm 回流」
+    /// 那一整段；拿不到也不影响后面继续按老路走。</para></summary>
+    private const int MaxApiResolves = 3;
+
     /// <summary>忍耐期：页面刚打开的前 10 秒不因「登录」判定去弹窗。
     /// 实测 N 网首屏经常先给一张 Cloudflare 中间页（Just a moment…），3~8 秒才自己放行；
     /// 太早 Reveal 会让用户对着一个下一秒就消失的挑战页发呆。
@@ -1057,6 +1071,152 @@ public sealed class NexusWebDownloadService
     public bool IsQueued(TaskItem task) => Gate.IsQueued(task);
 
     // ══════════════════════════════════════════════════════════════════
+    // 内嵌内核的身份修补（下载用的隐藏窗口与登录/授权的账号窗口共用）
+    // ══════════════════════════════════════════════════════════════════
+
+    /// <summary>CF 的固定 cookie 名。只删这些（登录态原样保留）—— 见 <see cref="ClearCfCookiesAsync"/>。</summary>
+    private static readonly string[] CfCookieNames =
+        ["cf_clearance", "__cf_bm", "__cf_chl_2fa", "__cf_chl_prog", "__cf_chl_rc_m",
+         "__cf_chl_js_t", "__cf_chl_tk", "__cfduid", "__cf_waitlist"];
+
+    /// <summary>清掉 profile 里 Cloudflare 的验证 cookie。2026-11-07 03:16 实测：被污染的
+    /// cf_clearance/__cf_bm 会让托管挑战永远不放行；清掉后同一 profile 7 秒通过。
+    /// 走 CDP 的 Network.deleteCookies，逐个来，失败不炸。
+    /// <para>2026-11-07 03:35 实机日志出现过「CDP 调用全部失败」：<c>Network.deleteCookies</c>
+    /// 只给 <c>name</c> 会被判参数非法（缺 <c>url</c>/<c>domain</c>），所以这里带上
+    /// <c>url</c>，并把第一个异常记下来 —— 不然只能看到「全部失败」，没法判断是参数问题
+    /// 还是内核/通道真的废了。</para></summary>
+    private static async Task ClearCfCookiesAsync(CoreWebView2? core)
+    {
+        if (core is null) return;
+        var cleared = 0;
+        string? firstError = null;
+        foreach (var name in CfCookieNames)
+        {
+            try
+            {
+                await core.CallDevToolsProtocolMethodAsync("Network.deleteCookies",
+                    JsonSerializer.Serialize(new Dictionary<string, object?>
+                    {
+                        ["name"] = name,
+                        ["url"] = "https://www.nexusmods.com/",
+                    }));
+                cleared++;
+            }
+            catch (Exception ex) { firstError ??= ex.Message; }
+        }
+        AppLog.Info("NexusWeb", cleared > 0
+            ? $"已清除 CF 验证 Cookie（{cleared}/{CfCookieNames.Length} 个，含 cf_clearance/__cf_bm）"
+            : $"清除 CF Cookie 没有生效（CDP 调用全部失败：{firstError ?? "未知"}）");
+    }
+
+    /// <summary>「身份已修过一次」的落盘标记 —— 旧 cf_clearance 是按旧 UA 签发的，
+    /// 换身份之后它就作废了，所以只在第一次换的时候清一次 cookie。</summary>
+    private static string IdentityMarkerPath => Path.Combine(StoragePaths.NexusWebDir, "identity-v1");
+    private static bool IdentityApplied
+    {
+        get { try { return File.Exists(IdentityMarkerPath); } catch { return false; } }
+    }
+
+    /// <summary>
+    /// v1.3.4：把内核自报的身份从「内嵌 WebView2」修成「普通 Edge」。
+    /// <para><b>为什么值得做</b>：WebView2 的 UA 字符串看着像 Edge，但
+    /// <c>Sec-CH-UA</c> / <c>navigator.userAgentData.brands</c> 里明明白白写着
+    /// <c>Microsoft Edge WebView2</c> —— 对 Cloudflare 来说这就是「我是被某个程序嵌进来的
+    /// 浏览器」，是最省事的一条判定依据。真浏览器里同样页面能过、内嵌里过不去，差别往往就在
+    /// 这一行字上。这里用 CDP 把 brands / fullVersionList 换成真 Edge，并保持
+    /// platform / platformVersion / architecture / bitness 等字段<b>原样不动</b> ——
+    /// 只抹掉那一句自报，不制造新的不一致。</para>
+    /// <para>失败不影响取链：拿不到身份就用内核版本号拼一个最普通的 Edge 身份。</para>
+    /// <para>2026-11-22：从隐藏下载窗口挪到外层 —— 账号窗口（登录 / OAuth 授权）同样吃这一套，
+    /// N 网登录页自带 Turnstile，不打补丁它就继续以 WebView2 身份示人（用户反馈「内置总过不了
+    /// 人机验证，浏览器没事」正是卡在这一步）。</para>
+    /// </summary>
+    internal static async Task ApplyBrowserIdentityAsync(CoreWebView2? core)
+    {
+        if (core is null) return;
+        // 2026-11-11 对照实验开关：设 JG_RAW_WEBVIEW2=1 时一个补丁都不打，
+        // 用来验证「是不是我们自己的篡改反而让 Turnstile 拒绝渲染控件」。
+        // 只影响本机调试，默认路径不受影响。
+        if (Environment.GetEnvironmentVariable("JG_RAW_WEBVIEW2") == "1")
+        {
+            AppLog.Warn("NexusWeb", "⚠ 对照实验：跳过全部身份修补（JG_RAW_WEBVIEW2=1）");
+            return;
+        }
+        try
+        {
+            var probe = await ReadIdentityProbeAsync(core);
+            var payload = BrowserIdentity.Build(probe,
+                core.Environment?.BrowserVersionString, BrowserIdentity.GuessPlatformVersion());
+            if (payload is null) return;
+
+            try
+            {
+                await core.CallDevToolsProtocolMethodAsync("Network.setUserAgentOverride", payload);
+            }
+            catch (Exception ex)
+            {
+                // Network 域偶发不可用（未 enable / 内核差异）时退到 Emulation 域，参数完全一样。
+                AppLog.Warn("NexusWeb", "Network.setUserAgentOverride 失败，改用 Emulation：" + ex.Message);
+                await core.CallDevToolsProtocolMethodAsync("Emulation.setUserAgentOverride", payload);
+            }
+            AppLog.Info("NexusWeb", "已把内嵌内核的身份修成普通 Edge（抹掉 WebView2 标记）");
+
+            // UA 只是「自报家门」，页面脚本还能直接问 window.chrome.webview 在不在。
+            // 这段必须在文档创建时先跑，晚于页面脚本就没意义了。
+            try
+            {
+                await core.AddScriptToExecuteOnDocumentCreatedAsync(BrowserIdentity.HideEmbeddedScript);
+                AppLog.Info("NexusWeb", "已隐藏 window.chrome.webview / navigator.webdriver 痕迹");
+            }
+            catch (Exception ex)
+            {
+                AppLog.Warn("NexusWeb", "隐藏嵌入痕迹失败（不影响取链流程）：" + ex.Message);
+            }
+
+            if (!IdentityApplied)
+            {
+                await ClearCfCookiesAsync(core);
+                try
+                {
+                    Directory.CreateDirectory(StoragePaths.NexusWebDir);
+                    File.WriteAllText(IdentityMarkerPath, AppInfo.Version);
+                }
+                catch { /* 标记写不进去只会导致多清一次 cookie，无碍 */ }
+            }
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warn("NexusWeb", "修正内核身份失败（不影响取链流程）：" + ex.Message);
+        }
+    }
+
+    /// <summary>读内核自己的身份（含高熵字段）。返回内核上报的 JSON 原文，失败返回 null。</summary>
+    private static async Task<string?> ReadIdentityProbeAsync(CoreWebView2 core)
+    {
+        try
+        {
+            var raw = await core.CallDevToolsProtocolMethodAsync("Runtime.evaluate",
+                JsonSerializer.Serialize(new Dictionary<string, object?>
+                {
+                    ["expression"] = BrowserIdentity.ProbeScript,
+                    ["awaitPromise"] = true,
+                    ["returnByValue"] = true,
+                }));
+            using var doc = JsonDocument.Parse(raw);
+            if (doc.RootElement.TryGetProperty("result", out var result)
+                && result.TryGetProperty("value", out var value)
+                && value.ValueKind == JsonValueKind.String)
+                return value.GetString();
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warn("NexusWeb", "读取内核身份失败（改用版本号兜底）：" + ex.Message);
+        }
+        return null;
+    }
+
+    // ══════════════════════════════════════════════════════════════════
     // nxm 回流合流（同一 mod 只该有一行任务）
     // ══════════════════════════════════════════════════════════════════
 
@@ -1114,6 +1274,13 @@ public sealed class NexusWebDownloadService
         private int _reloads;
         /// <summary>这一单是否已经清过一次网页缓存（只在「页面一直渲染不出下载区」时清，且只清一次）。</summary>
         private bool _cacheCleared;
+        /// <summary>已经直接问过几次站点取链接口（见 <see cref="MaxApiResolves"/>）。</summary>
+        private int _apiTries;
+        /// <summary>上一次直接问接口的时刻 —— 用来按 1s / 10s / 25s 的间隔排期。</summary>
+        private DateTime _lastApiTryUtc = DateTime.MinValue;
+        /// <summary>接口回过「空」（HTTP 200 但 body 是 <c>[]</c>）。实测这就是未登录的签名 ——
+        /// 失败时据此给出「会话可能已过期」这种能照着的说法，而不是含糊的「页面改版」。</summary>
+        private bool _apiEmpty;
         /// <summary>连续多少次探不到挑战页 —— 用来给「验证已通过」的收窗去抖。</summary>
         private int _cfMisses;
         /// <summary>这次运行里见过人机验证页吗 —— 失败时用来把结论说得更准。</summary>
@@ -1133,42 +1300,6 @@ public sealed class NexusWebDownloadService
         private DateTime? _challengeSeenAtUtc;
         /// <summary>验证窗口是什么时候交到用户手上的（用户自己过的计时起点）。</summary>
         private DateTime _challengeRevealAtUtc;
-
-        /// <summary>CF 的固定 cookie 名。只删这些（登录态原样保留）—— 见 <see cref="ClearCfCookiesAsync"/>。</summary>
-        private static readonly string[] CfCookieNames =
-            ["cf_clearance", "__cf_bm", "__cf_chl_2fa", "__cf_chl_prog", "__cf_chl_rc_m",
-             "__cf_chl_js_t", "__cf_chl_tk", "__cfduid", "__cf_waitlist"];
-
-        /// <summary>清掉 profile 里 Cloudflare 的验证 cookie。2026-11-07 03:16 实测：被污染的
-        /// cf_clearance/__cf_bm 会让托管挑战永远不放行；清掉后同一 profile 7 秒通过。
-        /// 走 CDP 的 Network.deleteCookies，逐个来，失败不炸。
-        /// <para>2026-11-07 03:35 实机日志出现过「CDP 调用全部失败」：<c>Network.deleteCookies</c>
-        /// 只给 <c>name</c> 会被判参数非法（缺 <c>url</c>/<c>domain</c>），所以这里带上
-        /// <c>url</c>，并把第一个异常记下来 —— 不然只能看到「全部失败」，没法判断是参数问题
-        /// 还是内核/通道真的废了。</para></summary>
-        private async Task ClearCfCookiesAsync()
-        {
-            if (_core is null) return;
-            var cleared = 0;
-            string? firstError = null;
-            foreach (var name in CfCookieNames)
-            {
-                try
-                {
-                    await _core.CallDevToolsProtocolMethodAsync("Network.deleteCookies",
-                        JsonSerializer.Serialize(new Dictionary<string, object?>
-                        {
-                            ["name"] = name,
-                            ["url"] = "https://www.nexusmods.com/",
-                        }));
-                    cleared++;
-                }
-                catch (Exception ex) { firstError ??= ex.Message; }
-            }
-            AppLog.Info("NexusWeb", cleared > 0
-                ? $"已清除 CF 验证 Cookie（{cleared}/{CfCookieNames.Length} 个，含 cf_clearance/__cf_bm）"
-                : $"清除 CF Cookie 没有生效（CDP 调用全部失败：{firstError ?? "未知"}）");
-        }
 
         /// <summary>清一次网页缓存（磁盘 + 内存），不动 cookie / 登录态。
         /// <para>2026-11-21 实测：N 网新文件页的下载按钮（Slow download）全靠
@@ -1190,110 +1321,6 @@ public sealed class NexusWebDownloadService
             }
         }
 
-        /// <summary>「身份已修过一次」的落盘标记 —— 旧 cf_clearance 是按旧 UA 签发的，
-        /// 换身份之后它就作废了，所以只在第一次换的时候清一次 cookie。</summary>
-        private static string IdentityMarkerPath => Path.Combine(StoragePaths.NexusWebDir, "identity-v1");
-        private static bool IdentityApplied
-        {
-            get { try { return File.Exists(IdentityMarkerPath); } catch { return false; } }
-        }
-
-        /// <summary>
-        /// v1.3.4：把内核自报的身份从「内嵌 WebView2」修成「普通 Edge」。
-        /// <para><b>为什么值得做</b>：WebView2 的 UA 字符串看着像 Edge，但
-        /// <c>Sec-CH-UA</c> / <c>navigator.userAgentData.brands</c> 里明明白白写着
-        /// <c>Microsoft Edge WebView2</c> —— 对 Cloudflare 来说这就是「我是被某个程序嵌进来的
-        /// 浏览器」，是最省事的一条判定依据。真浏览器里同样页面能过、内嵌里过不去，差别往往就在
-        /// 这一行字上。这里用 CDP 把 brands / fullVersionList 换成真 Edge，并保持
-        /// platform / platformVersion / architecture / bitness 等字段<b>原样不动</b> ——
-        /// 只抹掉那一句自报，不制造新的不一致。</para>
-        /// <para>失败不影响取链：拿不到身份就用内核版本号拼一个最普通的 Edge 身份。</para>
-        /// </summary>
-        private async Task ApplyBrowserIdentityAsync()
-        {
-            if (_core is null) return;
-            // 2026-11-11 对照实验开关：设 JG_RAW_WEBVIEW2=1 时一个补丁都不打，
-            // 用来验证「是不是我们自己的篡改反而让 Turnstile 拒绝渲染控件」。
-            // 只影响本机调试，默认路径不受影响。
-            if (Environment.GetEnvironmentVariable("JG_RAW_WEBVIEW2") == "1")
-            {
-                AppLog.Warn("NexusWeb", "⚠ 对照实验：跳过全部身份修补（JG_RAW_WEBVIEW2=1）");
-                return;
-            }
-            try
-            {
-                var probe = await ReadIdentityProbeAsync();
-                var payload = BrowserIdentity.Build(probe,
-                    _core.Environment?.BrowserVersionString, BrowserIdentity.GuessPlatformVersion());
-                if (payload is null) return;
-
-                try
-                {
-                    await _core.CallDevToolsProtocolMethodAsync("Network.setUserAgentOverride", payload);
-                }
-                catch (Exception ex)
-                {
-                    // Network 域偶发不可用（未 enable / 内核差异）时退到 Emulation 域，参数完全一样。
-                    AppLog.Warn("NexusWeb", "Network.setUserAgentOverride 失败，改用 Emulation：" + ex.Message);
-                    await _core.CallDevToolsProtocolMethodAsync("Emulation.setUserAgentOverride", payload);
-                }
-                AppLog.Info("NexusWeb", "已把内嵌内核的身份修成普通 Edge（抹掉 WebView2 标记）");
-
-                // UA 只是「自报家门」，页面脚本还能直接问 window.chrome.webview 在不在。
-                // 这段必须在文档创建时先跑，晚于页面脚本就没意义了。
-                try
-                {
-                    await _core.AddScriptToExecuteOnDocumentCreatedAsync(BrowserIdentity.HideEmbeddedScript);
-                    AppLog.Info("NexusWeb", "已隐藏 window.chrome.webview / navigator.webdriver 痕迹");
-                }
-                catch (Exception ex)
-                {
-                    AppLog.Warn("NexusWeb", "隐藏嵌入痕迹失败（不影响取链流程）：" + ex.Message);
-                }
-
-                if (!IdentityApplied)
-                {
-                    await ClearCfCookiesAsync();
-                    try
-                    {
-                        Directory.CreateDirectory(StoragePaths.NexusWebDir);
-                        File.WriteAllText(IdentityMarkerPath, AppInfo.Version);
-                    }
-                    catch { /* 标记写不进去只会导致多清一次 cookie，无碍 */ }
-                }
-            }
-            catch (Exception ex)
-            {
-                AppLog.Warn("NexusWeb", "修正内核身份失败（不影响取链流程）：" + ex.Message);
-            }
-        }
-
-        /// <summary>读内核自己的身份（含高熵字段）。返回内核上报的 JSON 原文，失败返回 null。</summary>
-        private async Task<string?> ReadIdentityProbeAsync()
-        {
-            if (_core is null) return null;
-            try
-            {
-                var raw = await _core.CallDevToolsProtocolMethodAsync("Runtime.evaluate",
-                    JsonSerializer.Serialize(new Dictionary<string, object?>
-                    {
-                        ["expression"] = BrowserIdentity.ProbeScript,
-                        ["awaitPromise"] = true,
-                        ["returnByValue"] = true,
-                    }));
-                using var doc = JsonDocument.Parse(raw);
-                if (doc.RootElement.TryGetProperty("result", out var result)
-                    && result.TryGetProperty("value", out var value)
-                    && value.ValueKind == JsonValueKind.String)
-                    return value.GetString();
-            }
-            catch (Exception ex)
-            {
-                AppLog.Warn("NexusWeb", "读取内核身份失败（改用版本号兜底）：" + ex.Message);
-            }
-            return null;
-        }
-
         /// <summary>静默窗口到期时间：这段时间内不做任何探针注入（见 PumpAsync 里的说明）。</summary>
         private DateTime _quietUntilUtc = DateTime.MinValue;
 
@@ -1311,6 +1338,11 @@ public sealed class NexusWebDownloadService
         /// <summary>完全静默最多持续多久（秒）。到点无论标题如何都恢复探测 ——
         /// 万一 CF 的挑战页标题跟 N 网页面一样，不设上限就会一直哑着。</summary>
         private const int ChallengeSilentMaxSeconds = 20;
+
+        /// <summary>挑战活跃期间上一次探针注入的时刻 —— 配合 <see cref="ChallengeQuietSeconds"/>
+        /// 把挑战期的注入压到 12 秒一次（2026-11-22 前这个常量定义了却没接线，
+        /// 静默期一过探针仍按 1.5 秒一轮打，正是实测里「越探越不放行」的自锁形态）。</summary>
+        private DateTime _lastChallengeProbeUtc = DateTime.MinValue;
 
         private string? _lastError;
 
@@ -1372,12 +1404,40 @@ public sealed class NexusWebDownloadService
         // 建窗
         // --------------------------------------------------------------
 
+        /// <summary>准备内置网页的 profile 目录。
+        /// <para>2026-11-22 用户反馈「一点安装就立马跳浏览器，任务行连一秒都没撑住」——
+        /// 这种「快到看不见过程」的失败只可能发生在建窗之前，而建窗最早的一步就是这个目录。
+        /// 它有可能被别的东西占着（手动在同名位置建过文件、杀软锁住、缓存目录被改到不可写的位置），
+        /// 那时 <c>Directory.CreateDirectory</c> 会当场抛 —— 直接换一个目录继续，别让整条通道
+        /// 因为一格目录就静默失效。</para></summary>
+        private static string PrepareProfileDir()
+        {
+            var profile = Path.Combine(StoragePaths.NexusWebDir, "profile");
+            try
+            {
+                if (File.Exists(profile))   // 同名位置是个文件：挪开而不是删（用户可能自己建的）
+                {
+                    var aside = profile + ".bad-" + DateTime.Now.ToString("yyyyMMdd-HHmmss");
+                    AppLog.Warn("NexusWeb", $"profile 位置被文件占用，挪到 {aside}");
+                    File.Move(profile, aside, true);
+                }
+                Directory.CreateDirectory(profile);
+                return profile;
+            }
+            catch (Exception ex)
+            {
+                var alt = profile + "-fresh";
+                AppLog.Warn("NexusWeb", $"profile 目录不可用（{ex.Message}），改用 {alt}");
+                Directory.CreateDirectory(alt);
+                return alt;
+            }
+        }
+
         private async Task CreateUiAsync(CancellationToken ct)
         {
             // 独立 profile：与主界面 BlazorWebView 的 StoragePaths.WebView2Dir 分开。
             // 好处是 N 网的登录态只活在这一个目录里，清缓存/换账号互不影响。
-            var profile = Path.Combine(StoragePaths.NexusWebDir, "profile");
-            Directory.CreateDirectory(profile);
+            var profile = PrepareProfileDir();
 
             _view = new WebView2
             {
@@ -1431,13 +1491,12 @@ public sealed class NexusWebDownloadService
             // 调用方照旧退回「打开系统浏览器」的老路，别让用户对着假死干等。
             // 注意：超时后底下那次 EnsureCoreWebView2Async 还在后台跑，本进程内的
             // EnvGate 可能被它占着 —— 后续重试同样会走到这个超时再兜底，重启后恢复。
-            var init = EnsureIsolatedWebViewAsync(profile);
-            if (await Task.WhenAny(init, Task.Delay(TimeSpan.FromSeconds(45), ct)) != init)
-            {
-                ct.ThrowIfCancellationRequested();   // 取消引起的先行退场，走「已取消」语义
-                throw new TimeoutException("内置浏览器内核初始化超时（45 秒）");
-            }
-            await init;   // WhenAny 只看谁先完成、不解包异常：失败要在这里照常炸出来
+            //
+            // 2026-11-22：多了「自愈一次」。以前这一步炸出来就直接判失败 → 调用方一秒内
+            // 打开系统浏览器，任务行连过程都没显示完（用户原话「一点安装就立马跳浏览器」）。
+            // 现在先清 profile 里的残留锁、换一个干净控件重试；还不行就换一个全新 profile 目录
+            // —— 登录态丢了总比整条通道静默废掉强，至少会走「请先登录」那条有说法出口。
+            await EnsureCoreWithHealAsync(profile, ct);
             _core = _view.CoreWebView2;
             AppLog.Info("NexusWeb", $"内核就绪 {_core.Environment?.BrowserVersionString} profile={profile}");
 
@@ -1455,7 +1514,7 @@ public sealed class NexusWebDownloadService
             await HookNetworkAsync();
             // 必须排在 Network.enable 之后（setUserAgentOverride / deleteCookies 都属这个域），
             // 也必须在第一次导航之前 —— 这一层改的是「后续每个请求带上什么身份」。
-            await ApplyBrowserIdentityAsync();
+            await ApplyBrowserIdentityAsync(_core);
             _core.NavigationCompleted += (_, e) =>
             {
                 if (!e.IsSuccess && e.WebErrorStatus != CoreWebView2WebErrorStatus.OperationCanceled)
@@ -1467,6 +1526,106 @@ public sealed class NexusWebDownloadService
                         + (_challengeActive ? "（验证期间）" : ""));
                 }
             };
+        }
+
+        /// <summary>起内核，失败就自愈一次（清残留锁 → 换控件 → 必要时换 profile 目录）。</summary>
+        private async Task EnsureCoreWithHealAsync(string profile, CancellationToken ct)
+        {
+            try
+            {
+                await EnsureCoreOnceAsync(profile, ct);
+                return;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // 这一行就是「一秒内跳浏览器」的现场证据：HResult 能直接分出
+                // 0x8007139F（状态不对/被占）、0x80070005（没权限）、0x80070002（找不到运行时）。
+                AppLog.Warn("NexusWeb", $"内置网页内核初始化失败（0x{ex.HResult:X8}）：{ex.Message}");
+                var cleared = TryClearStaleLocks(profile);
+                var next = cleared ? profile : profile + "-fresh";
+                AppLog.Warn("NexusWeb", cleared
+                    ? "已清掉 profile 里的残留锁，换个干净控件再试一次"
+                    : "残留锁删不掉（多半还有 msedgewebview2 进程占着），改用全新 profile 再试一次");
+                await ReplaceViewAsync();
+                try
+                {
+                    await EnsureCoreOnceAsync(next, ct);
+                    AppLog.Info("NexusWeb", $"内置网页内核自愈成功 profile={next}");
+                }
+                catch (Exception ex2) when (ex2 is not OperationCanceledException)
+                {
+                    AppLog.Warn("NexusWeb", $"内核自愈失败（0x{ex2.HResult:X8}）：{ex2.Message}");
+                    throw new InvalidOperationException("内置浏览器内核起不来：" + ex2.Message, ex2);
+                }
+            }
+        }
+
+        /// <summary>一次内核初始化（带 45 秒上限）。</summary>
+        private async Task EnsureCoreOnceAsync(string profile, CancellationToken ct)
+        {
+            var init = EnsureIsolatedWebViewAsync(profile);
+            if (await Task.WhenAny(init, Task.Delay(TimeSpan.FromSeconds(45), ct)) != init)
+            {
+                ct.ThrowIfCancellationRequested();   // 取消引起的先行退场，走「已取消」语义
+                throw new TimeoutException("内置浏览器内核初始化超时（45 秒）");
+            }
+            await init;   // WhenAny 只看谁先完成、不解包异常：失败要在这里照常炸出来
+        }
+
+        /// <summary>初始化失败过的 WebView2 控件不能再用，换一个新的（窗口留着，只换内容）。</summary>
+        private async Task ReplaceViewAsync()
+        {
+            try { _view?.Dispose(); } catch { }
+            var view = new WebView2
+            {
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                VerticalAlignment = VerticalAlignment.Stretch,
+            };
+            _view = view;
+            try { if (_window is not null) _window.Content = view; } catch { }
+            if (!view.IsLoaded)
+            {
+                var loaded = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                RoutedEventHandler? handler = null;
+                handler = (_, _) =>
+                {
+                    view.Loaded -= handler;
+                    loaded.TrySetResult();
+                };
+                view.Loaded += handler;
+                await loaded.Task;
+            }
+        }
+
+        /// <summary>清掉 profile 里 Chromium 的单实例锁文件（只删锁，不碰 Cookie / 登录态）。
+        /// <para>返回 true = 确实删掉了什么（说明是残留锁，原目录还能继续用）；
+        /// 返回 false = 一个都没删掉 —— 要么本来就没有（问题不在锁），要么被活着的
+        /// <c>msedgewebview2.exe</c> 独占着删不动（那种情况只能换目录）。</para></summary>
+        private static bool TryClearStaleLocks(string profile)
+        {
+            var names = new[] { "lockfile", "SingletonLock", "SingletonCookie", "SingletonSocket", "DevToolsActivePort" };
+            var dirs = new[] { Path.Combine(profile, "EBWebView"), profile };
+            var removed = 0;
+            foreach (var dir in dirs)
+            {
+                if (!Directory.Exists(dir)) continue;
+                foreach (var name in names)
+                {
+                    var path = Path.Combine(dir, name);
+                    try
+                    {
+                        if (!File.Exists(path)) continue;
+                        File.Delete(path);
+                        removed++;
+                    }
+                    catch (Exception ex)
+                    {
+                        AppLog.Warn("NexusWeb", $"锁文件删不掉 {name}：{ex.Message}");
+                    }
+                }
+            }
+            if (removed > 0) AppLog.Info("NexusWeb", $"已清理 profile 残留锁文件 {removed} 个");
+            return removed > 0;
         }
 
         /// <summary>
@@ -1880,6 +2039,27 @@ public sealed class NexusWebDownloadService
                     continue;
                 }
 
+                // 挑战期探针节流（ChallengeQuietSeconds）：窗口已交给用户之后，上一次注入
+                // 还没隔够 12 秒就不打，只用宿主侧的 DocumentTitle 看挑战页换掉没有
+                // （读它不往页面注入任何代码）。不节流的后果是实测过的自锁：挑战还在跑，
+                // 探针每 1.5 秒注入一次，CF 把「一直有人在页面上执行脚本」当自动化证据，
+                // 越探越不放行。弹窗之前不节流 —— 那 1.5 秒去抖要靠连续探针确认挑战页还在，
+                // 压成 12 秒一次会让窗口晚 12 秒才出现（2026-11-08 修过的「弹窗太慢」会复发）。
+                if (_challengeActive && _revealedHint == "cf"
+                    && (DateTime.UtcNow - _lastChallengeProbeUtc).TotalSeconds < ChallengeQuietSeconds)
+                {
+                    var title = string.Empty;
+                    try { title = _core?.DocumentTitle ?? string.Empty; } catch { }
+                    if (!LooksLikeChallengeTitle(title))
+                    {
+                        // 标题不再是挑战页 —— 可能已经放行。解除节流，下一轮探针正常确认。
+                        _challengeActive = false;
+                        _lastChallengeProbeUtc = DateTime.MinValue;
+                    }
+                    await Task.Delay(700, ct);
+                    continue;
+                }
+
                 var probe = await ProbeAsync();
                 if (probe is null)
                 {
@@ -1910,6 +2090,7 @@ public sealed class NexusWebDownloadService
                     _sawChallenge = true;
                     sawChallenge = true;
                     _challengeActive = true;
+                    _lastChallengeProbeUtc = DateTime.UtcNow;
                     _challengeSeenAtUtc ??= DateTime.UtcNow;
 
                     // 去抖：挑战页连续存在一小会儿才弹窗。一闪而过的 CF 中间页不值得
@@ -1964,13 +2145,14 @@ public sealed class NexusWebDownloadService
                         // 清 cookie 是这一步的一半：2026-11-07 03:16 实锤，被污染的
                         // cf_clearance / __cf_bm 会让托管挑战永远不放行（清掉后同一 profile
                         // 7 秒通过）。旧版把这步挂在 45 秒之后，等于先让人干等一分半。
-                        await ClearCfCookiesAsync();
+                        await ClearCfCookiesAsync(_core);
                         AppLog.Warn("NexusWeb",
                             $"验证页 {age:F0}s 未放行 → 窗口已上屏，清 CF Cookie 并重载换新质询（第 {_challengeRecoveries} 次）");
                         _report?.Invoke("正在重新校验一次…", null, null);
                         _core?.Navigate(PageUrl);
                         // 新质询要静默：探针注入会打断挑战本身（见 _quietUntilUtc 的说明）。
                         _quietUntilUtc = DateTime.UtcNow.AddSeconds(4);
+                        _lastChallengeProbeUtc = DateTime.MinValue;   // 新质询重新计节流，别拿旧页的时间戳压它
                         // 手动计时重来：换质询之后要重新给满 ChallengeManualSeconds，否则会出现
                         // 「刚重载 2 秒就判超时」把第二次机会白扔掉（2026-11-09 00:14 自测日志）。
                         _challengeRevealAtUtc = DateTime.UtcNow;
@@ -2034,6 +2216,7 @@ public sealed class NexusWebDownloadService
                     sawChallenge = false;
                     _autoHintSent = false;
                     _challengeActive = false;
+                    _lastChallengeProbeUtc = DateTime.MinValue;
                     _challengeSeenAtUtc = null;   // 挑战页退了，下一张重新计时
                     started = DateTime.UtcNow;
                 }
@@ -2080,6 +2263,29 @@ public sealed class NexusWebDownloadService
                     }
                     await Task.Delay(1200, ct);
                     continue;
+                }
+
+                // ── 直取：直接问站点自己的取链接口 ──
+                // 新版页面那颗 Slow download 只是外壳，按下时它才去调 GenerateDownloadUrl
+                // 换直链（见 ResolveUrlScript 的注释）。既然接口就是入口，那就先直接问它：
+                // 拿到的 <b>是同一条</b> CDN 直链，却绕开了「组件脚本没跑 / 按钮改名 /
+                // shadow 结构变了」这一整类让老路彻底断掉的原因 —— 2026-11-22 用户
+                // 「明明在内置网页里下载过，还是没取到直链」正是这一类。
+                // 接口没给就继续往下按老路走，两条路互不阻塞。
+                if (_apiTries < MaxApiResolves)
+                {
+                    var gap = _apiTries switch { 0 => 2, 1 => 10, _ => 25 };
+                    var since = _apiTries == 0
+                        ? (DateTime.UtcNow - started).TotalSeconds
+                        : (DateTime.UtcNow - _lastApiTryUtc).TotalSeconds;
+                    if (since >= gap)
+                    {
+                        _apiTries++;
+                        _lastApiTryUtc = DateTime.UtcNow;
+                        var apiUrl = await ResolveViaApiAsync();
+                        if (!string.IsNullOrWhiteSpace(apiUrl)) return apiUrl;
+                        await Task.Delay(200, ct);
+                    }
                 }
 
                 // 按过按钮却迟迟等不到下载事件。
@@ -2141,6 +2347,18 @@ public sealed class NexusWebDownloadService
                     var clicked = await ClickAsync(clicks);
                     await Task.Delay(clicked ? 1500 : 600, ct);
                     continue;
+                }
+
+                // 接口连回过「空」、页面上又始终没有按钮 —— 实测这就是「这条会话不是登录态」
+                // 的组合（未登录时站点接口回 200 + []，同时下载面板不渲染）。
+                // 再等 45 秒、再清一次缓存重载都不会变，直接给一句能照着做的话收工。
+                if (_apiEmpty && _apiTries >= 2 && clicks == 0 && probe.Button == "none"
+                    && (DateTime.UtcNow - started).TotalSeconds > 15)
+                {
+                    _lastError = "内置网页里的 Nexus 会话可能已过期（取链接口对未登录请求只回空），"
+                               + "在内置网页里重新登录一次再试";
+                    AppLog.Warn("NexusWeb", _lastError);
+                    return null;
                 }
 
                 // 页面加载完了，但下载面板一直没出现 —— 实测有两种：① 真的慢，SVE/POV
@@ -2273,6 +2491,39 @@ public sealed class NexusWebDownloadService
 
         /// <summary>从当前页面里捞下载落点，<paramref name="logScene"/> 时顺带把
         /// URL / 标题 / 正文前 180 字写进日志（失败后用来看它到底停在哪个页面）。</summary>
+        /// <summary>直接问站点自己的取链接口要一条直链（见 <see cref="ResolveUrlScript"/>）。
+        /// <para>拿到就返回 URL；拿不到返回 null，并把「接口回了什么」写进日志 ——
+        /// 这一行以后就是判断「会话过期 / 页面没起来 / 接口改版」的直接证据。</para></summary>
+        private async Task<string?> ResolveViaApiAsync()
+        {
+            var js = ResolveUrlScript.Replace("__FID__", _fileId.ToString());
+            var raw = await EvalAwaitAsync(js);
+            if (string.IsNullOrWhiteSpace(raw)) return null;
+            try
+            {
+                using var doc = JsonDocument.Parse(raw);
+                var root = doc.RootElement;
+                var ok = root.TryGetProperty("ok", out var o) && o.ValueKind == JsonValueKind.Number && o.GetInt32() == 1;
+                var url = root.TryGetProperty("url", out var u) && u.ValueKind == JsonValueKind.String
+                    ? u.GetString() : null;
+                if (root.TryGetProperty("empty", out var e) && e.ValueKind == JsonValueKind.Number && e.GetInt32() == 1)
+                    _apiEmpty = true;
+                if (ok && !string.IsNullOrWhiteSpace(url))
+                {
+                    var via = root.TryGetProperty("via", out var v) ? v.GetString() : "?";
+                    AppLog.Info("NexusWeb", $"站点接口直取成功 via={via} url={url[..Math.Min(90, url!.Length)]}…");
+                    return url;
+                }
+                var detail = raw.Length > 240 ? raw[..240] : raw;
+                AppLog.Info("NexusWeb", "站点接口没给直链：" + detail);
+            }
+            catch (Exception ex)
+            {
+                AppLog.Warn("NexusWeb", "站点接口返回无法解析：" + ex.Message);
+            }
+            return null;
+        }
+
         private async Task<string?> HarvestAsync(bool logScene)
         {
             var raw = await EvalAsync(HarvestScript, userGesture: false);
@@ -2770,6 +3021,80 @@ public sealed class NexusWebDownloadService
         """;
 
     /// <summary>滚到视口中央后程序化点击。返回坐标只为日志/兜底用。</summary>
+    /// <summary>
+    /// 直接向站点自己的取链接口要一条直链 —— 不走按钮、不走 nxm、不碰 shadow DOM。
+    /// <para>2026-11-22 从站点前端 bundle（<c>/assets/dist/web-components-*.js</c>）里抠出来的实现：
+    /// <c>Slow download</c> 的 onClick 就是 <c>urlProvider()</c>，它
+    /// <c>POST {origin}/Core/Libs/Common/Managers/Downloads?GenerateDownloadUrl</c>
+    /// （form: <c>game_id / fid / collection_id</c>，带 <c>X-Requested-With</c> 与 cookie），
+    /// 成功返回 <c>{"url":"https://cf-files…/xxx.zip?md5=…&amp;expires=…"}</c>。
+    /// 未登录时同一接口回 <b>HTTP 200 + <c>[]</c></b>（实测匿名请求），所以「空数组」本身就是
+    /// 「这条会话不是登录态」的可靠信号。</para>
+    /// <para><c>__FID__</c> 由调用方替换成目标 fileId。game_id 优先从页面读
+    /// （<c>&lt;section class="modpage" data-game-id&gt;</c> 是服务端渲染的，下载区空白时它也在），
+    /// 读不到才留空 —— 留空就只走属性那条分支，不会打一个注定 400 的请求。</para>
+    /// </summary>
+    private const string ResolveUrlScript = """
+        (async () => {
+          try {
+            var q = function (s) { try { return document.querySelector(s); } catch (e) { return null; } };
+            var fid = '__FID__';
+            var gid = '';
+            var host = q('mod-file-download[game-id]');
+            if (host) gid = host.getAttribute('game-id') || '';
+            if (!gid) { var s1 = q('[data-game-id]'); if (s1) gid = s1.getAttribute('data-game-id') || ''; }
+            if (!gid) { var s2 = q('mod-download-modal[game-id]'); if (s2) gid = s2.getAttribute('game-id') || ''; }
+            // 兜底：HTML 里任何一个 game-id="1303"（服务端渲染的 section / 组件属性都算）
+            if (!gid) {
+              try {
+                var m = (document.documentElement ? document.documentElement.outerHTML : '').match(/game-id="(\d+)"/);
+                if (m) gid = m[1];
+              } catch (e) { }
+            }
+            // ① 服务端已经把直链写在属性上（有就直接用，省一次请求）
+            var f = q('mod-file-download[download-url]');
+            var pre = f ? (f.getAttribute('download-url') || '') : '';
+            if (pre) return JSON.stringify({ ok: 1, via: 'attr', url: pre });
+            if (!gid || !fid) return JSON.stringify({ ok: 0, via: 'none', err: 'no game/file id', gid: gid, fid: fid });
+            // ② 站点自己的接口
+            var body = new URLSearchParams();
+            body.append('game_id', gid);
+            body.append('fid', fid);
+            body.append('collection_id', '0');
+            var r = await fetch(location.origin + '/Core/Libs/Common/Managers/Downloads?GenerateDownloadUrl', {
+              method: 'POST',
+              credentials: 'include',
+              headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'X-Requested-With': 'XMLHttpRequest'
+              },
+              body: body.toString()
+            });
+            var txt = '';
+            try { txt = await r.text(); } catch (e) { }
+            var url = '';
+            try {
+              var j = JSON.parse(txt);
+              if (j && typeof j.url === 'string') url = j.url;
+            } catch (e) { }
+            // 「未登录」的签名：HTTP 200 + 空数组（实测匿名请求）。只有这个组合才敢当信号，
+            // 403/500/其它形状一律只算「这次没拿到」，免得把网络故障说成会话过期。
+            var trimmed = (txt || '').trim();
+            var anon = r.status === 200 && (trimmed === '[]' || trimmed === '{}' || trimmed === '');
+            return JSON.stringify({
+              ok: url ? 1 : 0,
+              via: 'api',
+              http: r.status,
+              empty: anon ? 1 : 0,
+              url: url,
+              body: (txt || '').replace(/\s+/g, ' ').slice(0, 160)
+            });
+          } catch (e) {
+            return JSON.stringify({ ok: 0, via: 'api', err: String(e).slice(0, 200) });
+          }
+        })()
+        """;
+
     private static readonly string ClickScript = $$"""
         (function () {
           try {

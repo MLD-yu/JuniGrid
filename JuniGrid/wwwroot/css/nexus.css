@@ -352,3 +352,5 @@
     opacity: .66;
 }
 .jg-nexus-scope .jg-featured-grid { margin-top: 12px; }
+/* 模糊兜底说明：跟在「搜索：xxx」标题后，弱一级颜色，说清这批结果是拆词/截尾重试来的 */
+.jg-search-fuzzy-note { font-size: 12px; color: var(--jg-text-3); white-space: nowrap; }

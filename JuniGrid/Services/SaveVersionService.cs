@@ -141,6 +141,9 @@ public static class SaveVersionService
         try { dirs = Directory.GetDirectories(root); } catch { return list; }
         foreach (var dir in dirs)
         {
+            // 自家拷贝残壳不是一份档：界面上少这一行，免得玩家点进去（没有档体，必闪退）。
+            // 它们由 SweepIncompleteShells 在启动前挪进留底区。
+            if (IsIncompleteShell(Path.GetFileName(dir))) continue;
             var s = ReadSlot(dir);
             if (s is not null) list.Add(s);
         }
@@ -729,6 +732,10 @@ public static class SaveVersionService
         try { dirs = Directory.GetDirectories(root); } catch { return bad; }
         foreach (var dir in dirs)
         {
+            // 自家拷贝残壳（`<档名>-incomplete-<时间戳>`）不算「云半同步」：它是我们核对不通过时
+            // 留下的索引件副本，档体在真档那边好好的（2026-11-14 实测 6 份，被这句说明冤枉成
+            // 「Steam 云同步断在半路」，每次启动都拦一次）。交给 SweepIncompleteShells 挪走。
+            if (IsIncompleteShell(Path.GetFileName(dir))) continue;
             string[] files;
             try { files = Directory.GetFiles(dir); } catch { continue; }
             if (files.Length == 0) continue;                 // 空壳目录（云留下的壳）不报
@@ -745,6 +752,70 @@ public static class SaveVersionService
     private static bool IsBodyFile(string fileName)
         => Path.GetExtension(fileName).Length == 0
         && !fileName.StartsWith("SaveGameInfo", StringComparison.OrdinalIgnoreCase);
+
+    // ─────────────── 自家拷贝残壳（`<档名>-incomplete-<时间戳>`） ───────────────
+
+    /// <summary>残壳名的形状。只有 <see cref="DepotDownloaderService.MoveDirectoryVerified"/> 在
+    /// 「拷贝后核对不通过」时会生成（FileOps.cs 里两处 `-incomplete-` + 时间戳）。锚定到时间戳结尾，
+    /// 玩家自己起的档名里带 "-incomplete-" 但不像时间戳的，不当残壳处理。</summary>
+    private static readonly Regex ShellNameRe =
+        new(@"-incomplete-\d{8}_\d{6}$", RegexOptions.IgnoreCase);
+
+    public static bool IsIncompleteShell(string name) => ShellNameRe.IsMatch(name);
+
+    /// <summary>Saves 里躺着的自家残壳（档体缺失的索引件副本，没有独有数据）。</summary>
+    public static List<string> IncompleteShells()
+    {
+        var hits = new List<string>();
+        var root = SavesDir();
+        if (root is null) return hits;
+        string[] dirs;
+        try { dirs = Directory.GetDirectories(root); } catch { return hits; }
+        foreach (var dir in dirs)
+        {
+            var name = Path.GetFileName(dir);
+            if (IsIncompleteShell(name)) hits.Add(name);
+        }
+        return hits;
+    }
+
+    /// <summary>
+    /// 把 Saves 里的残壳挪进留底区（<c>_saves-backup\_incomplete</c>），返回挪走的份数。
+    /// <para><b>只挪不删</b>：残壳里只有 SaveGameInfo 副本，但万一哪天核对逻辑误判，留底区里的
+    /// 还能人工翻出来。挪不动（被占用）就留在原地、下次启动再试，绝不因此影响启动。</para>
+    /// <para>为什么必须挪走：① 星露谷读档菜单把「含 SaveGameInfo 的目录」当成一份存档列出来，
+    /// 点进去没有档体必闪退；② <see cref="HalfSyncedSaves"/> 会把它们误判成云半同步；
+    /// ③ 它们会被 Steam 云当成新档传上去。</para>
+    /// </summary>
+    public static int SweepIncompleteShells(Action<string>? log = null)
+    {
+        var root = SavesDir();
+        if (root is null) return 0;
+        string[] dirs;
+        try { dirs = Directory.GetDirectories(root); } catch { return 0; }
+        var qdir = Path.Combine(BackupRoot, "_incomplete");
+        var n = 0;
+        foreach (var dir in dirs)
+        {
+            var name = Path.GetFileName(dir);
+            if (!IsIncompleteShell(name)) continue;
+            try
+            {
+                Directory.CreateDirectory(qdir);
+                var to = Path.Combine(qdir, name);
+                // 留底区在 E:，Saves 常在 C: —— 跨盘走拷贝+核对，同盘直接改名。
+                DepotDownloaderService.MoveDirectoryVerified(dir, to, null, null, "残壳挪进留底区");
+                if (Directory.Exists(dir)) { log?.Invoke($"残壳「{name}」挪不动（被占用），下次启动再试"); continue; }
+                n++;
+                log?.Invoke($"残壳「{name}」已挪进留底区（没有档体、无独有数据，只是本家拷贝失败的索引件副本）");
+            }
+            catch (Exception ex)
+            {
+                log?.Invoke($"残壳「{name}」挪走失败：{ex.Message}");
+            }
+        }
+        return n;
+    }
 
     /// <summary>
     /// 顶部横幅那一句话：要短到不被截断，又把「再点一次就能启动」这个出口写明白 ——

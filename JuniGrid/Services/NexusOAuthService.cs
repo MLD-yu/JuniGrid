@@ -33,6 +33,14 @@ public sealed class NexusOAuthService
     private readonly NexusWebDownloadService _web;
     private static readonly HttpClient Http = CreateClient();
 
+    // ── 账号（含会员状态）的重新核对 ──
+    /// <summary>非 force 核对的节流窗口。免费账号的 GraphQL 配额也要省着用，
+    /// 而「刚买完会员」这个事件本身是低频的 —— 30 分钟一轮足够快。</summary>
+    private const int AccountCheckThrottleMinutes = 25;
+    private DateTime _lastAccountCheckUtc = DateTime.MinValue;
+    private readonly SemaphoreSlim _accountGate = new(1, 1);   // 同一时刻只跑一次核对
+    private int _watcherStarted;
+
     public NexusOAuthService(ConfigService cfg, NexusWebDownloadService web)
     {
         _cfg = cfg;
@@ -96,6 +104,78 @@ public sealed class NexusOAuthService
             LastError = ex.Message;
             return false;
         }
+    }
+
+    /// <summary>把「当前账号」从 N 网重新核对一遍 —— 名字、主页，以及最要紧的会员状态。
+    /// <para>会员状态不再只信 access token：JWT 里的 premium_expiry 是签发那一刻的快照，
+    /// 用户在浏览器里买了会员，手里这份 token 不会变，于是界面一直显示「免费账户」、
+    /// 会员通道一直锁着。这里改问 GraphQL 的用户角色（实时），只在查不到时才回落 token。</para>
+    /// <param name="force">用户明确点了「重新核验」：跳过 25 分钟节流与 2 分钟查询缓存。</param>
+    /// <returns>核对后的账号（IsPremium 已修正）；未登录 / 已有核对在跑 / 失败返回 null。</returns>
+    public async Task<NexusUser?> RefreshAccountAsync(bool force = false)
+    {
+        if (!NexusService.IsAuthenticated) return null;
+        if (!force && (DateTime.UtcNow - _lastAccountCheckUtc).TotalMinutes < AccountCheckThrottleMinutes) return null;
+        // 手动点「重新核验」时等一下正在跑的那一轮（最多 20s），而不是直接让人看到「失败」；
+        // 后台轮询则让位 —— 叠加请求对 AUP 配额没好处。
+        var got = force
+            ? await _accountGate.WaitAsync(TimeSpan.FromSeconds(20))
+            : await _accountGate.WaitAsync(0);
+        if (!got) return null;
+        try
+        {
+            // 进锁后再判一次：等锁期间可能刚被另一轮刷过
+            if (!force && (DateTime.UtcNow - _lastAccountCheckUtc).TotalMinutes < AccountCheckThrottleMinutes) return null;
+            if (NeedsRefresh) await RefreshAsync();   // token 过期时先续期，JWT 里的用户名/ID 才可用
+            if (force) NexusService.InvalidatePremiumCache();
+
+            var u = await _nexus.ValidateAsync();
+            if (u is null) return null;
+            var live = await _nexus.FetchPremiumLiveAsync(u.MemberId);
+            var premium = live ?? u.IsPremium;   // 查不到就沿用 token 的判断 —— 失败绝不能判成免费
+
+            var c = _cfg.Current;
+            var changed = false;
+            if (c.NexusIsPremium != premium) { c.NexusIsPremium = premium; changed = true; }
+            if (!string.IsNullOrEmpty(u.Name) && c.NexusUserName != u.Name) { c.NexusUserName = u.Name; changed = true; }
+            if (!string.IsNullOrEmpty(u.ProfileUrl) && c.NexusProfileUrl != u.ProfileUrl) { c.NexusProfileUrl = u.ProfileUrl; changed = true; }
+            if (changed)
+            {
+                _cfg.Save(c);
+                AppLog.Info("NOAUTH", $"账号信息已更新：premium={premium}（来源={(live is null ? "token" : "GraphQL")}）");
+            }
+            _lastAccountCheckUtc = DateTime.UtcNow;
+            return premium == u.IsPremium ? u : u with { IsPremium = premium };
+        }
+        catch (Exception ex)
+        {
+            LastError = ex.Message;
+            AppLog.Warn("NOAUTH", "刷新账号信息失败: " + ex.Message);
+            return null;
+        }
+        finally { _accountGate.Release(); }
+    }
+
+    /// <summary>后台常驻：登录态下定期核对会员状态 —— 用户在浏览器里开通会员后，
+    /// 不重启、不点任何东西也会在一轮之内变成 Premium。
+    /// 免费号 30 分钟一轮（升级要尽快看到）；已是会员 4 小时一轮（只为感知到期，省配额）。</summary>
+    public void StartAccountWatcher()
+    {
+        if (Interlocked.Exchange(ref _watcherStarted, 1) == 1) return;
+        _ = Task.Run(async () =>
+        {
+            try { await Task.Delay(TimeSpan.FromSeconds(5)); } catch { return; }
+            while (true)
+            {
+                try
+                {
+                    if (NexusService.IsAuthenticated) await RefreshAccountAsync();
+                }
+                catch (Exception ex) { AppLog.Warn("NOAUTH", "会员状态自动同步失败: " + ex.Message); }
+                try { await Task.Delay(TimeSpan.FromMinutes(_cfg.Current.NexusIsPremium ? 240 : 30)); }
+                catch { return; }
+            }
+        });
     }
 
     /// <summary>跑完整的浏览器授权。返回登录用户，失败/取消返回 null（LastError 带原因）。</summary>
@@ -166,12 +246,19 @@ public sealed class NexusOAuthService
             var user = await _nexus.ValidateAsync();
             if (user is null) { LastError = LocService.Tr("已登录，但拉取账号信息失败"); return null; }
 
+            // 会员状态取实时值：刚在浏览器里升完会员的用户，登录瞬间拿到的 JWT 也可能还是
+            // 免费时签的那份（Nexus 侧缓存），只信 token 就会白白显示「免费账户」。
+            NexusService.InvalidatePremiumCache();
+            var livePremium = await _nexus.FetchPremiumLiveAsync(user.MemberId);
+            if (livePremium is bool lp && lp != user.IsPremium) user = user with { IsPremium = lp };
+
             var c = _cfg.Current;
             c.NexusUserName = user.Name ?? "";
             c.NexusUserEmail = user.Email ?? "";
             c.NexusProfileUrl = user.ProfileUrl ?? "";
             c.NexusIsPremium = user.IsPremium;
             _cfg.Save(c);
+            _lastAccountCheckUtc = DateTime.UtcNow;
             await _web.CompleteAuthorizeAsync();
             return user;
         }
@@ -284,6 +371,8 @@ public sealed class NexusOAuthService
     {
         NexusService.BearerToken = null;
         NexusService.ClearResponseCache();   // 换账号/登出后不能继续挂上一账号的用户资料与头像
+        NexusService.InvalidatePremiumCache();
+        _lastAccountCheckUtc = DateTime.MinValue;
         var c = _cfg.Current;
         c.NexusAccessToken = "";
         c.NexusRefreshToken = "";

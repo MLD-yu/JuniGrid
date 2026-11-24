@@ -52,6 +52,7 @@ _backup-*/
 .codex-testbuild/
 .testtmp/
 .tmp-test/
+.tmp-avatar/
 .tmp-xdyno/
 
 # WPF 标记编译第二遍落下的临时工程文件

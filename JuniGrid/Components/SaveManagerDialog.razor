@@ -1,0 +1,329 @@
+@namespace JuniGrid.Components
+@using JuniGrid.Services
+@* ─── v1.5：存档管理弹窗（首页第 5 张统计卡的入口）
+   为什么要有这一列「存档版本」：存档是单向升级的，被高版本写过的档在低版本里点开必闪退。
+   为什么「上次启动」要单独记：打开旧档、没存盘就退出，版本不会变 —— 那是两件事，不能拿存盘时间冒充。 *@
+@inject ConfigService Cfg
+
+@if (Open)
+{
+    <div class="jg-modal-overlay" @onclick="Close">
+        <div class="jg-modal jg-save-modal" @onclick:stopPropagation>
+            <div class="jg-saves-head">
+                <div class="jg-saves-headtext">
+                    <div class="jg-saves-title">@Loc.T("存档管理")</div>
+                    <div class="jg-saves-sub">
+                        @if (_loading)
+                        {
+                            @Loc.T("正在读取存档…")
+                        }
+                        else if (_saves.Count == 0)
+                        {
+                            @Loc.T("还没有存档（进游戏存一次盘就会出现在这里）")
+                        }
+                        else
+                        {
+                            @Loc.F("{0} 份存档 · 按最后存档排序", _saves.Count)
+                        }
+                    </div>
+                </div>
+                <div class="jg-saves-tools">
+                    <button type="button" class="jg-saves-btn" disabled="@_busy" @onclick="ImportAsync">
+                        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                            <path d="M8 2v7m0 0L5 6m3 3l3-3M2.5 11.5v1A1.5 1.5 0 004 14h8a1.5 1.5 0 001.5-1.5v-1"
+                                  stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                        @Loc.T("导入存档")
+                    </button>
+                    <button type="button" class="jg-saves-btn" disabled="@_loading" @onclick="Load">
+                        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                            <path d="M13.5 8a5.5 5.5 0 11-1.6-3.9M13.5 2v3h-3"
+                                  stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                        @Loc.T("刷新")
+                    </button>
+                    <button type="button" class="jg-save-x" data-modal-close @onclick="Close" title='@Loc.T("关闭")'>
+                        <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                            <path d="M2 2l10 10M12 2L2 12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+
+            @if (_msg is not null)
+            {
+                <div class="jg-saves-msg @(_msgOk ? "ok" : "err")">@_msg</div>
+            }
+
+            @if (_loading && _saves.Count == 0)
+            {
+                @* 首次打开：骨架行与真实行同高，先把列表位置占住，别让弹窗从一条缝撑开。
+                   刷新时 _saves 还在，走下面的真实列表（不闪骨架）。 *@
+                <div class="jg-saves-list jg-saves-skeleton" aria-hidden="true">
+                    @for (var i = 0; i < 6; i++)
+                    {
+                        <div class="jg-save-row jg-save-row-sk">
+                            <div class="jg-save-ava"><span class="jg-shimmer jg-sk-ava"></span></div>
+                            <div class="jg-save-main">
+                                <span class="jg-shimmer jg-sk-name"></span>
+                                <div class="jg-save-meta">
+                                    @for (var c = 0; c < 4; c++)
+                                    {
+                                        <div class="jg-meta">
+                                            <span class="jg-shimmer jg-sk-k"></span>
+                                            <span class="jg-shimmer jg-sk-v"></span>
+                                        </div>
+                                    }
+                                </div>
+                            </div>
+                            <div class="jg-save-ops jg-save-ops-sk"></div>
+                        </div>
+                    }
+                </div>
+            }
+            else if (_saves.Count == 0)
+            {
+                <div class="jg-saves-empty">@Loc.T("进游戏存一次盘，这里就会列出你的存档、版本和游玩时长。")</div>
+            }
+            else
+            {
+                <div class="jg-saves-list">
+                    @foreach (var s in _saves)
+                    {
+                        var e = s;
+                        <div class="jg-save-row" @key="e.DirName">
+                            <div class="jg-save-ava">
+                                @if (AvatarOf(e) is string img)
+                                {
+                                    <img src="@img" alt="" draggable="false" />
+                                }
+                                else
+                                {
+                                    <span class="jg-save-ava-ph">@Initial(e)</span>
+                                }
+                            </div>
+                            <div class="jg-save-main">
+                                <div class="jg-save-name">
+                                    @(e.FarmerName ?? e.DirName)
+                                    @if (!string.IsNullOrWhiteSpace(e.FarmName))
+                                    {
+                                        <span class="jg-save-farm">@Loc.F("{0} 农场", e.FarmName)</span>
+                                    }
+                                    @if (TooNewForCurrent(e))
+                                    {
+                                        <span class="jg-save-warn" data-tip='@Loc.T("存档版本比当前游戏新，点它进游戏会闪退")'>
+                                            @Loc.T("当前版本打不开")
+                                        </span>
+                                    }
+                                </div>
+                                <div class="jg-save-meta">
+                                    <div class="jg-meta">
+                                        <span class="jg-meta-k">@Loc.T("存档版本")</span>
+                                        <span class="jg-meta-v">@(string.IsNullOrWhiteSpace(e.GameVersion) ? "—" : e.GameVersion)</span>
+                                    </div>
+                                    <div class="jg-meta">
+                                        <span class="jg-meta-k">@Loc.T("上次启动")</span>
+                                        <span class="jg-meta-v">@LastLaunchLabel(e)</span>
+                                    </div>
+                                    <div class="jg-meta">
+                                        <span class="jg-meta-k">@Loc.T("游玩")</span>
+                                        <span class="jg-meta-v">@PlayLabel(e.Played)</span>
+                                    </div>
+                                    <div class="jg-meta">
+                                        <span class="jg-meta-k">@Loc.T("金币")</span>
+                                        <span class="jg-meta-v">@(e.Money > 0 ? e.Money.ToString("N0") : "—")</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="jg-save-ops">
+                                <button type="button" class="jg-saves-btn sm" disabled="@_busy" @onclick="() => ExportAsync(e)">@Loc.T("导出")</button>
+                                <button type="button" class="jg-saves-btn sm" @onclick="() => Reveal(e.Dir)">@Loc.T("定位")</button>
+                            </div>
+                        </div>
+                    }
+                </div>
+            }
+        </div>
+    </div>
+}
+
+@code {
+    /// <summary>弹窗是否显示。父组件控制；从 false 变 true 的那一刻开始扫存档。</summary>
+    [Parameter] public bool Open { get; set; }
+
+    /// <summary>点遮罩 / 点 × 关闭。</summary>
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private List<SaveEntry> _saves = new();
+    private Dictionary<string, string?> _avatars = new(StringComparer.OrdinalIgnoreCase);
+    private bool _loading;
+    private bool _busy;
+    private string? _msg;
+    private bool _msgOk = true;
+    private string? _currentVersion;   // 当前游戏版本，判「存档比现在新」用
+
+    /// <summary>Open 每帧都会被父组件重新赋值，只在 false→true 这一跳触发扫描。</summary>
+    private bool _wasOpen;
+
+    protected override void OnParametersSet()
+    {
+        var opening = Open && !_wasOpen;
+        _wasOpen = Open;
+        if (opening) Load();
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private string? AvatarOf(SaveEntry s) => _avatars.TryGetValue(s.DirName, out var v) ? v : null;
+
+    private static string Initial(SaveEntry s) =>
+        string.IsNullOrEmpty(s.FarmerName) ? "?" : s.FarmerName[..1];
+
+    /// <summary>
+    /// 扫存档 + 合成小像，都在后台线程：读 40 多份 SaveGameInfo（每份 80KB 上下）
+    /// 加上首次解码贴图（pants 表 1920×1376）要几百毫秒，放渲染线程上弹窗会卡住。
+    /// </summary>
+    private void Load()
+    {
+        _loading = true;
+        _msg = null;
+        StateHasChanged();
+
+        var cfg = Cfg.Current;
+        var gamePath = cfg.GamePath;
+        _ = Task.Run(() =>
+        {
+            List<SaveEntry> list;
+            try { list = SaveManagerService.Scan(); }
+            catch (Exception ex)
+            {
+                AppLog.Warn("存档", "扫描存档失败：" + ex.Message);
+                list = new List<SaveEntry>();
+            }
+            try { SaveLaunchJournal.Prune(); } catch { }
+
+            var avatars = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+            foreach (var e in list)
+            {
+                try { avatars[e.DirName] = e.Look is null ? null : FarmerAvatarService.DataUri(e.Look, gamePath); }
+                catch { avatars[e.DirName] = null; }   // 一张小像合成失败不能连累整张列表
+            }
+
+            string? cur = null;
+            try
+            {
+                var raw = UpdateService.ResolveCurrentVersion(gamePath);
+                cur = UpdateService.DisplayGameVersion(raw, cfg.LastHistoricalLabel, cfg.LastHistoricalInternalVersion);
+            }
+            catch (Exception ex) { AppLog.Warn("存档", "读当前版本失败：" + ex.Message); }
+
+            _saves = list;
+            _avatars = avatars;
+            _currentVersion = cur;
+            _loading = false;
+            return InvokeAsync(StateHasChanged);
+        });
+    }
+
+    /// <summary>「上次启动」：优先用按会话记下的版本 + 时间；没记过就如实说没记过，只补一个存盘时间当参考。</summary>
+    private string LastLaunchLabel(SaveEntry s)
+    {
+        var (ver, at) = SaveLaunchJournal.Lookup(s.DirName);
+        if (at is not null)
+        {
+            var when = at.Value.ToString("MM-dd HH:mm");
+            return string.IsNullOrWhiteSpace(ver) ? when : ver + " · " + when;
+        }
+        return Loc.F("未记录（{0} 存盘）", s.WrittenAt.ToString("MM-dd HH:mm"));
+    }
+
+    private string PlayLabel(TimeSpan t)
+    {
+        var h = (long)t.TotalHours;
+        return h > 0
+            ? Loc.F("{0} 时 {1} 分 {2} 秒", h, t.Minutes, t.Seconds)
+            : Loc.F("{0} 分 {1} 秒", t.Minutes, t.Seconds);
+    }
+
+    /// <summary>这份档是不是「比当前游戏新」。单向升级：存档被高版本写过后，低版本点它必闪退。</summary>
+    private bool TooNewForCurrent(SaveEntry s)
+    {
+        if (string.IsNullOrWhiteSpace(s.GameVersion)) return false;
+        if (string.IsNullOrWhiteSpace(_currentVersion)) return false;
+        return SaveVersionService.CompareVersions(s.GameVersion, _currentVersion) > 0;
+    }
+
+    private async Task ImportAsync()
+    {
+        var dlg = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = Loc.T("选择要导入的存档压缩包"),
+            Filter = Loc.T("压缩包 (*.zip;*.rar;*.7z)") + "|*.zip;*.rar;*.7z|" + Loc.T("所有文件 (*.*)") + "|*.*",
+            CheckFileExists = true,
+            Multiselect = false
+        };
+        if (dlg.ShowDialog() != true) return;
+
+        var path = dlg.FileName;
+        _busy = true;
+        _msgOk = true;
+        _msg = Loc.T("正在导入…");
+        StateHasChanged();
+
+        var r = await Task.Run(() => SaveManagerService.Import(path));
+        _busy = false;
+        _msgOk = r.Ok;
+        _msg = r.Message;
+        if (r.Ok) Load();
+        else StateHasChanged();
+    }
+
+    private async Task ExportAsync(SaveEntry s)
+    {
+        var name = string.IsNullOrWhiteSpace(s.FarmerName) ? s.DirName : s.FarmerName;
+        foreach (var bad in Path.GetInvalidFileNameChars()) name = name.Replace(bad, '_');
+        var dlg = new Microsoft.Win32.SaveFileDialog
+        {
+            Title = Loc.T("导出存档"),
+            FileName = name + " - " + s.DirName + ".zip",
+            DefaultExt = ".zip",
+            Filter = "ZIP (*.zip)|*.zip"
+        };
+        if (dlg.ShowDialog() != true) return;
+
+        var dest = dlg.FileName;
+        _busy = true;
+        _msgOk = true;
+        _msg = Loc.T("正在导出…");
+        StateHasChanged();
+
+        var r = await Task.Run(() => SaveManagerService.Export(s, dest));
+        _busy = false;
+        _msgOk = r.Ok;
+        _msg = r.Message;
+        StateHasChanged();
+    }
+
+    /// <summary>在资源管理器里定位。用目录本身当 FileName + UseShellExecute，比拼 explorer 命令行稳。</summary>
+    private void Reveal(string dir)
+    {
+        try
+        {
+            if (!Directory.Exists(dir))
+            {
+                _msgOk = false;
+                _msg = Loc.T("目录不存在");
+                StateHasChanged();
+                return;
+            }
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(dir) { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warn("存档", "打开目录失败：" + ex.Message);
+            _msgOk = false;
+            _msg = Loc.T("打开目录失败") + "：" + ex.Message;
+            StateHasChanged();
+        }
+    }
+}
